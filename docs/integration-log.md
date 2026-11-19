@@ -43,6 +43,7 @@
 | `mixed-e2e` | `7c94971` | `b7ee298` | 通過（check＋fmt＋clippy） | 2026-11-20 00:16 |
 | `zh-bigram` | `61b1ed5` | `b2d244f` | check 通過；clippy 退步 | 2026-11-20 00:20 |
 | `zh-bigram`（clippy 修正） | `3ecd2a7` | `807c41d` | 通過（fmt＋clippy） | 2026-11-20 00:23 |
+| `model-wire-zh` | `39d9bda` | `67d16e8` | 通過（fmt＋clippy） | 2026-11-20 00:39 |
 
 ## 衝突與修正
 
@@ -244,3 +245,13 @@
   `converter.rs` 把 `convert` 的參數收成結構，`score.rs` 測試改用結構初始化，兩個 clippy 錯消失。
   `cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` **exit 0**、
   `cargo check --workspace --all-targets` 也通過。`eval zh-golden --lm … --stats` 仍為 41/45、queries=22747 hits=9743。
+
+- `model-wire-zh`（合併 `67d16e8`，含 `798d55a`、`8b15704`、`e42408a`、`39d9bda`）：無衝突。
+  `zh_golden` 改成 `GoldenOptions` 收斂參數，解掉上一輪 `too_many_arguments` 的死結；
+  `jc-cli` 加 `--select-model on|off`（需要 `--features onnx`）、`jc-core/src/zh/select.rs` 新增選字模型前處理。
+  `cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` **exit 0**、
+  `cargo check --workspace --all-targets` 通過；依指示未跑 test。
+
+  量測（`docs/port/model-wire-zh.md`）：`eval zh-golden` 開與關都是 **41/45**；開啟時推論 100 次、
+  p50 **11.87 ms**、p95 19.42 ms。前處理與前身 Python 參考實作逐位一致（誤差 0：vocab 映射、序列長度、
+  `[UNK]`、遮罩、`proj_pos`、`target_node`／`target_ids`）。結論是此題庫上無改善，`--select-model` 預設 off。
