@@ -35,6 +35,12 @@ cargo run -p jc-engine
 
 Windows 產物一律以 MSVC 建置；Linux 只用來開發核心與跑評測。
 
+## 致謝
+
+本專案的輸入法設計、注音與日文題庫、詞典資料與模型，來自前身專案 [0c-ime](https://github.com/0c-biggo/0c-ime)。`jc-ime` 是它的核心以 Rust 重寫的版本，功能範圍與品質基準都由它啟發；沒有 0c-ime 累積的題庫與資料，這個專案無法在同樣時間內達到可驗證的品質。
+
+0c-ime 同為 AGPL-3.0 授權。
+
 ## 授權
 
 AGPL-3.0-only，見 `LICENSE`。
