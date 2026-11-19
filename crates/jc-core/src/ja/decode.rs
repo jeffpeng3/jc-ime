@@ -180,7 +180,7 @@ pub struct JaCandidate {
 ///
 /// 正式實作是 [`JaDictionary`]；測試或小型情境可以直接提供自己的實作。
 /// `matches` 必須走訪 `reading[start..]` 的所有前綴，讓可変長讀音被展開。
-pub trait JaWordSource {
+pub trait JaWordSource: Send + Sync {
     /// 最長詞條的讀音單位數。
     fn longest_reading_units(&self) -> usize;
 
@@ -393,7 +393,7 @@ impl Lattice {
 /// 個人學習的鉤子。
 ///
 /// 回傳指定詞條在該位置的額外成本；0 表示不調整，負值可以提高優先度。
-pub trait JaLearning {
+pub trait JaLearning: Send + Sync {
     /// 額外成本。
     fn cost(&self, reading: &[char], start: usize, entry: &JaEntry, ctx: &JaContext) -> i32;
 }
@@ -411,7 +411,7 @@ impl JaLearning for NoLearning {
 /// 驗證器的鉤子。
 ///
 /// `score` 回傳整句結果的額外加分，越高越好；不得改變讀音對應。
-pub trait JaVerifier {
+pub trait JaVerifier: Send + Sync {
     /// 額外加分。
     fn score(&self, reading: &[char], result: &JaResult, ctx: &JaContext) -> f64;
 }
@@ -429,7 +429,7 @@ impl JaVerifier for NoVerifier {
 /// 重排鉤子。
 ///
 /// 收到已按統計成本排序的候選，回傳完整排序；實作在任何錯誤時應原樣回傳。
-pub trait JaReranker {
+pub trait JaReranker: Send + Sync {
     /// 重排候選。
     fn rerank(&self, reading: &[char], drafts: Vec<JaResult>, ctx: &JaContext) -> Vec<JaResult>;
 }
@@ -627,7 +627,7 @@ fn clause_cost(nodes: &[&JaNode], conn: &dyn ConnectionCost) -> i32 {
 ///
 /// 只有詞弧帶 left／right ID 且解碼器設定了這個矩陣時才會使用；否則一律
 /// 退回 [`ConnectionCost`] 的詞性表。
-pub trait JaContextCost {
+pub trait JaContextCost: Send + Sync {
     /// 回傳 `left` 接 `right` 的連接成本；ID 0 是 BOS／EOS。
     fn cost(&self, left: u16, right: u16) -> i32;
 }
@@ -666,6 +666,7 @@ pub struct JaDecoder {
     learning: Option<Arc<dyn JaLearning>>,
     verifier: Option<Arc<dyn JaVerifier>>,
     reranker: Option<Arc<dyn JaReranker>>,
+    rerank_enabled: bool,
     prefer_hiragana: bool,
     lm: Option<Arc<LanguageModel>>,
     lm_weight: f64,
@@ -701,6 +702,7 @@ impl JaDecoder {
             learning: None,
             verifier: None,
             reranker: None,
+            rerank_enabled: true,
             prefer_hiragana: false,
             lm: None,
             lm_weight: 0.0,
@@ -784,6 +786,17 @@ impl JaDecoder {
         self
     }
 
+    /// 執行期開關；關閉時保留重排器但不呼叫，排序與統計結果相同。
+    pub fn with_rerank_enabled(mut self, enabled: bool) -> Self {
+        self.rerank_enabled = enabled;
+        self
+    }
+
+    /// 重排器目前是否會實際執行。
+    pub fn rerank_enabled(&self) -> bool {
+        self.rerank_enabled && self.reranker.is_some()
+    }
+
     /// 設定平假名讀音的詞面偏好。
     pub fn with_prefer_hiragana(mut self, prefer: bool) -> Self {
         self.prefer_hiragana = prefer;
@@ -820,7 +833,7 @@ impl JaDecoder {
         if units.is_empty() {
             return None;
         }
-        let k = if self.verifier.is_some() || self.reranker.is_some() {
+        let k = if self.verifier.is_some() || self.rerank_enabled() {
             self.desired_nbest()
         } else {
             1
@@ -867,11 +880,13 @@ impl JaDecoder {
                 .total_cmp(&a.score)
                 .then_with(|| a.surface().cmp(&b.surface()))
         });
-        if let Some(reranker) = &self.reranker {
-            if !out.is_empty() {
-                let reranked = reranker.rerank(reading, out.clone(), ctx);
-                if !reranked.is_empty() {
-                    out = reranked;
+        if self.rerank_enabled() {
+            if let Some(reranker) = &self.reranker {
+                if !out.is_empty() {
+                    let reranked = reranker.rerank(reading, out.clone(), ctx);
+                    if !reranked.is_empty() {
+                        out = reranked;
+                    }
                 }
             }
         }
@@ -917,9 +932,11 @@ impl JaDecoder {
         }
         cands.sort_by(|a, b| a.cost.cmp(&b.cost).then_with(|| a.surface.cmp(&b.surface)));
 
-        if let Some(reranker) = &self.reranker {
-            if !cands.is_empty() {
-                cands = self.rerank_candidates(sub, cands, ctx, reranker.as_ref());
+        if self.rerank_enabled() {
+            if let Some(reranker) = &self.reranker {
+                if !cands.is_empty() {
+                    cands = self.rerank_candidates(sub, cands, ctx, reranker.as_ref());
+                }
             }
         }
         cands.truncate(limit);
@@ -1600,6 +1617,52 @@ mod tests {
         dec.convert(reading, &JaContext::default())
             .unwrap_or_else(|| panic!("{reading} 沒有轉換結果"))
             .surface
+    }
+
+    #[test]
+    fn test_decoder_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<JaDecoder>();
+        assert_send_sync::<Arc<JaDecoder>>();
+    }
+
+    #[test]
+    fn test_reranker_reorders_and_can_be_disabled() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Reverse {
+            calls: AtomicUsize,
+        }
+
+        impl JaReranker for Reverse {
+            fn rerank(
+                &self,
+                _reading: &[char],
+                mut drafts: Vec<JaResult>,
+                _ctx: &JaContext,
+            ) -> Vec<JaResult> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                drafts.reverse();
+                drafts
+            }
+        }
+
+        let reranker = Arc::new(Reverse {
+            calls: AtomicUsize::new(0),
+        });
+        let enabled = test_decoder().with_reranker(reranker.clone());
+        let before = enabled.results(&units("はし"), &JaContext::default(), 3);
+        let after = enabled.results(&units("はし"), &JaContext::default(), 3);
+        assert_eq!(before.len(), 3);
+        assert_eq!(before[0].surface(), "端");
+        assert_eq!(reranker.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(after[0].surface(), "端");
+
+        let disabled = enabled.with_rerank_enabled(false);
+        assert!(!disabled.rerank_enabled());
+        let stats = disabled.results(&units("はし"), &JaContext::default(), 3);
+        assert_eq!(stats[0].surface(), "橋");
+        assert_eq!(reranker.calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]

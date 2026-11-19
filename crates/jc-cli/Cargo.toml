@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [features]
 default = []
-# 轉發注音選字模型的 ONNX 推論；預設建置不拉入 ORT。
+# 轉發 ONNX 推論（注音選字模型與日文 reranker）；預設建置不拉入 ONNX Runtime。
 onnx = ["jc-core/onnx"]
 
 [dependencies]

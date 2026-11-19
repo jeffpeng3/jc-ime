@@ -7,8 +7,9 @@ rust-version.workspace = true
 
 [features]
 default = []
-# 開啟後才拉入選字模型與 ORT；預設建置不應下載或連結 ONNX Runtime。
-onnx = ["dep:jc-model", "dep:ort"]
+# 開啟後才拉入注音選字模型與日文 reranker，以及 ONNX Runtime；
+# 預設建置不應下載或連結 ONNX Runtime。
+onnx = ["dep:jc-model", "dep:ort", "jc-model/onnx"]
 
 [dependencies]
 serde.workspace = true

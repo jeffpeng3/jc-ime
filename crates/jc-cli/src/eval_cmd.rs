@@ -251,6 +251,7 @@ pub fn ja(
     testdata: Option<PathBuf>,
     corpus: &str,
     pack: Option<PathBuf>,
+    rerank: bool,
     json: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
@@ -273,7 +274,28 @@ pub fn ja(
         }
         selected
     };
-    let decoder = data::load_ja_decoder_with_pack(&data::data_root(&dir), pack.as_deref())?;
+    let root = data::data_root(&dir);
+    let decoder = data::load_ja_decoder_with_pack(&root, pack.as_deref())?;
+    #[cfg(feature = "onnx")]
+    let reranker = if rerank {
+        Some(data::load_ja_reranker(&root)?)
+    } else {
+        None
+    };
+    #[cfg(not(feature = "onnx"))]
+    if rerank {
+        return Err(CliError::data(
+            "此建置沒有 onnx feature；請用 --features onnx 重新建置".to_string(),
+        ));
+    }
+    #[cfg(feature = "onnx")]
+    let decoder = match &reranker {
+        Some(reranker) => {
+            let trait_object: Arc<dyn jc_core::ja::decode::JaReranker> = reranker.clone();
+            decoder.with_reranker(trait_object)
+        }
+        None => decoder,
+    };
     let converter = JaConverter::new(decoder);
     let options = RunOptions::from_rules(&rules);
     let run = run_ja(&converter, &rules, &selected, engine_info(&dir), &options);
@@ -286,6 +308,26 @@ pub fn ja(
         )?;
     } else {
         write!(out, "{}", run.to_table())?;
+    }
+    #[cfg(feature = "onnx")]
+    if let Some(reranker) = &reranker {
+        let stats = reranker.stats();
+        let line = format!(
+            "rerank：calls {}，scored {}，changed {}，timeout {}，error {}，\
+             inference p50 {:.2} ms／p95 {:.2} ms\n",
+            stats.calls,
+            stats.scored,
+            stats.changed,
+            stats.timeouts,
+            stats.errors,
+            stats.p50_ms,
+            stats.p95_ms
+        );
+        if json {
+            eprint!("{line}");
+        } else {
+            write!(out, "{line}")?;
+        }
     }
     Ok(())
 }

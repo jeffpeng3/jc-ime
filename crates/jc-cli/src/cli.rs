@@ -63,6 +63,8 @@ pub enum Command {
         corpus: String,
         /// 日文 pack；未指定時由 `JC_JA_PACK` 與資料根目錄決定。
         pack: Option<PathBuf>,
+        /// 是否接上神經重排；預設關閉，讓統計基準可重現。
+        rerank: bool,
         /// 輸出 JSON。
         json: bool,
     },
@@ -147,6 +149,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut testdata = None;
     let mut corpus = "modern-500".to_string();
     let mut pack = None;
+    let mut rerank = None;
     let mut data = None;
     let mut lm = None;
     let mut mu = None;
@@ -171,6 +174,18 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
             "--select-model" => {
                 index += 1;
                 select_model = switch(value(rest, index, "--select-model")?, "--select-model")?;
+            }
+            "--rerank" => {
+                index += 1;
+                rerank = Some(match value(rest, index, "--rerank")? {
+                    "on" => true,
+                    "off" => false,
+                    other => {
+                        return Err(CliError::Usage(format!(
+                            "--rerank 只接受 on 或 off，實際為 {other}"
+                        )));
+                    }
+                });
             }
             "--data" => {
                 index += 1;
@@ -206,18 +221,27 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 testdata,
                 corpus,
                 pack,
+                rerank: rerank.unwrap_or(false),
                 json,
             })
         }
         "fuzzy" => {
             reject_zh_flags(data, lm, mu, stats, "eval fuzzy")?;
+            if rerank.is_some() {
+                return Err(CliError::Usage("--rerank 只適用於 eval ja".to_string()));
+            }
             Ok(Command::EvalFuzzy { testdata, json })
         }
-        "mixed" => Ok(Command::EvalMixed {
-            testdata,
-            data,
-            json,
-        }),
+        "mixed" => {
+            if rerank.is_some() {
+                return Err(CliError::Usage("--rerank 只適用於 eval ja".to_string()));
+            }
+            Ok(Command::EvalMixed {
+                testdata,
+                data,
+                json,
+            })
+        }
         other => Err(CliError::Usage(format!("eval 不認得的題庫 {other}"))),
     }
 }
@@ -426,8 +450,9 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             testdata,
             corpus,
             pack,
+            rerank,
             json,
-        } => crate::eval_cmd::ja(testdata.clone(), corpus, pack.clone(), *json, out),
+        } => crate::eval_cmd::ja(testdata.clone(), corpus, pack.clone(), *rerank, *json, out),
         Command::EvalFuzzy { testdata, json } => {
             crate::eval_cmd::fuzzy(testdata.clone(), *json, out)
         }
@@ -476,7 +501,8 @@ pub fn usage() -> String {
         "jc-cli {}（開發工具）\n\n\
          用法：\n  \
          jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--select-model on|off] [--json]\n  \
-         jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] [--json]\n  \
+         jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] \
+         [--rerank on|off] [--json]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
          jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--json]\n  \
@@ -529,6 +555,7 @@ mod tests {
                 testdata: None,
                 corpus: "modern-500".to_string(),
                 pack: None,
+                rerank: false,
                 json: false,
             }
         );
@@ -550,9 +577,26 @@ mod tests {
                 testdata: None,
                 corpus: "/tmp/subset.json".to_string(),
                 pack: Some(PathBuf::from("/tmp/ja.pack")),
+                rerank: false,
                 json: false,
             }
         );
+    }
+
+    #[test]
+    fn parses_ja_rerank_switch() {
+        assert_eq!(
+            parse(&args(&["eval", "ja", "--rerank", "on"])).unwrap(),
+            Command::EvalJa {
+                testdata: None,
+                corpus: "modern-500".to_string(),
+                pack: None,
+                rerank: true,
+                json: false,
+            }
+        );
+        assert!(parse(&args(&["eval", "ja", "--rerank", "maybe"])).is_err());
+        assert!(parse(&args(&["eval", "fuzzy", "--rerank", "on"])).is_err());
     }
 
     #[test]

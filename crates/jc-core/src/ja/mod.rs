@@ -6,4 +6,6 @@ pub mod decode;
 pub mod input;
 pub mod lexicon;
 pub mod lm;
+#[cfg(feature = "onnx")]
+pub mod rerank;
 pub mod rewrite;
