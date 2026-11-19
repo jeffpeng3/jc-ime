@@ -24,7 +24,7 @@ pub const NUM_LABELS: usize = 4;
 pub struct CandlePunctuation {
     config: CandleConfig,
     device: Device,
-    encoder: Encoder,
+    encoder: Encoder<Linear>,
     classifier: Linear,
 }
 
@@ -36,7 +36,7 @@ impl CandlePunctuation {
     pub fn load(weights: &Path) -> Result<Self> {
         let config = CandleConfig::for_punct();
         let (device, vb) = load_weights(weights)?;
-        let encoder = Encoder::load(&vb, &config)?;
+        let encoder = <Encoder<Linear>>::load(&vb, &config)?;
         let classifier = Linear::new(
             vb.get((NUM_LABELS, config.d_model), "classifier.weight")
                 .map_err(super::inference)?,
@@ -92,9 +92,7 @@ impl CandlePunctuation {
         let positions =
             Tensor::from_vec(positions, (rows, width), &self.device).map_err(super::inference)?;
         let additive = additive_mask(&mask, rows, width);
-        let hidden = self
-            .encoder
-            .forward(&ids, &positions, additive.as_ref(), &self.config)?;
+        let hidden = self.encoder.forward(&ids, &positions, additive.as_ref())?;
         let logits = self
             .classifier
             .forward(&hidden)

@@ -1,4 +1,4 @@
-//! 模型推論接線：日文 reranker、標點模型與 Jinen 同時支援 ONNX Runtime（`ort`）與 candle。
+//! 模型推論接線：日文 reranker、標點模型與 Jinen 都支援 ONNX Runtime（`ort`）與 candle。
 //!
 //! `ort` 是一般依賴，使用 `load-dynamic`：建置時不下載、不連結 ONNX
 //! Runtime。執行期由 [`ModelRuntime::probe`] 偵測；沒有動態庫時模型集合
@@ -6,7 +6,8 @@
 //!
 //! candle 後端讀 checkpoint 轉出的 safetensors，不需要 ONNX Runtime。兩個
 //! 後端用 [`Backend`] 切換，預設仍是 ORT；`--backend candle` 在載入模型前
-//! 呼叫 [`set_default_backend`]。candle 的 [`candle::Encoder`] 由 reranker 與標點模型共用。
+//! 呼叫 [`set_default_backend`]。candle 的 [`candle::Encoder`] 由 reranker 與
+//! 標點模型共用；量化權重（GGUF）走同一條 forward。
 //!
 //! 提供：
 //!
@@ -34,7 +35,9 @@ pub mod spm;
 pub mod tokenizer;
 
 pub use candle::jinen::{Generation, Jinen};
-pub use candle::{default_backend, set_default_backend, Backend, CandleReranker};
+pub use candle::{
+    default_backend, set_default_backend, Backend, CandlePunctuation, CandleReranker, QuantDtype,
+};
 pub use error::{ModelError, Result};
 pub use manifest::{
     Availability, ModelSet, ModelSpec, DEFAULT_BOS_ID, DEFAULT_CANDIDATE_SLOT,

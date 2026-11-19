@@ -7,7 +7,8 @@
 //!
 //! forward 有兩個後端：預設的 ONNX Runtime（`ort`）與 candle。後端由
 //! [`crate::candle::Backend`] 選定，`--backend` 在載入前設定；兩個後端吃
-//! 完全相同的 token id 與 attention mask。
+//! 完全相同的 token id 與 attention mask。candle 的權重可以是 fp32
+//! safetensors，也可以是 GGUF 量化檔（`JC_PUNCT_WEIGHTS=<gguf>`）。
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -16,7 +17,10 @@ use std::sync::Mutex;
 use ort::session::Session;
 
 use crate::candle::punct::CandlePunctuation;
-use crate::candle::{default_backend, weights_path, Backend, DEFAULT_WEIGHTS_FILE, WEIGHTS_ENV};
+use crate::candle::{
+    default_backend, punct_weights_path, Backend, QuantPunctuation, DEFAULT_WEIGHTS_FILE,
+    PUNCT_WEIGHTS_ENV,
+};
 use crate::error::{ModelError, Result};
 use crate::manifest::ModelSpec;
 use crate::punct_plan::{apply, argmax, is_punct, merge_window_rows, window_starts, Edit};
@@ -46,6 +50,8 @@ enum Engine {
     Ort(Mutex<Session>),
     /// candle；forward 沒有內部可變狀態。
     Candle(Mutex<CandlePunctuation>),
+    /// candle + GGUF 量化權重。
+    CandleQuant(Mutex<QuantPunctuation>),
 }
 
 impl PunctuationModel {
@@ -88,14 +94,19 @@ impl PunctuationModel {
                 Engine::Ort(Mutex::new(session))
             }
             Backend::Candle => {
-                let weights = weights_path(dir, spec).ok_or_else(|| {
+                let weights = punct_weights_path(dir, spec).ok_or_else(|| {
                     ModelError::Inference(format!(
                         "candle：找不到權重，預期 {} 或 ${} 指定的檔案",
                         dir.join(DEFAULT_WEIGHTS_FILE).display(),
-                        WEIGHTS_ENV
+                        PUNCT_WEIGHTS_ENV
                     ))
                 })?;
-                Engine::Candle(Mutex::new(CandlePunctuation::load(&weights)?))
+                // `.gguf` 走量化權重；其他副檔名走 fp32 safetensors。
+                if crate::candle::quant::is_gguf(&weights) {
+                    Engine::CandleQuant(Mutex::new(QuantPunctuation::load(&weights)?))
+                } else {
+                    Engine::Candle(Mutex::new(CandlePunctuation::load(&weights)?))
+                }
             }
         };
         Ok(Self {
@@ -109,7 +120,7 @@ impl PunctuationModel {
     pub fn backend(&self) -> Backend {
         match self.engine {
             Engine::Ort(_) => Backend::Ort,
-            Engine::Candle(_) => Backend::Candle,
+            Engine::Candle(_) | Engine::CandleQuant(_) => Backend::Candle,
         }
     }
 
@@ -182,6 +193,14 @@ impl PunctuationModel {
                     .collect()
             }
             Engine::Candle(model) => {
+                let started = std::time::Instant::now();
+                let model = model.lock().ok()?;
+                let rows = model.logits(windows).ok()?;
+                // ORT 每個視窗各有一次 timeout；candle 只能整批跑完再檢查，
+                // 因此預算取「視窗數 × 單窗預算」。
+                (started.elapsed() <= self.spec.timeout() * windows.len() as u32).then_some(rows)
+            }
+            Engine::CandleQuant(model) => {
                 let started = std::time::Instant::now();
                 let model = model.lock().ok()?;
                 let rows = model.logits(windows).ok()?;

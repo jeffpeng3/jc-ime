@@ -36,3 +36,7 @@ jc-testdata = { path = "../jc-testdata" }
 [[bin]]
 name = "probe"
 path = "src/bin/probe.rs"
+
+[[bin]]
+name = "candle-quant"
+path = "src/bin/candle-quant.rs"

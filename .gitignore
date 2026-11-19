@@ -7,3 +7,4 @@ models/
 *.tmp
 .tmp*/
 Cargo.fetches.lock
+bench/
