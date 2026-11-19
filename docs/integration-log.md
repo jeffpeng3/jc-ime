@@ -67,6 +67,7 @@
 | `zh-select-calibrate`（診斷） | `9f84483` | `eabae70` | check 通過 | 2026-11-20 03:04 |
 | `english-suggest`（混合修正） | `a9e8fb0` | `b9459ac` | test／clippy 剩他人失敗 | 2026-11-20 03:10 |
 | `legal-notices` | `d1be772` | `823eab9` | fmt 通過；clippy 剩 zh-calibrate | 2026-11-20 03:17 |
+| `zh-select-calibrate`（移除 cfg） | `741e59a` | `5fcf8ca` | 通過（clippy＋jc-cli test） | 2026-11-20 03:19 |
 
 ## 衝突與修正
 
@@ -520,3 +521,8 @@
   `cargo fmt --all -- --check` exit 0。`cargo clippy --workspace --all-targets -- -D warnings` 仍 exit 101，
   13 個錯誤全是 `crates/jc-cli/src/bin/zh-calibrate.rs` 的 `unexpected cfg condition value: onnx`，
   屬 zh-select-calibrate 待修項，與本 branch 無關。
+
+- `zh-select-calibrate` 第三次合併（`5fcf8ca`，含 `741e59a`）：無衝突，`zh-calibrate.rs` 移除 13 處失效的 `onnx` cfg
+  （22 行刪、4 行增），文件同步。
+  `cargo clippy --workspace --all-targets -- -D warnings` **exit 0**；`cargo test -p jc-cli` exit 0（6 targets、40 passed、0 failed）。
+  先前 13 個 `unexpected cfg condition value: onnx` 錯誤全部消失。jc-settings 的 3 個既有失敗依指示先不處理。
