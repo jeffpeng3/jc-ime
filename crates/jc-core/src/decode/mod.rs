@@ -18,6 +18,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use crate::candidate::CandidateSource;
 use crate::lang::Mode;
 use crate::lattice::{Edge, Lattice, LexEntry, Lexicon};
 use crate::score::{ScoreContext, Scorer};
@@ -41,13 +42,19 @@ pub use crate::zh::input::Hyp;
 pub use crate::zh::input::Lattice as SyllableLattice;
 
 /// 路徑起點（BOS）的狀態鍵，與 [`crate::lattice::Viterbi`] 相同。
-pub const BOS: u16 = u16::MAX;
+pub const BOS: u16 = crate::score::BOS_POS;
 
 /// 沒有語言上限時的詞條讀音長度搜尋上限。
 pub const MAX_WORD_LEN: usize = crate::score::MAX_WORD_UNITS;
 
 /// 尾端前綴計算預設取幾個最佳狀態。
 pub const DEFAULT_TOP_B: usize = 4;
+
+/// 有 bigram 時每個位置最多展開幾個前詞狀態。
+///
+/// 對應前身 `core/session.Options.Beam` 的預設值 8。沒有 bigram 時
+/// 狀態數本來就小，解碼器不套用上限，結果與逐詞性保留完全相同。
+pub const DEFAULT_BEAM: usize = 8;
 
 /// 一次轉換的結果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +180,11 @@ impl PathState {
             .collect::<Vec<_>>()
             .join("\x1f")
     }
+
+    /// 前一個詞面；句首為 `None`。
+    pub(crate) fn prev_word(&self) -> Option<&str> {
+        self.segs.last().map(|seg| seg.word.as_str())
+    }
 }
 
 /// 路徑排序：成本、段數、穩定鍵。
@@ -217,6 +229,10 @@ pub struct Decoder<'a> {
     pub scorer: &'a dyn Scorer,
     /// 尾端前綴取幾個最佳狀態。
     pub top_b: usize,
+    /// 每個位置最多展開幾個前詞狀態；0 表示不限。
+    ///
+    /// 有 bigram 時狀態數會隨前詞增加，前身用 beam 把成本壓在延遲預算內。
+    pub beam: usize,
     /// 候選查詢的詞面數上限；0 不限。
     pub max_candidates: usize,
 }
@@ -229,6 +245,7 @@ impl<'a> Decoder<'a> {
             ctx,
             scorer: ctx,
             top_b: 0,
+            beam: 0,
             max_candidates: 0,
         }
     }
@@ -282,11 +299,15 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// 前向 DP：每個位置、每個最後詞性保留成本最低的路徑。
-    fn forward(&self, lat: &Lattice, locks: &Locks) -> Vec<BTreeMap<u16, PathState>> {
-        let mut best: Vec<BTreeMap<u16, PathState>> = vec![BTreeMap::new(); lat.len() + 1];
+    /// 前向 DP：每個位置、每個（前一個詞面, 最後詞性）保留成本最低的路徑。
+    ///
+    /// 鍵要含前一個詞面，bigram 成本才不會被錯誤合併；沒有 bigram 時
+    /// 同一詞性的不同前詞會各自保留，結果與只看詞性相同。
+    fn forward(&self, lat: &Lattice, locks: &Locks) -> Vec<BTreeMap<(String, u16), PathState>> {
+        let mut best: Vec<BTreeMap<(String, u16), PathState>> =
+            vec![BTreeMap::new(); lat.len() + 1];
         best[0].insert(
-            BOS,
+            (String::new(), BOS),
             PathState {
                 last: BOS,
                 cost: 0,
@@ -299,9 +320,10 @@ impl<'a> Decoder<'a> {
             if states.is_empty() {
                 continue;
             }
+            let frontier = self.frontier(&states);
             for edge in self.edges_at(lat, pos, locks) {
-                for st in states.values() {
-                    let step = self.step_cost(st.last, edge);
+                for st in &frontier {
+                    let step = self.step_cost(st, edge);
                     let mut next = PathState {
                         last: edge.pos,
                         cost: st.cost.saturating_add(step),
@@ -316,12 +338,23 @@ impl<'a> Decoder<'a> {
         best
     }
 
+    /// 這個位置要繼續展開的狀態：成本最低的前 `beam` 個；`beam` 為 0 時全部。
+    fn frontier<'s>(&self, states: &'s BTreeMap<(String, u16), PathState>) -> Vec<&'s PathState> {
+        let mut all: Vec<&PathState> = states.values().collect();
+        if self.beam == 0 || all.len() <= self.beam {
+            return all;
+        }
+        all.sort_by(|a, b| path_less(a, b));
+        all.truncate(self.beam);
+        all
+    }
+
     /// 尾端前綴延伸：只保留每個顯示字串成本最低者。
     fn prefix_states(
         &self,
         lat: &Lattice,
         locks: &Locks,
-        best: &[BTreeMap<u16, PathState>],
+        best: &[BTreeMap<(String, u16), PathState>],
     ) -> Vec<PathState> {
         let n = lat.len();
         let top_b = self.top_b();
@@ -338,10 +371,14 @@ impl<'a> Decoder<'a> {
             for entry in self.tail_entries(lat, i, k) {
                 let display = first_chars(&entry.surface, k);
                 for st in &states {
-                    let cost = st
-                        .cost
-                        .saturating_add(self.step_cost_raw(st.last, entry.pos))
-                        .saturating_add(self.ctx.word_cost(entry.cost, entry.units()));
+                    let cost = st.cost.saturating_add(self.scorer.arc_cost(
+                        st.prev_word(),
+                        st.last,
+                        self.ctx.word_cost(entry.cost, entry.units()),
+                        entry.pos,
+                        &entry.surface,
+                        CandidateSource::Lexicon,
+                    ));
                     let mut segs = st.segs.clone();
                     segs.push(Seg::partial(display.clone(), i, n));
                     let cand = PathState {
@@ -363,9 +400,9 @@ impl<'a> Decoder<'a> {
         out
     }
 
-    /// 一顆邊從 `prev` 接過去的成本。
-    fn step_cost(&self, prev: u16, edge: &Edge) -> i32 {
-        self.step_cost_raw(prev, edge.pos).saturating_add(edge.cost)
+    /// 一條邊接在 `prev` 後面的成本。
+    fn step_cost(&self, prev: &PathState, edge: &Edge) -> i32 {
+        self.scorer.edge_cost(prev.prev_word(), prev.last, edge)
     }
 
     fn step_cost_raw(&self, prev: u16, next_pos: u16) -> i32 {
@@ -722,12 +759,13 @@ pub(crate) fn first_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-/// 把路徑插進「每個最後詞性只留最佳」的表。
-pub(crate) fn put_best(slot: &mut BTreeMap<u16, PathState>, cand: PathState) {
-    match slot.get(&cand.last) {
+/// 把路徑插進「每個（前詞, 最後詞性）只留最佳」的表。
+pub(crate) fn put_best(slot: &mut BTreeMap<(String, u16), PathState>, cand: PathState) {
+    let key = (cand.prev_word().unwrap_or_default().to_string(), cand.last);
+    match slot.get(&key) {
         Some(old) if !path_less(&cand, old).is_lt() => {}
         _ => {
-            slot.insert(cand.last, cand);
+            slot.insert(key, cand);
         }
     }
 }

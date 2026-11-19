@@ -58,6 +58,7 @@ impl Decoder<'_> {
         let mut prev = super::BOS;
         let mut left = String::new();
         for seg in &path {
+            let left_word = (!left.is_empty()).then_some(left.as_str());
             let (word_cost, connection, pos) = if seg.partial {
                 let k = seg.end - seg.start;
                 let entry = self
@@ -66,12 +67,16 @@ impl Decoder<'_> {
                     .find(|e| super::first_chars(&e.surface, k) == seg.word);
                 match entry {
                     Some(e) => {
-                        let conn = if prev == super::BOS {
-                            0
-                        } else {
-                            self.scorer.connection_cost(prev, e.pos)
-                        };
-                        (self.ctx.word_cost(e.cost, e.units()), conn, e.pos)
+                        let word_cost = self.ctx.word_cost(e.cost, e.units());
+                        let total = self.scorer.arc_cost(
+                            left_word,
+                            prev,
+                            word_cost,
+                            e.pos,
+                            &e.surface,
+                            crate::candidate::CandidateSource::Lexicon,
+                        );
+                        (word_cost, total.saturating_sub(word_cost), e.pos)
                     }
                     None => (0, 0, super::BOS),
                 }
@@ -82,12 +87,8 @@ impl Decoder<'_> {
                     .find(|e| e.end == seg.end && e.surface == seg.word)
                 {
                     Some(e) => {
-                        let conn = if prev == super::BOS {
-                            0
-                        } else {
-                            self.scorer.connection_cost(prev, e.pos)
-                        };
-                        (e.cost, conn, e.pos)
+                        let total = self.scorer.edge_cost(left_word, prev, e);
+                        (e.cost, total.saturating_sub(e.cost), e.pos)
                     }
                     None => (0, 0, super::BOS),
                 }

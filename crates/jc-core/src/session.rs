@@ -57,6 +57,8 @@ pub struct SessionConfig {
     pub zh_lexicon: Option<InMemoryLexicon>,
     /// 注音成本設定；`None` 用 [`ScoreContext::default`]。
     pub zh_ctx: Option<ScoreContext>,
+    /// 注音 bigram 語言模型（`lm.bin`）；`None` 或沒有 bigram 時只用 unigram。
+    pub zh_lm: Option<Arc<crate::score::ZhLm>>,
     /// 日文解碼器；`None` 時日文只做原樣輸出。
     pub ja: Option<Arc<JaDecoder>>,
     /// 聲調選填：沒有聲調的音節展開成五個聲調再解碼。
@@ -92,6 +94,7 @@ impl Default for SessionConfig {
             max_candidates: DEFAULT_MAX_CANDIDATES,
             zh_lexicon: None,
             zh_ctx: None,
+            zh_lm: None,
             ja: None,
             toneless: false,
             ctrl_punct: false,
@@ -121,6 +124,7 @@ pub struct Session {
     romaji: RomajiInput,
     lexicon: InMemoryLexicon,
     ctx: ScoreContext,
+    zh_lm: Option<Arc<crate::score::ZhLm>>,
     /// 注音以外的字面按鍵（標點、英文、直接輸入的注音符號）。
     literal: String,
     /// 字面按鍵是在幾個已完成音節之後打的；用來插回轉換結果中間。
@@ -157,12 +161,14 @@ impl Session {
     pub fn new(config: SessionConfig) -> Self {
         let ctx = config.zh_ctx.clone().unwrap_or_default();
         let lexicon = config.zh_lexicon.clone().unwrap_or_default();
+        let zh_lm = config.zh_lm.clone();
         Self {
             config,
             zh: ZhInput::standard(),
             romaji: RomajiInput::new(),
             lexicon,
             ctx,
+            zh_lm,
             literal: String::new(),
             literal_anchor: 0,
             literal_offset: 0,
@@ -579,7 +585,8 @@ impl Session {
             self.base = units.join("");
             return;
         };
-        let decoder = Decoder::new(&self.lexicon, &self.ctx);
+        let scorer = zh_scorer(&self.ctx, self.zh_lm.as_deref());
+        let decoder = zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
         let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
         let conversion = decoder.conversion(&lattice, &segs, Mode::Zh);
         self.base = conversion.surface;
@@ -681,7 +688,8 @@ impl Session {
                 .collect();
             let units: Vec<&str> = readings.iter().map(String::as_str).collect();
             if let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) {
-                let decoder = Decoder::new(&self.lexicon, &self.ctx);
+                let scorer = zh_scorer(&self.ctx, self.zh_lm.as_deref());
+                let decoder = zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
                 let (_, cost) = decoder.best(&lattice, &Locks::new(), false);
                 if best
                     .as_ref()
@@ -771,7 +779,8 @@ impl Session {
             let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) else {
                 continue;
             };
-            let decoder = Decoder::new(&self.lexicon, &self.ctx);
+            let scorer = zh_scorer(&self.ctx, self.zh_lm.as_deref());
+            let decoder = zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
             let (hypotheses, _) =
                 decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
             for hypothesis in hypotheses {
@@ -890,10 +899,37 @@ impl Session {
         }
         let units: Vec<&str> = syllables.iter().map(|s| s.as_str()).collect();
         let lattice = Lattice::build(&units, &self.lexicon, &self.ctx).ok()?;
-        let decoder = Decoder::new(&self.lexicon, &self.ctx);
+        let scorer = zh_scorer(&self.ctx, self.zh_lm.as_deref());
+        let decoder = zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
         let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
         Some(decoder.conversion(&lattice, &segs, Mode::Zh).surface)
     }
+}
+
+/// 有 bigram 時建立內插評分器；`lm.bin` 沒有 bigram 時回傳 `None`，
+/// 解碼完全走原本的 unigram 成本。
+fn zh_scorer<'a>(
+    ctx: &'a ScoreContext,
+    lm: Option<&'a crate::score::ZhLm>,
+) -> Option<crate::score::LmScorer<'a>> {
+    lm.filter(|lm| lm.bigrams() > 0)
+        .map(|lm| crate::score::LmScorer::new(ctx, lm))
+}
+
+/// 建立注音解碼器；有 bigram 時接上評分器並套用 beam 上限。
+fn zh_decoder<'a>(
+    lex: &'a InMemoryLexicon,
+    ctx: &'a ScoreContext,
+    scorer: Option<&'a crate::score::LmScorer<'a>>,
+) -> Decoder<'a> {
+    let mut decoder = match scorer {
+        Some(scorer) => Decoder::new(lex, ctx).with_scorer(scorer),
+        None => Decoder::new(lex, ctx),
+    };
+    if scorer.is_some() {
+        decoder.beam = crate::decode::DEFAULT_BEAM;
+    }
+    decoder
 }
 
 #[cfg(test)]

@@ -28,8 +28,14 @@ use crate::data;
 ///
 /// 直接從 `cases.json` 載入，逐題跑按鍵序列，最後比對 `expected/*.jsonl`
 /// 的所有 commit 串接結果。任何一題失敗都不影響其他題。
+///
+/// 預設用 golden 自帶的 TSV 詞庫（沒有 bigram），因此基準分數不變；
+/// `data` 改用二進位資料包，`lm` 單獨接上 bigram 語言模型，`mu` 調整內插。
 pub fn zh_golden(
     testdata: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
+    lm: Option<PathBuf>,
+    mu: Option<f64>,
     json: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
@@ -37,7 +43,14 @@ pub fn zh_golden(
     let golden_dir = dir.join("golden/zh");
     let suite = load_golden_zh(&golden_dir)
         .map_err(|err| CliError::eval(format!("讀取注音 golden 失敗：{err}")))?;
-    let resources = data::load_zh_resources(&golden_dir.join("data"))?;
+    let mut resources = match (&data_dir, &lm) {
+        (Some(pack), _) => data::load_zh_bin_resources_with_lm(pack, lm.as_deref())?,
+        (None, Some(path)) => data::load_zh_resources_with_lm(&golden_dir.join("data"), path)?,
+        (None, None) => data::load_zh_resources(&golden_dir.join("data"))?,
+    };
+    if let Some(mu) = mu {
+        resources.ctx.bigram_mu = mu;
+    }
 
     let mut items = Vec::with_capacity(suite.cases().len());
     let mut durations = Vec::with_capacity(suite.cases().len());
@@ -482,7 +495,7 @@ mod tests {
             return;
         };
         let mut out = Vec::new();
-        zh_golden(Some(dir), false, &mut out).unwrap();
+        zh_golden(Some(dir), None, None, None, false, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("zh-golden"), "{text}");
         assert!(text.contains("通過"), "{text}");

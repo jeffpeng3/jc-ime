@@ -38,7 +38,7 @@ pub enum LatticeError {
 /// 節點是音節位置 `0..=len`，邊是 [`Edge`]。同一個位置可以有多條邊，
 /// 詞典成本越低越優先；查不到詞典詞條的音節會補一條未知詞邊，確保
 /// 每個音節都有路徑可用。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Lattice {
     readings: Vec<String>,
     by_start: Vec<Vec<Edge>>,

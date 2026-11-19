@@ -36,12 +36,18 @@ impl CliError {
 }
 
 /// 解析後要執行的動作。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// 跑注音 golden 的 45 個案例。
     EvalZhGolden {
         /// `0c-testdata` 目錄；未指定時用 `JC_TESTDATA`。
         testdata: Option<PathBuf>,
+        /// 改用注音二進位資料包（`lexicon.bin`、`lm.bin`）跑題庫。
+        data: Option<PathBuf>,
+        /// 覆寫 bigram 語言模型；未指定時用資料包內的 `lm.bin`。
+        lm: Option<PathBuf>,
+        /// bigram 內插權重 μ。
+        mu: Option<f64>,
         /// 輸出 JSON 而非表格。
         json: bool,
     },
@@ -71,6 +77,10 @@ pub enum Command {
         testdata: Option<PathBuf>,
         /// 注音二進位資料包目錄（`lexicon.bin`、`lm.bin`、`manifest.json`）。
         data: Option<PathBuf>,
+        /// 覆寫 bigram 語言模型；未指定時用資料包內的 `lm.bin`。
+        lm: Option<PathBuf>,
+        /// bigram 內插權重 μ；未指定時用前身預設 0.7。
+        mu: Option<f64>,
         /// 取幾個候選。
         n: usize,
         /// 輸出 JSON。
@@ -120,6 +130,9 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut testdata = None;
     let mut corpus = "modern-500".to_string();
     let mut pack = None;
+    let mut data = None;
+    let mut lm = None;
+    let mut mu = None;
     let mut json = false;
     let mut index = 0;
     while index < rest.len() {
@@ -136,28 +149,80 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 index += 1;
                 pack = Some(PathBuf::from(value(rest, index, "--pack")?));
             }
+            "--data" => {
+                index += 1;
+                data = Some(PathBuf::from(value(rest, index, "--data")?));
+            }
+            "--lm" => {
+                index += 1;
+                lm = Some(PathBuf::from(value(rest, index, "--lm")?));
+            }
+            "--mu" => {
+                index += 1;
+                mu = Some(parse_mu(value(rest, index, "--mu")?)?);
+            }
             "--json" => json = true,
             other => return Err(CliError::Usage(format!("eval 不認得的參數 {other}"))),
         }
         index += 1;
     }
     match kind {
-        "zh-golden" => Ok(Command::EvalZhGolden { testdata, json }),
-        "ja" => Ok(Command::EvalJa {
+        "zh-golden" => Ok(Command::EvalZhGolden {
             testdata,
-            corpus,
-            pack,
+            data,
+            lm,
+            mu,
             json,
         }),
-        "fuzzy" => Ok(Command::EvalFuzzy { testdata, json }),
+        "ja" => {
+            reject_zh_flags(data, lm, mu, "eval ja")?;
+            Ok(Command::EvalJa {
+                testdata,
+                corpus,
+                pack,
+                json,
+            })
+        }
+        "fuzzy" => {
+            reject_zh_flags(data, lm, mu, "eval fuzzy")?;
+            Ok(Command::EvalFuzzy { testdata, json })
+        }
         other => Err(CliError::Usage(format!("eval 不認得的題庫 {other}"))),
     }
+}
+
+/// 只有注音題庫接受 `--data`、`--lm` 與 `--mu`。
+fn reject_zh_flags(
+    data: Option<PathBuf>,
+    lm: Option<PathBuf>,
+    mu: Option<f64>,
+    command: &str,
+) -> Result<(), CliError> {
+    if data.is_some() || lm.is_some() || mu.is_some() {
+        return Err(CliError::Usage(format!(
+            "{command} 不接受 --data、--lm 或 --mu"
+        )));
+    }
+    Ok(())
+}
+
+/// 解析 bigram 內插權重，範圍與前身 `Params.Mu` 相同。
+fn parse_mu(value: &str) -> Result<f64, CliError> {
+    let mu: f64 = value
+        .parse()
+        .map_err(|_| CliError::Usage("--mu 需要 0 到 1 的數字".to_string()))?;
+    if !(0.0..=1.0).contains(&mu) {
+        return Err(CliError::Usage("--mu 必須介於 0 與 1".to_string()));
+    }
+    Ok(mu)
 }
 
 fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     let mut reading = None;
     let mut testdata = None;
     let mut data = None;
+    let mut lm = None;
+    let mut mu = None;
     let mut n = 5usize;
     let mut json = false;
     let mut index = 0;
@@ -170,6 +235,14 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
             "--data" => {
                 index += 1;
                 data = Some(PathBuf::from(value(args, index, "--data")?));
+            }
+            "--lm" => {
+                index += 1;
+                lm = Some(PathBuf::from(value(args, index, "--lm")?));
+            }
+            "--mu" => {
+                index += 1;
+                mu = Some(parse_mu(value(args, index, "--mu")?)?);
             }
             "--n" => {
                 index += 1;
@@ -198,6 +271,8 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
         reading,
         testdata,
         data,
+        lm,
+        mu,
         n,
         json,
     })
@@ -275,8 +350,14 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             writeln!(out, "jc-cli {}", env!("CARGO_PKG_VERSION"))?;
             Ok(())
         }
-        Command::EvalZhGolden { testdata, json } => {
-            crate::eval_cmd::zh_golden(testdata.clone(), *json, out)
+        Command::EvalZhGolden {
+            testdata,
+            data,
+            lm,
+            mu,
+            json,
+        } => {
+            crate::eval_cmd::zh_golden(testdata.clone(), data.clone(), lm.clone(), *mu, *json, out)
         }
         Command::EvalJa {
             testdata,
@@ -291,9 +372,20 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             reading,
             testdata,
             data,
+            lm,
+            mu,
             n,
             json,
-        } => crate::converter::convert(testdata.clone(), data.clone(), reading, *n, *json, out),
+        } => crate::converter::convert(
+            testdata.clone(),
+            data.clone(),
+            lm.clone(),
+            *mu,
+            reading,
+            *n,
+            *json,
+            out,
+        ),
         Command::Bench {
             file,
             testdata,
@@ -309,14 +401,15 @@ pub fn usage() -> String {
     format!(
         "jc-cli {}（開發工具）\n\n\
          用法：\n  \
-         jc-cli eval zh-golden --testdata <dir> [--json]\n  \
+         jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] [--json]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
-         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--n 5] [--json]\n  \
+         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--n 5] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
          --data 指向注音二進位資料包（lexicon.bin、lm.bin、manifest.json）；\n\
-         指定時注音走真實詞庫，golden 評測不受影響。\n",
+         指定時注音走真實詞庫並自動載入同目錄的 lm.bin。\n\
+         --lm 覆寫 bigram 語言模型；--mu 是 bigram 與 unigram 的內插權重（預設 0.7）。\n",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -342,6 +435,9 @@ mod tests {
             .unwrap(),
             Command::EvalZhGolden {
                 testdata: Some(PathBuf::from("/tmp/t")),
+                data: None,
+                lm: None,
+                mu: None,
                 json: true,
             }
         );
@@ -389,10 +485,42 @@ mod tests {
                 reading: "ㄨㄛˇ".to_string(),
                 testdata: None,
                 data: None,
+                lm: None,
+                mu: None,
                 n: 3,
                 json: false,
             }
         );
+    }
+
+    #[test]
+    fn parses_bigram_flags() {
+        let parsed = parse(&args(&[
+            "convert",
+            "ㄨㄛˇ",
+            "--data",
+            "/tmp/pack",
+            "--lm",
+            "/tmp/lm.bin",
+            "--mu",
+            "0.5",
+        ]))
+        .unwrap();
+        assert_eq!(
+            parsed,
+            Command::Convert {
+                reading: "ㄨㄛˇ".to_string(),
+                testdata: None,
+                data: Some(PathBuf::from("/tmp/pack")),
+                lm: Some(PathBuf::from("/tmp/lm.bin")),
+                mu: Some(0.5),
+                n: 5,
+                json: false,
+            }
+        );
+        assert!(parse(&args(&["convert", "ㄚ", "--mu", "1.5"])).is_err());
+        assert!(parse(&args(&["eval", "ja", "--lm", "/tmp/lm.bin"])).is_err());
+        assert!(parse(&args(&["eval", "fuzzy", "--data", "/tmp/pack"])).is_err());
     }
 
     #[test]
