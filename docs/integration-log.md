@@ -87,6 +87,7 @@
 | `jinen-eval` | `9bd13b1` | `e2d6cfb` | check 通過 | 2026-11-20 05:12 |
 | `mozkey-study` | `b8ad3ce` | `764ee82` | check 通過 | 2026-11-20 05:25 |
 | `ja-particle-rewrite`（golden＋engine） | `aa5797f` | `c04e85e` | 通過（clippy＋全量 test） | 2026-11-20 05:30 |
+| `jinen-integrate` | `34688d7` | `72985f6` | 通過（clippy＋全量 test） | 2026-11-20 05:38 |
 
 ## 衝突與修正
 
@@ -751,3 +752,17 @@
   `cargo test --workspace --no-fail-fast` **exit 0**（41 targets、945 passed、0 failed）。全量測試至此全綠。
 
   備註：main 的 `e868e4e` 已把 `.cargo/config.toml` 的 `+fullfp16` 收進版控，gemm-f16 在 aarch64 可以正常編譯。
+
+- `jinen-integrate`（合併 `72985f6`，含 `34688d7`）：無衝突。新增 `crates/jc-cli/src/bin/jinen-eval.rs`（586 行）、
+  `crates/jc-model/src/candle/jinen.rs`（337 行，用 candle 載入 Jinen v2 xsmall GGUF），`Cargo.lock` 帶入 candle 相關依賴。
+
+  gate：`cargo clippy --workspace --all-targets -- -D warnings` **exit 0**；
+  `cargo test --workspace --no-fail-fast` **exit 0**（42 targets、950 passed、0 failed）。
+
+  Rust 版 Jinen xsmall 對照 Python：
+  - `ajimee-200` accept **68.0%（136/200）**，Python 68.5%（137/200），差 −0.5pp。
+  - `modern-500` top-1 **81.4%（407/500）**，Python 81.6%（408/500），差 −0.2pp。
+  - `hard-cases` top-1 **77.1%（27/35）**，與 Python 相同。
+  - 延遲 p50：ajimee **28.59 ms**、modern-500 **19.69 ms**、hard-cases **19.16 ms**（4 threads）。
+
+  備註：main 另有 `254f4b4`（收錄 rerank-domain 報告），不是本輪合併帶入。
