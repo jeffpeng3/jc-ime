@@ -68,6 +68,7 @@
 | `english-suggest`（混合修正） | `a9e8fb0` | `b9459ac` | test／clippy 剩他人失敗 | 2026-11-20 03:10 |
 | `legal-notices` | `d1be772` | `823eab9` | fmt 通過；clippy 剩 zh-calibrate | 2026-11-20 03:17 |
 | `zh-select-calibrate`（移除 cfg） | `741e59a` | `5fcf8ca` | 通過（clippy＋jc-cli test） | 2026-11-20 03:19 |
+| `settings-core`（修測試） | `87cfdf1` | `89a4f6f` | 通過（fmt＋clippy＋test） | 2026-11-20 03:28 |
 
 ## 衝突與修正
 
@@ -526,3 +527,9 @@
   （22 行刪、4 行增），文件同步。
   `cargo clippy --workspace --all-targets -- -D warnings` **exit 0**；`cargo test -p jc-cli` exit 0（6 targets、40 passed、0 failed）。
   先前 13 個 `unexpected cfg condition value: onnx` 錯誤全部消失。jc-settings 的 3 個既有失敗依指示先不處理。
+
+- `settings-core` 第二次合併（`89a4f6f`，含 `87cfdf1`）：無衝突，`profiles.rs` 修內建風格快照（+2 行）、
+  `modelset/tests.rs` 修測試暫存目錄清理（3 行），未改任何測試斷言。
+  三個 gate 全過：`cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0、
+  `cargo test --workspace --no-fail-fast` **exit 0**（38 targets、892 passed、0 failed）。
+  先前 jc-settings 的 3 個失敗全部解除，main 全量測試歸零。
