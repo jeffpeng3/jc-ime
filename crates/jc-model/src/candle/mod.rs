@@ -344,14 +344,18 @@ impl Layer<Linear> {
             attn_out,
             linear1,
             linear2,
-            vb.get(d, &format!("{prefix}.norm1.weight"))
-                .map_err(inference)?,
-            vb.get(d, &format!("{prefix}.norm1.bias"))
-                .map_err(inference)?,
-            vb.get(d, &format!("{prefix}.norm2.weight"))
-                .map_err(inference)?,
-            vb.get(d, &format!("{prefix}.norm2.bias"))
-                .map_err(inference)?,
+            (
+                vb.get(d, &format!("{prefix}.norm1.weight"))
+                    .map_err(inference)?,
+                vb.get(d, &format!("{prefix}.norm1.bias"))
+                    .map_err(inference)?,
+            ),
+            (
+                vb.get(d, &format!("{prefix}.norm2.weight"))
+                    .map_err(inference)?,
+                vb.get(d, &format!("{prefix}.norm2.bias"))
+                    .map_err(inference)?,
+            ),
         ))
     }
 }
@@ -362,20 +366,18 @@ impl<L: LinearOp> Layer<L> {
         attn_out: L,
         linear1: L,
         linear2: L,
-        norm1_weight: Tensor,
-        norm1_bias: Tensor,
-        norm2_weight: Tensor,
-        norm2_bias: Tensor,
+        norm1: (Tensor, Tensor),
+        norm2: (Tensor, Tensor),
     ) -> Self {
         Self {
             attn_in,
             attn_out,
             linear1,
             linear2,
-            norm1_weight,
-            norm1_bias,
-            norm2_weight,
-            norm2_bias,
+            norm1_weight: norm1.0,
+            norm1_bias: norm1.1,
+            norm2_weight: norm2.0,
+            norm2_bias: norm2.1,
         }
     }
 
