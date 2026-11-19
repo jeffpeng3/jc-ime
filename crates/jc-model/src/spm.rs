@@ -11,7 +11,8 @@
 //!    原樣保留，再處理空白、加 dummy prefix、把空白轉成 U+2581。
 //! 2. 用 piece 的 log-probability 建 lattice，跑 Viterbi 取整句總分最高的切法。
 //! 3. 沒有單字 piece 可用的位置放入 unknown 節點；`byte_fallback` 開啟時
-//!    在輸出階段把該節點的 UTF-8 位元組展開成 `<0xNN>` byte piece。
+//!    在輸出階段把該節點的 UTF-8 位元組展開成 `<0xNN>` byte piece；沒有開
+//!    byte fallback 時，連續的 unknown 節點合併成一個 id。
 //!
 //! 已知限制：`precompiled_charsmap`（SentencePiece 內建的雙陣列 trie）沒有
 //! 實作，正規化只依規則名近似。`identity` 與 `nmt_nfkc` 這兩種常見設定都正確；
@@ -512,18 +513,23 @@ impl Model {
         }
         path.reverse();
         let mut out = Vec::with_capacity(path.len());
+        let mut prev_unk = false;
         for idx in path {
             let node = nodes[idx];
-            if node.id == self.unk_id && self.byte_fallback {
+            let is_unk = node.id == self.unk_id;
+            if is_unk && self.byte_fallback {
                 for ch in &chars[node.start..node.end] {
                     let mut buf = [0u8; 4];
                     for &b in ch.encode_utf8(&mut buf).as_bytes() {
                         out.push(self.byte_ids[b as usize].unwrap_or(self.unk_id));
                     }
                 }
-            } else {
+            } else if !(is_unk && prev_unk) {
+                // 與 SentencePiece 的 processor 一樣，把連續的 unknown piece
+                // 合併成一個 id（byte fallback 開啟時逐位元組展開，不合併）。
                 out.push(node.id);
             }
+            prev_unk = is_unk;
         }
         out
     }
@@ -656,9 +662,12 @@ mod tests {
 
     #[test]
     fn unknown_runes_keep_unk_id_without_byte_pieces() {
-        // 有開 byte_fallback 但詞表沒有 byte piece：未知字的每個位元組退回
-        // `<unk>`。正規化後的 dummy prefix「▁」本身是正常 piece，照樣輸出
-        // （與上一個測試、Go 版 `TestEncodeUnknown` 的 `[▁, <unk>]` 一致）。
+        // 有開 byte_fallback 但詞表缺 byte piece：SentencePiece 的 processor 會把
+        // unknown piece 逐位元組送進 `PieceToId`，缺 byte piece 就退回 `<unk>`，
+        // 且這條路徑不合并連續 unk（見 sentencepiece_processor.cc 的
+        // EncodeOptimized）。真正的 SP loader 會直接拒絕這種模型
+        // （"there are not 256 byte pieces although byte_fallback is true"），
+        // 這裡是本實作的防禦性 fallback。
         let model = small_model();
         let want = vec![
             id(&model, "▁"),
@@ -667,9 +676,11 @@ mod tests {
             model.unk_id(),
         ];
         assert_eq!(model.encode("あ"), want);
-        // 沒開 byte_fallback 時整個字就是一個 unknown 節點。
+        // 沒開 byte_fallback 時整個字就是一個 unknown 節點；連續的未知字
+        // 合併成一個 `<unk>`（SentencePiece `EncodeOptimized` 的行為）。
         let model = build(small_pieces(), false);
         assert_eq!(model.encode("あ"), vec![id(&model, "▁"), model.unk_id()]);
+        assert_eq!(model.encode("ああ"), vec![id(&model, "▁"), model.unk_id()]);
     }
 
     #[test]

@@ -410,3 +410,9 @@
   - `spm::tests::unknown_runes_keep_unk_id_without_byte_pieces`（`spm.rs:653`）：`[4, 1, 1, 1]` vs `[1, 1, 1]`。
   - `tokenizer::tests::test_normalize`（`tokenizer.rs:651`）：`normalize("  a  b ")` 得 `"▁▁a▁b"`，期望 `"▁a▁b"`。
   - `tokenizer::tests::normalize_adds_dummy_prefix_and_collapses_spaces`（`tokenizer.rs:687`）：同樣多一個 `▁`。
+
+  已由 `rerank-tokenizer` 的 `3770403`／後續 OOV 補測修正：前導空白先去乾淨再加
+  dummy prefix；`unknown_runes_keep_unk_id_without_byte_pieces` 的期望改為
+  `[▁, <unk>, <unk>, <unk>]` 與 `[▁, <unk>]`，並用 Python `sentencepiece` 0.2.3
+  對真模型驗證 byte fallback 與連續 unk 合并，對照表見
+  `docs/port/rerank-tokenizer.md` 的「byte fallback 與 OOV 補測」。
