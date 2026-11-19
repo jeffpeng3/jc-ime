@@ -7,12 +7,13 @@ rust-version.workspace = true
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
 thiserror.workspace = true
+log.workspace = true
 unicode-script = "0.5"
 unicode_categories = "0.1"
 jc-data = { path = "../jc-data" }
 
 [dev-dependencies]
 jc-testdata = { path = "../jc-testdata" }
-serde_json.workspace = true
-sha2 = "0.10"
