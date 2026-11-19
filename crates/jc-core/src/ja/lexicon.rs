@@ -9,8 +9,9 @@
 //! `i32`，不做任何縮放。連接成本用同一個尺度（Mozc 原始整數），curated 的
 //! `ja-src/connection.tsv` 以小數記錄，讀入時乘上 1000 對齊。
 //!
-//! 完整的 context ID 連接矩陣不在這個階段：pack v1 沒有 left/right context
-//! ID，只有 [`ConnectionCost`] 這個 trait 先凍結介面。
+//! 完整的 context ID 連接矩陣由 [`JaConnectionCost`] 提供：它包住同一個
+//! pack，直接查 v2 的矩陣。pack v1 沒有矩陣，查詢一律回傳 `None`，呼叫端
+//! 退回 [`ConnectionCost`] 的詞性表。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -247,9 +248,10 @@ impl JaEntry {
 /// 依詞面查詢的日文詞典。
 ///
 /// 內部保留 pack 以取得原始資料與驗證結果，另外整理一份 [`JaEntry`]，
-/// 讓 `lookup` 可以回傳連續切片。
+/// 讓 `lookup` 可以回傳連續切片。pack 以 [`Arc`] 共用，讓連接矩陣與
+/// 詞條查詢不必各自解碼一次。
 pub struct JaLexicon {
-    pack: Pack,
+    pack: Arc<Pack>,
     entries: Vec<JaEntry>,
     longest_reading_units: usize,
 }
@@ -266,7 +268,11 @@ impl std::fmt::Debug for JaLexicon {
 impl JaLexicon {
     /// 開啟 pack 並建立查詢層。
     pub fn open(path: impl AsRef<Path>) -> Result<Self, JaError> {
-        let pack = Pack::open(path)?;
+        Self::from_pack(Arc::new(Pack::open(path)?))
+    }
+
+    /// 用已開啟的 pack 建立查詢層，pack 由詞典與連接矩陣共用。
+    pub fn from_pack(pack: Arc<Pack>) -> Result<Self, JaError> {
         let mut entries = Vec::with_capacity(pack.entry_count());
 
         let pos: Vec<Arc<str>> = pack
@@ -315,10 +321,16 @@ impl JaLexicon {
             longest_reading_units,
         })
     }
-
     /// 底層 pack。
     pub fn pack(&self) -> &Pack {
         &self.pack
+    }
+
+    /// 以同一個 pack 建立 context ID 連接成本表。
+    ///
+    /// 回傳的物件與詞典共用映射與驗證結果，不需要再開一次檔。
+    pub fn connection_cost(&self) -> JaConnectionCost {
+        JaConnectionCost::from_pack(Arc::clone(&self.pack))
     }
 
     /// 詞條總數。
@@ -370,6 +382,50 @@ impl JaLexicon {
     /// 最長詞條的讀音單位數。
     pub fn longest_reading_units(&self) -> usize {
         self.longest_reading_units
+    }
+}
+
+/// pack v2 的 context ID 連接矩陣查詢。
+///
+/// 成本直接來自 Mozc `connection_single_column.txt`，單位與詞成本相同
+/// （原始整數，越小越優先）。pack v1 沒有矩陣，`cost` 一律回傳 `None`。
+#[derive(Clone)]
+pub struct JaConnectionCost {
+    pack: Arc<Pack>,
+}
+
+impl std::fmt::Debug for JaConnectionCost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JaConnectionCost")
+            .field("context_count", &self.context_count())
+            .finish()
+    }
+}
+
+impl JaConnectionCost {
+    /// 開啟 pack 並取得連接矩陣；v1 pack 也能開啟，但查詢都會是 `None`。
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, JaError> {
+        Ok(Self::from_pack(Arc::new(Pack::open(path)?)))
+    }
+
+    /// 用已開啟的 pack 建立查詢層。
+    pub fn from_pack(pack: Arc<Pack>) -> Self {
+        Self { pack }
+    }
+
+    /// matrix 邊長；v1 pack 是 0。
+    pub fn context_count(&self) -> u16 {
+        self.pack.context_count()
+    }
+
+    /// 是否真的有連接矩陣。
+    pub fn has_matrix(&self) -> bool {
+        self.pack.capabilities().connection_matrix
+    }
+
+    /// 查 `left` 接 `right` 的成本；越界或沒有矩陣時回傳 `None`。
+    pub fn cost(&self, left: u16, right: u16) -> Option<i32> {
+        self.pack.connection(left, right)
     }
 }
 
@@ -684,6 +740,118 @@ mod tests {
         path
     }
 
+    /// 產生只有兩筆詞條、3×3 連接矩陣的 v2 pack。
+    ///
+    /// 矩陣內容由測試指定，用來驗證 row-major 索引與越界行為。
+    fn build_pack_v2(matrix: &[i16; 9]) -> Vec<u8> {
+        use jc_data::ja::{ENTRY_SIZE_V2, HEADER_SIZE_V2};
+
+        let surfaces = ["A", "B"];
+        let mut surface_blob = Vec::new();
+        let mut surface_offsets = Vec::new();
+        for surface in surfaces {
+            surface_offsets.push(surface_blob.len() as u32);
+            surface_blob.extend_from_slice(surface.as_bytes());
+        }
+
+        let mut reading_blob = Vec::new();
+        let mut reading_ranges = Vec::new();
+        for _ in surfaces {
+            let start = reading_blob.len() as u32;
+            reading_blob.extend_from_slice("あ".as_bytes());
+            reading_ranges.push((start, "あ".len() as u16));
+        }
+
+        let mut entry_bytes = Vec::with_capacity(2 * ENTRY_SIZE_V2);
+        for (left, right) in [(1u16, 1u16), (2, 2)] {
+            let index = (left - 1) as usize;
+            entry_bytes.extend_from_slice(&surface_offsets[index].to_le_bytes());
+            entry_bytes.extend_from_slice(&1u16.to_le_bytes());
+            entry_bytes.extend_from_slice(&reading_ranges[index].0.to_le_bytes());
+            entry_bytes.extend_from_slice(&reading_ranges[index].1.to_le_bytes());
+            entry_bytes.extend_from_slice(&0u16.to_le_bytes());
+            entry_bytes.push(0);
+            entry_bytes.push(0);
+            entry_bytes.extend_from_slice(&(left as i16).to_le_bytes());
+            entry_bytes.extend_from_slice(&0u16.to_le_bytes());
+            entry_bytes.extend_from_slice(&left.to_le_bytes());
+            entry_bytes.extend_from_slice(&right.to_le_bytes());
+        }
+
+        let mut index_bytes = Vec::new();
+        for (i, offset) in surface_offsets.iter().enumerate() {
+            index_bytes.extend_from_slice(&offset.to_le_bytes());
+            index_bytes.extend_from_slice(&(i as u32).to_le_bytes());
+        }
+
+        let pos_table = ["名詞,一般,*,*"];
+        let mut pos_bytes = Vec::new();
+        pos_bytes.extend_from_slice(&1u16.to_le_bytes());
+        for value in pos_table {
+            pos_bytes.extend_from_slice(&(value.len() as u16).to_le_bytes());
+            pos_bytes.extend_from_slice(value.as_bytes());
+        }
+
+        let mut conj_bytes = Vec::new();
+        conj_bytes.extend_from_slice(&1u16.to_le_bytes());
+        conj_bytes.extend_from_slice(&1u16.to_le_bytes());
+        conj_bytes.extend_from_slice(b"*");
+        conj_bytes.extend_from_slice(&1u16.to_le_bytes());
+        conj_bytes.extend_from_slice(&1u16.to_le_bytes());
+        conj_bytes.extend_from_slice(b"*");
+
+        let mut connection_bytes = Vec::with_capacity(9 * 2);
+        for value in matrix {
+            connection_bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let surface_offset = HEADER_SIZE_V2 as u32;
+        let reading_offset = surface_offset + surface_blob.len() as u32;
+        let entries_offset = reading_offset + reading_blob.len() as u32;
+        let index_offset = entries_offset + entry_bytes.len() as u32;
+        let pos_offset = index_offset + index_bytes.len() as u32;
+        let conj_offset = pos_offset + pos_bytes.len() as u32;
+        let connection_offset = conj_offset + conj_bytes.len() as u32;
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&MAGIC);
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&(HEADER_SIZE_V2 as u16).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&(surfaces.len() as u32).to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&3u16.to_le_bytes());
+        for (offset, length) in [
+            (surface_offset, surface_blob.len()),
+            (reading_offset, reading_blob.len()),
+            (entries_offset, entry_bytes.len()),
+            (index_offset, index_bytes.len()),
+            (pos_offset, pos_bytes.len()),
+            (conj_offset, conj_bytes.len()),
+            (connection_offset, connection_bytes.len()),
+        ] {
+            out.extend_from_slice(&offset.to_le_bytes());
+            out.extend_from_slice(&(length as u32).to_le_bytes());
+        }
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(out.len(), HEADER_SIZE_V2);
+        out.extend_from_slice(&surface_blob);
+        out.extend_from_slice(&reading_blob);
+        out.extend_from_slice(&entry_bytes);
+        out.extend_from_slice(&index_bytes);
+        out.extend_from_slice(&pos_bytes);
+        out.extend_from_slice(&conj_bytes);
+        out.extend_from_slice(&connection_bytes);
+
+        let digest = Sha256::digest(&out);
+        out.extend_from_slice(&digest);
+        out
+    }
+
     fn entry(
         surface: &'static str,
         reading: &'static str,
@@ -811,6 +979,48 @@ mod tests {
             Some(JaPosClass::AdjectivalNoun)
         );
         assert_eq!(JaPosClass::from_name("nope"), None);
+    }
+
+    #[test]
+    fn test_context_matrix_values_and_bounds() {
+        let matrix = [0, 20, -5, 7, 0, 0, 30, 0, 0];
+        let pack = build_pack_v2(&matrix);
+        let path = write_temp("context", &pack);
+        let conn = JaConnectionCost::open(&path).unwrap();
+        assert_eq!(conn.context_count(), 3);
+        assert!(conn.has_matrix());
+        assert_eq!(conn.cost(0, 0), Some(0));
+        assert_eq!(conn.cost(0, 1), Some(20));
+        assert_eq!(conn.cost(0, 2), Some(-5));
+        assert_eq!(conn.cost(1, 0), Some(7));
+        assert_eq!(conn.cost(2, 0), Some(30));
+        assert_eq!(conn.cost(3, 0), None);
+        assert_eq!(conn.cost(0, 3), None);
+        assert_eq!(conn.cost(u16::MAX, 0), None);
+
+        let lex = JaLexicon::open(&path).unwrap();
+        assert_eq!(lex.pack().context_count(), 3);
+        let entries = lex.pack().entries();
+        assert_eq!(entries[0].left_id(), Some(1));
+        assert_eq!(entries[0].right_id(), Some(1));
+        assert_eq!(entries[1].left_id(), Some(2));
+        assert_eq!(entries[1].right_id(), Some(2));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn test_v1_pack_has_no_context_matrix() {
+        let pack = build_pack(vec![entry("あ", "あ", "名詞,一般,*,*", 1)]);
+        let path = write_temp("v1-context", &pack);
+        let conn = JaConnectionCost::open(&path).unwrap();
+        assert_eq!(conn.context_count(), 0);
+        assert!(!conn.has_matrix());
+        assert_eq!(conn.cost(0, 0), None);
+
+        let lex = JaLexicon::open(&path).unwrap();
+        assert_eq!(lex.pack().entries()[0].left_id(), None);
+        assert_eq!(lex.pack().entries()[0].right_id(), None);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

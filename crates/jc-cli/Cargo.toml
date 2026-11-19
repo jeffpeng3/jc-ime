@@ -6,3 +6,6 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+jc-core = { path = "../jc-core" }
+jc-eval = { path = "../jc-eval" }
+jc-testdata = { path = "../jc-testdata" }

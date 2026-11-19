@@ -23,8 +23,8 @@ use unicode_script::{Script as UnicodeScript, UnicodeScript as _};
 
 use crate::decode::Conversion;
 use crate::ja::lexicon::{
-    unknown_entry, ConnectionCost, JaEntry, JaError, JaLexicon, JaPosClass, SingleColumnCost,
-    DEFAULT_CONNECTION_COST, UNKNOWN_WORD_COST,
+    unknown_entry, ConnectionCost, JaConnectionCost, JaEntry, JaError, JaLexicon, JaPosClass,
+    SingleColumnCost, DEFAULT_CONNECTION_COST, UNKNOWN_WORD_COST,
 };
 use crate::ja::lm::LanguageModel;
 use crate::lang::Mode;
@@ -214,6 +214,7 @@ pub struct JaWordMatch<'a> {
 pub struct JaDictionary {
     lex: Arc<JaLexicon>,
     index: HashMap<Box<str>, Vec<u32>>,
+    context_ids: Vec<(Option<u16>, Option<u16>)>,
     longest: usize,
 }
 
@@ -236,6 +237,8 @@ impl JaDictionary {
     /// 用已開啟的詞典建立讀音索引。
     pub fn new(lex: Arc<JaLexicon>) -> Self {
         let mut index: HashMap<Box<str>, Vec<u32>> = HashMap::with_capacity(lex.len() / 2);
+        let pack_entries = lex.pack().entries();
+        let mut context_ids = Vec::with_capacity(lex.len());
         for (i, entry) in lex.entries().iter().enumerate() {
             match index.get_mut(entry.reading.as_ref()) {
                 Some(ids) => ids.push(i as u32),
@@ -243,11 +246,14 @@ impl JaDictionary {
                     index.insert(entry.reading.clone(), vec![i as u32]);
                 }
             }
+            let raw = &pack_entries[i];
+            context_ids.push((raw.left_id(), raw.right_id()));
         }
         Self {
             longest: lex.longest_reading_units(),
             lex,
             index,
+            context_ids,
         }
     }
 
@@ -279,11 +285,12 @@ impl JaWordSource for JaDictionary {
                 continue;
             };
             for &id in ids {
+                let (left_id, right_id) = self.context_ids[id as usize];
                 out(JaWordMatch {
                     end,
                     entry: &self.lex.entries()[id as usize],
-                    left_id: None,
-                    right_id: None,
+                    left_id,
+                    right_id,
                 });
             }
         }
@@ -647,6 +654,14 @@ impl JaContextCost for NoContextCost {
     }
 }
 
+impl JaContextCost for JaConnectionCost {
+    /// 越界或沒有矩陣時退回 [`DEFAULT_CONNECTION_COST`]，與前身
+    /// `Connections.ContextCost` 的保底行為一致。
+    fn cost(&self, left: u16, right: u16) -> i32 {
+        JaConnectionCost::cost(self, left, right).unwrap_or(DEFAULT_CONNECTION_COST)
+    }
+}
+
 /// 日文轉換器：かな字串進，N-best 的 [`Conversion`] 出。
 ///
 /// 解碼器不保存輸入狀態，同一個實作可以同時服務多個轉換請求。
@@ -707,6 +722,18 @@ impl JaDecoder {
     /// 開啟 pack 並建立解碼器。
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, JaError> {
         Ok(Self::new(Arc::new(JaDictionary::open(path)?)))
+    }
+
+    /// 開啟 pack 並接上 context ID 連接矩陣。
+    ///
+    /// pack v2 會同時取得詞條的 left／right ID 與 2,672×2,672 矩陣；v1
+    /// pack 仍可開啟，但查詢一律退回詞性連接成本。詞典與矩陣共用同一份
+    /// 映射，不會重複解碼。
+    pub fn open_with_context(path: impl AsRef<std::path::Path>) -> Result<Self, JaError> {
+        let lex = Arc::new(JaLexicon::open(path)?);
+        let context = Arc::new(lex.connection_cost());
+        let dict = Arc::new(JaDictionary::new(Arc::clone(&lex)));
+        Ok(Self::new(dict).with_context_cost(context))
     }
 
     /// 設定詞性連接成本。
@@ -1749,6 +1776,32 @@ mod tests {
         assert!(dec.convert("", &JaContext::default()).is_none());
         assert!(dec.nbest("", &JaContext::default(), 3).is_empty());
         assert!(dec.results(&[], &JaContext::default(), 3).is_empty());
+    }
+
+    /// 有 ID 但沒有設定矩陣時退回 POS 成本，不 panic。
+    #[test]
+    fn test_context_ids_without_matrix_fall_back_to_pos() {
+        let source = Arc::new(TestSource::new(vec![
+            with_context(entry("A", "あ", 1, "noun"), 1, 1),
+            with_context(entry("B", "あ", 2, "noun"), 2, 2),
+        ]));
+        let mut pos = SingleColumnCost::new();
+        pos.set(JaPosClass::Noun, JaPosClass::Eos, 0);
+        pos.set(JaPosClass::Bos, JaPosClass::Noun, 0);
+        let dec = JaDecoder::new(source).with_connection(Arc::new(pos));
+        assert_eq!(convert_surface(&dec, "あ"), "A");
+    }
+
+    #[test]
+    fn test_real_v2_pack_exposes_context_matrix() {
+        let path = jc_testdata::require_data!("packs/ja-lexicon-mozc-v2.pack");
+        let conn = crate::ja::lexicon::JaConnectionCost::open(&path).unwrap();
+        assert_eq!(conn.context_count(), 2_672);
+        assert!(conn.has_matrix());
+        assert!(conn.cost(0, 0).is_some());
+        assert!(conn.cost(1, 0).is_some());
+        assert_eq!(conn.cost(2_672, 0), None);
+        assert_eq!(conn.cost(u16::MAX, u16::MAX), None);
     }
 
     #[test]
