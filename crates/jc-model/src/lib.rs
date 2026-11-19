@@ -33,6 +33,7 @@ pub mod runtime;
 pub mod spm;
 pub mod tokenizer;
 
+pub use candle::jinen::{Generation, Jinen};
 pub use candle::{default_backend, set_default_backend, Backend, CandleReranker};
 pub use error::{ModelError, Result};
 pub use manifest::{

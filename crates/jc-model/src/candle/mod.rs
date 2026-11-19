@@ -23,6 +23,8 @@
 //!
 //! 模型檔不進 git；找不到時回 [`ModelError::Candle`]，呼叫端退回統計排序。
 
+pub mod jinen;
+
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU8, Ordering};
