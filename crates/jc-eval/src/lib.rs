@@ -5,16 +5,23 @@
 //!
 //! * [`Converter`] 是唯一的轉換介面；這個 crate 不依賴 `jc-core`。
 //! * [`evaluate`] 計算 top-1、top-5、詞邊界與延遲。
+//! * [`FuzzyReport`] 彙總模糊輸入題庫的語言×擾動 raw／fallback 指標。
 //! * [`Report`] 可以輸出成與 `ja/baseline.json` 相同形狀的 JSON 或表格。
 //! * [`RuleSet::gate`] 依 `rules.json` 的容許量判定是否退步。
 
 mod corpus;
 mod error;
+mod fuzzy;
 mod golden;
 mod ja;
 mod metrics;
 mod report;
 mod sha256;
+
+/// 回傳位元組的 SHA-256，以小寫十六進位表示。
+pub fn sha256_hex(data: &[u8]) -> String {
+    sha256::hex_digest(data)
+}
 
 pub use corpus::{
     load_fuzzy_input, load_ja_lexicon_ambiguous, load_zhuyin_golden, AmbiguousCandidate,
@@ -23,6 +30,12 @@ pub use corpus::{
     FUZZY_INPUT_KINDS, FUZZY_KINDS,
 };
 pub use error::{EvalError, Result};
+pub use fuzzy::{
+    fuzzy_corpus_problems, load_fuzzy_manifest, rank_of, summarize_fuzzy, FuzzyArmMetrics,
+    FuzzyCaseResult, FuzzyDegraded, FuzzyEngineInfo, FuzzyGroupReport, FuzzyManifest,
+    FuzzyManifestModels, FuzzyPackInfo, FuzzyRankerCounters, FuzzyReport, FuzzyRunConfig,
+    FUZZY_SCHEMA,
+};
 pub use golden::{
     load_golden_mixed, load_golden_zh, GoldenAction, GoldenCase, GoldenMixedFile, GoldenMixedSuite,
     GoldenOptions, GoldenPunct, GoldenRerank, GoldenSeed, GoldenSuggest, GoldenVocab, GoldenZhFile,
