@@ -124,6 +124,8 @@ pub enum Command {
         user_data: Option<PathBuf>,
         /// 指定轉換模式；目前只有 `en` 會走英文候選。
         mode: Option<Mode>,
+        /// 日文轉換後要把第幾個候選記進學習（1 起算）；未指定時記首選。
+        pick: Option<usize>,
     },
     /// 印出 SentencePiece unigram 與最長前綴匹配的切法對照。
     TokenizeJa {
@@ -347,6 +349,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     let mut punct = false;
     let mut user_data = None;
     let mut mode = None;
+    let mut pick = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -393,6 +396,16 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
                 index += 1;
                 user_data = Some(PathBuf::from(value(args, index, "--user-data")?));
             }
+            "--pick" => {
+                index += 1;
+                let picked: usize = value(args, index, "--pick")?
+                    .parse()
+                    .map_err(|_| CliError::Usage("--pick 需要正整數".to_string()))?;
+                if picked == 0 {
+                    return Err(CliError::Usage("--pick 從 1 起算".to_string()));
+                }
+                pick = Some(picked);
+            }
             other if other.starts_with("--") => {
                 return Err(CliError::Usage(format!("convert 不認得的參數 {other}")));
             }
@@ -419,6 +432,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
         punct,
         user_data,
         mode,
+        pick,
     })
 }
 
@@ -616,6 +630,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             punct,
             user_data,
             mode,
+            pick,
         } => crate::converter::convert(
             crate::converter::ConvertOptions {
                 testdata: testdata.clone(),
@@ -629,6 +644,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 punct: *punct,
                 user_data: user_data.clone(),
                 mode: *mode,
+                pick: *pick,
             },
             reading,
             out,
@@ -669,7 +685,7 @@ pub fn usage() -> String {
          [--rerank on|off] [--left off|rolling] [--json]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
-         jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--punct on|off] [--user-data <dir>] [--json]\n  \
+         jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--punct on|off] [--user-data <dir>] [--pick <n>] [--json]\n  \
          jc-cli tokenize ja [--testdata <dir>] [--vocab <model>] [--text <字串>]... [--diff] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
@@ -677,7 +693,8 @@ pub fn usage() -> String {
          指定時注音走真實詞庫並自動載入同目錄的 lm.bin。\n\
          --lm 覆寫 bigram 語言模型；--mu 是 bigram 與 unigram 的內插權重（預設 0.7）。\n\
          --select-model on 需要 zh-select 模型與 ONNX Runtime；預設 on，可用 off 關閉。\n\
-         --punct on 需要標點模型與 ONNX Runtime；預設 off，沒有模型時輸出與原本逐字相同。\n",
+         --punct on 需要標點模型與 ONNX Runtime；預設 off，沒有模型時輸出與原本逐字相同。\n\
+         --user-data 指定個人資料目錄；日文學習寫進同一個 personal.json，--pick 記下第幾個候選。\n",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -785,8 +802,42 @@ mod tests {
                 punct: false,
                 user_data: None,
                 mode: None,
+                pick: None,
             }
         );
+    }
+
+    #[test]
+    fn parses_convert_pick_and_user_data() {
+        let parsed = parse(&args(&[
+            "convert",
+            "きょう",
+            "--user-data",
+            "/tmp/opencode/ja-user",
+            "--pick",
+            "2",
+        ]))
+        .unwrap();
+        assert_eq!(
+            parsed,
+            Command::Convert {
+                reading: "きょう".to_string(),
+                testdata: None,
+                data: None,
+                lm: None,
+                mu: None,
+                stats: false,
+                n: 5,
+                json: false,
+                select_model: true,
+                punct: false,
+                user_data: Some(PathBuf::from("/tmp/opencode/ja-user")),
+                mode: None,
+                pick: Some(2),
+            }
+        );
+        assert!(parse(&args(&["convert", "きょう", "--pick", "0"])).is_err());
+        assert!(parse(&args(&["convert", "きょう", "--pick", "x"])).is_err());
     }
 
     #[test]
@@ -806,6 +857,7 @@ mod tests {
                 punct: false,
                 user_data: None,
                 mode: None,
+                pick: None,
             }
         );
         assert_eq!(
@@ -851,6 +903,7 @@ mod tests {
                 punct: false,
                 user_data: None,
                 mode: None,
+                pick: None,
             }
         );
         assert!(parse(&args(&["convert", "ㄚ", "--mu", "1.5"])).is_err());
