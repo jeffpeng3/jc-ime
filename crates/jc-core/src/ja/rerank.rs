@@ -5,21 +5,23 @@
 //! 返回，轉換結果與沒開 feature 時完全相同。
 //!
 //! 上下文切法沿用前身 `core/ja/rerank`：左文取靠近游標的最後 60 個
-//! token（前身 `MaxLeftContextUnits` 的尾部裁切），序列長度 124。前身
-//! 部署沒有 lookahead，右文只保留在介面上、不進張量；這裡同樣只送左文。
+//! token（前身 `MaxLeftContextUnits` 的尾部裁切），序列長度 124。沒有左文
+//! 時模型端用 BOS 佔住緊鄰分隔符的 slot，不留空。前身部署沒有 lookahead，
+//! 右文只保留在介面上、不進張量；這裡同樣只送左文。
 //!
-//! 分數公式：
+//! 分數公式沿用前身 `core/ja/rerank/config.go` 的預設權重
+//! （`Weights{Neural: 1, Stats: 0.2, Draft: 0.1}`）：
 //!
 //! ```text
-//! stats_i = (score_i - min_score) / (max_score - min_score)
-//! neural_i = (raw_i - min_raw) / (max_raw - min_raw)
-//! final_i = stats_i + NEURAL_WEIGHT * neural_i
-//!         + if i == 0 { DRAFT_BONUS } else { 0 }
+//! stats_i  = (score_i - min_score) / (max_score - min_score)
+//! final_i  = NEURAL_WEIGHT * raw_i + STATS_WEIGHT * stats_i
+//!          + if i == 0 { DRAFT_BONUS } else { 0 }
 //! ```
 //!
-//! 統計分數是主要訊號，神經分數只在統計接近時拆解平手；統計第一名另外
-//! 加一點分，避免模型只因表面書寫差異翻盤。同分時保留原本順序，讓輸出
-//! 可重現。`span == 0` 時正規化給 0.5。
+//! 神經分數是模型輸出的原始分數，不做批內正規化；前身的驗證器直接回
+//! 長度正規化 logprob，`Neural` 乘的就是原值。統計分數以本批候選的範圍
+//! 正規化到 `[0, 1]`，只在神經分數接近時拆解平手。同分時保留原本順序，
+//! 讓輸出可重現。`span == 0` 時正規化給 0.5。
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -36,10 +38,12 @@ pub const RERANK_NBEST: usize = 5;
 pub const CONTEXT_TOKENS_PER_SIDE: usize = 60;
 /// 預設推論預算；超過就放棄重排。
 pub const RERANK_TIMEOUT: Duration = Duration::from_millis(100);
-/// 神經分數的融合權重；統計仍是主要訊號。
-pub const NEURAL_WEIGHT: f64 = 0.1;
-/// 統計第一名的固定加分；比神經權重小，強訊號仍可翻盤。
-pub const DRAFT_BONUS: f64 = 0.05;
+/// 神經分數的融合權重；對齊前身 `Weights.Neural`。
+pub const NEURAL_WEIGHT: f64 = 1.0;
+/// 統計分數的融合權重；對齊前身 `Weights.Stats`。
+pub const STATS_WEIGHT: f64 = 0.2;
+/// 統計第一名的固定加分；對齊前身 `Weights.Draft`。
+pub const DRAFT_BONUS: f64 = 0.1;
 
 /// 重排模型載入或設定的錯誤。
 #[derive(Debug, thiserror::Error)]
@@ -97,13 +101,16 @@ impl NeuralReranker {
 
     /// 由模型集合根目錄的 `manifest.json` 找出 `ja-rerank` 並載入。
     ///
-    /// 目錄或 manifest 缺席時回 [`RerankError::Unavailable`]，不 panic。
+    /// 使用 manifest 內的 `ModelSpec`（序列長度、slot、執行緒數與逾時），
+    /// 不是預設值。目錄或 manifest 缺席時回 [`RerankError::Unavailable`]，
+    /// 不 panic。
     pub fn load_from_models(models: impl AsRef<Path>) -> Result<Self, RerankError> {
         let set = ModelSet::load(models)?;
         let dir = set.model_dir(Role::JaRerank).ok_or_else(|| {
             RerankError::Unavailable(format!("{:?}", set.availability(Role::JaRerank)))
         })?;
-        Self::load(dir)
+        let spec = set.spec(Role::JaRerank).cloned().unwrap_or_default();
+        Self::load_with_spec(dir, &spec, None)
     }
 
     /// 以預設佈局載入，並指定 ONNX Runtime 動態庫。
@@ -113,8 +120,16 @@ impl NeuralReranker {
         dir: impl AsRef<Path>,
         ort_lib: Option<&Path>,
     ) -> Result<Self, RerankError> {
-        let spec = ModelSpec::default();
-        let model = Reranker::load_with_spec(dir, &spec, ort_lib)?;
+        Self::load_with_spec(dir, &ModelSpec::default(), ort_lib)
+    }
+
+    /// 以指定佈局載入，並指定 ONNX Runtime 動態庫。
+    pub fn load_with_spec(
+        dir: impl AsRef<Path>,
+        spec: &ModelSpec,
+        ort_lib: Option<&Path>,
+    ) -> Result<Self, RerankError> {
+        let model = Reranker::load_with_spec(dir, spec, ort_lib)?;
         Ok(Self {
             model,
             stats: Mutex::new(StatsInner::default()),
@@ -182,10 +197,12 @@ impl JaReranker for NeuralReranker {
             .context_tokens()
             .min(CONTEXT_TOKENS_PER_SIDE);
         let left = left_context(self.model.tokenizer(), &ctx.left, max_context);
+        // 空字串代表沒有左文，交給模型端放 BOS 標記。
+        let left = (!left.is_empty()).then_some(left.as_str());
         let started = Instant::now();
         self.lock().calls += 1;
 
-        let scores = match self.model.try_score_batch(&left, &candidates) {
+        let scores = match self.model.try_score_batch(left, &candidates) {
             Ok(scores) => scores,
             Err(err) => {
                 let elapsed = started.elapsed();
@@ -229,14 +246,17 @@ impl JaReranker for NeuralReranker {
 }
 
 /// 把統計分數與神經分數融合成最終排序分數。
+///
+/// 神經分數直接用模型原值：前身的驗證器回長度正規化 logprob，`Neural`
+/// 乘的就是原值，不對同一批候選再做 [0, 1] 正規化。
 fn fuse_scores(neural: &[f32], stats: &[f64]) -> Vec<f64> {
-    let neural: Vec<f64> = neural.iter().map(|&v| f64::from(v)).collect();
-    let neural_norm = normalize(&neural);
     let stats_norm = normalize(stats);
     let mut fused = Vec::with_capacity(neural.len());
     for index in 0..neural.len().min(stats_norm.len()) {
         let draft = if index == 0 { DRAFT_BONUS } else { 0.0 };
-        fused.push(stats_norm[index] + NEURAL_WEIGHT * neural_norm[index] + draft);
+        fused.push(
+            NEURAL_WEIGHT * f64::from(neural[index]) + STATS_WEIGHT * stats_norm[index] + draft,
+        );
     }
     fused
 }
@@ -347,16 +367,28 @@ mod tests {
     }
 
     #[test]
-    fn stats_lead_and_neural_breaks_close_ties() {
-        // 統計第一名的原始差距很大，神經偏好不足以翻盤。
-        let fused = fuse_scores(&[-4.4, 0.33], &[-22.3, -23.5]);
-        assert!(fused[0] > fused[1], "{fused:?}");
-        // 統計前兩名很接近時，神經分數可以改排。
-        let fused = fuse_scores(&[0.1, 0.9, 0.2], &[-20.0, -20.01, -21.0]);
-        assert_eq!(order_by_scores(&fused), vec![1, 0, 2]);
-        // 統計完全相同時，神經分數決定順序。
-        let fused = fuse_scores(&[0.1, 0.9], &[-20.0, -20.0]);
+    fn fusion_follows_predecessor_weights() {
+        // 神經原值乘 1.0，統計正規化後乘 0.2，第一名再加 0.1。
+        let fused = fuse_scores(&[1.0, 2.0], &[-20.0, -24.0]);
+        assert!((fused[0] - 1.3).abs() < 1e-9, "{fused:?}");
+        assert!((fused[1] - 2.0).abs() < 1e-9, "{fused:?}");
+    }
+
+    #[test]
+    fn draft_bonus_only_breaks_near_ties() {
+        // 神經差距 0.05 小於 draft 加分 0.1，統計第一名保留。
+        let fused = fuse_scores(&[0.0, 0.05], &[-20.0, -20.0]);
+        assert_eq!(order_by_scores(&fused), vec![0, 1]);
+        // 神經差距 0.5 明顯大於統計項與 draft 加分，模型可以翻盤。
+        let fused = fuse_scores(&[0.0, 0.5], &[-20.0, -20.0]);
         assert_eq!(order_by_scores(&fused), vec![1, 0]);
+    }
+
+    #[test]
+    fn stats_normalization_breaks_neural_ties() {
+        // 神經同分時，統計分數高的在前；同分再保留原順序。
+        let fused = fuse_scores(&[0.4, 0.4, 0.4], &[-24.0, -20.0, -22.0]);
+        assert_eq!(order_by_scores(&fused), vec![1, 0, 2]);
     }
 
     #[test]

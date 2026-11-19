@@ -48,6 +48,9 @@ const TONELESS_COMBINATIONS: usize = 256;
 /// 模糊音最多展開幾種讀音組合。
 const FUZZY_COMBINATIONS: usize = 16;
 
+/// 左文保留的字元上限，對齊前身 `MaxLeftContextUnits`。
+const MAX_LEFT_CONTEXT_UNITS: usize = 128;
+
 /// 建立 [`Session`] 所需的設定。
 ///
 /// 資料來源以值持有：注音詞典是小型記憶體詞典，日文解碼器用 [`Arc`] 共用。
@@ -175,6 +178,8 @@ pub struct Session {
     segments: Vec<Segment>,
     /// 已轉換的部分。
     base: String,
+    /// 已送出的文字尾巴；下一次轉換當左文用（前身 `lang.Context.Left`）。
+    committed: String,
     /// 尚未轉換的尾巴（未完成的注音或羅馬字）。
     pending: String,
     /// `Enter` 先放進這裡，下一次 [`Session::commit`] 取走。
@@ -236,6 +241,7 @@ impl Session {
             candidate_window: false,
             segments: Vec::new(),
             base: String::new(),
+            committed: String::new(),
             pending: String::new(),
             pending_commit: None,
             accepted_completion: None,
@@ -399,6 +405,7 @@ impl Session {
     pub fn commit(&mut self) -> String {
         if let Some(text) = self.pending_commit.take() {
             self.clear_composition();
+            self.remember_committed(&text);
             return text;
         }
         self.remember_selection();
@@ -407,10 +414,31 @@ impl Session {
         }
         let text = self.finalize(self.current_text());
         self.clear_composition();
+        self.remember_committed(&text);
         text
     }
 
-    /// 清空所有狀態，包含尚未取走的提交結果。
+    /// 把送出的文字接到左文尾巴，長度上限對齊前身 `MaxLeftContextUnits`。
+    fn remember_committed(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.committed.push_str(text);
+        let len = self.committed.chars().count();
+        if len > MAX_LEFT_CONTEXT_UNITS {
+            let skip = len - MAX_LEFT_CONTEXT_UNITS;
+            self.committed = self.committed.chars().skip(skip).collect();
+        }
+    }
+
+    /// 目前已送出的左文。
+    pub fn committed(&self) -> &str {
+        &self.committed
+    }
+
+    /// 清空組字狀態，包含尚未取走的提交結果。
+    ///
+    /// 已送出的左文保留；那是文件內容，不屬於組字狀態。
     pub fn reset(&mut self) {
         self.pending_commit = None;
         self.clear_composition();
@@ -1175,7 +1203,11 @@ impl Session {
             self.base = reading;
             return;
         };
-        let results = decoder.nbest(&reading, &JaContext::default(), self.max_candidates());
+        let ctx = JaContext {
+            left: self.committed.clone(),
+            right: String::new(),
+        };
+        let results = decoder.nbest(&reading, &ctx, self.max_candidates());
         let Some(best) = results.first() else {
             self.base = reading;
             return;
@@ -1413,6 +1445,35 @@ mod tests {
         // 已無組字時再按 Enter 不得重複提交。
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "");
+    }
+
+    #[test]
+    fn test_commit_accumulates_left_context() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄈㄥ");
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        assert_eq!(s.commit(), "風景");
+        assert_eq!(s.committed(), "風景");
+        type_syllable(&mut s, "ㄨㄛˇ");
+        assert_eq!(s.commit(), "我");
+        assert_eq!(s.committed(), "風景我");
+        // Enter 先放進 pending_commit 的路徑也要計入。
+        type_syllable(&mut s, "ㄔ");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "吃");
+        assert_eq!(s.committed(), "風景我吃");
+    }
+
+    #[test]
+    fn test_committed_left_context_is_capped() {
+        let mut s = session();
+        for _ in 0..80 {
+            type_syllable(&mut s, "ㄈㄥ");
+            type_syllable(&mut s, "ㄐㄧㄥˇ");
+            s.commit();
+        }
+        assert_eq!(s.committed().chars().count(), MAX_LEFT_CONTEXT_UNITS);
+        assert!(s.committed().ends_with("風景"), "{}", s.committed());
     }
 
     #[test]

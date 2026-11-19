@@ -6,6 +6,16 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+/// 日文評測的左文來源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LeftMode {
+    /// 不給左文；與前身評測相同，基準可重現。
+    #[default]
+    Off,
+    /// 把前一題的第一名接到左文，模擬連續輸入。
+    Rolling,
+}
+
 /// 命令列錯誤。
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
@@ -65,6 +75,8 @@ pub enum Command {
         pack: Option<PathBuf>,
         /// 是否接上神經重排；預設關閉，讓統計基準可重現。
         rerank: bool,
+        /// 左文來源：`off` 不給左文，`rolling` 用前一題的輸出當左文。
+        left: LeftMode,
         /// 輸出 JSON。
         json: bool,
     },
@@ -149,11 +161,12 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut testdata = None;
     let mut corpus = "modern-500".to_string();
     let mut pack = None;
-    let mut rerank = None;
     let mut data = None;
     let mut lm = None;
     let mut mu = None;
     let mut stats = false;
+    let mut rerank = None;
+    let mut left = LeftMode::Off;
     let mut json = false;
     let mut select_model = false;
     let mut index = 0;
@@ -175,18 +188,6 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 index += 1;
                 select_model = switch(value(rest, index, "--select-model")?, "--select-model")?;
             }
-            "--rerank" => {
-                index += 1;
-                rerank = Some(match value(rest, index, "--rerank")? {
-                    "on" => true,
-                    "off" => false,
-                    other => {
-                        return Err(CliError::Usage(format!(
-                            "--rerank 只接受 on 或 off，實際為 {other}"
-                        )));
-                    }
-                });
-            }
             "--data" => {
                 index += 1;
                 data = Some(PathBuf::from(value(rest, index, "--data")?));
@@ -200,21 +201,48 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 mu = Some(parse_mu(value(rest, index, "--mu")?)?);
             }
             "--stats" => stats = true,
+            "--rerank" => {
+                index += 1;
+                rerank = Some(match value(rest, index, "--rerank")? {
+                    "on" => true,
+                    "off" => false,
+                    other => {
+                        return Err(CliError::Usage(format!(
+                            "--rerank 只接受 on 或 off，實際為 {other}"
+                        )));
+                    }
+                });
+            }
+            "--left" => {
+                index += 1;
+                left = match value(rest, index, "--left")? {
+                    "off" => LeftMode::Off,
+                    "rolling" => LeftMode::Rolling,
+                    other => {
+                        return Err(CliError::Usage(format!(
+                            "--left 只接受 off 或 rolling，實際為 {other}"
+                        )));
+                    }
+                };
+            }
             "--json" => json = true,
             other => return Err(CliError::Usage(format!("eval 不認得的參數 {other}"))),
         }
         index += 1;
     }
     match kind {
-        "zh-golden" => Ok(Command::EvalZhGolden {
-            testdata,
-            data,
-            lm,
-            mu,
-            stats,
-            json,
-            select_model,
-        }),
+        "zh-golden" => {
+            reject_ja_flags(rerank, left, "eval zh-golden")?;
+            Ok(Command::EvalZhGolden {
+                testdata,
+                data,
+                lm,
+                mu,
+                stats,
+                select_model,
+                json,
+            })
+        }
         "ja" => {
             reject_zh_flags(data, lm, mu, stats, "eval ja")?;
             Ok(Command::EvalJa {
@@ -222,20 +250,17 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 corpus,
                 pack,
                 rerank: rerank.unwrap_or(false),
+                left,
                 json,
             })
         }
         "fuzzy" => {
             reject_zh_flags(data, lm, mu, stats, "eval fuzzy")?;
-            if rerank.is_some() {
-                return Err(CliError::Usage("--rerank 只適用於 eval ja".to_string()));
-            }
+            reject_ja_flags(rerank, left, "eval fuzzy")?;
             Ok(Command::EvalFuzzy { testdata, json })
         }
         "mixed" => {
-            if rerank.is_some() {
-                return Err(CliError::Usage("--rerank 只適用於 eval ja".to_string()));
-            }
+            reject_ja_flags(rerank, left, "eval mixed")?;
             Ok(Command::EvalMixed {
                 testdata,
                 data,
@@ -258,6 +283,17 @@ fn reject_zh_flags(
         return Err(CliError::Usage(format!(
             "{command} 不接受 --data、--lm、--mu 或 --stats"
         )));
+    }
+    Ok(())
+}
+
+/// 只有日文題庫接受 `--rerank` 與 `--left`。
+fn reject_ja_flags(rerank: Option<bool>, left: LeftMode, command: &str) -> Result<(), CliError> {
+    if rerank.is_some() {
+        return Err(CliError::Usage(format!("{command} 不接受 --rerank")));
+    }
+    if left != LeftMode::Off {
+        return Err(CliError::Usage(format!("{command} 不接受 --left")));
     }
     Ok(())
 }
@@ -451,8 +487,17 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             corpus,
             pack,
             rerank,
+            left,
             json,
-        } => crate::eval_cmd::ja(testdata.clone(), corpus, pack.clone(), *rerank, *json, out),
+        } => crate::eval_cmd::ja(
+            testdata.clone(),
+            corpus,
+            pack.clone(),
+            *rerank,
+            *left,
+            *json,
+            out,
+        ),
         Command::EvalFuzzy { testdata, json } => {
             crate::eval_cmd::fuzzy(testdata.clone(), *json, out)
         }
@@ -502,7 +547,7 @@ pub fn usage() -> String {
          用法：\n  \
          jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--select-model on|off] [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] \
-         [--rerank on|off] [--json]\n  \
+         [--rerank on|off] [--left off|rolling] [--json]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
          jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--json]\n  \
@@ -556,6 +601,7 @@ mod tests {
                 corpus: "modern-500".to_string(),
                 pack: None,
                 rerank: false,
+                left: LeftMode::Off,
                 json: false,
             }
         );
@@ -578,6 +624,7 @@ mod tests {
                 corpus: "/tmp/subset.json".to_string(),
                 pack: Some(PathBuf::from("/tmp/ja.pack")),
                 rerank: false,
+                left: LeftMode::Off,
                 json: false,
             }
         );
@@ -592,6 +639,7 @@ mod tests {
                 corpus: "modern-500".to_string(),
                 pack: None,
                 rerank: true,
+                left: LeftMode::Off,
                 json: false,
             }
         );

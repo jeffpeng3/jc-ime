@@ -45,6 +45,8 @@ pub const DEFAULT_EOS_ID: i64 = 3;
 pub const DEFAULT_PAD_ID: i64 = 0;
 /// 推論預設預算，毫秒。
 pub const DEFAULT_TIMEOUT_MS: u64 = 100;
+/// 預設 intra-op 執行緒上限，對齊前身 `neural.MaxThreads`。
+pub const DEFAULT_MAX_THREADS: usize = 8;
 
 /// manifest 內單一模型的設定。
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -134,15 +136,26 @@ impl ModelSpec {
         self.padding_id.unwrap_or(DEFAULT_PAD_ID)
     }
 
-    /// 執行緒數；0 表示交給 ONNX Runtime 預設值。
+    /// 執行緒數；未指定時用邏輯核心數，上限 [`DEFAULT_MAX_THREADS`]。
+    ///
+    /// 對齊前身 `neural.DefaultThreads()`：推論只在短時間內跑，預設吃滿
+    /// CPU 比固定單執行緒快得多。
     pub fn threads(&self) -> usize {
-        self.threads.unwrap_or(1).max(1)
+        self.threads.unwrap_or_else(default_threads).max(1)
     }
 
     /// 推論預算。
     pub fn timeout(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS))
     }
+}
+
+/// 預設執行緒數：邏輯核心數，上限 [`DEFAULT_MAX_THREADS`]。
+fn default_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
+        .min(DEFAULT_MAX_THREADS)
 }
 
 /// manifest.json 的頂層結構。
