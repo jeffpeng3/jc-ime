@@ -437,8 +437,10 @@ mod tests {
     fn test_pick_bounds_and_clean() {
         let mut order = Vec::new();
         let mut stats = HashMap::new();
-        for i in 0..MAX_RECENT + 10 {
-            (order, stats) = pick(&order, &stats, FACES[i], DAY + i as i64);
+        // 先切出固定長度：FACES 不夠長時仍然在切片處 panic，與逐項索引相同。
+        let faces = &FACES[..MAX_RECENT + 10];
+        for (i, &face) in faces.iter().enumerate() {
+            (order, stats) = pick(&order, &stats, face, DAY + i as i64);
         }
         assert_eq!(order.len(), MAX_RECENT);
         assert_eq!(stats.len(), MAX_RECENT);
