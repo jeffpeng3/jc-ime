@@ -1042,7 +1042,7 @@ impl<'a> Converter<'a> {
         let mut ranked: Vec<(JaCandidate, f64)> = cands
             .into_iter()
             .map(|cand| {
-                let mut score = -f64::from(cand.cost);
+                let mut score = -f64::from(cand.cost) / COST_SCALE;
                 if boostable(&cand) {
                     let clause = JaClause {
                         reading: cand.reading.clone(),

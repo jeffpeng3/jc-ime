@@ -66,7 +66,7 @@ Go 測試名沿用為 `test_*`：
 | 鎖毒化 | Go 的 mutex 沒有毒化概念；Rust 讀寫鎖中毒時取回內層資料繼續，不把 panic 傳給呼叫端。 |
 | 學習加成尺度 | Go 的 `Learner.Cost` 回傳 `float64` 分數；Rust 的 `JaLearning::cost` 是 `i32` 詞成本，因此負加成乘上 `COST_SCALE = 1000` 後四捨五入。`Converter` 的整句重排仍在 `f64` 分數尺度。 |
 | 候選結構 | Rust 的 `JaCandidate` 沒有 `Clauses`，`LearnCandidate` 一律把整筆候選當一個文節；`Candidates` 重排也以單一文節計分。Go 在候選帶有文節時會逐節計分。 |
-| 候選分數 | Go 的 `lang.Candidate.Score` 改成 `JaCandidate.cost`（越小越優先），重排分數取 `-cost`，其餘排序鍵與 Go 相同。 |
+| 候選分數 | Go 的 `lang.Candidate.Score` 改成 `JaCandidate.cost`（越小越優先），重排分數取 `-cost / 1000` 換回前身的浮點尺度，其餘排序鍵與 Go 相同。 |
 | 空解碼器 | Go 的 `Converter` 允許 `Decoder == nil` 並回錯誤；Rust 用 `&JaDecoder`，所有權保證不會是空指標，因此沒有這個錯誤分支。 |
 | 左文正規化 | 空白判定用 `char::is_whitespace`，大小寫轉換用 `char::to_lowercase`（完整映射）；Go 用 `unicode.IsSpace`、`unicode.ToLower`（單字元映射）。日常前文結果相同。 |
 | 索引 | Go 允許直接建構 `Store{Entries: ...}`，`Lookup` 在索引為 nil 時線性掃描；Rust 欄位私有，所有寫入路徑都維護索引，不需要 fallback。 |
