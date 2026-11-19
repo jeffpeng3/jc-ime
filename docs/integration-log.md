@@ -72,7 +72,7 @@
 | `rerank-wordlevel` | `277bd8e` | `9476f51` | fmt／clippy 通過；5 個 test 失敗 | 2026-11-20 03:35 |
 | `rerank-wordlevel`（修測試） | `2c25f3d` | `2e649f5` | 通過（fmt＋clippy＋test） | 2026-11-20 04:00 |
 | `defaults-policy` | `e116f5f` | `175f417` | 通過（fmt／clippy／test／兩個 eval） | 2026-11-20 04:08 |
-| `engine-data` | `24b876b` | `8aa5ab1` | clippy 通過；jc-engine 4 個 test 失敗 | 2026-11-20 04:20 |
+| `engine-data` | `24b876b` | `8aa5ab1` | clippy 通過；jc-engine 4 個 test 失敗 | 2026-11-20 04:13 |
 
 ## 衝突與修正
 
