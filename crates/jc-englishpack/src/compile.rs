@@ -118,7 +118,8 @@ pub fn compile(source_dir: &Path, out_dir: &Path) -> Result<EnglishManifest, Bui
         let weight: f64 = fields[1]
             .parse()
             .map_err(|_| BuildError::Source("technical.tsv 權重不是數字".to_string()))?;
-        if !(weight > 0.0) || weight > 1000.0 || !weight.is_finite() {
+        let valid_weight = weight.is_finite() && weight > 0.0 && weight <= 1000.0;
+        if !valid_weight {
             return Err(BuildError::Source("technical.tsv 權重不合法".to_string()));
         }
         words.push(Word::new(fields[0], weight));
