@@ -2,46 +2,14 @@
 //! 讓讀取端與格式文件互相驗證。
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::pack::{
     hex, is_hiragana, sha256, Entry, Pack, Split, FORMAT_VERSION, HEADER_SIZE, MAGIC, TRAILER_SIZE,
 };
 use super::{compare_entries, sort_surface_entries, Manifest, PackError};
-
-// ---------------------------------------------------------------------------
-// 測試資料定位。正式版本合併 `jc-testdata` 後改成該 crate 的 `require_data!`。
-// ---------------------------------------------------------------------------
-
-fn testdata_root() -> Option<PathBuf> {
-    let candidate = match std::env::var_os("JC_TESTDATA") {
-        Some(v) if !v.is_empty() => PathBuf::from(v),
-        _ => PathBuf::from("/mnt/work/jc/jc-ime-data"),
-    };
-    candidate.is_dir().then_some(candidate)
-}
-
-fn testdata_path(rel: &str) -> Option<PathBuf> {
-    let rel = Path::new(rel);
-    if rel.is_absolute() {
-        return None;
-    }
-    let path = testdata_root()?.join(rel);
-    path.exists().then_some(path)
-}
-
-macro_rules! require_data {
-    ($rel:expr) => {
-        match testdata_path($rel) {
-            Some(p) => p,
-            None => {
-                eprintln!("缺少測試資料：{}（JC_TESTDATA 未設定或路徑不存在）", $rel);
-                return;
-            }
-        }
-    };
-}
+use jc_testdata::require_data;
 
 // ---------------------------------------------------------------------------
 // 測試用 pack builder。
