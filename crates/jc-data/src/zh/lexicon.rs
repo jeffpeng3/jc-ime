@@ -330,9 +330,8 @@ impl Lexicon {
     fn cmp_ids(&self, index: usize, query: &[u16]) -> std::cmp::Ordering {
         let start = self.rd_off(index) as usize;
         let len = self.rd_len(index) as usize;
-        for k in 0..len.min(query.len()) {
+        for (k, &right) in query.iter().enumerate().take(len) {
             let left = self.rd_id(start + k);
-            let right = query[k];
             if left != right {
                 return left.cmp(&right);
             }

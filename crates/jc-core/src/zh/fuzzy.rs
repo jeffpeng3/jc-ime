@@ -154,7 +154,7 @@ impl Config {
 
     /// 是否有任何配對啟用自動修正。
     pub fn auto_enabled(self) -> bool {
-        self.modes.iter().any(|mode| *mode == Mode::Auto)
+        self.modes.contains(&Mode::Auto)
     }
 
     /// 只保留自動修正配對的設定。

@@ -292,8 +292,10 @@ mod tests {
 
         let mut lexicon = InMemoryLexicon::new();
         lexicon.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
-        let mut config = SessionConfig::default();
-        config.zh_lexicon = Some(lexicon);
+        let config = SessionConfig {
+            zh_lexicon: Some(lexicon),
+            ..Default::default()
+        };
         let mut engine = Engine::with_session(Session::new(config));
         hello(&mut engine);
 

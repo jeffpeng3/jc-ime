@@ -192,7 +192,7 @@ pub fn ja(
         selected
     };
     let decoder = data::load_ja_decoder_with_pack(&data::data_root(&dir), pack.as_deref())?;
-    let converter = JaConverter::new(Arc::new(decoder));
+    let converter = JaConverter::new(decoder);
     let options = RunOptions::from_rules(&rules);
     let run = run_ja(&converter, &rules, &selected, engine_info(&dir), &options);
     if json {

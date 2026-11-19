@@ -18,8 +18,7 @@ pub const MAX_UNTONED_ARCS: usize = 64;
 
 /// 音節格第 `i` 個位置是不是沒打聲調展開的。
 pub fn untoned_pos(lat: &SyllableLattice, i: usize) -> bool {
-    lat.get(i)
-        .map_or(false, |row| row.iter().any(|h| h.untoned))
+    lat.get(i).is_some_and(|row| row.iter().any(|h| h.untoned))
 }
 
 /// `[start, end)` 是否碰到沒打聲調的位置。

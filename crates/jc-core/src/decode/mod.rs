@@ -271,7 +271,7 @@ impl<'a> Decoder<'a> {
             .min_by(path_less);
         if prefix {
             for st in self.prefix_states(lat, locks, &states) {
-                if winner.as_ref().map_or(true, |w| path_less(&st, w).is_lt()) {
+                if winner.as_ref().is_none_or(|w| path_less(&st, w).is_lt()) {
                     winner = Some(st);
                 }
             }
@@ -326,12 +326,12 @@ impl<'a> Decoder<'a> {
         let n = lat.len();
         let top_b = self.top_b();
         let mut out: Vec<PathState> = Vec::new();
-        for i in 0..n {
-            if locked_in(locks, i, n) || best[i].is_empty() {
+        for (i, slot) in best.iter().enumerate().take(n) {
+            if locked_in(locks, i, n) || slot.is_empty() {
                 continue;
             }
             let k = n - i;
-            let mut states: Vec<PathState> = best[i].values().cloned().collect();
+            let mut states: Vec<PathState> = slot.values().cloned().collect();
             states.sort_by(path_less);
             states.truncate(top_b);
             let mut group: BTreeMap<String, PathState> = BTreeMap::new();
@@ -788,11 +788,12 @@ mod tests {
     }
 
     fn plain_ctx() -> ScoreContext {
-        let mut ctx = ScoreContext::default();
-        ctx.length_bonus = 0;
-        ctx.unknown_cost = 100;
-        ctx.connection = crate::score::ConnectionMatrix::with_fallback(0);
-        ctx
+        ScoreContext {
+            length_bonus: 0,
+            unknown_cost: 100,
+            connection: crate::score::ConnectionMatrix::with_fallback(0),
+            ..Default::default()
+        }
     }
 
     fn fixture() -> (InMemoryLexicon, ScoreContext) {

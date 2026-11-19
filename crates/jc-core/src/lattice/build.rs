@@ -90,7 +90,7 @@ impl Lattice {
             }
             edges.push(unknown_edge(&units[start], start, ctx));
             dedupe(&mut edges);
-            edges.sort_by(|a, b| (a.end, a.key()).cmp(&(b.end, b.key())));
+            edges.sort_by_key(|a| (a.end, a.key()));
             by_start.push(edges);
         }
 
@@ -356,8 +356,10 @@ mod tests {
 
         // 沒有覆寫 longest_word_units，詞長上限只由 ctx 決定。
         let lex = FixedLexicon(vec![entry("台北", "ㄊㄞˊ ㄅㄟˇ", 1, 1)]);
-        let mut ctx = ScoreContext::default();
-        ctx.max_word_units = 1;
+        let mut ctx = ScoreContext {
+            max_word_units: 1,
+            ..Default::default()
+        };
         let lat = Lattice::build(&["ㄊㄞˊ", "ㄅㄟˇ"], &lex, &ctx).expect("建立詞格");
         assert_eq!(lat.edges_from(0).len(), 1, "只留未知詞邊");
         assert_eq!(lat.edges_from(0)[0].source, CandidateSource::Literal);
@@ -372,14 +374,18 @@ mod tests {
     fn test_build_uses_lexicon_longest_word() {
         let mut lex = InMemoryLexicon::new();
         lex.push(entry("台北市", "ㄊㄞˊ ㄅㄟˇ ㄕˋ", 3000, 1));
-        let mut ctx = ScoreContext::default();
-        ctx.max_word_units = 2;
+        let ctx = ScoreContext {
+            max_word_units: 2,
+            ..Default::default()
+        };
 
         let lat = Lattice::build(&["ㄊㄞˊ", "ㄅㄟˇ", "ㄕˋ"], &lex, &ctx).expect("建立詞格");
         assert_eq!(edge(&lat, 0, "台北市").end, 3, "詞庫更長的詞仍要查到");
 
-        let mut ctx = ScoreContext::default();
-        ctx.max_word_units = 0;
+        let ctx = ScoreContext {
+            max_word_units: 0,
+            ..Default::default()
+        };
         let lat = Lattice::build(&["ㄊㄞˊ", "ㄅㄟˇ", "ㄕˋ"], &lex, &ctx).expect("建立詞格");
         assert_eq!(edge(&lat, 0, "台北市").end, 3);
     }
@@ -432,8 +438,10 @@ mod tests {
     #[test]
     fn test_build_exposes_context() {
         let lex = taipei_lexicon();
-        let mut ctx = ScoreContext::default();
-        ctx.unknown_cost = 99;
+        let ctx = ScoreContext {
+            unknown_cost: 99,
+            ..Default::default()
+        };
         let lat = Lattice::build(&["ㄊㄞˊ"], &lex, &ctx).expect("建立詞格");
         assert_eq!(lat.ctx().unknown_cost, 99);
         assert_eq!(edge(&lat, 0, "ㄊㄞˊ").cost, 99);

@@ -516,7 +516,7 @@ mod tests {
         let want = Splitter::new().split(input);
         assert_eq!(Splitter.split(input), want);
         assert_eq!(split(input), want);
-        assert_eq!(Splitter::default().split(input), want);
+        assert_eq!(Splitter.split(input), want);
     }
 
     #[test]

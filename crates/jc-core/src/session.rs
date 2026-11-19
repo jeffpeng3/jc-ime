@@ -736,10 +736,7 @@ impl Session {
             if let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) {
                 let decoder = Decoder::new(&self.lexicon, &self.ctx);
                 let (_, cost) = decoder.best(&lattice, &Locks::new(), false);
-                if best
-                    .as_ref()
-                    .map_or(true, |(best_cost, _)| cost < *best_cost)
-                {
+                if best.as_ref().is_none_or(|(best_cost, _)| cost < *best_cost) {
                     best = Some((cost, readings));
                 }
             }
@@ -1105,7 +1102,7 @@ mod tests {
         let mut s = session();
         type_syllable(&mut s, "ㄐㄧㄥˇ");
         let snap = s.snapshot();
-        assert!(snap.candidates.len() >= 1);
+        assert!(!snap.candidates.is_empty());
         let first = snap.candidates[0].surface.clone();
         assert_eq!(snap.preedit, first);
         s.press(Key::new(KeyCode::Tab, None, false));

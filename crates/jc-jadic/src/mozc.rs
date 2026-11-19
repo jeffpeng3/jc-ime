@@ -300,10 +300,10 @@ pub fn parse_connection<R: BufRead>(
     path: &Path,
     context_count: u16,
 ) -> Result<Vec<i16>, ImportError> {
-    let mut lines = reader.lines().enumerate();
+    let lines = reader.lines().enumerate();
     let mut size: Option<u32> = None;
     let mut costs: Vec<i16> = Vec::new();
-    while let Some((index, line)) = lines.next() {
+    for (index, line) in lines {
         let line_number = index + 1;
         let line = line.map_err(|source| ImportError::Io {
             path: path.to_path_buf(),
@@ -469,7 +469,7 @@ mod tests {
         let text = "3\n0\n1\n2\n3\n4\n5\n6\n7\n8\n";
         let costs = parse_connection(Cursor::new(text), &p("connection.txt"), 3).expect("解析矩陣");
         assert_eq!(costs, (0..9).collect::<Vec<i16>>());
-        assert_eq!(costs[1 * 3 + 2], 5);
+        assert_eq!(costs[3 + 2], 5);
     }
 
     #[test]

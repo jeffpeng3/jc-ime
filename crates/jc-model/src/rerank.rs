@@ -160,8 +160,10 @@ mod tests {
 
     #[test]
     fn timeout_above_contract_is_rejected() {
-        let mut spec = ModelSpec::default();
-        spec.timeout_ms = Some(101);
+        let mut spec = ModelSpec {
+            timeout_ms: Some(101),
+            ..Default::default()
+        };
         assert!(validate(&spec).is_err());
         spec.timeout_ms = Some(0);
         assert!(validate(&spec).is_err());
@@ -171,17 +173,21 @@ mod tests {
 
     #[test]
     fn layout_mismatch_is_rejected() {
-        let mut spec = ModelSpec::default();
-        spec.candidate_slot = Some(10);
-        spec.context_tokens_per_side = Some(20);
+        let spec = ModelSpec {
+            candidate_slot: Some(10),
+            context_tokens_per_side: Some(20),
+            ..Default::default()
+        };
         let err = validate(&spec).unwrap_err().to_string();
         assert!(err.contains("context_tokens"), "{err}");
     }
 
     #[test]
     fn too_many_threads_is_rejected() {
-        let mut spec = ModelSpec::default();
-        spec.threads = Some(9);
+        let spec = ModelSpec {
+            threads: Some(9),
+            ..Default::default()
+        };
         assert!(validate(&spec).is_err());
     }
 }

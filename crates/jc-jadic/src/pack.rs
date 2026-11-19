@@ -251,9 +251,11 @@ pub fn encode(data: &PackData) -> Result<Encoded, ImportError> {
     let conj_table = encode_conj_table(&data.conj_types, &data.conj_forms);
 
     let mut payload = Vec::new();
-    let mut offsets = SectionOffsets::default();
     // header 的 offset 一律從檔案開頭算，所以加上 header 大小。
-    offsets.surface_blob = HEADER_SIZE + payload.len();
+    let mut offsets = SectionOffsets {
+        surface_blob: HEADER_SIZE + payload.len(),
+        ..Default::default()
+    };
     payload.extend_from_slice(&surface_blob);
     offsets.surface_blob_len = surface_blob.len();
 
