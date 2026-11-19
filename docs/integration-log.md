@@ -55,6 +55,7 @@
 | `ja-live-rewrite` | `d1a3dca` | `7b7047a` | 通過（check／fmt／clippy＋針對性 test） | 2026-11-20 01:16 |
 | `punct-wire`（修測試） | `d1ae090` | `d53703f` | 通過 | 2026-11-20 01:17 |
 | `ja-personal`（修排序） | `0a376e5` | `88c482d` | 通過 | 2026-11-20 01:18 |
+| `ja-live-rewrite`（修かな鎖定） | `7516c29` | `d83cf5b` | 通過（jc-core 全 crate test） | 2026-11-20 01:27 |
 
 ## 衝突與修正
 
@@ -350,3 +351,8 @@
 - `ja-personal` 第二次合併（`88c482d`，含 `0a376e5`）：無衝突，`ja/personal.rs` 把候選重排分數換回浮點尺度（1 行）。
   `cargo test -p jc-core --lib ja::personal` **34 passed、0 failed**（先前的 `test_candidates_put_learned_first` 已修）；
   `cargo check --workspace --all-targets` exit 0。三個已知 test 失敗至此全部解除。
+
+- `ja-live-rewrite` 第二次合併（`d83cf5b`，含 `7516c29`）：無衝突，`ja/live.rs` 的 `advance_lock` 不再鎖定詞面等於讀音的
+  かな文節（16 增、2 刪），解掉「きょ」只轉出かな、跨詞組不出「今日」的問題。
+  `cargo test -p jc-core --lib` **418 passed、0 failed**（含上一輪失敗的 `test_ja_live_enabled_converts_without_enter`）；
+  `cargo check --workspace --all-targets` exit 0。全量 gate 的三項至此都應為綠。
