@@ -33,6 +33,7 @@
 | `eval-fuzzy` | `9ba1fe8` | `35c769f` | 通過（解衝突） | 2026-11-19 23:21 |
 | `zh-data` | `333abac` | `b2f6d80` | 通過 | 2026-11-19 23:23 |
 | `zh-models` | `f188bf7` | `5d85e54` | 通過 | 2026-11-19 23:27 |
+| `docs-milestone` | `5f87d03` | `52ac22e` | 通過 | 2026-11-19 23:29 |
 
 ## 衝突與修正
 
@@ -171,3 +172,7 @@
   兩個注音模型已取得（`zh-select`：`Funmula/0c-sequence-d512`、`zh-punct`：`Funmula/0c-punct-d512`，皆 MIT，revision 已固定）。
   `vocab.json` 是 **zuin-phonetic-v1**（27,857 字、416 注音 base），不是 sentencepiece，
   `jc-model` 的 tokenizer 目前不支援，實際注音推論接線待後續 task。
+
+- `docs-milestone`（合併 `52ac22e`）：無衝突，只有文件改動：`README.md`、`docs/architecture.md`、`docs/history.md` 更新到 M2，
+  新增 `docs/status.md`。`cargo check` 全部 cached 通過，確認沒動到程式。
+  `README.md` 的 `## 致謝` 段落仍在（文字重排換行，內容未變）。
