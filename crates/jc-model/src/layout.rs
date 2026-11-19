@@ -46,16 +46,56 @@ pub fn validate_layout(spec: &ModelSpec) -> Result<(), String> {
     Ok(())
 }
 
-/// 把左文與候選字打包成模型輸入。
+/// 上下文的 token id。
 ///
-/// `left` 為 `None` 或空字串時代表沒有左文：在最靠近分隔符的左文 slot 放
-/// BOS，讓模型看到「上下文開始」而不是一整排 PAD。左文超過
-/// `context_tokens` 時保留前段，與前身 `capIDs` 一致；候選字超過可用 slot
-/// 時直接截斷，剩下一格放 EOS。
+/// `encode` 會為了詞首自動加一個 `▁`；訓練資料的 context 是連續語料的
+/// token，沒有這個假邊界。留著會讓整個 60 格視窗多一格並擠掉最舊的
+/// token，實測掉 5 個百分點，所以在這裡只丟掉獨立的那一個 `▁`。
+fn context_ids(tokenizer: &Tokenizer, text: &str) -> Vec<u32> {
+    let mut ids = tokenizer.encode(text);
+    let space = tokenizer.piece_id(crate::tokenizer::SPACE.encode_utf8(&mut [0; 4]));
+    if !ids.is_empty() && Some(ids[0]) == space {
+        ids.remove(0);
+    }
+    ids
+}
+
+/// 候選字放在模型 slot 的單一 piece id。
+///
+/// 訓練時 candidate slot 放的是一個 SentencePiece piece：優先裸 piece
+/// （`橋`），詞表只有行首變體時用 `▁橋`。兩者都沒有回 `None`，呼叫端
+/// 不應把多 piece 詞面塞進這個 slot，模型只會看到第一個 piece。
+pub fn candidate_piece(tokenizer: &Tokenizer, surface: &str) -> Option<u32> {
+    if surface.is_empty() {
+        return None;
+    }
+    if let Some(id) = tokenizer.piece_id(surface) {
+        return Some(id);
+    }
+    let mut prefixed = String::with_capacity(surface.len() + 3);
+    prefixed.push(crate::tokenizer::SPACE);
+    prefixed.push_str(surface);
+    tokenizer.piece_id(&prefixed)
+}
+
+/// 把左文、候選字與右文打包成模型輸入。
+///
+/// 佈局與訓練 checkpoint 一致：
+///
+/// ```text
+/// <bos> [left 最多 60 token] <eos> candidate <eos> [right 最多 60 token]
+///  0      1..60               61      62         63      64..123
+/// ```
+///
+/// 位置表是 `[0, 61, 62, …, 183]`：左文 60 格、分隔符 121、候選 122、
+/// 候選後的 EOS 123、右文 124..183。`left` 為 `None` 或空字串時，最靠近
+/// 分隔符的左文 slot 放 BOS；左文超過 `context_tokens` 時保留前段。`right`
+/// 取前 `context_tokens` 個 token，緊接在候選後的 EOS 之後。
 pub fn pack_batch(
     tokenizer: &Tokenizer,
     spec: &ModelSpec,
     left: Option<&str>,
+    right: Option<&str>,
     candidates: &[&str],
 ) -> Result<PackedBatch, String> {
     validate_layout(spec)?;
@@ -64,9 +104,16 @@ pub fn pack_batch(
     let context = spec.context_tokens();
     let mut ids = vec![spec.padding_id(); candidates.len() * seq];
     let mut mask = vec![0i64; candidates.len() * seq];
-    let mut left_ids = left.map(|text| tokenizer.encode(text)).unwrap_or_default();
+    let mut left_ids = left
+        .map(|text| context_ids(tokenizer, text))
+        .unwrap_or_default();
     left_ids.truncate(context);
     let left_ids: Vec<i64> = left_ids.into_iter().map(i64::from).collect();
+    let mut right_ids = right
+        .map(|text| context_ids(tokenizer, text))
+        .unwrap_or_default();
+    right_ids.truncate(context);
+    let right_ids: Vec<i64> = right_ids.into_iter().map(i64::from).collect();
 
     for (row_idx, candidate) in candidates.iter().enumerate() {
         let base = row_idx * seq;
@@ -88,8 +135,14 @@ pub fn pack_batch(
         }
         row[slot - 1] = spec.eos_id();
         row_mask[slot - 1] = 1;
-        let cap = seq - slot - 1;
-        let mut cand_ids = tokenizer.encode(candidate);
+        // 候選後面一定要留一格放 EOS；再後面才是右文。
+        let cap = seq - slot - 2;
+        // 單 piece 詞面直接放那個 piece，與訓練的 candidate slot 一致；
+        // 多 piece 詞面才退回一般編碼（只會被截到 slot 起點）。
+        let mut cand_ids = match candidate_piece(tokenizer, candidate) {
+            Some(id) => vec![id],
+            None => tokenizer.encode(candidate),
+        };
         cand_ids.truncate(cap);
         let mut pos = slot;
         for id in cand_ids {
@@ -97,9 +150,14 @@ pub fn pack_batch(
             row_mask[pos] = 1;
             pos += 1;
         }
-        if pos < seq {
-            row[pos] = spec.eos_id();
+        // 候選後的 EOS；右文從下一格開始，與訓練的 123／124 對齊。
+        row[pos] = spec.eos_id();
+        row_mask[pos] = 1;
+        pos += 1;
+        for id in right_ids.iter().take(seq.saturating_sub(pos)) {
+            row[pos] = *id;
             row_mask[pos] = 1;
+            pos += 1;
         }
     }
     Ok(PackedBatch {
@@ -146,7 +204,7 @@ mod tests {
     fn packs_bos_left_eos_candidate_eos() {
         let t = tokenizer();
         let spec = ModelSpec::default();
-        let batch = pack_batch(&t, &spec, Some("東京都"), &["東京"]).unwrap();
+        let batch = pack_batch(&t, &spec, Some("東京都"), None, &["東京"]).unwrap();
         assert_eq!(batch.seq, 124);
         assert_eq!(batch.rows, 1);
         assert_eq!(batch.ids.len(), 124);
@@ -157,7 +215,9 @@ mod tests {
         assert_eq!(row[1 + 60 - 1], id_of(&t, "▁東京都"));
         assert_eq!(&row[1..60], &[0; 59]);
         assert_eq!(row[61], 3, "slot 前的 EOS");
-        assert_eq!(row[62], id_of(&t, "▁東京"));
+        // candidate slot 放裸 piece「東京」，與訓練的單一 piece 一致；沒有裸
+        // piece 才退回「▁東京」。
+        assert_eq!(row[62], id_of(&t, "東京"));
         assert_eq!(row[63], 3, "候選字後的 EOS");
         assert!(row[64..].iter().all(|&id| id == 0));
 
@@ -171,6 +231,17 @@ mod tests {
     }
 
     #[test]
+    fn candidate_piece_prefers_the_bare_piece() {
+        let t = tokenizer();
+        assert_eq!(candidate_piece(&t, "東京"), Some(id_of(&t, "東京") as u32));
+        // 詞表只有「▁東」時用行首變體。
+        assert_eq!(candidate_piece(&t, "東"), Some(id_of(&t, "▁東") as u32));
+        // 多 piece 詞面回 None，呼叫端不該塞進 slot。
+        assert_eq!(candidate_piece(&t, "京都"), None);
+        assert_eq!(candidate_piece(&t, ""), None);
+    }
+
+    #[test]
     fn candidate_longer_than_slot_is_truncated() {
         let t = tokenizer();
         let spec = ModelSpec {
@@ -180,18 +251,46 @@ mod tests {
             ..Default::default()
         };
         let long = "東京都東京都東京都";
-        let batch = pack_batch(&t, &spec, Some("東京"), &[long]).unwrap();
+        let batch = pack_batch(&t, &spec, Some("東京"), None, &[long]).unwrap();
         assert_eq!(batch.ids.len(), 8);
-        // slot 4..6 給候選字（最多 3 個），最後一格 7 放 EOS。
-        assert_eq!(batch.ids[7], 3);
+        // slot 4..5 給候選字（最多 2 個），slot 6 放 EOS，slot 7 留給右文。
+        assert_eq!(batch.ids[6], 3);
         assert_eq!(batch.mask.iter().sum::<i64>(), 7);
+    }
+
+    #[test]
+    fn right_context_follows_the_candidate_eos() {
+        let t = tokenizer();
+        let spec = ModelSpec::default();
+        let batch = pack_batch(&t, &spec, Some("東京"), Some("東京都東京"), &["東"]).unwrap();
+        let row = &batch.ids[..batch.seq];
+        assert_eq!(row[62], id_of(&t, "東"));
+        assert_eq!(row[63], 3, "候選後的 EOS");
+        // 右文從 64 起依序放，位置 123 對應訓練的 183。
+        assert_eq!(row[64], id_of(&t, "▁東京都"));
+        assert_eq!(row[65], id_of(&t, "東京"));
+        assert_eq!(batch.mask[64], 1);
+        assert_eq!(batch.mask[65], 1);
+        assert_eq!(batch.mask[66..].iter().sum::<i64>(), 0);
+    }
+
+    #[test]
+    fn context_drops_the_artificial_word_boundary() {
+        let t = tokenizer();
+        // 「京」沒有「▁京」這個 piece，編碼會先吐出獨立的「▁」。
+        assert_eq!(t.encode("京")[0], id_of(&t, "▁") as u32);
+        let batch = pack_batch(&t, &ModelSpec::default(), Some("京"), None, &["東"]).unwrap();
+        let row = &batch.ids[..124];
+        assert_eq!(row[60], id_of(&t, "京"), "右對齊後只剩真正的 token");
+        assert_eq!(&row[1..60], &[0; 59]);
+        assert_eq!(batch.mask[1..60].iter().sum::<i64>(), 0);
     }
 
     #[test]
     fn empty_context_uses_bos_marker() {
         let t = tokenizer();
         for left in [None, Some("")] {
-            let batch = pack_batch(&t, &ModelSpec::default(), left, &["東京"]).unwrap();
+            let batch = pack_batch(&t, &ModelSpec::default(), left, None, &["東京"]).unwrap();
             assert_eq!(batch.ids[0], 2, "序列開頭的 BOS");
             assert_eq!(batch.ids[60], 2, "左文 slot 的 BOS 標記");
             assert_eq!(batch.ids[61], 3);
@@ -218,7 +317,7 @@ mod tests {
     #[test]
     fn normalized_spaces_are_preserved_in_layout() {
         let t = tokenizer();
-        let batch = pack_batch(&t, &ModelSpec::default(), Some("東京 都"), &[]).unwrap();
+        let batch = pack_batch(&t, &ModelSpec::default(), Some("東京 都"), None, &[]).unwrap();
         assert_eq!(batch.rows, 0);
         assert!(batch.ids.is_empty());
         // 空白不影響 encode 的 dummy prefix 規則。
@@ -235,7 +334,7 @@ mod tests {
             ..Default::default()
         };
         // 「東京都東京」在前身 `capIDs` 的切法是保留前 2 個 token。
-        let batch = pack_batch(&t, &spec, Some("東京都東京"), &["東"]).unwrap();
+        let batch = pack_batch(&t, &spec, Some("東京都東京"), None, &["東"]).unwrap();
         assert_eq!(batch.ids[1], id_of(&t, "▁東京都"));
         assert_eq!(batch.ids[2], id_of(&t, "東京"));
         assert_eq!(batch.ids[3], 3, "分隔符固定在 slot - 1");
@@ -252,7 +351,7 @@ mod tests {
         let all = t.encode(&left);
         assert!(all.len() > 60, "左文必須超過上限，實際 {} token", all.len());
 
-        let batch = pack_batch(&t, &spec, Some(&left), &["東京"]).unwrap();
+        let batch = pack_batch(&t, &spec, Some(&left), None, &["東京"]).unwrap();
         let row = &batch.ids[..batch.seq];
         let want: Vec<i64> = all[..60].iter().map(|&id| i64::from(id)).collect();
         // 左文區 1..=60 全部填滿，而且是真的 token 不是 PAD。

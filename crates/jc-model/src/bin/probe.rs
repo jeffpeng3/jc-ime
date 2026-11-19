@@ -71,7 +71,7 @@ fn main() {
     };
     let candidates = ["東京", "東京都"];
     let started = Instant::now();
-    let scores = reranker.score_batch(Some(&left), &candidates);
+    let scores = reranker.score_batch(Some(&left), "", &candidates);
     let rerank_ms = started.elapsed().as_secs_f64() * 1000.0;
     match &scores {
         Some(scores) => println!(

@@ -16,8 +16,9 @@
 //!
 //! 這個 module 不碰檔案系統與 session；詞典由呼叫端開啟後注入。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use unicode_script::{Script as UnicodeScript, UnicodeScript as _};
 
@@ -47,6 +48,39 @@ const COST_SCALE: f64 = 1_000.0;
 
 /// 片假名詞面的容忍度（詞成本差距 500），對齊前身 `katakanaMargin = 0.5`。
 pub const KATAKANA_MARGIN: i32 = 500;
+
+/// 詞層級重排一次送進模型的候選上限，對齊模型的批次上限。
+pub const WORD_RERANK_MAX_CANDIDATES: usize = 8;
+
+/// 參與重排的詞面字數上限，對齊訓練資料的 `max_candidate_chars`。
+pub const WORD_RERANK_MAX_CHARS: usize = 4;
+
+/// 參與重排的最短讀音單位數；單かな的助詞不是訓練分佈。
+pub const WORD_RERANK_MIN_READING_UNITS: usize = 2;
+
+/// 候選成本的容忍視窗，對齊訓練資料的 `homophone_cost_window`。
+///
+/// 只把與最便宜候選相差不超過這個值的詞面送進模型；再貴的詞面統計已經
+/// 排除，硬送進去只會讓模型把雜訊放大。
+pub const WORD_RERANK_COST_WINDOW: i32 = 2_500;
+
+/// 神經分數的融合權重，對齊前身 `Weights.Neural`。
+pub const WORD_NEURAL_WEIGHT: f64 = 1.0;
+
+/// 統計分數的融合權重，對齊前身 `Weights.Stats`。
+pub const WORD_STATS_WEIGHT: f64 = 0.2;
+
+/// 統計第一名的固定加分，對齊前身 `Weights.Draft`。
+pub const WORD_DRAFT_BONUS: f64 = 0.1;
+
+/// 一次轉換最多重排幾個詞群，控制延遲。
+pub const WORD_RERANK_MAX_GROUPS: usize = 3;
+
+/// 融合分數差距換成詞成本的倍率。
+///
+/// 1.0 表示「神經分數差 1 分」等於「詞成本差 1.0」（DP 尺度，即詞典的
+/// 1000 單位）。統計成本保留在原處，重排只加上這個增量。
+pub const WORD_SCORE_SCALE: f64 = 1.0;
 
 /// 詞性 `other` 的片假名容忍度（2000），對齊前身 `katakanaUnknownPOSMargin = 2.0`。
 pub const KATAKANA_UNKNOWN_POS_MARGIN: i32 = 2_000;
@@ -426,12 +460,31 @@ impl JaVerifier for NoVerifier {
     }
 }
 
-/// 重排鉤子。
+/// 詞層級重排鉤子。
 ///
-/// 收到已按統計成本排序的候選，回傳完整排序；實作在任何錯誤時應原樣回傳。
+/// 一組候選是同一段讀音的多個詞面，`candidates` 依統計成本由低到高排序，
+/// 第一筆是統計第一名。回傳與 `candidates` 等長的分數，越高越好；回
+/// `None` 代表這一組放棄，解碼器保留統計成本。
 pub trait JaReranker: Send + Sync {
-    /// 重排候選。
-    fn rerank(&self, reading: &[char], drafts: Vec<JaResult>, ctx: &JaContext) -> Vec<JaResult>;
+    /// 為同一讀音的多個詞面打分。
+    ///
+    /// `left`／`right` 是候選詞前後的已解碼文字；`candidates` 依統計成本
+    /// 由低到高排序。
+    fn score_words(&self, left: &str, right: &str, candidates: &[&str]) -> Option<Vec<f32>>;
+
+    /// 一次轉換開始；預設不做事，實作可累計呼叫次數。
+    fn begin(&self) {}
+
+    /// 一次轉換結束；`timed_out` 代表預算用盡、整批放棄。
+    fn end(&self, _timed_out: bool) {}
+
+    /// 某一組候選的排序被改寫；預設不做事。
+    fn note_changed(&self) {}
+
+    /// 單次轉換的推論預算。
+    fn timeout(&self) -> Duration {
+        Duration::from_millis(100)
+    }
 }
 
 /// 依讀音建立かな lattice。
@@ -827,13 +880,14 @@ impl JaDecoder {
 
     /// 回傳整段讀音的最佳轉換；空讀音回傳 `None`。
     ///
-    /// 有驗證器或重排器時保留數條統計候選再重排；否則只算最佳路徑。
+    /// 有驗證器時保留數條統計候選再重排；詞層級重排直接在 lattice 內作用，
+    /// 不需要額外的 N-best。
     pub fn convert(&self, reading: &str, ctx: &JaContext) -> Option<Conversion> {
         let units: Vec<char> = reading.chars().collect();
         if units.is_empty() {
             return None;
         }
-        let k = if self.verifier.is_some() || self.rerank_enabled() {
+        let k = if self.verifier.is_some() {
             self.desired_nbest()
         } else {
             1
@@ -880,16 +934,6 @@ impl JaDecoder {
                 .total_cmp(&a.score)
                 .then_with(|| a.surface().cmp(&b.surface()))
         });
-        if self.rerank_enabled() {
-            if let Some(reranker) = &self.reranker {
-                if !out.is_empty() {
-                    let reranked = reranker.rerank(reading, out.clone(), ctx);
-                    if !reranked.is_empty() {
-                        out = reranked;
-                    }
-                }
-            }
-        }
         out
     }
 
@@ -931,14 +975,6 @@ impl JaDecoder {
             });
         }
         cands.sort_by(|a, b| a.cost.cmp(&b.cost).then_with(|| a.surface.cmp(&b.surface)));
-
-        if self.rerank_enabled() {
-            if let Some(reranker) = &self.reranker {
-                if !cands.is_empty() {
-                    cands = self.rerank_candidates(sub, cands, ctx, reranker.as_ref());
-                }
-            }
-        }
         cands.truncate(limit);
         cands
     }
@@ -997,58 +1033,6 @@ impl JaDecoder {
         base + self.lm_cost("", &entry.surface)
     }
 
-    fn rerank_candidates(
-        &self,
-        reading: &[char],
-        cands: Vec<JaCandidate>,
-        ctx: &JaContext,
-        reranker: &dyn JaReranker,
-    ) -> Vec<JaCandidate> {
-        let mut drafts: Vec<JaResult> = Vec::with_capacity(cands.len());
-        let mut by_surface: HashMap<String, JaCandidate> = HashMap::with_capacity(cands.len());
-        for cand in &cands {
-            if cand.surface.is_empty() {
-                continue;
-            }
-            drafts.push(JaResult {
-                clauses: vec![JaClause {
-                    reading: cand.reading.clone(),
-                    surface: cand.surface.clone(),
-                    segments: Vec::new(),
-                    cost: cand.cost,
-                }],
-                cost: go_cost(cand.cost),
-                score: -go_cost(cand.cost),
-            });
-            by_surface.insert(cand.surface.clone(), cand.clone());
-        }
-        if drafts.is_empty() {
-            return cands;
-        }
-        let reranked = reranker.rerank(reading, drafts, ctx);
-        if reranked.is_empty() {
-            return cands;
-        }
-        let mut out: Vec<JaCandidate> = Vec::with_capacity(cands.len());
-        let mut seen: HashSet<String> = HashSet::new();
-        for result in &reranked {
-            let surface = result.surface();
-            let Some(cand) = by_surface.get(&surface) else {
-                continue;
-            };
-            if !seen.insert(surface) {
-                continue;
-            }
-            out.push(cand.clone());
-        }
-        for cand in cands {
-            if !seen.contains(&cand.surface) {
-                out.push(cand);
-            }
-        }
-        out
-    }
-
     fn builder<'a>(&'a self, ctx: &JaContext) -> JaBuilder<'a> {
         JaBuilder {
             source: Some(self.source.as_ref()),
@@ -1101,7 +1085,40 @@ impl JaDecoder {
     ) -> (Vec<Hypothesis>, Vec<SearchResult>, Lattice) {
         let k = k.max(1);
         let lat = self.builder(ctx).build(reading);
-        let len = reading.len();
+        let (base_hyps, base_finals) = self.viterbi(&lat, k, None);
+        let Some(reranker) = self.reranker.as_deref().filter(|_| self.rerank_enabled()) else {
+            return (base_hyps, base_finals, lat);
+        };
+        let started = Instant::now();
+        reranker.begin();
+        let deltas = match base_finals.first() {
+            Some(best) => {
+                let prefixes = path_prefixes(&base_hyps, &lat, best.hyp, reading.len());
+                let suffixes = path_suffixes(&base_hyps, &lat, best.hyp, reading.len());
+                self.word_deltas(ctx, &lat, &prefixes, &suffixes, reranker, started)
+            }
+            None => {
+                reranker.end(false);
+                None
+            }
+        };
+        match deltas {
+            Some(deltas) if !deltas.is_empty() => {
+                let (hyps, finals) = self.viterbi(&lat, k, Some(&deltas));
+                (hyps, finals, lat)
+            }
+            _ => (base_hyps, base_finals, lat),
+        }
+    }
+
+    /// 純統計 Viterbi；`deltas` 是詞層級重排加上的成本增量。
+    fn viterbi(
+        &self,
+        lat: &Lattice,
+        k: usize,
+        deltas: Option<&HashMap<(usize, usize), f64>>,
+    ) -> (Vec<Hypothesis>, Vec<SearchResult>) {
+        let len = lat.len();
         let mut states: Vec<StateSet> = (0..=len).map(|_| StateSet::default()).collect();
         let mut hyps: Vec<Hypothesis> = Vec::new();
         hyps.push(Hypothesis {
@@ -1130,6 +1147,11 @@ impl JaDecoder {
                     }
                 }
                 let entry_key = entry_key(&node.entry);
+                let total = go_cost(node.entry.cost)
+                    + deltas
+                        .and_then(|map| map.get(&(start, node_index)))
+                        .copied()
+                        .unwrap_or(0.0);
                 for key in &current.order {
                     let conn = go_cost(self.connection_cost(key, node));
                     let hyps_for_key = current.map.get(key).map(Vec::as_slice).unwrap_or(&[]);
@@ -1141,7 +1163,7 @@ impl JaDecoder {
                         let lm = self.lm_cost(left_surface, &node.entry.surface);
                         let key_text = format!("{}\u{0}{}", hyps[hyp_id].key, entry_key);
                         hyps.push(Hypothesis {
-                            cost: hyps[hyp_id].cost + go_cost(node.entry.cost) + conn + lm,
+                            cost: hyps[hyp_id].cost + total + conn + lm,
                             prev: Some(hyp_id),
                             node: Some((start, node_index)),
                             key: key_text,
@@ -1171,7 +1193,88 @@ impl JaDecoder {
                 .then_with(|| hyps[a.hyp].key.cmp(&hyps[b.hyp].key))
         });
         finals.truncate(k);
-        (hyps, finals, lat)
+        (hyps, finals)
+    }
+
+    /// 對每個「同讀音多候選」的詞弧群組打分，回傳 `(start, node) -> 成本增量`。
+    ///
+    /// 左文是統計第一名的已解碼前文加上外部 `ctx.left`。任何一組失敗都只
+    /// 影響自己；預算用盡時整批放棄（回 `None`），使用純統計結果。
+    fn word_deltas(
+        &self,
+        ctx: &JaContext,
+        lat: &Lattice,
+        prefixes: &[String],
+        suffixes: &[String],
+        reranker: &dyn JaReranker,
+        started: Instant,
+    ) -> Option<HashMap<(usize, usize), f64>> {
+        let budget = reranker.timeout();
+        let mut pending: Vec<(usize, Vec<WordCandidate<'_>>)> = Vec::new();
+        for (start, _) in prefixes.iter().enumerate() {
+            for group in word_groups(lat, start) {
+                pending.push((start, group));
+            }
+        }
+        // 成本跨度最小的詞群最模糊，先送；超過上限的留給統計。
+        pending.sort_by_key(|(start, group)| {
+            let span = group
+                .last()
+                .map(|c| c.cost)
+                .unwrap_or(0)
+                .saturating_sub(group.first().map(|c| c.cost).unwrap_or(0));
+            (span, *start)
+        });
+        pending.truncate(WORD_RERANK_MAX_GROUPS);
+
+        let mut deltas: HashMap<(usize, usize), f64> = HashMap::new();
+        for (start, group) in pending {
+            if started.elapsed() >= budget {
+                reranker.end(true);
+                return None;
+            }
+            let end = group
+                .first()
+                .and_then(|cand| cand.nodes.first())
+                .map(|&node| lat.nodes(start)[node].end)
+                .unwrap_or(start);
+            let left = format!("{}{}", ctx.left, prefixes[start]);
+            let right = format!("{}{}", suffixes[end], ctx.right);
+            let surfaces: Vec<&str> = group.iter().map(|c| c.surface).collect();
+            let Some(scores) = reranker.score_words(&left, &right, &surfaces) else {
+                continue;
+            };
+            if scores.len() != surfaces.len() {
+                continue;
+            }
+            let costs: Vec<i32> = group.iter().map(|c| c.cost).collect();
+            let best_index = order_by_scores(
+                &scores
+                    .iter()
+                    .map(|s| {
+                        if s.is_finite() {
+                            f64::from(*s)
+                        } else {
+                            f64::NEG_INFINITY
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )[0];
+            if best_index != 0 && scores[0].is_finite() {
+                reranker.note_changed();
+            }
+            let delta = word_delta(&costs, &scores);
+            for (index, cand) in group.iter().enumerate() {
+                if delta[index] == 0.0 {
+                    continue;
+                }
+                for &node in &cand.nodes {
+                    deltas.insert((start, node), delta[index]);
+                }
+            }
+        }
+        reranker.end(false);
+        Some(deltas)
     }
 
     fn result(&self, hyps: &[Hypothesis], sr: &SearchResult, lat: &Lattice) -> JaResult {
@@ -1261,6 +1364,180 @@ fn hypothesis_less(a: &Hypothesis, b: &Hypothesis) -> bool {
 
 fn entry_key(entry: &JaEntry) -> String {
     format!("{}|{}|{}", entry.surface, entry.reading, entry.pos)
+}
+
+/// 同一段讀音的一個詞弧候選。
+struct WordCandidate<'a> {
+    surface: &'a str,
+    /// 統計成本（詞典原始整數）。
+    cost: i32,
+    /// 這個詞面在 lattice 上的詞弧編號；同詞面的重複詞條共用一個增量。
+    nodes: Vec<usize>,
+}
+
+/// 這個詞弧是否值得送進詞層級重排。
+///
+/// 訓練資料的候選是 2 到 4 字、全漢字、讀音至少 2 個單位、成本落在
+/// [`WORD_RERANK_COST_WINDOW`] 內的詞面；不在這個範圍的詞弧統計已經決定，
+/// 送進模型只會被分佈外的輸入帶偏。
+fn scorable_surface(node: &JaNode) -> bool {
+    if node.unknown || node.units() < WORD_RERANK_MIN_READING_UNITS {
+        return false;
+    }
+    let surface = node.entry.surface.as_ref();
+    let chars = surface.chars().count();
+    if chars == 0 || chars > WORD_RERANK_MAX_CHARS {
+        return false;
+    }
+    surface
+        .chars()
+        .all(|c| matches!(c, '々' | '〆') || c.script() == UnicodeScript::Han)
+}
+
+/// 列出 `start` 起點上「同讀音多候選」的詞弧群組。
+///
+/// 群組以讀音終點分開，候選依統計成本排序（第一筆是統計第一名），並
+/// 截斷到模型批次上限。未知詞 fallback 與分佈外的詞面不參與重排。
+fn word_groups(lat: &Lattice, start: usize) -> Vec<Vec<WordCandidate<'_>>> {
+    let mut by_end: BTreeMap<usize, Vec<WordCandidate<'_>>> = BTreeMap::new();
+    for (index, node) in lat.nodes(start).iter().enumerate() {
+        if !scorable_surface(node) {
+            continue;
+        }
+        let group = by_end.entry(node.end).or_default();
+        match group
+            .iter_mut()
+            .find(|cand| cand.surface == node.entry.surface.as_ref())
+        {
+            Some(cand) => {
+                cand.cost = cand.cost.min(node.entry.cost);
+                cand.nodes.push(index);
+            }
+            None => group.push(WordCandidate {
+                surface: node.entry.surface.as_ref(),
+                cost: node.entry.cost,
+                nodes: vec![index],
+            }),
+        }
+    }
+    let mut groups: Vec<Vec<WordCandidate<'_>>> = by_end
+        .into_values()
+        .filter(|group| group.len() >= 2)
+        .collect();
+    for group in &mut groups {
+        group.sort_by(|a, b| a.cost.cmp(&b.cost).then_with(|| a.surface.cmp(b.surface)));
+        let floor = group.first().map(|cand| cand.cost).unwrap_or(0);
+        group.retain(|cand| cand.cost.saturating_sub(floor) <= WORD_RERANK_COST_WINDOW);
+        group.truncate(WORD_RERANK_MAX_CANDIDATES);
+    }
+    groups.retain(|group| group.len() >= 2);
+    groups
+}
+
+/// 每組候選的成本增量（DP 尺度）。
+///
+/// 先照前身 `core/ja/rerank` 的權重把神經分數與統計分數融合，再取與最高分
+/// 的差距換成成本：模型最喜歡的候選不加成本，其餘候選按差距加上去。統計
+/// 成本本身保留在詞弧上，增量只負責在 Viterbi 裡調整相對順序。
+fn word_delta(costs: &[i32], scores: &[f32]) -> Vec<f64> {
+    let fused = fuse_word_scores(costs, scores);
+    let order = order_by_scores(&fused);
+    let top = fused[order[0]];
+    fused
+        .iter()
+        .map(|value| {
+            if value.is_finite() {
+                (top - value).max(0.0) * WORD_SCORE_SCALE
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+/// 把統計成本與神經分數融合成越高越好的分數。
+///
+/// `stats_i = (max_cost - cost_i) / (max_cost - min_cost)`，所有成本相同時
+/// 給 0.5；第一筆（統計第一名）另外加 [`WORD_DRAFT_BONUS`]。
+/// `neural` 不是有限值的候選沒有分數，融合結果是 `NEG_INFINITY`，呼叫端
+/// 不對它加成本增量。
+fn fuse_word_scores(costs: &[i32], neural: &[f32]) -> Vec<f64> {
+    let valid: Vec<usize> = (0..costs.len().min(neural.len()))
+        .filter(|&index| neural[index].is_finite())
+        .collect();
+    let min = valid.iter().map(|&i| costs[i]).min().unwrap_or(0);
+    let max = valid.iter().map(|&i| costs[i]).max().unwrap_or(0);
+    let span = f64::from(max.saturating_sub(min));
+    (0..costs.len())
+        .map(|index| {
+            if !neural.get(index).is_some_and(|score| score.is_finite()) {
+                return f64::NEG_INFINITY;
+            }
+            let norm = if span > 0.0 {
+                f64::from(max - costs[index]) / span
+            } else {
+                0.5
+            };
+            let draft = if index == 0 { WORD_DRAFT_BONUS } else { 0.0 };
+            WORD_NEURAL_WEIGHT * f64::from(neural[index]) + WORD_STATS_WEIGHT * norm + draft
+        })
+        .collect()
+}
+
+/// 依分數由高到低排出索引；同分保留原本順序。
+fn order_by_scores(scores: &[f64]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..scores.len()).collect();
+    order.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]).then_with(|| a.cmp(&b)));
+    order
+}
+
+/// 統計第一名的已解碼後文：`suffixes[pos]` 是 `pos` 之後所有詞面的串接。
+fn path_suffixes(hyps: &[Hypothesis], lat: &Lattice, best: usize, len: usize) -> Vec<String> {
+    let mut nodes: Vec<&JaNode> = Vec::new();
+    let mut cursor = Some(best);
+    while let Some(id) = cursor {
+        if let Some((pos, index)) = hyps[id].node {
+            nodes.push(&lat.nodes(pos)[index]);
+        }
+        cursor = hyps[id].prev;
+    }
+    nodes.reverse();
+    let mut out = vec![String::new(); len + 1];
+    let mut current = String::new();
+    let mut next = nodes.len();
+    for pos in (0..=len).rev() {
+        while next > 0 && nodes[next - 1].start >= pos {
+            let node = nodes[next - 1];
+            current.insert_str(0, &node.entry.surface);
+            next -= 1;
+        }
+        out[pos].push_str(&current);
+    }
+    out
+}
+
+/// 統計第一名的已解碼前文：`prefixes[pos]` 是 `pos` 之前所有詞面的串接。
+fn path_prefixes(hyps: &[Hypothesis], lat: &Lattice, best: usize, len: usize) -> Vec<String> {
+    let mut nodes: Vec<&JaNode> = Vec::new();
+    let mut cursor = Some(best);
+    while let Some(id) = cursor {
+        if let Some((pos, index)) = hyps[id].node {
+            nodes.push(&lat.nodes(pos)[index]);
+        }
+        cursor = hyps[id].prev;
+    }
+    nodes.reverse();
+    let mut out = vec![String::new(); len + 1];
+    let mut current = String::new();
+    let mut next = 0;
+    for (pos, slot) in out.iter_mut().enumerate() {
+        while next < nodes.len() && nodes[next].start < pos {
+            current.push_str(&nodes[next].entry.surface);
+            next += 1;
+        }
+        slot.push_str(&current);
+    }
+    out
 }
 
 /// 詞典成本換成 DP 使用的尺度（Mozc 原始整數除以 1000）。
@@ -1630,39 +1907,121 @@ mod tests {
     fn test_reranker_reorders_and_can_be_disabled() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        struct Reverse {
+        /// 把「箸」打成最高分，確認分數真的進入 lattice 成本。
+        struct Prefer {
             calls: AtomicUsize,
         }
 
-        impl JaReranker for Reverse {
-            fn rerank(
+        impl JaReranker for Prefer {
+            fn score_words(
                 &self,
-                _reading: &[char],
-                mut drafts: Vec<JaResult>,
-                _ctx: &JaContext,
-            ) -> Vec<JaResult> {
+                _left: &str,
+                _right: &str,
+                candidates: &[&str],
+            ) -> Option<Vec<f32>> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
-                drafts.reverse();
-                drafts
+                Some(
+                    candidates
+                        .iter()
+                        .map(|surface| if *surface == "箸" { 2.0 } else { 0.0 })
+                        .collect(),
+                )
             }
         }
 
-        let reranker = Arc::new(Reverse {
+        let reranker = Arc::new(Prefer {
             calls: AtomicUsize::new(0),
         });
         let enabled = test_decoder().with_reranker(reranker.clone());
-        let before = enabled.results(&units("はし"), &JaContext::default(), 3);
-        let after = enabled.results(&units("はし"), &JaContext::default(), 3);
-        assert_eq!(before.len(), 3);
-        assert_eq!(before[0].surface(), "端");
-        assert_eq!(reranker.calls.load(Ordering::SeqCst), 2);
-        assert_eq!(after[0].surface(), "端");
+        let reranked = enabled.results(&units("はし"), &JaContext::default(), 3);
+        assert_eq!(reranked[0].surface(), "箸");
+        assert_eq!(reranker.calls.load(Ordering::SeqCst), 1);
 
         let disabled = enabled.with_rerank_enabled(false);
         assert!(!disabled.rerank_enabled());
         let stats = disabled.results(&units("はし"), &JaContext::default(), 3);
         assert_eq!(stats[0].surface(), "橋");
-        assert_eq!(reranker.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(reranker.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_word_reranker_sees_decoded_left_context() {
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct Record {
+            lefts: Mutex<Vec<String>>,
+        }
+
+        impl JaReranker for Record {
+            fn score_words(
+                &self,
+                left: &str,
+                _right: &str,
+                candidates: &[&str],
+            ) -> Option<Vec<f32>> {
+                self.lefts.lock().unwrap().push(left.to_string());
+                Some(vec![0.0; candidates.len()])
+            }
+        }
+
+        let reranker = Arc::new(Record::default());
+        let dec = test_decoder().with_reranker(reranker.clone());
+        let result = dec.results(&units("きょうはし"), &JaContext::default(), 1);
+        assert_eq!(result[0].surface(), "今日橋");
+        let lefts = reranker.lefts.lock().unwrap();
+        // 第一個群組沒有前文，第二個群組的左文是統計第一名的已解碼前文。
+        assert_eq!(*lefts, vec![String::new(), "今日".to_string()]);
+    }
+
+    #[test]
+    fn test_word_reranker_timeout_keeps_statistics() {
+        use std::time::Duration;
+
+        struct Expired;
+
+        impl JaReranker for Expired {
+            fn score_words(
+                &self,
+                _left: &str,
+                _right: &str,
+                candidates: &[&str],
+            ) -> Option<Vec<f32>> {
+                Some(vec![0.0; candidates.len()])
+            }
+
+            fn timeout(&self) -> Duration {
+                Duration::ZERO
+            }
+        }
+
+        let dec = test_decoder().with_reranker(Arc::new(Expired));
+        let result = dec.results(&units("はし"), &JaContext::default(), 3);
+        assert_eq!(result[0].surface(), "橋");
+    }
+
+    #[test]
+    fn test_fuse_word_scores_follows_predecessor_weights() {
+        // 成本 1000／2000 正規化成 1.0／0.0，第一名再加 0.1。
+        let fused = fuse_word_scores(&[1_000, 2_000], &[0.0, 1.0]);
+        assert!((fused[0] - 0.3).abs() < 1e-9, "{fused:?}");
+        assert!((fused[1] - 1.0).abs() < 1e-9, "{fused:?}");
+        // 成本相同時統計項給 0.5。
+        let flat = fuse_word_scores(&[1_000, 1_000], &[0.0, 0.0]);
+        assert!((flat[0] - 0.2).abs() < 1e-9, "{flat:?}");
+        assert!((flat[1] - 0.1).abs() < 1e-9, "{flat:?}");
+    }
+
+    #[test]
+    fn test_word_groups_start_at_statistical_best() {
+        let dec = test_decoder();
+        let reading = units("はし");
+        let lat = dec.builder(&JaContext::default()).build(&reading);
+        let groups = word_groups(&lat, 0);
+        assert_eq!(groups.len(), 1);
+        let surfaces: Vec<&str> = groups[0].iter().map(|c| c.surface).collect();
+        assert_eq!(surfaces, vec!["橋", "箸", "端"]);
+        assert_eq!(groups[0][0].cost, 1_000);
     }
 
     #[test]

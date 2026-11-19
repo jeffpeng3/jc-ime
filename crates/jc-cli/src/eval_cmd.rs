@@ -304,9 +304,10 @@ pub fn ja(
     if let Some(reranker) = &reranker {
         let stats = reranker.stats();
         let line = format!(
-            "rerank：calls {}，scored {}，changed {}，timeout {}，error {}，\
+            "rerank：calls {}，groups {}，scored {}，changed {}，timeout {}，error {}，\
              inference p50 {:.2} ms／p95 {:.2} ms\n",
             stats.calls,
+            stats.groups,
             stats.scored,
             stats.changed,
             stats.timeouts,
