@@ -49,6 +49,9 @@
 | `fix-tests` | `3bda5a0` | `f660e30` | 通過 | 2026-11-20 00:44 |
 | `mixed-e2e`（片語合併） | `6c72b5e` | `301c423` | 通過 | 2026-11-20 00:44 |
 | `rerank-fix` | `5954b89` | `fadc139` | 通過（fmt＋clippy＋test） | 2026-11-20 01:04 |
+| `core-misc` | `bc39909` | `2148cd6` | 通過 | 2026-11-20 01:10 |
+| `ja-personal` | `841b35f` | `cf0c235` | 通過 | 2026-11-20 01:12 |
+| `punct-wire` | `b79183c` | `117e2b9` | check／fmt／clippy 通過；3 個 test 失敗 | 2026-11-20 01:15 |
 
 ## 衝突與修正
 
@@ -311,3 +314,19 @@
   - 融合權重照前身修正後，`--rerank on` 的 top-1 反而掉到 **40.8%**（統計基準 86.0%，滾動左文 57.8%）。
   - 原因：訓練候選是單一 SentencePiece token，評測餵整句 surface，**候選粒度不一致**；且 tokenizer 只有詞表、
     **缺 piece 分數**，只能用最長前綴匹配近似。`--rerank` 維持 opt-in、預設 off。
+
+- 三條依序合併，全部無衝突：`core-misc`（`2148cd6`，新增 `vocab`、`suggest`、`inputstyle`、`lm`，3424 行）、
+  `ja-personal`（`cf0c235`，新增 `ja/personal.rs`，2235 行）、`punct-wire`（`117e2b9`，新增 `jc-model` 的
+  `punct_plan`／`punct_zh` 與 `jc-core/src/output/punct.rs`）。每條合完都跑過 `cargo check --workspace --all-targets`，全部 exit 0。
+
+  最終 gate：`cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0、
+  `cargo test --workspace --no-fail-fast` **exit 101**，3 個失敗（依指示保留合併，沒有 reset）：
+
+  | crate | 測試 | 位置 | 觀察 |
+  |---|---|---|---|
+  | jc-core | `ja::personal::tests::test_candidates_put_learned_first` | `crates/jc-core/src/ja/personal.rs:1944` | 學過「京」後第一名仍是「今日」，`left: "今日"`、`right: "京"` |
+  | jc-model | `punct_plan::tests::test_window_starts_matches_reference_rule` | `crates/jc-model/src/punct_plan.rs:203` | `window_starts(300, 128, 0)` 回 `0..172`，期望 `[0, 1, 2, 172]`；`stride.max(1)` 與期望規則不一致 |
+  | jc-model | `punct_plan::tests::test_merge_window_rows_prefers_central_prediction` | `crates/jc-model/src/punct_plan.rs:215` | `merged[1]` 得 `[9.0, 0.0]`，期望中央視窗的 `[0.0, 1.0]` |
+
+  兩個 `punct_plan` 失敗都在 punct-wire 新增的檔案內，且該檔沒有合併衝突，屬該 task 自身測試與實作不一致；
+  `personal.rs` 同樣是 ja-personal 新增檔案。三個失敗都需回原 task 修。
