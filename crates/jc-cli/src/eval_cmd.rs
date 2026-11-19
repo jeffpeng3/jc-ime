@@ -40,9 +40,22 @@ use crate::data;
 pub fn zh_golden(
     testdata: Option<PathBuf>,
     json: bool,
+    select_model: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
     let dir = data::testdata_dir(testdata)?;
+    #[cfg(feature = "onnx")]
+    if select_model {
+        data::install_select_model(Some(&dir))?;
+    } else {
+        data::disable_select_model();
+    }
+    #[cfg(not(feature = "onnx"))]
+    if select_model {
+        return Err(CliError::eval(
+            "這個建置沒有啟用 onnx feature，不能使用 --select-model on".to_string(),
+        ));
+    }
     let golden_dir = dir.join("golden/zh");
     let suite = load_golden_zh(&golden_dir)
         .map_err(|err| CliError::eval(format!("讀取注音 golden 失敗：{err}")))?;
@@ -157,6 +170,29 @@ pub fn zh_golden(
     for (name, expected, actual) in &failures {
         writeln!(out, "  ✗ {name}: 期望 {expected:?}，得到 {actual:?}")?;
     }
+    if select_model {
+        write_select_stats(out)?;
+    }
+    Ok(())
+}
+
+/// 印出選字模型的推論延遲。
+#[cfg(feature = "onnx")]
+fn write_select_stats(out: &mut dyn Write) -> Result<(), CliError> {
+    let Some(stats) = data::select_model_stats() else {
+        writeln!(out, "select-model：沒有推論")?;
+        return Ok(());
+    };
+    writeln!(
+        out,
+        "select-model：推論 {} 次，p50 {:.2} ms，p95 {:.2} ms",
+        stats.calls, stats.p50_ms, stats.p95_ms
+    )?;
+    Ok(())
+}
+
+#[cfg(not(feature = "onnx"))]
+fn write_select_stats(_out: &mut dyn Write) -> Result<(), CliError> {
     Ok(())
 }
 
@@ -769,7 +805,7 @@ mod tests {
             return;
         };
         let mut out = Vec::new();
-        zh_golden(Some(dir), false, &mut out).unwrap();
+        zh_golden(Some(dir), false, false, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("zh-golden"), "{text}");
         assert!(text.contains("通過"), "{text}");

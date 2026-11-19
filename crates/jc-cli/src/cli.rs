@@ -44,6 +44,8 @@ pub enum Command {
         testdata: Option<PathBuf>,
         /// 輸出 JSON 而非表格。
         json: bool,
+        /// 啟用注音選字模型重排。
+        select_model: bool,
     },
     /// 跑一個日文題庫。
     EvalJa {
@@ -75,6 +77,8 @@ pub enum Command {
         n: usize,
         /// 輸出 JSON。
         json: bool,
+        /// 啟用注音選字模型重排。
+        select_model: bool,
     },
     /// 對檔案中的每行讀音做轉換並計時。
     Bench {
@@ -121,6 +125,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut corpus = "modern-500".to_string();
     let mut pack = None;
     let mut json = false;
+    let mut select_model = false;
     let mut index = 0;
     while index < rest.len() {
         match rest[index].as_str() {
@@ -136,13 +141,21 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 index += 1;
                 pack = Some(PathBuf::from(value(rest, index, "--pack")?));
             }
+            "--select-model" => {
+                index += 1;
+                select_model = switch(value(rest, index, "--select-model")?, "--select-model")?;
+            }
             "--json" => json = true,
             other => return Err(CliError::Usage(format!("eval 不認得的參數 {other}"))),
         }
         index += 1;
     }
     match kind {
-        "zh-golden" => Ok(Command::EvalZhGolden { testdata, json }),
+        "zh-golden" => Ok(Command::EvalZhGolden {
+            testdata,
+            json,
+            select_model,
+        }),
         "ja" => Ok(Command::EvalJa {
             testdata,
             corpus,
@@ -160,6 +173,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     let mut data = None;
     let mut n = 5usize;
     let mut json = false;
+    let mut select_model = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -170,6 +184,10 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
             "--data" => {
                 index += 1;
                 data = Some(PathBuf::from(value(args, index, "--data")?));
+            }
+            "--select-model" => {
+                index += 1;
+                select_model = switch(value(args, index, "--select-model")?, "--select-model")?;
             }
             "--n" => {
                 index += 1;
@@ -200,7 +218,19 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
         data,
         n,
         json,
+        select_model,
     })
+}
+
+/// 解析 `on`／`off` 開關。
+fn switch(value: &str, flag: &str) -> Result<bool, CliError> {
+    match value {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        other => Err(CliError::Usage(format!(
+            "{flag} 只接受 on 或 off，收到 {other:?}"
+        ))),
+    }
 }
 
 fn parse_bench(args: &[String]) -> Result<Command, CliError> {
@@ -275,9 +305,11 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             writeln!(out, "jc-cli {}", env!("CARGO_PKG_VERSION"))?;
             Ok(())
         }
-        Command::EvalZhGolden { testdata, json } => {
-            crate::eval_cmd::zh_golden(testdata.clone(), *json, out)
-        }
+        Command::EvalZhGolden {
+            testdata,
+            json,
+            select_model,
+        } => crate::eval_cmd::zh_golden(testdata.clone(), *json, *select_model, out),
         Command::EvalJa {
             testdata,
             corpus,
@@ -293,7 +325,16 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             data,
             n,
             json,
-        } => crate::converter::convert(testdata.clone(), data.clone(), reading, *n, *json, out),
+            select_model,
+        } => crate::converter::convert(
+            testdata.clone(),
+            data.clone(),
+            reading,
+            *n,
+            *json,
+            *select_model,
+            out,
+        ),
         Command::Bench {
             file,
             testdata,
@@ -309,14 +350,16 @@ pub fn usage() -> String {
     format!(
         "jc-cli {}（開發工具）\n\n\
          用法：\n  \
-         jc-cli eval zh-golden --testdata <dir> [--json]\n  \
+         jc-cli eval zh-golden --testdata <dir> [--select-model on|off] [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] [--json]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
-         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--n 5] [--json]\n  \
+         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--n 5] \
+         [--select-model on|off] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
          --data 指向注音二進位資料包（lexicon.bin、lm.bin、manifest.json）；\n\
-         指定時注音走真實詞庫，golden 評測不受影響。\n",
+         指定時注音走真實詞庫，golden 評測不受影響。\n\
+         --select-model on 需要 --features onnx；預設 off。\n",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -343,6 +386,7 @@ mod tests {
             Command::EvalZhGolden {
                 testdata: Some(PathBuf::from("/tmp/t")),
                 json: true,
+                select_model: false,
             }
         );
     }
@@ -391,8 +435,33 @@ mod tests {
                 data: None,
                 n: 3,
                 json: false,
+                select_model: false,
             }
         );
+    }
+
+    #[test]
+    fn parses_select_model_switch() {
+        assert_eq!(
+            parse(&args(&["convert", "ㄨㄛˇ", "--select-model", "on"])).unwrap(),
+            Command::Convert {
+                reading: "ㄨㄛˇ".to_string(),
+                testdata: None,
+                data: None,
+                n: 5,
+                json: false,
+                select_model: true,
+            }
+        );
+        assert_eq!(
+            parse(&args(&["eval", "zh-golden", "--select-model", "off"])).unwrap(),
+            Command::EvalZhGolden {
+                testdata: None,
+                json: false,
+                select_model: false,
+            }
+        );
+        assert!(parse(&args(&["convert", "ㄨㄛˇ", "--select-model", "auto"])).is_err());
     }
 
     #[test]

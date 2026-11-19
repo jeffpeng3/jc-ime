@@ -13,6 +13,7 @@ pub mod han;
 pub mod input;
 pub mod keyboard;
 pub mod pinyin;
+pub mod select;
 pub mod syllable;
 
 pub use han::is_han;
