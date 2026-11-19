@@ -87,8 +87,10 @@ pub struct SessionConfig {
     pub zh_lm: Option<Arc<crate::score::ZhLm>>,
     /// 日文解碼器；`None` 時日文只做原樣輸出。
     pub ja: Option<Arc<JaDecoder>>,
-    /// 是否呼叫日文解碼器上的重排器；預設關閉，實測 modern-500 由 86.0%
-    /// 退到 82.0%，因此不再預設啟用。
+    /// 是否呼叫日文解碼器上的重排器；預設關閉，實測 modern-500 全量重排
+    /// 由 86.0% 退到 82.0%，因此不再預設啟用。解碼器上的詞群門檻
+    /// （[`crate::ja::decode::DEFAULT_WORD_RERANK_GATE`]）預設只送統計
+    /// 不確定的詞群，但這裡仍保守關閉。
     pub ja_rerank: bool,
     /// 日文逐字変換設定；預設關閉，關閉時日文走一般変換流程。
     pub ja_live: live::Config,
