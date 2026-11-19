@@ -14,6 +14,7 @@
 | `z1-zh-front` | `3068450` | `9780d51` | 通過 | 2026-11-19 20:36 |
 | `z2-zh-mid` | `dcb1114` | `26be893` | 通過 | 2026-11-19 20:41 |
 | `j1-ja-input` | `5137e08` | `0f86061` | 通過 | 2026-11-19 20:51 |
+| `zh-layout-daqian-only` | `bb7f4fa` | `f0918da` | 通過 | 2026-11-19 20:51 |
 
 ## 衝突與修正
 
@@ -41,3 +42,6 @@
 
 - `j1-ja-input`（合併 `0f86061`）：無衝突。新增 `crates/jc-core/src/ja/input.rs`、`ja/rewrite.rs`，
   `ja/mod.rs` 只加 `pub mod`，`Cargo.lock` 自動合併。沒有編譯錯誤要修，未改任何實作。
+
+- `zh-layout-daqian-only`（合併 `f0918da`）：無衝突。`zh/keyboard.rs` 移除許氏與倚天排列，`LayoutKind` 只剩 `Standard`；
+  同步移除 `zh/mod.rs` 的相關 re-export 並更新 `docs/port/z1-zh-front.md`。沒有編譯錯誤要修，未改任何實作。
