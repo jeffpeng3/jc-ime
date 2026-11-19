@@ -158,7 +158,14 @@ impl Normalizer {
         };
         let mut out = String::with_capacity(mapped.len() + 4);
         let mut prev_space = false;
-        for ch in mapped.chars() {
+        let mut chars = mapped.chars().peekable();
+        // 前導空白要先去掉，否則 dummy prefix 會和它疊成兩個 U+2581。
+        if self.remove_extra_whitespaces {
+            while let Some(&' ') = chars.peek() {
+                chars.next();
+            }
+        }
+        for ch in chars {
             if ch == ' ' && self.remove_extra_whitespaces {
                 if prev_space {
                     continue;
@@ -177,7 +184,8 @@ impl Normalizer {
         if out.is_empty() {
             return out;
         }
-        if self.add_dummy_prefix {
+        // 整段輸入只加一次；已經以空白或 U+2581 開頭時不再重複。
+        if self.add_dummy_prefix && !out.starts_with([' ', SPACE]) {
             out.insert(0, ' ');
         }
         if self.escape_whitespaces {
@@ -648,12 +656,20 @@ mod tests {
 
     #[test]
     fn unknown_runes_keep_unk_id_without_byte_pieces() {
-        // 有開 byte_fallback 但詞表沒有 byte piece：每個位元組退回 `<unk>`。
+        // 有開 byte_fallback 但詞表沒有 byte piece：未知字的每個位元組退回
+        // `<unk>`。正規化後的 dummy prefix「▁」本身是正常 piece，照樣輸出
+        // （與上一個測試、Go 版 `TestEncodeUnknown` 的 `[▁, <unk>]` 一致）。
         let model = small_model();
-        assert_eq!(model.encode("あ"), vec![model.unk_id(); 3]);
+        let want = vec![
+            id(&model, "▁"),
+            model.unk_id(),
+            model.unk_id(),
+            model.unk_id(),
+        ];
+        assert_eq!(model.encode("あ"), want);
         // 沒開 byte_fallback 時整個字就是一個 unknown 節點。
         let model = build(small_pieces(), false);
-        assert_eq!(model.encode("あ"), vec![model.unk_id()]);
+        assert_eq!(model.encode("あ"), vec![id(&model, "▁"), model.unk_id()]);
     }
 
     #[test]
@@ -663,6 +679,9 @@ mod tests {
         assert_eq!(model.normalize("   "), "");
         assert_eq!(model.normalize("東京"), "▁東京");
         assert_eq!(model.normalize("  東京  都  "), "▁東京▁都");
+        // 已經以 U+2581 開頭時不再重複加 dummy prefix。
+        assert_eq!(model.normalize("▁東京"), "▁東京");
+        assert_eq!(model.normalize("  ▁東京  "), "▁東京");
         assert_eq!(model.normalize("東京\t都"), "▁東京\t都");
     }
 
