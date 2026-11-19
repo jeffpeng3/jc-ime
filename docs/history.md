@@ -212,8 +212,10 @@ TSF DLL (Rust) ──named pipe──> 0c-server (Go) ──ONNX──> 模型
 
 | 項目 | 位置 |
 |---|---|
-| 前身 repo | `/home/fedora/0c-ime`（`github.com/jeffpeng3/0c-ime`，main `8f443af`） |
+| 前身 repo（本機） | `/home/fedora/0c-ime`（`github.com/jeffpeng3/0c-ime`，main `8f443af`） |
+| 前身 repo（DGX，參考實作） | `~/ref/0c-ime`，已 clone 到 `8f443af`，`CGO_ENABLED=0 go build ./...` 通過（Go 1.27.4 arm64） |
+| 訓練 repo（DGX） | `/mnt/work/0c`（`main` `9fde9ef`，與本專案不同） |
 | 計畫與紀錄 | `/home/fedora/.opencode/plan/0c-ja/phase2/` |
 | 前身安裝包（可用但無 Mozc） | `/mnt/e/freerun/0c-0.2.13-preview.1-windows-amd64-preview-setup.exe` |
 | 前身完整包（會讓 explorer 崩潰，勿安裝） | `/mnt/e/freerun/preview.2/` |
-| 訓練 repo | DGX `~/0c`（`main` `9fde9ef`） |
+
