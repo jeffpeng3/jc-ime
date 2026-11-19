@@ -75,17 +75,12 @@ pub fn zh_golden(options: GoldenOptions, out: &mut dyn Write) -> Result<(), CliE
         select_model,
     } = options;
     let dir = data::testdata_dir(testdata)?;
-    #[cfg(feature = "onnx")]
     if select_model {
-        data::install_select_model(Some(&dir))?;
+        if let Err(err) = data::install_select_model(Some(&dir)) {
+            eprintln!("警告：--select-model on 無法載入選字模型，維持統計排序：{err}");
+        }
     } else {
         data::disable_select_model();
-    }
-    #[cfg(not(feature = "onnx"))]
-    if select_model {
-        return Err(CliError::eval(
-            "這個建置沒有啟用 onnx feature，不能使用 --select-model on".to_string(),
-        ));
     }
     let golden_dir = dir.join("golden/zh");
     let suite = load_golden_zh(&golden_dir)
@@ -224,7 +219,6 @@ pub fn zh_golden(options: GoldenOptions, out: &mut dyn Write) -> Result<(), CliE
 }
 
 /// 印出選字模型的推論延遲。
-#[cfg(feature = "onnx")]
 fn write_select_stats(out: &mut dyn Write) -> Result<(), CliError> {
     let Some(stats) = data::select_model_stats() else {
         writeln!(out, "select-model：沒有推論")?;
@@ -235,11 +229,6 @@ fn write_select_stats(out: &mut dyn Write) -> Result<(), CliError> {
         "select-model：推論 {} 次，p50 {:.2} ms，p95 {:.2} ms",
         stats.calls, stats.p50_ms, stats.p95_ms
     )?;
-    Ok(())
-}
-
-#[cfg(not(feature = "onnx"))]
-fn write_select_stats(_out: &mut dyn Write) -> Result<(), CliError> {
     Ok(())
 }
 
@@ -278,19 +267,17 @@ pub fn ja(
     };
     let root = data::data_root(&dir);
     let decoder = data::load_ja_decoder_with_pack(&root, pack.as_deref())?;
-    #[cfg(feature = "onnx")]
     let reranker = if rerank {
-        Some(data::load_ja_reranker(&root)?)
+        match data::load_ja_reranker(&root) {
+            Ok(reranker) => Some(reranker),
+            Err(err) => {
+                eprintln!("警告：--rerank on 無法載入 reranker，維持統計排序：{err}");
+                None
+            }
+        }
     } else {
         None
     };
-    #[cfg(not(feature = "onnx"))]
-    if rerank {
-        return Err(CliError::data(
-            "此建置沒有 onnx feature；請用 --features onnx 重新建置".to_string(),
-        ));
-    }
-    #[cfg(feature = "onnx")]
     let decoder = match &reranker {
         Some(reranker) => {
             let trait_object: Arc<dyn jc_core::ja::decode::JaReranker> = reranker.clone();
@@ -314,7 +301,6 @@ pub fn ja(
     } else {
         write!(out, "{}", run.to_table())?;
     }
-    #[cfg(feature = "onnx")]
     if let Some(reranker) = &reranker {
         let stats = reranker.stats();
         let line = format!(

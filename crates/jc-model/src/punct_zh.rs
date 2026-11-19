@@ -1,4 +1,4 @@
-//! 注音標點模型（需要 `onnx` feature）。
+//! 注音標點模型。
 //!
 //! 模型包是 `zuin-punct-runtime-v1`：`ids` 一個 int64 輸入，`probs` 輸出
 //! `[seq][7]`。輸入格式是 `[BOS=1, TASK=7, 原字 id...]`，只取原字位置的
@@ -376,7 +376,8 @@ pub(crate) fn eligible_boundaries(runes: &[char]) -> Vec<bool> {
     }
 
     let mut allowed = vec![false; runes.len()];
-    for i in 0..runes.len() {
+    // 段落尾端不插標點，最後一個位置永遠不是邊界。
+    for i in 0..runes.len().saturating_sub(1) {
         let next = runes.get(i + 1).copied();
         let next_visible = runes[i + 1..]
             .iter()
@@ -409,7 +410,8 @@ mod tests {
     fn test_eligible_boundaries_only_inside_han_runs() {
         let text: Vec<char> = "好的我知道了明天見".chars().collect();
         let allowed = eligible_boundaries(&text);
-        assert!(allowed.iter().all(|v| *v));
+        assert!(allowed[..text.len() - 1].iter().all(|v| *v));
+        assert!(!allowed[text.len() - 1], "段尾不插");
         assert_eq!(allowed.len(), text.len());
 
         let text: Vec<char> = "價格100元".chars().collect();

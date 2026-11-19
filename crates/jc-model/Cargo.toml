@@ -5,24 +5,21 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-[features]
-default = []
-# 開啟後才拉入 ort 與 ONNX Runtime 接線；預設建置不應下載或連結 ORT。
-onnx = ["dep:ort"]
-
 [dependencies]
 # SentencePiece 的 `.model` 是 protobuf；只解推論需要的欄位，不引入 C++ 相依。
 prost = "0.14"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+log = { workspace = true }
 # `nmt_nfkc` 系列規則的字元折疊。
 unicode-normalization = "0.1"
+# `load-dynamic`：建置時不連結也不下載 ONNX Runtime，執行期才載入動態庫。
 ort = { version = "=2.0.0-rc.15", default-features = false, features = [
     "std",
     "load-dynamic",
     "api-31",
-], optional = true }
+] }
 
 [dev-dependencies]
 jc-testdata = { path = "../jc-testdata" }
@@ -30,4 +27,3 @@ jc-testdata = { path = "../jc-testdata" }
 [[bin]]
 name = "probe"
 path = "src/bin/probe.rs"
-required-features = ["onnx"]

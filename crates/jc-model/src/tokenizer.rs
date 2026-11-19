@@ -297,6 +297,13 @@ impl Tokenizer {
             .map(|id| id as u32)
     }
 
+    /// 詞表中最長 piece 的位元組數，上限 128。
+    ///
+    /// 最長前綴匹配用它避免掃過整段輸入。
+    pub fn max_piece_bytes(&self) -> usize {
+        self.max_piece_bytes
+    }
+
     /// 查 id 的 piece 文字。
     pub fn piece(&self, id: u32) -> Option<&str> {
         self.pieces.get(id as usize).map(String::as_str)

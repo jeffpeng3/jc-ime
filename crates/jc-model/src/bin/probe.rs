@@ -1,16 +1,18 @@
 //! 手動探測：載入 reranker 與標點模型各跑一次推論並印延遲。
 //!
 //! ```text
-//! cargo run -p jc-model --features onnx --bin probe -- \
+//! cargo run -p jc-model --bin probe -- \
 //!   [--models /mnt/work/jc/jc-ime-data/models] [--ort-lib /path/libonnxruntime.so]
 //! ```
 //!
-//! 只在使用 `--features onnx` 時編譯（`required-features`）。
+//! 沒有 ONNX Runtime 時只印出探測結果就結束，不 panic。
 
 use std::path::PathBuf;
 use std::time::Instant;
 
-use jc_model::{ModelSpec, PunctuationModel, Reranker, ZhPunctuationModel};
+use jc_model::{
+    init_runtime, ModelRuntime, ModelSpec, PunctuationModel, Reranker, ZhPunctuationModel,
+};
 
 fn main() {
     let mut models = PathBuf::from("/mnt/work/jc/jc-ime-data/models");
@@ -44,6 +46,19 @@ fn main() {
             }
             other => usage(&format!("未知參數：{other}")),
         }
+    }
+
+    if let Some(lib) = ort_lib.as_deref() {
+        if let Err(err) = init_runtime(Some(lib)) {
+            println!("ONNX Runtime 載入失敗：{err}");
+            std::process::exit(2);
+        }
+    }
+    let runtime = ModelRuntime::probe();
+    if let Some(reason) = runtime.reason() {
+        println!("ONNX Runtime 不可用：{reason}");
+        println!("設定 ORT_DYLIB_PATH 或 --ort-lib 後再試。");
+        std::process::exit(2);
     }
 
     let rerank_dir = rerank_dir.unwrap_or_else(|| models.join("reranker-extra"));

@@ -1,4 +1,4 @@
-//! 日文 N-best 的神經重排（需要 `onnx` feature）。
+//! 日文 N-best 的神經重排。
 //!
 //! 接在 [`JaDecoder`](super::decode::JaDecoder) 的統計候選之後：讀音不變，
 //! 只把同一組候選依模型分數重新排序。模型缺席、逾時或推論錯誤時原順序
@@ -291,21 +291,27 @@ fn order_by_scores(scores: &[f64]) -> Vec<usize> {
 
 /// 取靠近游標、最多 `max` 個 token 的左文。
 ///
-/// 先從尾端逐字往前擴，直到編碼超過上限；保留最後一個合法後綴。
-/// 模型端仍會再做一次右對齊與裁切，這裡先縮小輸入可避免它留下
-/// 離游標最遠的那一段。
+/// 從尾端逐字往前擴，保留最長且編碼不超過上限的後綴。模型端仍會再做一次
+/// 右對齊與裁切，這裡先縮小輸入可避免它留下離游標最遠的那一段。
+///
+/// 最長前綴匹配的切法不是嚴格單調，較長的後綴可能因為 dummy prefix 而用更
+/// 少 token，所以不能在第一個超限的後綴就停下；超過 `max` 個 token 能覆蓋
+/// 的位元組數時才確定不可能再往前走。
 fn left_context(tokenizer: &jc_model::Tokenizer, text: &str, max: usize) -> String {
     if max == 0 || text.is_empty() {
         return String::new();
     }
     let chars: Vec<char> = text.chars().collect();
+    let limit = max.saturating_mul(tokenizer.max_piece_bytes().max(1));
     let mut start = chars.len();
     for index in (0..chars.len()).rev() {
         let candidate: String = chars[index..].iter().collect();
-        if tokenizer.encode(&candidate).len() > max {
+        if candidate.len() > limit {
             break;
         }
-        start = index;
+        if tokenizer.encode(&candidate).len() <= max {
+            start = index;
+        }
     }
     chars[start..].iter().collect()
 }

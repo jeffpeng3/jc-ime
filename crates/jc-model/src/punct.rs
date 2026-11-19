@@ -1,8 +1,8 @@
 //! 標點模型介面。
 //!
 //! [`Punctuator`] 是不需要模型的字串介面；[`PunctuationModel`] 與
-//! [`crate::ZhPunctuationModel`] 在 `onnx` feature 下載入真正的模型。
-//! 這裡保留 identity 實作，讓沒有模型的路徑維持原樣。
+//! [`crate::ZhPunctuationModel`] 載入真正的模型。這裡保留 identity 實作，
+//! 讓沒有模型的路徑維持原樣。
 
 /// 標點介面。實作只能插入標點，不得改動原字。
 pub trait Punctuator {

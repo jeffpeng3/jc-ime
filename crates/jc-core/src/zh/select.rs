@@ -13,7 +13,8 @@
 //! 最後一個音節會多一個輕聲分支，讓句尾助詞打錯聲調時仍能被評分。分支
 //! 分數取最大值，與前身 `core/rerank` 和 `internal/neural/native/input` 相同。
 //!
-//! 推論需要 `onnx` feature；關閉時只保留輸入組裝與純函式，不連結 ORT。
+//! 推論是執行期能力：沒有 ONNX Runtime 或模型檔時只保留輸入組裝與純函式，
+//! 呼叫端退回統計排序。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -55,9 +56,6 @@ pub enum SelectError {
     /// 推論失敗或逾時。
     #[error("選字模型推論失敗：{0}")]
     Inference(String),
-    /// 這個建置沒有啟用 `onnx`。
-    #[error("這個建置沒有啟用 onnx feature")]
-    FeatureDisabled,
 }
 
 /// `vocab.json` 的內容。
@@ -573,49 +571,18 @@ pub fn choose(engine: &[f64], neural: &[f64], weight: f64, margin: f64) -> usize
     }
 }
 
-#[cfg(feature = "onnx")]
 mod onnx {
     use std::path::{Path, PathBuf};
     use std::sync::{mpsc, Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
-    use ort::environment::Environment;
     use ort::session::{RunOptions, Session};
     use ort::value::{Shape, Tensor};
 
     use super::{choose, cost_to_log_score, prepare, Arrays, Request, SelectError};
     use super::{SelectManifest, Vocabulary, DEFAULT_TIMEOUT_MS, MIN_OVERRIDE_MARGIN};
 
-    static ENVIRONMENT: OnceLock<Environment> = OnceLock::new();
     static MODEL: OnceLock<Mutex<Option<Arc<SelectModel>>>> = OnceLock::new();
-
-    fn environment(ort_lib: Option<&Path>) -> Result<Environment, SelectError> {
-        if let Some(env) = ENVIRONMENT.get() {
-            return Ok(env.clone());
-        }
-        let path = ort_lib
-            .map(Path::to_path_buf)
-            .or_else(|| std::env::var_os("ORT_DYLIB_PATH").map(PathBuf::from))
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| {
-                PathBuf::from(format!(
-                    "{}onnxruntime{}",
-                    std::env::consts::DLL_PREFIX,
-                    std::env::consts::DLL_SUFFIX
-                ))
-            });
-        let env = ort::init_from(&path)
-            .map_err(|err| SelectError::Inference(format!("{}：{err}", path.display())))?
-            .build()
-            .map_err(|err| SelectError::Inference(err.to_string()))?;
-        match ENVIRONMENT.set(env.clone()) {
-            Ok(()) => Ok(env),
-            Err(_) => Ok(ENVIRONMENT
-                .get()
-                .expect("environment 已由另一個執行緒設定")
-                .clone()),
-        }
-    }
 
     /// 一次推論的統計。
     #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -653,7 +620,8 @@ mod onnx {
                     vocab.dictionary_sha256()
                 )));
             }
-            let env = environment(ort_lib)?;
+            let env = jc_model::runtime::environment(ort_lib)
+                .map_err(|err| SelectError::Inference(err.to_string()))?;
             let session = Session::builder(&env)
                 .map_err(|err| SelectError::Inference(err.to_string()))?
                 .with_intra_threads(1)
@@ -941,7 +909,6 @@ mod onnx {
     }
 }
 
-#[cfg(feature = "onnx")]
 pub use onnx::{
     clear, install, installed, latency_stats, rerank_nbest, resolve_model_dir, LatencyStats,
     SelectModel,

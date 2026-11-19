@@ -13,8 +13,8 @@
 //! ```
 //!
 //! 每個角色目錄內預設放 `model.int8.onnx` 與 `vocab.json`，可用 `model`、
-//! `vocab` 欄位覆寫。manifest 或模型檔缺席都不算錯誤，只是該角色
-//! [`Availability::Unavailable`]。
+//! `vocab` 欄位覆寫。manifest、模型檔或 ONNX Runtime 缺席都不算錯誤，只是
+//! 該角色 [`Availability::Unavailable`]。
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -169,10 +169,10 @@ pub struct SetManifest {
     pub models: BTreeMap<String, ModelSpec>,
 }
 
-/// 模型可用狀態；缺模型時引擎退回統計路徑，不應失敗。
+/// 模型可用狀態；缺模型或沒有 ONNX Runtime 時引擎退回統計路徑，不應失敗。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Availability {
-    /// 模型檔存在，可以載入。
+    /// 模型檔存在，且執行期可載入 ONNX Runtime，可以推論。
     Loaded {
         /// 角色。
         role: Role,
@@ -249,6 +249,11 @@ impl ModelSet {
 
         let mut resolved = BTreeMap::new();
         let mut availability = BTreeMap::new();
+        // 沒有 ONNX Runtime 時，即使模型檔齊全也不能推論。
+        let runtime = crate::runtime::probe();
+        let runtime_reason = runtime
+            .reason()
+            .map(|reason| format!("ONNX Runtime 不可用：{reason}"));
         for role in Role::all() {
             let Some(spec) = specs.get(&role).cloned() else {
                 availability.insert(
@@ -263,8 +268,22 @@ impl ModelSet {
             match resolve(&root, role, &spec) {
                 Ok(r) => {
                     let bytes = fs::metadata(&r.model).map(|m| m.len()).unwrap_or(0);
-                    availability.insert(role, Availability::Loaded { role, bytes });
-                    resolved.insert(role, r);
+                    match &runtime_reason {
+                        Some(reason) => {
+                            resolved.insert(role, r);
+                            availability.insert(
+                                role,
+                                Availability::Unavailable {
+                                    role,
+                                    reason: reason.clone(),
+                                },
+                            );
+                        }
+                        None => {
+                            availability.insert(role, Availability::Loaded { role, bytes });
+                            resolved.insert(role, r);
+                        }
+                    }
                 }
                 Err(reason) => {
                     availability.insert(role, Availability::Unavailable { role, reason });
@@ -420,20 +439,7 @@ mod tests {
         .unwrap();
 
         let set = ModelSet::load(&dir).unwrap();
-        assert_eq!(
-            set.availability(Role::JaRerank),
-            &Availability::Loaded {
-                role: Role::JaRerank,
-                bytes: 1234
-            }
-        );
-        assert_eq!(
-            set.availability(Role::JaPunct),
-            &Availability::Loaded {
-                role: Role::JaPunct,
-                bytes: 7
-            }
-        );
+        // 檔案解析與執行期能否推論無關，路徑一律要解析出來。
         assert_eq!(
             set.model_path(Role::JaPunct).unwrap(),
             dir.join("punct/model.int8.onnx")
@@ -442,6 +448,26 @@ mod tests {
             set.vocab_path(Role::JaPunct).unwrap(),
             dir.join("punct/ja.bin")
         );
+        match set.availability(Role::JaRerank) {
+            Availability::Loaded { role, bytes } => {
+                assert_eq!(*role, Role::JaRerank);
+                assert_eq!(*bytes, 1234);
+            }
+            Availability::Unavailable { role, reason } => {
+                assert_eq!(*role, Role::JaRerank);
+                assert!(reason.starts_with("ONNX Runtime 不可用："), "{reason}");
+            }
+        }
+        match set.availability(Role::JaPunct) {
+            Availability::Loaded { role, bytes } => {
+                assert_eq!(*role, Role::JaPunct);
+                assert_eq!(*bytes, 7);
+            }
+            Availability::Unavailable { role, reason } => {
+                assert_eq!(*role, Role::JaPunct);
+                assert!(reason.starts_with("ONNX Runtime 不可用："), "{reason}");
+            }
+        }
         let spec = set.spec(Role::JaPunct).unwrap();
         assert_eq!(spec.seq_len(), 96);
         assert_eq!(spec.candidate_slot(), 48);
