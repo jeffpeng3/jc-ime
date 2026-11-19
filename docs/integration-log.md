@@ -27,6 +27,7 @@
 | `zh-golden` | `9068771` | `2e6156b` | 通過 | 2026-11-19 23:07 |
 | `jc-platform` | `92f57b2` | `7f19601` | 通過 | 2026-11-19 23:10 |
 | `bigram-data` | `3d96d6a` | `27ca97e` | 通過 | 2026-11-19 23:12 |
+| `eval-ja-ambiguous` | `f8fb416` | `ea85686` | 通過 | 2026-11-19 23:12 |
 
 ## 衝突與修正
 
@@ -119,3 +120,10 @@
 - `bigram-data`（合併 `27ca97e`）：無衝突，只新增 `docs/port/bigram-data.md` 與 `scripts/fetch_chewing_bigram.sh`，沒有 Rust 改動。
   `cargo check` 全部 cached 通過。新酷音 bigram 已重建到 `/mnt/work/jc/jc-ime-data/build-zh-bigram/`
   （`lexicon.bin` 8.4M、`lm.bin` 31.4M、`manifest.json`、`NOTICE.txt`、`report.txt`），資料在 git 外。
+
+- `eval-ja-ambiguous`（合併 `ea85686`）：無衝突。只改 `crates/jc-cli/src/bin/ja-eval.rs`（新增 `--file`／`--split`）
+  與 `docs/port/eval-ja-ambiguous.md`。沒有編譯錯誤要修，未改任何實作。
+
+  量測（`ja-lexicon-ambiguous`，1200 題）：v2 Mozc pack holdout top-1 **30.2%**（121/400）、top-5 58.5%；
+  public-core pack holdout top-1 **52.2%**、top-5 93.8%。差異來自題庫原始建構用的是 public-core pack
+  （候選成本取自 public-core，reference 是它的最低成本詞面），不是 decoder 問題，所以 `jc-core` 未改。
