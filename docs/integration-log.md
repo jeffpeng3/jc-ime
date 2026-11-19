@@ -13,6 +13,7 @@
 | `w1-eval` | `776ac8c` | `dd00506` | 通過 | 2026-11-19 20:34 |
 | `z1-zh-front` | `3068450` | `9780d51` | 通過 | 2026-11-19 20:36 |
 | `z2-zh-mid` | `dcb1114` | `26be893` | 通過 | 2026-11-19 20:41 |
+| `j1-ja-input` | `5137e08` | `0f86061` | 通過 | 2026-11-19 20:51 |
 
 ## 衝突與修正
 
@@ -37,3 +38,6 @@
 - `z2-zh-mid`（合併 `26be893`）：無衝突（base `aa5e32f`，與 z1 的 `zh/`、`segment.rs`、`reading.rs` 不重疊）。
   改動集中在 `crates/jc-core/src/score.rs` 與 `crates/jc-core/src/lattice/`（`build`、`candidate`、`lexicon`、`viterbi`、`mod`）。
   沒有編譯錯誤要修，`Cargo.lock` 無變動，未改任何實作。
+
+- `j1-ja-input`（合併 `0f86061`）：無衝突。新增 `crates/jc-core/src/ja/input.rs`、`ja/rewrite.rs`，
+  `ja/mod.rs` 只加 `pub mod`，`Cargo.lock` 自動合併。沒有編譯錯誤要修，未改任何實作。
