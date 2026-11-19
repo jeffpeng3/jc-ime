@@ -119,6 +119,21 @@ impl Converter for IdentityConverter {
     }
 }
 
+/// 繁體轉簡體的轉換器。
+///
+/// `zhconv::Converter` 直接實作這個介面；轉換器必須唯讀、可同時給多個
+/// 片段使用。
+pub trait HansConverter {
+    /// 把繁體詞面轉成簡體。
+    fn to_simplified(&self, text: &str) -> String;
+}
+
+impl HansConverter for IdentityConverter {
+    fn to_simplified(&self, text: &str) -> String {
+        text.to_string()
+    }
+}
+
 /// 把單一片段轉成輸出文字。
 pub trait Renderer {
     /// 轉換一個片段。
@@ -127,26 +142,35 @@ pub trait Renderer {
 
 /// 依片段自已的輸出變體產生文字。
 ///
-/// 繁體、日文新字體與英文原樣輸出；繁中經 [`Converter`]；簡體還沒有轉換器，
-/// 日文舊字體第一版不支援。
+/// 繁體、日文新字體與英文原樣輸出；繁體經 [`Converter`]，簡體經
+/// [`HansConverter`]，日文舊字體第一版不支援。
 pub struct VariantRenderer {
     converter: Box<dyn Converter>,
+    hans: Box<dyn HansConverter>,
 }
 
 impl Default for VariantRenderer {
     fn default() -> Self {
         Self {
             converter: Box::new(IdentityConverter),
+            hans: Box::new(IdentityConverter),
         }
     }
 }
 
 impl VariantRenderer {
-    /// 用指定的轉換器建立 renderer。
+    /// 用指定的繁體轉換器建立 renderer。
     pub fn new(converter: impl Converter + 'static) -> Self {
         Self {
             converter: Box::new(converter),
+            hans: Box::new(IdentityConverter),
         }
+    }
+
+    /// 加上簡體轉換器。
+    pub fn with_hans(mut self, converter: impl HansConverter + 'static) -> Self {
+        self.hans = Box::new(converter);
+        self
     }
 
     /// 用 identity 轉換器建立 renderer。
@@ -163,8 +187,8 @@ impl Renderer for VariantRenderer {
         }
         match variant {
             Variant::ZhHant => Ok(self.converter.to_traditional(&seg.surface)),
+            Variant::ZhHans => Ok(self.hans.to_simplified(&seg.surface)),
             Variant::JaShinjitai | Variant::English => Ok(seg.surface.clone()),
-            Variant::ZhHans => Err(OutputError::MissingConverter),
             Variant::JaKyujitai => Err(OutputError::UnsupportedVariant(Variant::JaKyujitai)),
         }
     }
@@ -497,7 +521,7 @@ mod tests {
             ),
             (
                 OutSegment::new("臺灣", Mode::Zh).with_variant(Variant::ZhHans),
-                Err(OutputError::MissingConverter),
+                Ok("臺灣".to_string()),
             ),
             (
                 OutSegment::new("臺灣", Mode::En).with_variant(Variant::ZhHant),
@@ -529,7 +553,32 @@ mod tests {
         assert_eq!(calls.get(), 1);
         assert_eq!(
             r.render(&OutSegment::new("繁", Mode::Zh).with_variant(Variant::ZhHans)),
-            Err(OutputError::MissingConverter)
+            Ok("繁".to_string())
+        );
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn hans_converter_is_used_only_for_simplified() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        struct Counting(Rc<Cell<usize>>);
+        impl HansConverter for Counting {
+            fn to_simplified(&self, text: &str) -> String {
+                self.0.set(self.0.get() + 1);
+                text.replace('繁', "简")
+            }
+        }
+        let calls = Rc::new(Cell::new(0));
+        let r = VariantRenderer::identity().with_hans(Counting(calls.clone()));
+        assert_eq!(
+            r.render(&OutSegment::new("繁", Mode::Zh).with_variant(Variant::ZhHans)),
+            Ok("简".to_string())
+        );
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            r.render(&OutSegment::new("繁", Mode::Zh).with_variant(Variant::ZhHant)),
+            Ok("繁".to_string())
         );
         assert_eq!(calls.get(), 1);
     }
