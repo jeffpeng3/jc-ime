@@ -190,18 +190,18 @@ margin 讓模型無法發言」。作法是不看統計成本，直接在合法�
 export ORT_DYLIB_PATH=/path/to/libonnxruntime.so
 
 # 主 dev：46 組，選點 0.5 / 3.0，救回 0、改壞 0
-cargo run -p jc-cli --release --features onnx --bin zh-calibrate -- \
+cargo run -p jc-cli --release --bin zh-calibrate -- \
   --dev /mnt/work/jc/jc-ime-data/0c-testdata/fuzzy/fuzzy-input.json \
   --out /tmp/zh-dev.jsonl
 
 # 壓力 dev：用打錯的讀音，161 組
-cargo run -p jc-cli --release --features onnx --bin zh-calibrate -- \
+cargo run -p jc-cli --release --bin zh-calibrate -- \
   --dev /mnt/work/jc/jc-ime-data/0c-testdata/fuzzy/fuzzy-input.json \
   --reading noisy --out /tmp/zh-dev-noisy.jsonl
 
 # 驗收
 cargo run -p jc-cli --release -- eval zh-golden
-cargo run -p jc-cli --release --features onnx -- eval zh-golden --select-model on
+cargo run -p jc-cli --release -- eval zh-golden --select-model on
 ```
 
 `--exact` 關閉近音展開，只用原讀音建詞格；`--limit`、`--k` 方便縮小檢查。
