@@ -1,7 +1,10 @@
 //! 語義按鍵。
 
+use serde::{Deserialize, Serialize};
+
 /// 按鍵的語義種類。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum KeyCode {
     /// 可列印字元。
     Char(char),
@@ -27,7 +30,7 @@ pub enum KeyCode {
 ///
 /// `text` 是按下這個鍵實際產生的字元；具名鍵為 `None`。
 /// `shift` 記錄 Shift 是否按著，用來區分標點與大小寫語意。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Key {
     /// 語義鍵碼。
     pub code: KeyCode,

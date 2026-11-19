@@ -9,3 +9,6 @@ rust-version.workspace = true
 jc-core = { path = "../jc-core" }
 jc-eval = { path = "../jc-eval" }
 jc-testdata = { path = "../jc-testdata" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

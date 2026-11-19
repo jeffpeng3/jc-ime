@@ -117,7 +117,7 @@ fn socket_serves_connections_sequentially_and_shutdown_cleans_up() {
         );
         assert_eq!(
             first.call(&Request::Key {
-                key: Key::Char('ㄅ')
+                key: Key::char('ㄅ', false)
             }),
             state("ㄅ", 1)
         );

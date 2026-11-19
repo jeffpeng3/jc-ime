@@ -126,7 +126,7 @@ fn message_over_custom_limit_is_rejected() {
 fn message_survives_one_byte_at_a_time_delivery() {
     let mut buf = Vec::new();
     let message = Request::Key {
-        key: Key::Char('ㄚ'),
+        key: Key::char('ㄚ', false),
     };
     write_message(&mut buf, &message, DEFAULT_MAX_FRAME).unwrap();
 

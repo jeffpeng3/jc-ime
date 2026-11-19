@@ -4,7 +4,7 @@ use std::io::BufReader;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use jc_proto::{
-    read_message, write_message, ErrorCode, Key, NamedKey, Request, Response, DEFAULT_MAX_FRAME,
+    read_message, write_message, ErrorCode, Key, KeyCode, Request, Response, DEFAULT_MAX_FRAME,
     PROTOCOL_VERSION,
 };
 
@@ -76,13 +76,13 @@ fn stdio_round_trip_and_clean_shutdown() {
 
     assert_eq!(
         engine.call(&Request::Key {
-            key: Key::Char('ㄇ')
+            key: Key::char('ㄇ', false)
         }),
         state("ㄇ", 1)
     );
     assert_eq!(
         engine.call(&Request::Key {
-            key: Key::Char('ㄚ')
+            key: Key::char('ㄚ', false)
         }),
         state("ㄇㄚ", 2)
     );
@@ -90,7 +90,7 @@ fn stdio_round_trip_and_clean_shutdown() {
 
     assert_eq!(
         engine.call(&Request::Key {
-            key: Key::Named(NamedKey::Backspace)
+            key: Key::new(KeyCode::Backspace, None, false)
         }),
         state("ㄇ", 1)
     );
