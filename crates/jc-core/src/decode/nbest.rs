@@ -480,11 +480,15 @@ mod tests {
             ("在", "ㄗㄞˋ"),
             ("再", "ㄗㄞˋ"),
             ("見", "ㄐㄧㄢˋ"),
-            ("建", "ㄐㄧㄢˋ"),
+            ("間", "ㄐㄧㄢˋ"),
         ] {
             lex.push(LexEntry::new(w, r, uni_cost, 1));
         }
-        let ctx = ctx();
+        // 未知詞邊只用來補缺字；成本拉高，讓四條詞典路徑互相競爭。
+        let ctx = ScoreContext {
+            unknown_cost: uni_cost * 10,
+            ..ctx()
+        };
         let lat = Lattice::build(&["ㄗㄞˋ", "ㄐㄧㄢˋ"], &lex, &ctx).expect("建立詞格");
 
         let plain = Decoder::new(&lex, &ctx);
@@ -498,8 +502,8 @@ mod tests {
                 (("<s>", "在"), 0.4),
                 (("再", "見"), 0.9),
                 (("在", "見"), 0.001),
-                (("在", "建"), 0.5),
-                (("再", "建"), 0.001),
+                (("在", "間"), 0.5),
+                (("再", "間"), 0.001),
             ],
         };
         let scorer = crate::score::LmScorer::new(&ctx, &lm);

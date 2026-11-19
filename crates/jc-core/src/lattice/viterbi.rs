@@ -349,7 +349,8 @@ mod tests {
         lex.push(entry("丙", "b", 10, 1));
 
         let mut ctx = plain_ctx();
-        ctx.connection.set(1, 2, 100);
+        // 懲罰 乙(2)→丙(1)，讓同詞性的 甲(1)→丙(1) 勝出。
+        ctx.connection.set(2, 1, 100);
 
         let readings = ["a", "b"];
         let lat = Lattice::build(&readings, &lex, &ctx).expect("建立詞格");
