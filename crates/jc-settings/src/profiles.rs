@@ -417,7 +417,8 @@ impl Settings {
                     append = true;
                 }
                 next.apply_profile(&profile, goos)?;
-                if append {
+                // 選用目錄裡的內建風格時也保存快照，之後目錄更新不會改動已選用的風格。
+                if append || idx.is_none() {
                     store.items.push(profile.clone());
                 }
                 store.active = profile.id.clone();
