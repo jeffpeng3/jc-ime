@@ -136,8 +136,7 @@ fn run() -> Result<(), String> {
             "{:>10} {:>5} {:>5} {:>7}  {:<28}",
             "surface", "lid", "rid", "cost", "pos"
         );
-        for (id, entry) in raw_pack.entries().iter().enumerate() {
-            let _ = id;
+        for entry in raw_pack.entries() {
             if entry.reading.as_ref() != reading {
                 continue;
             }
@@ -269,7 +268,7 @@ impl PathCost {
 }
 
 /// 依位置展開所有完整路徑。
-fn enumerate<'a>(lat: &'a jc_core::ja::decode::Lattice, len: usize) -> Vec<Vec<&'a JaNode>> {
+fn enumerate(lat: &jc_core::ja::decode::Lattice, len: usize) -> Vec<Vec<&JaNode>> {
     fn walk<'a>(
         lat: &'a jc_core::ja::decode::Lattice,
         len: usize,
