@@ -1,4 +1,4 @@
-//! 0CJADIC v1 pack 與 manifest 的錯誤型別。
+//! 0CJADIC v1／v2 pack 與 manifest 的錯誤型別。
 //!
 //! 每個驗證項目各自一個 variant，呼叫端能直接知道是哪一項失敗，
 //! 不需要解析錯誤訊息。
@@ -32,11 +32,11 @@ pub enum PackError {
     BadMagic,
 
     /// 格式版本不是本版支援的版本。
-    #[error("不支援的格式版本 {actual}，本版只支援 {expected}")]
+    #[error("不支援的格式版本 {actual}，本版支援 1 與 2")]
     UnsupportedVersion {
         /// 檔頭宣告的版本。
         actual: u16,
-        /// 本版支援的版本。
+        /// 最新支援的版本。
         expected: u16,
     },
 
@@ -52,6 +52,10 @@ pub enum PackError {
     /// reserved 欄位在 v1 必須是 0。
     #[error("reserved 欄位為 {0}，v1 必須是 0")]
     NonZeroReserved(u16),
+
+    /// v2 檔頭尾端的 reserved 欄位必須是 0。
+    #[error("v2 的 reserved 欄位為 {0}，必須是 0")]
+    NonZeroReserved32(u32),
 
     /// flags 在 v1 必須是 0。
     #[error("不支援的 flags {0:#x}，v1 必須是 0")]
@@ -353,6 +357,19 @@ pub enum PackError {
         count: usize,
     },
 
+    /// 詞條的 left／right context id 超出矩陣。
+    #[error("第 {index} 筆詞條的 {side} {id} 超出 context 數 {context_count}")]
+    EntryContextOutOfRange {
+        /// 詞條索引。
+        index: u32,
+        /// 欄位名稱。
+        side: &'static str,
+        /// context id。
+        id: u16,
+        /// context 數。
+        context_count: u16,
+    },
+
     /// 詞成本低於合法下限。
     #[error("第 {index} 筆詞條的詞成本 {cost} 低於合法下限 {minimum}")]
     CostOutOfRange {
@@ -449,13 +466,22 @@ pub enum PackError {
         expected: &'static str,
     },
 
-    /// manifest 的 pack_format.version 不受支援。
-    #[error("manifest 的 pack_format.version 為 {actual}，本版只支援 {expected}")]
+    /// manifest 的 pack_format.version 與 pack 檔頭不符。
+    #[error("manifest 的 pack_format.version 為 {actual}，pack 檔頭是 {expected}")]
     ManifestFormatVersion {
         /// manifest 宣告的版本。
         actual: i64,
-        /// 本版支援的版本。
+        /// pack 檔頭的版本。
         expected: i64,
+    },
+
+    /// manifest 的 pack_format.entry_size 與版本要求不符。
+    #[error("manifest 的 pack_format.entry_size 為 {actual:?}，version 2 必須是 {expected}")]
+    ManifestEntrySize {
+        /// manifest 宣告的 entry_size，缺少時是 `None`。
+        actual: Option<i64>,
+        /// 該版本要求的 entry 大小。
+        expected: u16,
     },
 
     /// manifest 的 reading_script 不受支援。
