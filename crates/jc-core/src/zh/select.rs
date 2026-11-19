@@ -30,12 +30,52 @@ pub const MIN_SYLLABLES: usize = 2;
 pub const MAX_SYLLABLES: usize = 32;
 /// 單次推論預算。
 pub const DEFAULT_TIMEOUT_MS: u64 = 100;
-/// 覆寫首選所需的最小融合領先。
+/// 校準後的融合權重預設值。
 ///
-/// manifest 的 `margin = 0` 是 0c 引擎分數尺度的校準值。本引擎的成本換成
-/// 對數分數後，模型的空前文偏好會把「程式」換成「城市」，造成 zh-golden
-/// 退步。安全下限取 1 nat，未經更大題庫校準前不得調低。
+/// dev 集（fuzzy 注音題）上沒有任何「統計錯、模型救回」的組，權重只能由
+/// 破壞量決定；0.5 是掃描網格中破壞最少的一端。
+pub const DEFAULT_SELECT_WEIGHT: f64 = 0.5;
+/// 校準後的覆寫門檻預設值，單位是融合後的 nat。
+///
+/// 3.0 是任務網格中破壞最少（2/161）的點。dev 的救回數是 0，因此這個值
+/// 只用來限制誤覆寫，不代表模型已可啟用。
+pub const DEFAULT_SELECT_MARGIN: f64 = 3.0;
+/// 舊版的安全下限，保留給既有呼叫端。
+///
+/// 這個常數已不是最終門檻；重排改用 [`SelectConfig::default()`] 的
+/// [`DEFAULT_SELECT_MARGIN`]。
 pub const MIN_OVERRIDE_MARGIN: f64 = 1.0;
+
+/// 本引擎的注音選字重排設定。
+///
+/// 上游 manifest 的 `weight = 2.0`、`margin = 0` 是 0c 引擎分數尺度的值，
+/// 換引擎後不可直接沿用。預設值來自 `zh-calibrate` 的掃描結果。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SelectConfig {
+    /// 模型分數的係數：`fused = log_score + weight × model_score`。
+    pub weight: f64,
+    /// 覆寫統計首選所需的最小融合領先。
+    pub margin: f64,
+}
+
+impl Default for SelectConfig {
+    fn default() -> Self {
+        Self {
+            weight: DEFAULT_SELECT_WEIGHT,
+            margin: DEFAULT_SELECT_MARGIN,
+        }
+    }
+}
+
+impl SelectConfig {
+    /// 是否為合法的融合設定。
+    pub fn is_valid(&self) -> bool {
+        self.weight.is_finite()
+            && self.weight > 0.0
+            && self.margin.is_finite()
+            && self.margin >= 0.0
+    }
+}
 
 /// 選字模型的錯誤。
 #[derive(Debug, thiserror::Error)]
@@ -584,7 +624,7 @@ mod onnx {
     use ort::value::{Shape, Tensor};
 
     use super::{choose, cost_to_log_score, prepare, Arrays, Request, SelectError};
-    use super::{SelectManifest, Vocabulary, DEFAULT_TIMEOUT_MS, MIN_OVERRIDE_MARGIN};
+    use super::{SelectConfig, SelectManifest, Vocabulary, DEFAULT_TIMEOUT_MS};
 
     static ENVIRONMENT: OnceLock<Environment> = OnceLock::new();
     static MODEL: OnceLock<Mutex<Option<Arc<SelectModel>>>> = OnceLock::new();
@@ -829,8 +869,8 @@ mod onnx {
             }
             let scores = self.score(context, reading, texts)?;
             let engine: Vec<f64> = costs.iter().map(|cost| cost_to_log_score(*cost)).collect();
-            let margin = self.manifest.margin.max(MIN_OVERRIDE_MARGIN);
-            let winner = choose(&engine, &scores, self.manifest.weight, margin);
+            let config = SelectConfig::default();
+            let winner = choose(&engine, &scores, config.weight, config.margin);
             Ok((winner > 0).then_some(winner))
         }
     }
@@ -920,8 +960,8 @@ mod onnx {
             .iter()
             .map(|hypothesis| cost_to_log_score(hypothesis.cost))
             .collect();
-        let margin = manifest.margin.max(MIN_OVERRIDE_MARGIN);
-        let winner = choose(&engine, &neural, manifest.weight, margin);
+        let config = SelectConfig::default();
+        let winner = choose(&engine, &neural, config.weight, config.margin);
         if winner > 0 && winner < hypotheses.len() {
             let promoted = hypotheses.remove(winner);
             hypotheses.insert(0, promoted);
@@ -1056,12 +1096,21 @@ mod tests {
     }
 
     #[test]
-    fn test_observed_bad_override_is_blocked_by_safety_margin() {
+    fn test_observed_bad_override_is_blocked_by_default_margin() {
         // 「ㄔㄥˊ ㄕˋ」的實際分數：成本差 0.223、模型分差 0.4159195。
         let engine = [-7.6, -7.823];
         let neural = [-0.9937908053398132, -0.577910304069519];
+        let config = SelectConfig::default();
         assert_eq!(choose(&engine, &neural, 2.0, 0.0), 1);
-        assert_eq!(choose(&engine, &neural, 2.0, MIN_OVERRIDE_MARGIN), 0);
+        assert_eq!(choose(&engine, &neural, config.weight, config.margin), 0);
+    }
+
+    #[test]
+    fn test_select_config_defaults_are_calibrated() {
+        let config = SelectConfig::default();
+        assert_eq!(config.weight, 0.5);
+        assert_eq!(config.margin, 3.0);
+        assert!(config.is_valid());
     }
 
     #[test]
