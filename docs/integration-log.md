@@ -21,6 +21,7 @@
 | `ja-pack-v2` | `86fe251` | `626d20f` | 通過 | 2026-11-19 21:53 |
 | `m1-mixed` | `c669d5b` | `918088e` | 通過 | 2026-11-19 21:56 |
 | `ja-import` | `e404fa1` | `ff13578` | 通過 | 2026-11-19 22:00 |
+| `ja-context` | `4bc5df8` | `d3f6d3f` | 通過 | 2026-11-19 22:11 |
 
 ## 衝突與修正
 
@@ -70,3 +71,18 @@
 - `ja-import`（合併 `ff13578`）：無衝突。新增 crate `crates/jc-jadic`（`error`、`import`、`mozc`、`pack`、`reading`、`lib`、`main`，2028 行），
   workspace `Cargo.toml` 加 member，`Cargo.lock` 自動合併。沒有編譯錯誤要修，未改任何實作。
   產出檔 `/mnt/work/jc/jc-ime-data/packs/ja-lexicon-mozc-v2.pack`（81.5M）與 manifest 在 git 外，不隨 repo 散布。
+
+- `ja-context`（合併 `d3f6d3f`）：無衝突。`ja/decode.rs`、`ja/lexicon.rs` 接上 pack v2 的 context 矩陣
+  （`JaConnectionCost` 直接查 connection section，BOS／EOS 用 context ID 0，缺 ID 退回 POS）；
+  新增 `crates/jc-cli/src/bin/ja-eval.rs`，`jc-cli/Cargo.toml` 與 `Cargo.lock` 同步補依賴。沒有編譯錯誤要修，未改任何實作。
+
+  量測（`ja-eval`，pack `ja-lexicon-mozc-v2.pack`，`--top 5`）：
+
+  | Corpus | n | top-1 | top-5 | boundary exact | boundary F1 | p50 ms |
+  |---|---:|---:|---:|---:|---:|---:|
+  | modern-500 | 500 | 86.0% | 98.0% | 88.2% | 0.9017 | 3.216 |
+  | hard-cases | 35 | 54.3% | 97.1% | 71.4% | 0.8600 | 0.747 |
+
+  對照前身 `data/ja/README.md`：modern-500 四項完全相同；hard-cases 的 top-1／top-5 相同，
+  boundary exact 差 2.8 個百分點（71.4% vs 68.6%，本版較好），boundary F1 為 0.8600 對 0.863。
+  負向對照：同支 bin 換 v1 pack，modern-500 top-1 為 0.0%，證明矩陣路徑確實生效。
