@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::lattice::Lexicon;
-use crate::mixed::{default_english, prototype, MAX_WORD_BYTES};
+use crate::mixed::{default_english, prototype, English, MAX_WORD_BYTES};
 use crate::zh::keyboard::Keyboard;
 use crate::zh::syllable::{class_of, Class, Composer, Syllable, TONE1};
 
@@ -383,12 +383,22 @@ impl AsciiInput {
         self.pending_display(lexicon)
     }
 
+    /// 用指定的英文查詢層顯示待定按鍵；讓測試不必依賴系統上的英文資料包。
+    #[cfg(test)]
+    fn display_pending_with(&self, lexicon: &dyn Lexicon, english: &English) -> String {
+        self.pending_display_with(lexicon, english)
+    }
+
     /// 待定按鍵的顯示：能組成注音時顯示注音，英文或打不成注音時照字面。
     ///
     /// 對照 `mixedText`：只有數字與標點、英數反序、或是英文詞／英文詞前綴
     /// 的按鍵照字面，其餘能組音時顯示注音。英文前綴若同時是一聲讀音
     ///（`up` 是 ㄧㄣ），仍顯示注音。
     fn pending_display(&self, lexicon: &dyn Lexicon) -> String {
+        self.pending_display_with(lexicon, default_english())
+    }
+
+    fn pending_display_with(&self, lexicon: &dyn Lexicon, english: &English) -> String {
         let raw = &self.pending;
         if raw.is_empty() {
             return String::new();
@@ -409,7 +419,7 @@ impl AsciiInput {
         }
         let composer = compose_keys(raw);
         let english_prior =
-            raw.chars().count() >= 2 && !default_english().dictionary().prefix(raw, 1).is_empty();
+            raw.chars().count() >= 2 && !english.dictionary().prefix(raw, 1).is_empty();
         if composer.is_some()
             && english_prior
             && mixed_reading(raw, TONE1, &self.pieces, lexicon).is_none()
@@ -730,11 +740,19 @@ mod tests {
         input
     }
 
+    /// 測試用英文查詢層：原型詞加上指定詞，不讀系統上的英文資料包。
+    fn test_english(extra: &[&str]) -> English {
+        let mut words = prototype().words().to_vec();
+        words.extend(extra.iter().map(|word| crate::mixed::Word::new(*word, 1.0)));
+        English::new(Some(crate::mixed::Dictionary::new(words)))
+    }
+
     /// 對照 `TestMixedTextKeepsLiteralAlnum`：只有數字與標點、英數反序、
     /// 英文詞前綴照字面；一般按鍵顯示注音。
     #[test]
     fn test_mixed_text_display_rules() {
         let lex = InMemoryLexicon::new();
+        let english = test_english(&["hi"]);
         for (keys, want) in [
             ("123", "123"),
             ("2.", "2."),
@@ -745,7 +763,7 @@ mod tests {
             ("hi", "hi"),
         ] {
             assert_eq!(
-                typed(keys).display_pending(&lex),
+                typed(keys).display_pending_with(&lex, &english),
                 want,
                 "display_pending({keys:?})"
             );
