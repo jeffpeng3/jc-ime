@@ -36,6 +36,7 @@
 | `docs-milestone` | `5f87d03` | `52ac22e` | 通過 | 2026-11-19 23:29 |
 | `ci-clippy` | `34055f4` | `34ecac4` | 通過 | 2026-11-19 23:30 |
 | `zh-symbols` | `f6db514` | `b6de2a9` | 通過 | 2026-11-19 23:30 |
+| `english-pack` | `fd5d8cf` | `15055d2` | 通過（解衝突） | 2026-11-19 23:40 |
 
 ## 衝突與修正
 
@@ -183,3 +184,11 @@
   `cargo check --workspace --all-targets` 通過，0 warning。
 - `zh-symbols`（合併 `b6de2a9`）：`jc-core/src/session.rs` 自動合併，無衝突。新增 `symbols.rs`、`emoji.rs`、`punct.rs`，
   `session.rs` 接上符號、表情、全形數字與補標點，`lib.rs` 加模組宣告。`cargo check --workspace --all-targets` 通過，0 warning。
+
+- `english-pack`（合併 `15055d2`）：新增 crate `crates/jc-englishpack`、`scripts/build_english_pack.sh`，workspace `Cargo.toml` 加 member。
+  `crates/jc-core/src/mixed.rs` 的 `suggestion()` 有衝突：main 用 `prototype().words()` 加 `one_edit_apart` 掃原型詞表，
+  branch 改用真詞表 `dict.corrections(raw, 1)`。採 branch 版讓載入真實詞表的意圖成真，`one_edit_apart`
+  隨 branch 一起移除，沒有留下未使用的函式。沒有改其他實作邏輯。
+
+  資料：`words.bin` 已建置在 `/mnt/work/jc/jc-ime-data/english/`（82,015 詞、1,522,028 bytes，另有 `manifest.json`、`NOTICE.txt`）。
+  branch 回報的 `strace` 顯示 `manifest.json` 與 `words.bin` 都被開啟，`query` 來源是 `english/words.bin`，可證實不是 `prototype()`。
