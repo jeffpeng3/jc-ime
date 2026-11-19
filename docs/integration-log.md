@@ -11,6 +11,7 @@
 | `w1-proto-engine` | `569b523` | `f85d20b` | 通過 | 2026-11-19 20:28 |
 | `w1-data-ja` | `39daa6d` | `3da7a73` | 通過（修正後） | 2026-11-19 20:31 |
 | `w1-eval` | `776ac8c` | `dd00506` | 通過 | 2026-11-19 20:34 |
+| `z1-zh-front` | `3068450` | `9780d51` | 通過 | 2026-11-19 20:36 |
 
 ## 衝突與修正
 
@@ -26,3 +27,8 @@
   - 已對 `jc-data` 跑 `cargo fmt`。
 
 - `w1-eval`（合併 `dd00506`）：無衝突，`Cargo.lock` 由 git 自動合併；沒有編譯錯誤要修，未改任何程式碼。
+
+- `z1-zh-front`（合併 `9780d51`）：
+  - 衝突：只有 `Cargo.lock`，以 main 版為底讓 cargo 重新解析。
+  - 契約變更：`crates/jc-core/src/segment.rs` 的 `Script` 新增 `Han`、`Mixed` 兩個變體，並在 `zh` 模組加入對應分類。其他 crate 沒有 exhaustive match 因此不需同步改動。
+  - 沒有編譯錯誤要修，未改任何實作（`jc-core` 的改動全部來自 branch）。
