@@ -12,6 +12,7 @@
 | `w1-data-ja` | `39daa6d` | `3da7a73` | 通過（修正後） | 2026-11-19 20:31 |
 | `w1-eval` | `776ac8c` | `dd00506` | 通過 | 2026-11-19 20:34 |
 | `z1-zh-front` | `3068450` | `9780d51` | 通過 | 2026-11-19 20:36 |
+| `z2-zh-mid` | `dcb1114` | `26be893` | 通過 | 2026-11-19 20:41 |
 
 ## 衝突與修正
 
@@ -32,3 +33,7 @@
   - 衝突：只有 `Cargo.lock`，以 main 版為底讓 cargo 重新解析。
   - 契約變更：`crates/jc-core/src/segment.rs` 的 `Script` 新增 `Han`、`Mixed` 兩個變體，並在 `zh` 模組加入對應分類。其他 crate 沒有 exhaustive match 因此不需同步改動。
   - 沒有編譯錯誤要修，未改任何實作（`jc-core` 的改動全部來自 branch）。
+
+- `z2-zh-mid`（合併 `26be893`）：無衝突（base `aa5e32f`，與 z1 的 `zh/`、`segment.rs`、`reading.rs` 不重疊）。
+  改動集中在 `crates/jc-core/src/score.rs` 與 `crates/jc-core/src/lattice/`（`build`、`candidate`、`lexicon`、`viterbi`、`mod`）。
+  沒有編譯錯誤要修，`Cargo.lock` 無變動，未改任何實作。
