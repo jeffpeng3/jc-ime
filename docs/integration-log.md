@@ -97,6 +97,7 @@
 | `session-g2-segments` | `57e3a5d` | `1fd343d` | 通過（fmt／clippy／test／兩個 eval） | 2026-11-20 06:16 |
 | `session-g1-input` | `45a73fa` | `ded267a` | test 2 個失敗（branch 自帶）；fmt／clippy／兩個 eval 通過 | 2026-11-20 06:26 |
 | `proto-extend` | `43c1741` | `a60766b` | test 剩同 2 個；fmt／clippy／兩個 eval 通過 | 2026-11-20 06:33 |
+| `session-g1-input`（修測試） | `4a493c3` | `f442cd4` | 通過（fmt／clippy／全量 test／兩個 eval） | 2026-11-20 06:37 |
 
 ## 衝突與修正
 
@@ -901,3 +902,7 @@
     只有 `cursor_rune` 真的填了組字游標的 rune 位置。
   - `KeyCode` 新增 `Down`／`Up`／`Home`／`End`／`PageUp`／`PageDown`／`ShiftTab`；session 目前以 `_ => {}` 忽略，
     行為不變，等後續候選選取任務接上。
+
+- `session-g1-input` 第二次合併（`f442cd4`，含 `4a493c3`）：無衝突，`input_style.rs` 修兩個測試（同音詞成本、全形英文改成累加預覽）。
+  fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（44 targets、1017 passed、0 failed）。
+  實測：`eval zh-golden` **45/45**；`eval ja modern-500` **86.0%**、p50 3.107 ms。全量測試回到全綠。
