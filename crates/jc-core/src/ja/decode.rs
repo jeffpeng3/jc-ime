@@ -2216,6 +2216,20 @@ mod tests {
     }
 
     #[test]
+    fn test_real_mozc_pack_watashiwa_cost_breakdown() {
+        // 這一題的成本由 Mozc 的 context 連接矩陣決定：私(1902) 接 羽(1949)
+        // 的連接成本 966，接 わ(431) 是 5556。詞成本差距 4346 抵不過連接成本
+        // 差距 4590，所以 私羽 勝出 244。
+        let path = jc_testdata::require_data!("packs/ja-lexicon-mozc-v2.pack");
+        let dec = JaDecoder::open_with_context(&path).unwrap();
+        let results = dec.results(&units("わたしわ"), &JaContext::default(), 2);
+        assert_eq!(results[0].surface(), "私羽");
+        assert_eq!(results[0].conversion().cost, 9_068);
+        assert_eq!(results[1].surface(), "私わ");
+        assert_eq!(results[1].conversion().cost, 9_312);
+    }
+
+    #[test]
     fn test_connection_cost_changes_best_path() {
         let source = Arc::new(TestSource::plain(vec![
             entry("雨", "あめ", 1_000, "noun"),
