@@ -321,6 +321,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "jc-settings"
+version = "0.1.0"
+dependencies = [
+ "jc-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "jc-testdata"
 version = "0.1.0"
 
