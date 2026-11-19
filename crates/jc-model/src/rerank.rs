@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use ort::session::Session;
 
+use crate::candle::{Backend, CandleReranker};
 use crate::error::{ModelError, Result};
-use crate::layout::{pack_batch, validate_layout};
+use crate::layout::{pack_batch, validate_layout, PackedBatch};
 use crate::manifest::ModelSpec;
 use crate::runtime::{build_session, run_timed};
 use crate::tokenizer::Tokenizer;
@@ -26,9 +27,17 @@ pub const MAX_THREADS: usize = 8;
 
 /// 日文重排模型。
 pub struct Reranker {
-    session: Mutex<Session>,
+    engine: Engine,
     tokenizer: Tokenizer,
     spec: ModelSpec,
+}
+
+/// 實際執行 forward 的後端。
+enum Engine {
+    /// ONNX Runtime session；`Session::run` 需要 `&mut`。
+    Ort(Mutex<Session>),
+    /// candle；forward 沒有內部可變狀態，鎖只為了與 ORT 介面一致。
+    Candle(Mutex<CandleReranker>),
 }
 
 impl Reranker {
@@ -39,22 +48,59 @@ impl Reranker {
 
     /// 以指定佈局與 ORT 動態庫路徑載入。
     ///
+    /// 使用 [`crate::candle::default_backend`] 選定的後端；預設是 ORT。
     /// `ort_lib` 為 `None` 時使用 `ORT_DYLIB_PATH`。
     pub fn load_with_spec(
         dir: impl AsRef<Path>,
         spec: &ModelSpec,
         ort_lib: Option<&Path>,
     ) -> Result<Self> {
+        Self::load_with_backend(dir, spec, ort_lib, crate::candle::default_backend())
+    }
+
+    /// 以指定佈局、後端與 ORT 動態庫路徑載入。
+    ///
+    /// candle 後端會依 [`crate::candle::weights_path`] 找 safetensors，不會
+    /// 初始化 ONNX Runtime。
+    pub fn load_with_backend(
+        dir: impl AsRef<Path>,
+        spec: &ModelSpec,
+        ort_lib: Option<&Path>,
+        backend: Backend,
+    ) -> Result<Self> {
         validate(spec)?;
-        crate::runtime::init_runtime(ort_lib)?;
         let dir = dir.as_ref();
         let tokenizer = Tokenizer::load(dir.join(spec.vocab_file()))?;
-        let session = build_session(&dir.join(spec.model_file()), spec.threads())?;
+        let engine = match backend {
+            Backend::Ort => {
+                crate::runtime::init_runtime(ort_lib)?;
+                let session = build_session(&dir.join(spec.model_file()), spec.threads())?;
+                Engine::Ort(Mutex::new(session))
+            }
+            Backend::Candle => {
+                let weights = crate::candle::weights_path(dir, spec).ok_or_else(|| {
+                    ModelError::Candle(format!(
+                        "找不到 candle 權重，預期 {} 或 ${} 指定的檔案",
+                        dir.join(crate::candle::DEFAULT_WEIGHTS_FILE).display(),
+                        crate::candle::WEIGHTS_ENV
+                    ))
+                })?;
+                Engine::Candle(Mutex::new(CandleReranker::load(&weights, spec)?))
+            }
+        };
         Ok(Self {
-            session: Mutex::new(session),
+            engine,
             tokenizer,
             spec: spec.clone(),
         })
+    }
+
+    /// 實際使用的後端。
+    pub fn backend(&self) -> Backend {
+        match self.engine {
+            Engine::Ort(_) => Backend::Ort,
+            Engine::Candle(_) => Backend::Candle,
+        }
     }
 
     /// 模型角色。
@@ -109,19 +155,7 @@ impl Reranker {
         let right = (!right.is_empty()).then_some(right);
         let batch = pack_batch(&self.tokenizer, &self.spec, left, right, candidates)
             .map_err(ModelError::Inference)?;
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| ModelError::Inference("session 鎖已損壞".into()))?;
-        let data = run_timed(
-            &mut session,
-            batch.ids,
-            batch.mask,
-            batch.rows,
-            batch.seq,
-            self.spec.timeout(),
-            "scores",
-        )?;
+        let data = self.score_packed(&batch)?;
         if data.len() != candidates.len() {
             return Err(ModelError::Inference(format!(
                 "scores 長度為 {}，候選字有 {}",
@@ -130,6 +164,47 @@ impl Reranker {
             )));
         }
         Ok(data)
+    }
+
+    /// 為已打包的 batch 打分，保留錯誤原因。
+    ///
+    /// 兩個後端共用同一份 token id 與 attention mask，這是 parity 比對的
+    /// 入口。ORT 會在 `spec.timeout()` 後中止；candle 的 forward 無法中途
+    /// 停止，只回報結果，群組之間的預算由呼叫端控制。
+    pub fn score_packed(&self, batch: &PackedBatch) -> Result<Vec<f32>> {
+        self.score_packed_with(batch, self.spec.timeout())
+    }
+
+    /// 與 [`Reranker::score_packed`] 相同，但 ORT 的預算由呼叫端指定。
+    ///
+    /// 只給對照與量測用：manifest 的 100 ms 上限是產品契約，離線比對 fp32
+    /// 參考模型時需要更長的預算。candle 不受 `timeout` 影響。
+    pub fn score_packed_with(&self, batch: &PackedBatch, timeout: Duration) -> Result<Vec<f32>> {
+        if batch.rows == 0 {
+            return Ok(Vec::new());
+        }
+        match &self.engine {
+            Engine::Ort(session) => {
+                let mut session = session
+                    .lock()
+                    .map_err(|_| ModelError::Inference("session 鎖已損壞".into()))?;
+                run_timed(
+                    &mut session,
+                    batch.ids.clone(),
+                    batch.mask.clone(),
+                    batch.rows,
+                    batch.seq,
+                    timeout,
+                    "scores",
+                )
+            }
+            Engine::Candle(model) => {
+                let model = model
+                    .lock()
+                    .map_err(|_| ModelError::Candle("模型鎖已損壞".into()))?;
+                model.score_packed(batch)
+            }
+        }
     }
 }
 

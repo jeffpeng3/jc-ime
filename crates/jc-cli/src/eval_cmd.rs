@@ -243,6 +243,8 @@ pub struct JaOptions {
     pub pack: Option<PathBuf>,
     /// 是否接上神經重排。
     pub rerank: bool,
+    /// 重排的推論後端。
+    pub backend: jc_model::Backend,
     /// 左文來源。
     pub left: LeftMode,
     /// 輸出聚合報告 JSON。
@@ -262,6 +264,7 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
         corpus,
         pack,
         rerank,
+        backend,
         left,
         json,
         items,
@@ -271,6 +274,8 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
     let root = data::data_root(&dir);
     let decoder = data::load_ja_decoder_with_pack(&root, pack.as_deref())?;
     let reranker = if rerank {
+        // 後端是行程層級設定，必須在載入模型前指定。
+        jc_model::set_default_backend(backend);
         match data::load_ja_reranker(&root) {
             Ok(reranker) => Some(reranker),
             Err(err) => {
@@ -314,8 +319,9 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
     if let Some(reranker) = &reranker {
         let stats = reranker.stats();
         let line = format!(
-            "rerank：calls {}，groups {}，scored {}，changed {}，timeout {}，error {}，\
+            "rerank [{}]：calls {}，groups {}，scored {}，changed {}，timeout {}，error {}，\
              inference p50 {:.2} ms／p95 {:.2} ms\n",
+            backend.as_str(),
             stats.calls,
             stats.groups,
             stats.scored,

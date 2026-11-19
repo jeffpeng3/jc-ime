@@ -1,8 +1,12 @@
-//! ONNX Runtime 接線（`ort` crate）。模型維持 ONNX，不進 git。
+//! 模型推論接線：日文 reranker 同時支援 ONNX Runtime（`ort`）與 candle。
 //!
 //! `ort` 是一般依賴，使用 `load-dynamic`：建置時不下載、不連結 ONNX
 //! Runtime。執行期由 [`ModelRuntime::probe`] 偵測；沒有動態庫時模型集合
 //! 全部 [`Availability::Unavailable`]，引擎退回統計路徑，不 panic。
+//!
+//! candle 後端讀 checkpoint 轉出的 safetensors，不需要 ONNX Runtime。兩個
+//! 後端用 [`Backend`] 切換，預設仍是 ORT；`--backend candle` 在載入模型前
+//! 呼叫 [`set_default_backend`]。
 //!
 //! 提供：
 //!
@@ -15,6 +19,7 @@
 //! SentencePiece 的 `*.model`（走 unigram Viterbi，見 [`spm`]），也可以是
 //! 只有詞表的 `vocab.json`（`0c.sentencepiece.vocab/1`，退回最長前綴匹配）。
 
+pub mod candle;
 pub mod error;
 pub mod layout;
 pub mod manifest;
@@ -28,6 +33,7 @@ pub mod runtime;
 pub mod spm;
 pub mod tokenizer;
 
+pub use candle::{default_backend, set_default_backend, Backend, CandleReranker};
 pub use error::{ModelError, Result};
 pub use manifest::{
     Availability, ModelSet, ModelSpec, DEFAULT_BOS_ID, DEFAULT_CANDIDATE_SLOT,
