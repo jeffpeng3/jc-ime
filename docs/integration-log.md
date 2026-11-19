@@ -44,6 +44,7 @@
 | `zh-bigram` | `61b1ed5` | `b2d244f` | check 通過；clippy 退步 | 2026-11-20 00:20 |
 | `zh-bigram`（clippy 修正） | `3ecd2a7` | `807c41d` | 通過（fmt＋clippy） | 2026-11-20 00:23 |
 | `model-wire-zh` | `39d9bda` | `67d16e8` | 通過（fmt＋clippy） | 2026-11-20 00:39 |
+| `model-wire-ja` | `f8d9d48` | `b147c61` | 通過（fmt＋clippy） | 2026-11-20 00:40 |
 
 ## 衝突與修正
 
@@ -255,3 +256,25 @@
   量測（`docs/port/model-wire-zh.md`）：`eval zh-golden` 開與關都是 **41/45**；開啟時推論 100 次、
   p50 **11.87 ms**、p95 19.42 ms。前處理與前身 Python 參考實作逐位一致（誤差 0：vocab 映射、序列長度、
   `[UNK]`、遮罩、`proj_pos`、`target_node`／`target_ids`）。結論是此題庫上無改善，`--select-model` 預設 off。
+
+- `model-wire-ja`（合併 `b147c61`，含 `f8d9d48` 與 Send＋Sync 修正）：`jc-cli/Cargo.toml`、`jc-core/Cargo.toml`、
+  `jc-cli/src/cli.rs` 有衝突，全部照兩邊意圖都保留解：
+  - `jc-core` 的 `onnx` feature 取聯集 `["dep:jc-model", "dep:ort", "jc-model/onnx"]`，`ort` optional 依賴保留。
+  - `jc-cli` 的 feature 註解合併成一句，涵蓋注音選字模型與日文 reranker。
+  - `cli.rs` 同時保留 `--select-model on|off` 與 `--rerank on|off` 的解析、`EvalJa.rerank`、usage 兩行。
+  `JaDecoder` 的 hook trait 都要求 `Send + Sync`，上一輪的 `arc_with_non_send_sync` 已消失。
+
+  驗證：`cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` **exit 0**、
+  `cargo check --workspace --all-targets` 通過；依指示跳過 test（jc-cli 的 2 個 `eval_ja_parity` 等 `fix-tests`）。
+
+  量測（`eval ja --corpus modern-500`）：
+
+  | 設定 | n | top-1 | top-5 | boundary exact | p50 | p95 |
+  |---|---:|---:|---:|---:|---:|---:|
+  | `--rerank off` | 500 | 86.0% | 98.0% | 88.2% | 3.26 ms | 6.75 ms |
+  | `--rerank on` | 500 | 85.6% | 98.0% | 87.8% | 77.87 ms | 88.10 ms |
+
+  rerank 統計：calls 500、scored 500、changed 2、timeout 0、error 0；推論 p50 74.73 ms、p95 77.47 ms。
+  兩個疑點：左文全空（題庫一次轉換整句，`JaContext::left` 沒有前文，模型只看到候選）；
+  candidate 位置 62 與訓練 checkpoint 的 122 不一致（匯出端限制，不在本 task owned paths）。
+  因此 `--rerank` 保持 opt-in、預設 off。
