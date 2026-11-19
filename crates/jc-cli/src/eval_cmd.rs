@@ -15,9 +15,9 @@ use jc_core::session::Session;
 use jc_core::zh::keyboard::Keyboard;
 use jc_core::zh::syllable::class_of;
 use jc_eval::{
-    evaluate, load_fuzzy_input, load_golden_zh, load_ja_corpus_set, load_rules, percentile, run_ja,
-    CaseResult, CorpusMetrics, CorpusRun, EngineInfo, EvalCase, GoldenAction, Report, Run,
-    RunOptions,
+    evaluate, load_fuzzy_input, load_golden_zh, load_ja_corpus, load_ja_corpus_set, load_rules,
+    percentile, run_ja, CaseResult, CorpusMetrics, CorpusRun, EngineInfo, EvalCase, GoldenAction,
+    Report, Run, RunOptions,
 };
 
 use crate::cli::CliError;
@@ -138,9 +138,14 @@ pub fn zh_golden(
 }
 
 /// 跑單一日文題庫。
+///
+/// `corpus` 可以是 `rules.json` 裡的題庫名稱，也可以是 `.json` 路徑；後者
+/// 讓 CLI 與 `ja-eval` 能用同一份小型題庫對照。`pack` 未指定時走
+/// [`data::resolve_ja_pack`] 的預設順序。
 pub fn ja(
     testdata: Option<PathBuf>,
     corpus: &str,
+    pack: Option<PathBuf>,
     json: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
@@ -148,16 +153,22 @@ pub fn ja(
     let rules_path = dir.join("ja/rules.json");
     let rules = load_rules(&rules_path)
         .map_err(|err| CliError::eval(format!("讀取 {} 失敗：{err}", rules_path.display())))?;
-    let entries = load_ja_corpus_set(&rules, &rules_path)
-        .map_err(|err| CliError::eval(format!("讀取日文題庫失敗：{err}")))?;
-    let selected: Vec<_> = entries
-        .into_iter()
-        .filter(|entry| entry.corpus.name == corpus)
-        .collect();
-    if selected.is_empty() {
-        return Err(CliError::eval(format!("rules.json 沒有題庫 {corpus:?}")));
-    }
-    let decoder = data::load_ja_decoder(&data::data_root(&dir))?;
+    let selected = if Path::new(corpus).is_file() {
+        vec![load_ja_corpus(Path::new(corpus))
+            .map_err(|err| CliError::eval(format!("讀取 {corpus} 失敗：{err}")))?]
+    } else {
+        let entries = load_ja_corpus_set(&rules, &rules_path)
+            .map_err(|err| CliError::eval(format!("讀取日文題庫失敗：{err}")))?;
+        let selected: Vec<_> = entries
+            .into_iter()
+            .filter(|entry| entry.corpus.name == corpus)
+            .collect();
+        if selected.is_empty() {
+            return Err(CliError::eval(format!("rules.json 沒有題庫 {corpus:?}")));
+        }
+        selected
+    };
+    let decoder = data::load_ja_decoder_with_pack(&data::data_root(&dir), pack.as_deref())?;
     let converter = JaConverter::new(Arc::new(decoder));
     let options = RunOptions::from_rules(&rules);
     let run = run_ja(&converter, &rules, &selected, engine_info(&dir), &options);
