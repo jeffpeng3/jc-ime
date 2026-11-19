@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 mod core;
+pub mod symbols;
 
 use crate::candidate::{Candidate, CandidateSource};
 use crate::decode::{Decoder, Hypothesis, Locks};
@@ -34,7 +35,6 @@ use crate::punct::{self, Edit};
 use crate::reading::Unit;
 use crate::score::ScoreContext;
 use crate::segment::{Script, Segment};
-use crate::symbols;
 use crate::zh::han::is_han;
 use crate::zh::input::ZhInput;
 use crate::zh::syllable::Syllable;
