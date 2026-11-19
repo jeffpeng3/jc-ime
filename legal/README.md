@@ -92,6 +92,26 @@ repo 內的檔案相對於本 repo 根目錄。同一個資料包目錄的 `mani
 `reranker-extra` 與 `punctuation-public-core` 隨日文模型包散布；`ja-tokenizer` 是兩者共用的
 分詞器，兩份 notice 都要附。模型清單與逐檔雜湊另見 [`docs/models.md`](../docs/models.md)。
 
+### 外部日文模型（僅本機評估，暫不散布）
+
+`models/external/` 是 2026-11-20 日文調查後抓下來做 spike 的第三方模型，全部只在本機評估，
+**不隨產品散布，不進 git、release 或安裝包**。每個目錄的 `manifest.json` 有 repo、revision、
+逐檔大小與 SHA-256；量測結果與 prompt 格式見
+[`docs/port/ja-models-fetch.md`](../docs/port/ja-models-fetch.md)。
+
+| 目錄 | 主檔 | 大小 | SHA-256 | 授權條目 | 散布 |
+|---|---|---:|---|---|---|
+| `jinen-v2-xsmall/` | `jinen-v2-xsmall-Q5_K_M.gguf` | 28,261,056 | `24ff3af5db712fbbb4aa9254ee28ec4d731207134471ab68b06c1828726284c2` | L-20 | 否 |
+| `jinen-v2-small/` | `jinen-v2-small-Q5_K_M.gguf` | 81,117,824 | `80482707513d6b67dafc31774371cf95d765542abf8d74eebf5f32f92d788bd3` | L-21 | 否 |
+| `zenz-v3.2-small/` | `ggml-model-Q5_K_M.gguf` | 73,871,936 | `29c223d4c23327b80fd13ebb5ab2555057a46317997d5da391584ffbef0db673` | L-22 | 否 |
+| `zenz-v3.2-xsmall/` | `ggml-model-Q5_K_M.gguf` | 20,970,304 | `00c64b3d318045a708d0cad5434faccab10f5481a49e6362864551fd0995fa58` | L-23 | 否 |
+| `duet-ja-kana-kanji-9m/` | `app/JapaneseConverter.pte`＋embedding／vocab／merges | 12,281,664（整組 14,769,047） | `554135eba0f61466ede7c2c1c0934c88294ab4c5bdfa92761b55aba7aaed102d` | L-24 | 否 |
+| `shizuku-judge/` | `model_q8_0.gguf`＋`tokenizer.json` | 41,405,248（整組 44,633,723） | `86727ed56aa0b669552b4c24cdf25c2f98300ed019938b75a6ec986eb4fc0856` | L-25 | 否 |
+
+L-20～L-24 都是 CC-BY-SA 4.0：**量化、轉檔、微調會產生 Adapted Material，衍生或散布需同授權**，
+也不能改標成 AGPL-3.0-only。L-25 的權重來源是 MIT，產生程式是 GPL-3.0-or-later，這次只取產物。
+
+
 ### 內部評測題庫（不散布）
 
 `0c-testdata/golden`、`eval`、`fuzzy`、`ja` 只用於評測，不隨產品散布。來源與授權見
@@ -123,6 +143,13 @@ Public Domain，`ja/ajimee_200.json` 是 CC-BY-SA-3.0。若要隨產品散布題
 | L-17 | 政府資料開放資料集（內政部、教育部、健保署、檔案管理局） | 115 年版／2026-10-17 下載 | 政府資料開放授權條款第 1 版 | 地名、學校、醫院、機關名稱 | 是 | [`licenses/ZH-DATA-NOTICE.txt`](licenses/ZH-DATA-NOTICE.txt) |
 | L-18 | `0c-testdata` 題庫 | `modern_500`／`hard_cases`／`anthy_corpus1`／`ajimee_200`／golden／eval／fuzzy | CC0-1.0、Public Domain、CC-BY-SA-3.0；0c 自製題庫見各 README | 評測 | 否（僅內部） | `/mnt/work/jc/jc-ime-data/0c-testdata/`；[`licenses/CC-BY-SA-3.0.txt`](licenses/CC-BY-SA-3.0.txt) |
 | L-19 | 0C curated 詞條（public-core） | public-core manifest 的 `lex-curated-0c`；SHA-256 `a2a940641b0cd514f4aee87396c8736ef6488c9b25bf2ff93cadb8461a79de3e` | CC-BY-4.0 | `ja-lexicon-public-core.pack` 的 6 筆詞條 | 是 | [`licenses/CC-BY-4.0.txt`](licenses/CC-BY-4.0.txt) |
+| L-20 | `togatogah/jinen-v2-xsmall.gguf` | rev `3910fd01bf4ba86eca89617f18db9b0c1c5b2283` | CC-BY-SA-4.0 | 日文かな漢字変換 spike | **否，僅本機評估** | `models/external/jinen-v2-xsmall/`；[`licenses/CC-BY-SA-4.0.txt`](licenses/CC-BY-SA-4.0.txt) |
+| L-21 | `togatogah/jinen-v2-small.gguf` | rev `3461d0573ab447985badde3174165b967d06076c` | CC-BY-SA-4.0 | 日文かな漢字変換 spike | **否，僅本機評估** | `models/external/jinen-v2-small/`；[`licenses/CC-BY-SA-4.0.txt`](licenses/CC-BY-SA-4.0.txt) |
+| L-22 | `Miwa-Keita/zenz-v3.2-small-gguf` | rev `ef3e66e3665fe6a19598e6578e9b88a994b647fd` | CC-BY-SA-4.0 | 日文かな漢字変換 spike | **否，僅本機評估** | `models/external/zenz-v3.2-small/`；[`licenses/CC-BY-SA-4.0.txt`](licenses/CC-BY-SA-4.0.txt) |
+| L-23 | `Miwa-Keita/zenz-v3.2-xsmall-gguf` | rev `42cab8392a3727d1cf80932cf2275b7d523fbb9f` | CC-BY-SA-4.0 | 日文かな漢字変換 spike | **否，僅本機評估** | `models/external/zenz-v3.2-xsmall/`；[`licenses/CC-BY-SA-4.0.txt`](licenses/CC-BY-SA-4.0.txt) |
+| L-24 | `jcbutter/duet-ja-kana-kanji-9m` | rev `18585dad1e2fc6cdc28e590b013a3e016df05b95` | CC-BY-SA-4.0 | edge かな漢字変換 spike（ExecuTorch） | **否，僅本機評估** | `models/external/duet-ja-kana-kanji-9m/`；[`licenses/CC-BY-SA-4.0.txt`](licenses/CC-BY-SA-4.0.txt) |
+| L-25 | `rinna/japanese-gpt2-xsmall`（Shizuku judge 權重） | rev `8e91527b3276e0565154935e84a08bf0137ed99f`；本地 q8_0 轉檔 | MIT；產生程式 `n-seiji/shizuku-ime` 為 GPL-3.0-or-later | reranker fusion spike | **否，僅本機評估** | `models/external/shizuku-judge/`；[`licenses/MIT.txt`](licenses/MIT.txt) |
+
 
 ## 維護規則
 
