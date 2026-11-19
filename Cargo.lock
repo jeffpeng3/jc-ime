@@ -204,6 +204,7 @@ version = "0.1.0"
 dependencies = [
  "jc-core",
  "jc-data",
+ "jc-engine",
  "jc-eval",
  "jc-model",
  "jc-testdata",
@@ -250,7 +251,10 @@ dependencies = [
  "anyhow",
  "env_logger",
  "jc-core",
+ "jc-data",
+ "jc-model",
  "jc-proto",
+ "jc-testdata",
  "log",
  "serde_json",
  "thiserror",

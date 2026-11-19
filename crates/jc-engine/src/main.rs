@@ -4,7 +4,7 @@
 //! 用法：
 //!
 //! ```text
-//! jc-engine [--socket <path>] [--max-frame <bytes>]
+//! jc-engine --data <dir> [--mode <zh|ja|mixed|en>] [--socket <path>] [--max-frame <bytes>]
 //! ```
 //!
 //! stdio 模式在所有平台都能跑；`--socket` 目前只有 unix 實作，其他平台
@@ -16,11 +16,13 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
+use jc_core::Mode;
+use jc_engine::loader::load_engine_data;
 use jc_engine::{engine_label, serve, Engine};
 use jc_proto::{DEFAULT_MAX_FRAME, PROTOCOL_VERSION};
 
 /// 啟動方式。
-enum Mode {
+enum Transport {
     /// 標準輸入／輸出，開發期與整合測試用。
     Stdio,
     /// unix domain socket，一次服務一個連線。非 unix 平台尚未支援。
@@ -28,8 +30,10 @@ enum Mode {
 }
 
 struct Options {
-    mode: Mode,
+    mode: Transport,
     max_frame: usize,
+    data: Option<PathBuf>,
+    input: Mode,
 }
 
 /// 命令列解析結果。
@@ -72,9 +76,22 @@ fn main() {
 
 fn run(options: Options) -> anyhow::Result<()> {
     log::debug!("啟動 {}（協定 {}）", engine_label(), PROTOCOL_VERSION);
-    let mut engine = Engine::new();
+    let dir = resolve_data_dir(options.data)?;
+    log::debug!("資料根目錄：{}", dir.display());
+    let data =
+        load_engine_data(&dir).with_context(|| format!("載入資料失敗：{}", dir.display()))?;
+    log::info!(
+        "載入 {} 個注音詞條{}，日文解碼器就緒",
+        data.zh.lexicon.len(),
+        if data.zh.lm.as_ref().is_some_and(|lm| lm.bigrams() > 0) {
+            "（含 bigram）"
+        } else {
+            ""
+        }
+    );
+    let mut engine = Engine::with_data(&data, options.input);
     match options.mode {
-        Mode::Stdio => {
+        Transport::Stdio => {
             let stdin = io::stdin();
             let stdout = io::stdout();
             let mut input = BufReader::new(stdin.lock());
@@ -84,7 +101,7 @@ fn run(options: Options) -> anyhow::Result<()> {
             log::debug!("stdio 結束");
             Ok(())
         }
-        Mode::Socket(path) => serve_socket(&mut engine, &path, options.max_frame),
+        Transport::Socket(path) => serve_socket(&mut engine, &path, options.max_frame),
     }
 }
 
@@ -147,9 +164,11 @@ fn prepare_socket_path(path: &Path) -> anyhow::Result<()> {
 }
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
-    let mut mode = Mode::Stdio;
+    let mut mode = Transport::Stdio;
     let mut socket: Option<PathBuf> = None;
     let mut max_frame = DEFAULT_MAX_FRAME;
+    let mut data: Option<PathBuf> = None;
+    let mut input = Mode::Zh;
     let mut index = 0;
 
     while index < args.len() {
@@ -160,6 +179,14 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--socket" => {
                 let value = value_of(args, &mut index, "--socket")?;
                 socket = Some(PathBuf::from(value));
+            }
+            "--data" => {
+                let value = value_of(args, &mut index, "--data")?;
+                data = Some(PathBuf::from(value));
+            }
+            "--mode" => {
+                let value = value_of(args, &mut index, "--mode")?;
+                input = parse_mode(&value)?;
             }
             "--max-frame" => {
                 let value = value_of(args, &mut index, "--max-frame")?;
@@ -177,9 +204,38 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     }
 
     if let Some(path) = socket {
-        mode = Mode::Socket(path);
+        mode = Transport::Socket(path);
     }
-    Ok(Parsed::Run(Options { mode, max_frame }))
+    Ok(Parsed::Run(Options {
+        mode,
+        max_frame,
+        data,
+        input,
+    }))
+}
+
+/// 解析 `--mode`；只接受四種輸入模式。
+fn parse_mode(value: &str) -> Result<Mode, String> {
+    match value {
+        "zh" => Ok(Mode::Zh),
+        "ja" => Ok(Mode::Ja),
+        "mixed" => Ok(Mode::Mixed),
+        "en" => Ok(Mode::En),
+        other => Err(format!("--mode 只接受 zh、ja、mixed、en，收到 {other}")),
+    }
+}
+
+/// `--data` 未指定時退回 `JC_DATA`；兩者都沒有就拒絕啟動。
+fn resolve_data_dir(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    if let Some(dir) = explicit {
+        return Ok(dir);
+    }
+    if let Some(value) = std::env::var_os("JC_DATA") {
+        if !value.is_empty() {
+            return Ok(PathBuf::from(value));
+        }
+    }
+    bail!("沒有指定 --data，且 JC_DATA 未設定；請用 --data <dir> 指向資料根目錄")
 }
 
 fn value_of(args: &[String], index: &mut usize, flag: &str) -> Result<String, String> {
@@ -199,8 +255,10 @@ const SOCKET_HELP: &str = "  --socket <path>     named pipe 尚未實作，目�
 fn print_usage() {
     println!(
         "jc-engine {}（協定 {}）\n\n\
-         用法：\n  jc-engine [--socket <path>] [--max-frame <bytes>]\n\n\
+         用法：\n  jc-engine --data <dir> [--mode <zh|ja|mixed|en>] [--socket <path>] [--max-frame <bytes>]\n\n\
          選項：\n\
+         \x20 --data <dir>        資料根目錄；未指定時讀 JC_DATA\n\
+         \x20 --mode <mode>       輸入模式：zh（預設）、ja、mixed、en\n\
         {SOCKET_HELP}\
          \x20 --max-frame <bytes> 單一訊框上限，預設 {DEFAULT_MAX_FRAME}\n\
          \x20 -h, --help          顯示說明\n\
@@ -211,7 +269,9 @@ fn print_usage() {
 }
 
 fn print_usage_to_stderr() {
-    eprintln!("用法：jc-engine [--socket <path>] [--max-frame <bytes>]");
+    eprintln!(
+        "用法：jc-engine --data <dir> [--mode <zh|ja|mixed|en>] [--socket <path>] [--max-frame <bytes>]"
+    );
 }
 
 #[cfg(test)]
@@ -228,8 +288,36 @@ mod tests {
         let Ok(Parsed::Run(options)) = parse(&[]) else {
             panic!("預設應該直接執行");
         };
-        assert!(matches!(options.mode, Mode::Stdio));
+        assert!(matches!(options.mode, Transport::Stdio));
         assert_eq!(options.max_frame, 1 << 20);
+        assert!(options.data.is_none(), "資料目錄由 JC_DATA 或 --data 決定");
+        assert_eq!(options.input, Mode::Zh);
+    }
+
+    #[test]
+    fn data_and_input_mode_are_parsed() {
+        let Ok(Parsed::Run(options)) = parse(&["--data", "/data/root", "--mode", "ja"]) else {
+            panic!("應該解析成功");
+        };
+        assert_eq!(options.data, Some(PathBuf::from("/data/root")));
+        assert_eq!(options.input, Mode::Ja);
+    }
+
+    #[test]
+    fn bad_input_mode_fails() {
+        let Err(err) = parse(&["--mode", "kana"]) else {
+            panic!("不認得的模式應該失敗");
+        };
+        assert!(
+            err.contains("zh、ja、mixed、en"),
+            "錯誤應列出可用模式：{err}"
+        );
+    }
+
+    #[test]
+    fn explicit_data_dir_wins_over_environment() {
+        let dir = resolve_data_dir(Some(PathBuf::from("/explicit"))).unwrap();
+        assert_eq!(dir, PathBuf::from("/explicit"));
     }
 
     #[test]
@@ -240,8 +328,8 @@ mod tests {
         };
         assert_eq!(options.max_frame, 4096);
         match options.mode {
-            Mode::Socket(path) => assert_eq!(path, PathBuf::from("/tmp/x.sock")),
-            Mode::Stdio => panic!("應該是 socket 模式"),
+            Transport::Socket(path) => assert_eq!(path, PathBuf::from("/tmp/x.sock")),
+            Transport::Stdio => panic!("應該是 socket 模式"),
         }
     }
 

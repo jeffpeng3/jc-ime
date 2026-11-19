@@ -2,11 +2,15 @@
 //!
 //! 這一層只處理協定與行程行為；組字與轉換全部交給 `jc_core::Session`。
 //! 每次請求都回傳完整快照，wrapper 不需要自己保存狀態。
+//!
+//! 資料載入在 [`loader`]；`jc-cli` 共用同一份載入程式碼。
 
 use std::io::{Read, Write};
 
 use jc_core::session::{Session, SessionConfig};
-use jc_core::{KeyCode, Snapshot};
+use jc_core::{KeyCode, Mode, Snapshot};
+
+pub mod loader;
 use jc_proto::message::{read_message, ProtoError};
 use jc_proto::{write_message, ErrorCode, Request, Response, PROTOCOL_VERSION};
 
@@ -33,6 +37,11 @@ impl Engine {
     /// 建立一個尚未握手、沒有額外資料的引擎。
     pub fn new() -> Self {
         Self::with_session(Session::new(SessionConfig::default()))
+    }
+
+    /// 用載入好的資料建立引擎；`mode` 決定啟動時的輸入語言。
+    pub fn with_data(data: &loader::EngineData, mode: Mode) -> Self {
+        Self::with_session(Session::new(data.session_config(mode)))
     }
 
     /// 用指定的工作階段建立引擎。

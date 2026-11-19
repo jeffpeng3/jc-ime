@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 jc-core = { path = "../jc-core" }
+jc-data = { path = "../jc-data" }
+jc-model = { path = "../jc-model" }
 jc-proto = { path = "../jc-proto" }
 anyhow.workspace = true
 thiserror.workspace = true
@@ -15,3 +17,4 @@ env_logger.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+jc-testdata = { path = "../jc-testdata" }

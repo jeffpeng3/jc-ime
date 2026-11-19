@@ -1,19 +1,21 @@
 //! 評測與互動模式共用的資料載入。
 //!
+//! 實際載入程式碼在 [`jc_engine::loader`]，引擎行程用同一份，避免兩邊對
+//! 同一個資料包得到不同排序。這個模組只保留 CLI 專屬的路徑解析、個人化
+//! 資料與錯誤型別轉換。
+//!
 //! 注音用 `0c-testdata/golden/zh/data` 的固定 TSV（與前身同一份），日文用
 //! `packs/` 的詞典 pack 與 `ja-src/connection.tsv`。路徑都可以用環境變數
 //! 覆寫，找不到時回傳帶路徑的錯誤，不 panic。
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use jc_core::ja::decode::{JaDecoder, JaDictionary, JaWordMatch, JaWordSource};
-use jc_core::ja::lexicon::{JaEntry, JaLexicon, SingleColumnCost};
-use jc_core::lattice::{InMemoryLexicon, LexEntry};
-use jc_core::score::{BigramLm, ScoreContext, ZhLm};
+use jc_engine::loader;
+use jc_engine::loader::LoadError;
 
 use crate::cli::CliError;
+
+pub use jc_engine::loader::{TsvWordSource, ZhResources, DEFAULT_JA_PACK, FALLBACK_JA_PACK};
 
 /// 沒有指定 `--testdata` 時使用的 `0c-testdata` 目錄。
 pub const DEFAULT_TESTDATA: &str = "/mnt/work/jc/jc-ime-data/0c-testdata";
@@ -21,15 +23,9 @@ pub const DEFAULT_TESTDATA: &str = "/mnt/work/jc/jc-ime-data/0c-testdata";
 /// 個人化學習資料檔名。
 pub const PERSONAL_FILE: &str = "personal.json";
 
-/// 注音評測資源。
-#[derive(Debug, Clone)]
-pub struct ZhResources {
-    /// 固定詞典。
-    pub lexicon: InMemoryLexicon,
-    /// 成本設定（含 bigram 內插權重）。
-    pub ctx: ScoreContext,
-    /// bigram 語言模型；`None` 表示只有詞典的 unigram 成本。
-    pub lm: Option<Arc<ZhLm>>,
+/// 把共用載入層的錯誤轉成 CLI 錯誤。
+fn to_cli(err: LoadError) -> CliError {
+    CliError::data(err.to_string())
 }
 
 /// 解析 `0c-testdata` 目錄。
@@ -101,82 +97,18 @@ pub fn save_personal(dir: &Path, store: &jc_core::personal::PersonalStore) -> Re
 }
 
 /// 載入注音固定詞典與成本設定。
-///
-/// `lexicon.tsv` 有詞面、讀音、P(r|w)；`lm.tsv` 有 unigram 機率。兩者都轉成
-/// 以千分之一為單位的負對數成本，長詞與高機率詞優先。
 pub fn load_zh_resources(data_dir: &Path) -> Result<ZhResources, CliError> {
-    load_zh_tsv_resources(data_dir, None)
+    loader::load_zh_resources(data_dir).map_err(to_cli)
 }
 
 /// 載入 golden 的 TSV 詞典，另外接上 `lm.bin` 的 bigram。
-///
-/// 詞條的 unigram 部分改用 `lm.bin` 的數值，避免同一條路徑上混用兩份
-/// 語言模型；`lm.tsv` 只在沒有指定 `lm.bin` 時使用。
 pub fn load_zh_resources_with_lm(data_dir: &Path, lm_path: &Path) -> Result<ZhResources, CliError> {
-    let lm = ZhLm::open(lm_path)
-        .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", lm_path.display())))?;
-    load_zh_tsv_resources(data_dir, Some(lm))
-}
-
-fn load_zh_tsv_resources(data_dir: &Path, bigram: Option<ZhLm>) -> Result<ZhResources, CliError> {
-    let lexicon_path = data_dir.join("lexicon.tsv");
-    let lm_path = data_dir.join("lm.tsv");
-    let lm = load_lm(&lm_path)?;
-    let text = std::fs::read_to_string(&lexicon_path)
-        .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", lexicon_path.display())))?;
-    let mut lexicon = InMemoryLexicon::new();
-    for (line_no, raw) in text.lines().enumerate() {
-        let line = raw.trim_end_matches('\r');
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() < 3 {
-            return Err(CliError::data(format!(
-                "{}:{}：需要詞面、讀音、P(r|w) 三欄",
-                lexicon_path.display(),
-                line_no + 1
-            )));
-        }
-        let probability: f64 = fields[2].parse().map_err(|_| {
-            CliError::data(format!(
-                "{}:{}：機率 {:?} 不是數字",
-                lexicon_path.display(),
-                line_no + 1,
-                fields[2]
-            ))
-        })?;
-        let lm_probability = match &bigram {
-            Some(lm) => lm.uni(fields[0]),
-            None => lm.get(fields[0]).copied().unwrap_or(1.0e-6),
-        };
-        let cost = probability_cost(probability).saturating_add(probability_cost(lm_probability));
-        lexicon.push(LexEntry::new(fields[0], fields[1], cost, 0));
-    }
-    if lexicon.is_empty() {
-        return Err(CliError::data(format!(
-            "{} 沒有任何詞條",
-            lexicon_path.display()
-        )));
-    }
-    let ctx = ScoreContext {
-        unknown_cost: 30_000,
-        ..ScoreContext::default()
-    };
-    Ok(ZhResources {
-        lexicon,
-        ctx,
-        lm: bigram.map(Arc::new),
-    })
+    loader::load_zh_resources_with_lm(data_dir, lm_path).map_err(to_cli)
 }
 
 /// 載入注音二進位資料包（`lexicon.bin`、`lm.bin`、`manifest.json`）。
-///
-/// 詞條成本沿用 golden 的換算：P(r|w) 與 unigram 機率各自轉成千分之一的
-/// 負對數成本後相加。`lm.bin` 的 bigram 交給 [`jc_core::score::LmScorer`]；
-/// 沒有 bigram 的資料包完全退回 unigram 行為。
 pub fn load_zh_bin_resources(data_dir: &Path) -> Result<ZhResources, CliError> {
-    load_zh_bin_resources_with_lm(data_dir, None)
+    loader::load_zh_bin_resources(data_dir).map_err(to_cli)
 }
 
 /// 載入注音二進位資料包，`lm_path` 可覆寫資料包內的 `lm.bin`。
@@ -184,298 +116,42 @@ pub fn load_zh_bin_resources_with_lm(
     data_dir: &Path,
     lm_path: Option<&Path>,
 ) -> Result<ZhResources, CliError> {
-    let bundle = jc_data::zh::Bundle::open(data_dir)
-        .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", data_dir.display())))?;
-    let lm = match lm_path {
-        Some(path) => ZhLm::open(path)
-            .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", path.display())))?,
-        None => ZhLm::from_lm(bundle.lm),
-    };
-    let mut lexicon = InMemoryLexicon::new();
-    for view in bundle.lexicon.entries() {
-        let unigram = lm.uni(view.surface);
-        let cost = probability_cost(view.prw as f64).saturating_add(probability_cost(unigram));
-        lexicon.push(LexEntry::new(
-            view.surface,
-            bundle.lexicon.reading(view.index),
-            cost,
-            0,
-        ));
-    }
-    if lexicon.is_empty() {
-        return Err(CliError::data(format!(
-            "{} 沒有任何詞條",
-            data_dir.join("lexicon.bin").display()
-        )));
-    }
-    let ctx = ScoreContext {
-        unknown_cost: 30_000,
-        ..ScoreContext::default()
-    };
-    Ok(ZhResources {
-        lexicon,
-        ctx,
-        lm: Some(Arc::new(lm)),
-    })
-}
-
-fn load_lm(path: &Path) -> Result<HashMap<String, f64>, CliError> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", path.display())))?;
-    let mut lm = HashMap::new();
-    for raw in text.lines() {
-        let line = raw.trim_end_matches('\r');
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != 2 {
-            // 三欄是 bigram；目前成本模型只有 unigram。
-            continue;
-        }
-        if let Ok(probability) = fields[1].parse::<f64>() {
-            if probability > 0.0 {
-                lm.insert(fields[0].to_string(), probability);
-            }
-        }
-    }
-    Ok(lm)
-}
-
-/// 機率轉成整數成本；與 [`jc_core::score::probability_cost`] 相同。
-fn probability_cost(probability: f64) -> i32 {
-    jc_core::score::probability_cost(probability)
-}
-
-/// 預設的日文詞典 pack（含 Mozc context 連接矩陣的 v2）。
-pub const DEFAULT_JA_PACK: &str = "packs/ja-lexicon-mozc-v2.pack";
-
-/// 找不到 v2 時退回的 v1 pack（只有詞性連接成本）。
-pub const FALLBACK_JA_PACK: &str = "packs/ja-lexicon-public-core.pack";
-
-/// 記憶體日文詞典：由 curated `words.tsv` 建立。
-///
-/// `JaDecoder` 只要求 [`JaWordSource`]，不必一定要讀 pack；評測 baseline
-/// 也是用同一份 curated 詞庫產生。
-#[derive(Debug)]
-pub struct TsvWordSource {
-    entries: Vec<JaEntry>,
-    index: HashMap<String, Vec<u32>>,
-    longest: usize,
-}
-
-impl TsvWordSource {
-    /// 讀取 `詞面\t讀音\t成本\t詞性\t來源\t活用型` 格式。
-    pub fn load(path: &Path) -> Result<Self, CliError> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", path.display())))?;
-        let mut entries = Vec::new();
-        for (line_no, raw) in text.lines().enumerate() {
-            let line = raw.trim_end_matches('\r');
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let fields: Vec<&str> = line.split('\t').collect();
-            if fields.len() < 4 {
-                return Err(CliError::data(format!(
-                    "{}:{}：需要詞面、讀音、成本、詞性",
-                    path.display(),
-                    line_no + 1
-                )));
-            }
-            let cost: f64 = fields[2].parse().map_err(|_| {
-                CliError::data(format!(
-                    "{}:{}：成本 {:?} 不是數字",
-                    path.display(),
-                    line_no + 1,
-                    fields[2]
-                ))
-            })?;
-            entries.push(JaEntry {
-                surface: fields[0].into(),
-                reading: fields[1].into(),
-                pos: Arc::from(fields[3]),
-                conj_type: Arc::from(fields.get(5).copied().unwrap_or("-")),
-                conj_form: Arc::from("-"),
-                cost: (cost * 1000.0).round() as i32,
-                split: jc_core::ja::lexicon::Split::C,
-            });
-        }
-        if entries.is_empty() {
-            return Err(CliError::data(format!("{} 沒有任何詞條", path.display())));
-        }
-        let mut index: HashMap<String, Vec<u32>> = HashMap::new();
-        let mut longest = 0usize;
-        for (i, entry) in entries.iter().enumerate() {
-            index
-                .entry(entry.reading.to_string())
-                .or_default()
-                .push(i as u32);
-            longest = longest.max(entry.reading.chars().count());
-        }
-        Ok(Self {
-            entries,
-            index,
-            longest,
-        })
-    }
-}
-
-impl JaWordSource for TsvWordSource {
-    fn longest_reading_units(&self) -> usize {
-        self.longest
-    }
-
-    fn matches<'a>(&'a self, reading: &[char], start: usize, out: &mut dyn FnMut(JaWordMatch<'a>)) {
-        if start >= reading.len() {
-            return;
-        }
-        let mut key = String::new();
-        let last = (start + self.longest).min(reading.len());
-        for end in start + 1..=last {
-            key.push(reading[end - 1]);
-            if let Some(ids) = self.index.get(&key) {
-                for &id in ids {
-                    out(JaWordMatch {
-                        end,
-                        entry: &self.entries[id as usize],
-                        left_id: None,
-                        right_id: None,
-                    });
-                }
-            }
-        }
-    }
-
-    fn exact(&self, reading: &[char]) -> Vec<&JaEntry> {
-        let key: String = reading.iter().collect();
-        self.index
-            .get(&key)
-            .map(|ids| ids.iter().map(|&id| &self.entries[id as usize]).collect())
-            .unwrap_or_default()
-    }
-
-    fn prefixed(&self, reading: &[char]) -> Vec<&JaEntry> {
-        if reading.is_empty() {
-            return self.entries.iter().collect();
-        }
-        let prefix: String = reading.iter().collect();
-        self.index
-            .iter()
-            .filter(|(key, _)| key.starts_with(&prefix))
-            .flat_map(|(_, ids)| ids.iter().map(|&id| &self.entries[id as usize]))
-            .collect()
-    }
+    loader::load_zh_bin_resources_with_lm(data_dir, lm_path).map_err(to_cli)
 }
 
 /// 解析日文 pack 路徑。
-///
-/// 順序：`explicit`（`--pack`）、`JC_JA_PACK`、資料根目錄的
-/// [`DEFAULT_JA_PACK`]、[`FALLBACK_JA_PACK`]。都沒有時回傳錯誤；不寫死
-/// 絕對路徑，因此 `JC_TESTDATA` 指到其他資料根目錄時也找得到同一組 pack。
 pub fn resolve_ja_pack(root: &Path, explicit: Option<&Path>) -> Result<PathBuf, CliError> {
-    if let Some(path) = explicit {
-        return Ok(path.to_path_buf());
-    }
-    if let Some(value) = std::env::var_os("JC_JA_PACK") {
-        if !value.is_empty() {
-            return Ok(PathBuf::from(value));
-        }
-    }
-    for relative in [DEFAULT_JA_PACK, FALLBACK_JA_PACK] {
-        let candidate = root.join(relative);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-    Err(CliError::data(format!(
-        "找不到日文 pack：{} 或 {}；可用 --pack 指定",
-        root.join(DEFAULT_JA_PACK).display(),
-        root.join(FALLBACK_JA_PACK).display()
-    )))
+    loader::resolve_ja_pack(root, explicit).map_err(to_cli)
 }
 
 /// 載入日文解碼器，使用預設 pack（見 [`resolve_ja_pack`]）。
-pub fn load_ja_decoder(root: &Path) -> Result<JaDecoder, CliError> {
-    load_ja_decoder_with_pack(root, None)
+pub fn load_ja_decoder(root: &Path) -> Result<jc_core::ja::decode::JaDecoder, CliError> {
+    loader::load_ja_decoder(root).map_err(to_cli)
 }
 
 /// 模型集合根目錄：`JC_JA_MODELS`，否則資料根目錄下的 `models/`。
 pub fn ja_models_dir(root: &Path) -> PathBuf {
-    if let Some(value) = std::env::var_os("JC_JA_MODELS") {
-        if !value.is_empty() {
-            return PathBuf::from(value);
-        }
-    }
-    root.join("models")
+    loader::ja_models_dir(root)
 }
 
 /// 載入日文 reranker。
-///
-/// 由模型集合的 `manifest.json` 找 `ja-rerank`；模型缺席或 ONNX Runtime
-/// 不可用時回傳帶路徑的錯誤，呼叫端應警告並退回統計排序。
-pub fn load_ja_reranker(root: &Path) -> Result<Arc<jc_core::ja::rerank::NeuralReranker>, CliError> {
-    let models = ja_models_dir(root);
-    jc_core::ja::rerank::NeuralReranker::load_from_models(&models)
-        .map(Arc::new)
-        .map_err(|err| CliError::data(format!("{}：{err}", models.display())))
+pub fn load_ja_reranker(
+    root: &Path,
+) -> Result<std::sync::Arc<jc_core::ja::rerank::NeuralReranker>, CliError> {
+    loader::load_ja_reranker(root).map_err(to_cli)
 }
 
 /// 載入日文解碼器，`pack` 覆寫預設 pack。
-///
-/// v2 pack 會同時接上詞條的 left／right ID 與 context 連接矩陣；v1 pack
-/// 沒有矩陣，退回 `ja-src/connection.tsv` 的詞性成本。兩條路徑都不會在
-/// 有 pack 時偷用 curated `words.tsv`，避免同一個 pack 在不同入口得到不同
-/// 分數。
-pub fn load_ja_decoder_with_pack(root: &Path, pack: Option<&Path>) -> Result<JaDecoder, CliError> {
-    match resolve_ja_pack(root, pack) {
-        Ok(pack) => open_pack_decoder(&pack, &root.join("ja-src/connection.tsv")),
-        Err(err) => {
-            let words = root.join("ja-src/lexicon/words.tsv");
-            if pack.is_none() && words.is_file() {
-                load_curated_decoder(&words, &root.join("ja-src/connection.tsv"))
-            } else {
-                Err(err)
-            }
-        }
-    }
-}
-
-/// 開啟 pack，並依 pack 能力接上 context 矩陣或詞性成本。
-fn open_pack_decoder(pack: &Path, connection: &Path) -> Result<JaDecoder, CliError> {
-    let lex = JaLexicon::open(pack)
-        .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", pack.display())))?;
-    let context = lex.connection_cost();
-    let has_matrix = context.has_matrix();
-    let decoder = JaDecoder::new(Arc::new(JaDictionary::new(Arc::new(lex))));
-    if has_matrix {
-        return Ok(decoder.with_context_cost(Arc::new(context)));
-    }
-    if connection.is_file() {
-        let cost = SingleColumnCost::load(connection)
-            .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", connection.display())))?;
-        return Ok(decoder.with_connection(Arc::new(cost)));
-    }
-    Ok(decoder)
-}
-
-/// 沒有 pack 時使用 curated `words.tsv` 的保底路徑。
-fn load_curated_decoder(words: &Path, connection: &Path) -> Result<JaDecoder, CliError> {
-    let source = TsvWordSource::load(words)?;
-    let mut decoder = JaDecoder::new(Arc::new(source));
-    if connection.is_file() {
-        let cost = SingleColumnCost::load(connection)
-            .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", connection.display())))?;
-        decoder = decoder.with_connection(Arc::new(cost));
-    }
-    Ok(decoder)
+pub fn load_ja_decoder_with_pack(
+    root: &Path,
+    pack: Option<&Path>,
+) -> Result<jc_core::ja::decode::JaDecoder, CliError> {
+    loader::load_ja_decoder_with_pack(root, pack).map_err(to_cli)
 }
 
 /// 載入 OpenCC tw2s 字典；資料在資料根目錄的 `opencc/`。
 pub fn load_zhconv(root: &Path) -> Result<jc_core::zhconv::Converter, CliError> {
-    let dir = root.join("opencc");
-    jc_core::zhconv::tw2s_from_dir(&dir)
-        .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", dir.display())))
+    loader::load_zhconv(root).map_err(to_cli)
 }
 
 /// 模型集合根目錄。
@@ -483,41 +159,23 @@ pub fn load_zhconv(root: &Path) -> Result<jc_core::zhconv::Converter, CliError> 
 /// 依序使用 `JC_MODELS`、`--testdata` 的上層 `models/`，最後退回預設
 /// `0c-testdata` 的上層。目錄不存在時仍回傳路徑，由載入端報錯。
 pub fn models_root(testdata: Option<&Path>) -> PathBuf {
-    if let Some(value) = std::env::var_os("JC_MODELS") {
-        if !value.is_empty() {
-            return PathBuf::from(value);
-        }
-    }
     match testdata {
-        Some(dir) => data_root(dir).join("models"),
-        None => data_root(Path::new(DEFAULT_TESTDATA)).join("models"),
+        Some(dir) => loader::models_dir(&data_root(dir)),
+        None => loader::models_dir(&data_root(Path::new(DEFAULT_TESTDATA))),
     }
 }
 
 /// 載入提交時補標點的模型。
-///
-/// 模型集合由 [`models_root`] 決定；只載入 `mode` 需要的語言。載入失敗時
-/// 回傳錯誤，呼叫端應警告並維持原文。
 pub fn load_punctuator(
     testdata: Option<&Path>,
     mode: jc_core::Mode,
 ) -> Result<jc_core::output::OnnxPunctuator, CliError> {
-    let root = models_root(testdata);
-    jc_core::output::OnnxPunctuator::load_from_models(&root, &[mode])
-        .map_err(|err| CliError::data(format!("{}：{err}", root.display())))
+    loader::load_punctuator(&models_root(testdata), &[mode]).map_err(to_cli)
 }
 
 /// 載入並安裝注音選字模型。
-///
-/// 模型目錄由 [`models_root`] 的集合 manifest 決定。載入失敗時回傳錯誤，
-/// 呼叫端應警告並維持統計排序。
 pub fn install_select_model(testdata: Option<&Path>) -> Result<(), CliError> {
-    let root = models_root(testdata);
-    let dir = jc_core::zh::select::resolve_model_dir(&root)
-        .map_err(|err| CliError::data(format!("找不到 zh-select 模型：{err}")))?;
-    let model = jc_core::zh::select::SelectModel::load(&dir, None)
-        .map_err(|err| CliError::data(format!("載入 zh-select 模型失敗：{err}")))?;
-    jc_core::zh::select::install(model);
+    loader::install_select_model(&models_root(testdata)).map_err(to_cli)?;
     eprintln!(
         "警告：zh-select 使用 0.5／3.0 的保守參數，已預設啟用但未經 Product dev 校準；\
          需要關閉時用 --select-model off。"
@@ -527,12 +185,12 @@ pub fn install_select_model(testdata: Option<&Path>) -> Result<(), CliError> {
 
 /// 關閉注音選字模型。
 pub fn disable_select_model() {
-    jc_core::zh::select::clear();
+    loader::disable_select_model();
 }
 
 /// 選字模型的推論延遲統計。
 pub fn select_model_stats() -> Option<jc_core::zh::select::LatencyStats> {
-    jc_core::zh::select::latency_stats()
+    loader::select_model_stats()
 }
 
 /// 由注音資源建立 session 設定。
@@ -540,25 +198,20 @@ pub fn zh_session_config(
     mode: jc_core::Mode,
     resources: &ZhResources,
 ) -> jc_core::session::SessionConfig {
-    jc_core::session::SessionConfig {
-        mode,
-        max_candidates: 5,
-        zh_lexicon: Some(resources.lexicon.clone()),
-        zh_ctx: Some(resources.ctx.clone()),
-        zh_lm: resources.lm.clone(),
-        ..jc_core::session::SessionConfig::default()
-    }
+    loader::zh_session_config(mode, resources)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jc_core::score::BigramLm;
+    use jc_engine::loader::load_curated_decoder;
 
     #[test]
     fn probability_cost_orders_rare_words_later() {
-        assert_eq!(probability_cost(1.0), 0);
-        assert!(probability_cost(0.2) > probability_cost(1.0));
-        assert_eq!(probability_cost(0.0), 100_000);
+        assert_eq!(loader::probability_cost(1.0), 0);
+        assert!(loader::probability_cost(0.2) > loader::probability_cost(1.0));
+        assert_eq!(loader::probability_cost(0.0), 100_000);
     }
 
     #[test]
