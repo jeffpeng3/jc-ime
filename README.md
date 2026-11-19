@@ -137,4 +137,7 @@ Hugging Face 下載後記下 revision 與 SHA-256。每個檔案都要能對回�
 
 ## 授權
 
-AGPL-3.0-only，見 `LICENSE`。
+AGPL-3.0-only，見 `LICENSE`。第三方詞典、模型與資料的散布帳本見
+[`legal/README.md`](legal/README.md)，授權與署名見
+[`legal/THIRD-PARTY-NOTICES.md`](legal/THIRD-PARTY-NOTICES.md)，完整聲明見
+[`NOTICE`](NOTICE)。
