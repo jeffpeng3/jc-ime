@@ -23,6 +23,7 @@
 | `ja-import` | `e404fa1` | `ff13578` | 通過 | 2026-11-19 22:00 |
 | `ja-context` | `4bc5df8` | `83c2974` | 通過 | 2026-11-19 22:11 |
 | `m2-cli-session` | `26de34b` | `8b44bc1` | 通過 | 2026-11-19 22:27 |
+| `fix-cli-ja` | `a8fbc7e` | `7b7e8bc` | 通過 | 2026-11-19 22:41 |
 
 ## 衝突與修正
 
@@ -91,3 +92,10 @@
 - `m2-cli-session`（合併 `8b44bc1`）：無衝突。`jc-cli` 新增 `cli`、`converter`、`data`、`eval_cmd`、`bench`；
   `jc-core` 的 `session.rs`、`key.rs` 補工作階段 API；`jc-engine`、`jc-proto` 同步調整並更新測試檔；
   `Cargo.lock` 自動合併。沒有編譯錯誤要修，未改任何實作。
+
+- `fix-cli-ja`（合併 `7b7e8bc`）：無衝突。`jc-cli` 的 `data.rs`、`eval_cmd.rs`、`cli.rs` 改為
+  `--pack` → `JC_JA_PACK` → `packs/ja-lexicon-mozc-v2.pack` → v1 pack 的解析順序，v2 走 `with_context_cost`；
+  新增 `tests/eval_ja_parity.rs`。沒有編譯錯誤要修，未改任何實作。
+
+  對齊結果：`jc-cli eval ja` 由 23.2% 升到 **86.0%**，與 `ja-eval` 同為 86.0%（modern-500、`--top 5`，兩者 top-5 均 98.0%）。
+  `hard-cases` 前 5 題兩邊同為 `n=5`、top1 0.0%、top5 100.0%、boundary exact 100.0%。
