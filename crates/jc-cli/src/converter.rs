@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use jc_core::candidate::Candidate;
 use jc_core::decode::{Decoder, Locks};
 use jc_core::ja::decode::{JaContext, JaDecoder};
+use jc_core::ja::personal::{
+    learn_unified, UnifiedLearning, UNIFIED_MANUAL_WEIGHT, UNIFIED_PASSIVE_WEIGHT,
+};
 use jc_core::lattice::{InMemoryLexicon, Lattice};
 use jc_core::output::ModelPunctuator;
 use jc_core::personal::PersonalStore;
@@ -302,6 +305,8 @@ pub struct ConvertOptions {
     pub user_data: Option<PathBuf>,
     /// 指定轉換模式；目前只有 `en` 會走英文候選。
     pub mode: Option<jc_core::Mode>,
+    /// 日文轉換後要把第幾個候選記進學習（1 起算）；未指定時記首選。
+    pub pick: Option<usize>,
 }
 
 /// `convert` 子命令：單句轉換並列出 N-best。
@@ -326,6 +331,7 @@ pub fn convert(
         punct,
         user_data,
         mode,
+        pick,
     } = options;
     let punct_testdata = testdata.clone();
     if select_model {
@@ -336,6 +342,9 @@ pub fn convert(
         data::disable_select_model();
     }
     let english = mode == Some(jc_core::Mode::En);
+    if pick.is_some() && (english || is_zhuyin(reading)) {
+        return Err(CliError::Usage("--pick 只支援日文轉換".to_string()));
+    }
     let (candidates, lm_stats) = if english {
         // `convert --mode en` 只列原字與拼字建議；前綴補完屬互動路徑，
         // 由 session 的候選清單負責。
@@ -382,10 +391,41 @@ pub fn convert(
     } else {
         let dir = data::testdata_dir(testdata)?;
         let decoder = data::load_ja_decoder(&data::data_root(&dir))?;
-        let candidates = JaConverter::new(decoder)
-            .nbest(reading, n)
-            .into_iter()
-            .map(|conversion| {
+        // 個人資料載入失敗時只警告並用空白資料，不覆寫可能還能救的檔案。
+        let mut personal = match &user_data {
+            Some(dir) => match data::load_personal(dir) {
+                Ok(store) => Some(store),
+                Err(err) => {
+                    eprintln!("警告：--user-data 載入個人資料失敗，這次不學習：{err}");
+                    None
+                }
+            },
+            None => None,
+        };
+        let ctx = JaContext::default();
+        let chars: Vec<char> = reading.chars().collect();
+        let mut results = decoder.results(&chars, &ctx, n.max(1));
+        if let Some(store) = &personal {
+            UnifiedLearning::new(store).rank_results(&mut results, &ctx.left);
+        }
+        if let (Some(store), Some(dir)) = (personal.as_mut(), user_data.as_ref()) {
+            let index = pick.unwrap_or(1).saturating_sub(1);
+            if let Some(chosen) = results.get(index) {
+                let weight = if pick.is_some() {
+                    UNIFIED_MANUAL_WEIGHT
+                } else {
+                    UNIFIED_PASSIVE_WEIGHT
+                };
+                learn_unified(store, &chosen.clauses, &ctx.left, weight, now_seconds());
+                if let Err(err) = data::save_personal(dir, store) {
+                    eprintln!("警告：無法寫回個人資料：{err}");
+                }
+            }
+        }
+        let candidates = results
+            .iter()
+            .map(|result| {
+                let conversion = result.conversion();
                 Candidate::new(
                     conversion.surface,
                     reading.to_string(),
@@ -490,6 +530,14 @@ pub fn convert(
         )?;
     }
     Ok(())
+}
+
+/// 目前 Unix 秒數；時鐘早於 epoch 時回傳 0。
+fn now_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// 印出選字模型的推論延遲。

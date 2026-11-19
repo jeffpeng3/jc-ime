@@ -1119,6 +1119,198 @@ fn segment_readings(clause: &JaClause) -> Vec<Sequence> {
     out
 }
 
+/// 共用 personal store 的日文學習視圖。
+///
+/// 日文學習與注音學習寫在同一份 [`crate::personal::Store`]，以
+/// [`crate::personal::LanguageId::Ja`] 命名空間區分；這個視圖只讀該命名空間，
+/// 加成公式與尺度沿用前身 `core/ja/personal`：
+///
+/// `bonus = min(boost × log2(1 + 次數), max_boost)`
+///
+/// 同讀音、同左文、同詞面的紀錄給完整加成；只有同讀音、同詞面但左文不同的
+/// 紀錄給 [`UNIFIED_GLOBAL_FACTOR`] 倍的加成。後者讓「同一句再打一次」在
+/// 新的前文下仍然看得到學習結果，但單次學習不會壓過成本差距明顯的首選。
+#[derive(Debug, Clone, Copy)]
+pub struct UnifiedLearning<'a> {
+    /// 共用的個人資料。
+    pub store: &'a crate::personal::PersonalStore,
+    /// 每次學習的加成；0 使用 [`DEFAULT_BOOST`]。
+    pub boost: f64,
+    /// 單一文節的加成上限；0 使用 [`DEFAULT_MAX_BOOST`]。
+    pub max_boost: f64,
+}
+
+impl<'a> UnifiedLearning<'a> {
+    /// 以預設加成建立視圖。
+    pub fn new(store: &'a crate::personal::PersonalStore) -> Self {
+        Self {
+            store,
+            boost: 0.0,
+            max_boost: 0.0,
+        }
+    }
+
+    fn boost_value(&self) -> f64 {
+        if self.boost > 0.0 {
+            self.boost
+        } else {
+            DEFAULT_BOOST
+        }
+    }
+
+    fn max_boost_value(&self) -> f64 {
+        if self.max_boost > 0.0 {
+            self.max_boost
+        } else {
+            DEFAULT_MAX_BOOST
+        }
+    }
+
+    fn bonus(&self, count: u32) -> f64 {
+        if count == 0 {
+            return 0.0;
+        }
+        let bonus = self.boost_value() * (1.0 + f64::from(count)).log2();
+        bonus.min(self.max_boost_value())
+    }
+
+    /// 某個文節在指定前文下的學習加成。
+    pub fn clause_bonus(&self, clause: &JaClause, left: &str) -> f64 {
+        let seq = clause_reading(clause);
+        if seq.is_empty() || clause.surface.is_empty() {
+            return 0.0;
+        }
+        let reading = reading::key(&seq);
+        let context = self.store.language_context_count(
+            crate::personal::LanguageId::Ja,
+            &normalize_left(left),
+            &clause.surface,
+        );
+        let reading_count = self.store.language_reading_count(
+            crate::personal::LanguageId::Ja,
+            &reading,
+            &clause.surface,
+        );
+        // 同前文的次數不會超過同讀音的次數；取較小值是這一組（讀音、前文、
+        // 詞面）的聯合次數上界。
+        let exact = self.bonus(context.min(reading_count));
+        let global = self.bonus(reading_count) * UNIFIED_GLOBAL_FACTOR;
+        exact.max(global)
+    }
+
+    /// 整串文節的學習加成；前文逐節串接，與學習時一致。
+    pub fn score(&self, clauses: &[JaClause], left: &str) -> f64 {
+        let mut total = 0.0;
+        let mut left = left.to_string();
+        for clause in clauses {
+            total += self.clause_bonus(clause, &left);
+            if !clause.surface.is_empty() {
+                left = clause.surface.clone();
+            }
+        }
+        total
+    }
+
+    /// 這個語言是否還沒有任何學習紀錄。
+    pub fn is_empty(&self) -> bool {
+        self.store
+            .language_selections(crate::personal::LanguageId::Ja)
+            == 0
+    }
+
+    /// 依學習加成重排 N-best；同分維持原始分數與詞面順序。
+    pub fn rank_results(&self, results: &mut [JaResult], left: &str) {
+        if self.is_empty() {
+            return;
+        }
+        results.sort_by(|a, b| {
+            let score_a = a.score + self.score(&a.clauses, left);
+            let score_b = b.score + self.score(&b.clauses, left);
+            score_b
+                .total_cmp(&score_a)
+                .then_with(|| b.score.total_cmp(&a.score))
+                .then_with(|| a.surface().cmp(&b.surface()))
+        });
+    }
+
+    /// 依學習加成重排候選；只調整轉換來源的候選。
+    pub fn rank_candidates(&self, candidates: &mut [JaCandidate], left: &str) {
+        if self.is_empty() {
+            return;
+        }
+        let mut ranked: Vec<(JaCandidate, f64)> = candidates
+            .iter()
+            .cloned()
+            .map(|cand| {
+                let mut score = -f64::from(cand.cost) / COST_SCALE;
+                if boostable(&cand) && !cand.reading.is_empty() && !cand.surface.is_empty() {
+                    let clause = JaClause {
+                        reading: cand.reading.clone(),
+                        surface: cand.surface.clone(),
+                        segments: Vec::new(),
+                        cost: cand.cost,
+                    };
+                    score += self.score(std::slice::from_ref(&clause), left);
+                }
+                (cand, score)
+            })
+            .collect();
+        ranked.sort_by(|(a, score_a), (b, score_b)| {
+            score_b
+                .total_cmp(score_a)
+                .then_with(|| a.cost.cmp(&b.cost))
+                .then_with(|| a.surface.cmp(&b.surface))
+        });
+        for (slot, (cand, _)) in candidates.iter_mut().zip(ranked) {
+            *slot = cand;
+        }
+    }
+}
+
+/// 沒有同前文紀錄時，同讀音學習的加成折減。
+pub const UNIFIED_GLOBAL_FACTOR: f64 = 0.5;
+
+/// 被動接受首選的證據權重。
+pub const UNIFIED_PASSIVE_WEIGHT: u32 = 1;
+
+/// 明確手選（含非首選）的證據權重。
+///
+/// 選了非首選比照前身的手選來源，給兩倍證據，讓下一次優先反映這個選擇。
+pub const UNIFIED_MANUAL_WEIGHT: u32 = 2;
+
+/// 把一次提交的文節寫進共用 store 的日文命名空間。
+///
+/// 第一個文節的前文是 `left`，其餘用前一個文節的詞面；讀音以
+/// [`reading::key`] 的空白分隔形式儲存，和注音共用同一個鍵的形狀。
+/// 回傳實際記下的文節數。
+pub fn learn_unified(
+    store: &mut crate::personal::PersonalStore,
+    clauses: &[JaClause],
+    left: &str,
+    weight: u32,
+    at: i64,
+) -> usize {
+    let mut left = left.to_string();
+    let mut recorded = 0;
+    for clause in clauses {
+        let seq = clause_reading(clause);
+        if seq.is_empty() || clause.surface.is_empty() {
+            continue;
+        }
+        store.note_language_weighted(
+            crate::personal::LanguageId::Ja,
+            &reading::key(&seq),
+            &clause.surface,
+            &normalize_left(&left),
+            weight,
+            at,
+        );
+        left = clause.surface.clone();
+        recorded += 1;
+    }
+    recorded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2138,5 +2330,113 @@ mod tests {
         let entry = store.lookup(&seq(&["あ"]), "").expect("條目");
         assert_eq!(entry.count, 2);
         assert_eq!(entry.last_used, 1_760_000_000);
+    }
+
+    // ---- 共用 personal store 的日文學習 ----
+
+    use crate::personal::{LanguageId, PersonalStore};
+
+    fn clause(reading: &str, surface: &str, cost: i32) -> JaClause {
+        JaClause {
+            reading: reading.to_string(),
+            surface: surface.to_string(),
+            segments: Vec::new(),
+            cost,
+        }
+    }
+
+    #[test]
+    fn test_unified_learning_records_into_shared_store() {
+        let mut store = PersonalStore::new();
+        let clauses = [clause("きょう", "京", 1_400)];
+        assert_eq!(
+            learn_unified(&mut store, &clauses, "", UNIFIED_MANUAL_WEIGHT, 10),
+            1
+        );
+        assert_eq!(
+            store.language_reading_count(LanguageId::Ja, "き ょ う", "京"),
+            2
+        );
+        assert_eq!(store.language_context_count(LanguageId::Ja, "", "京"), 0);
+        assert_eq!(store.language_selections(LanguageId::Ja), 2);
+        // 注音命名空間不受影響。
+        assert_eq!(store.language_selections(LanguageId::Zh), 0);
+
+        let learning = UnifiedLearning::new(&store);
+        let bonus = learning.clause_bonus(&clauses[0], "");
+        assert!((bonus - 0.75 * 3.0_f64.log2() * UNIFIED_GLOBAL_FACTOR).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_unified_bonus_is_capped_like_go() {
+        let mut store = PersonalStore::new();
+        let clauses = [clause("きょう", "京", 1_400)];
+        for _ in 0..40 {
+            learn_unified(&mut store, &clauses, "京", 1, 10);
+        }
+        let learning = UnifiedLearning::new(&store);
+        assert_eq!(learning.clause_bonus(&clauses[0], "京"), DEFAULT_MAX_BOOST);
+    }
+
+    #[test]
+    fn test_unified_learning_does_not_override_clear_statistical_winner() {
+        let mut store = PersonalStore::new();
+        let winner = clause("きょう", "今日", 1_000);
+        let picked = clause("きょう", "きょう", 3_000);
+        learn_unified(
+            &mut store,
+            std::slice::from_ref(&picked),
+            "",
+            UNIFIED_MANUAL_WEIGHT,
+            10,
+        );
+        let learning = UnifiedLearning::new(&store);
+        let mut results = vec![
+            JaResult {
+                clauses: vec![winner],
+                cost: 1.0,
+                score: -1.0,
+            },
+            JaResult {
+                clauses: vec![picked],
+                cost: 3.0,
+                score: -3.0,
+            },
+        ];
+        learning.rank_results(&mut results, "");
+        assert_eq!(results[0].surface(), "今日");
+    }
+
+    #[test]
+    fn test_unified_undo_restores_ranking() {
+        let mut store = PersonalStore::new();
+        let clauses = [clause("きょう", "京", 1_400)];
+        learn_unified(&mut store, &clauses, "", UNIFIED_MANUAL_WEIGHT, 10);
+        assert_eq!(store.language_selections(LanguageId::Ja), 2);
+        assert!(store.undo_language_note());
+        assert_eq!(store.language_selections(LanguageId::Ja), 0);
+        assert!(!store.languages.contains_key("ja"));
+        assert!(!store.undo_language_note());
+    }
+
+    #[test]
+    fn test_unified_store_round_trips_json() {
+        let dir = TempDir::new("unified-json");
+        let path = dir.join("personal.json");
+        let mut store = PersonalStore::new();
+        learn_unified(
+            &mut store,
+            &[clause("きょう", "京", 1_400)],
+            "",
+            UNIFIED_MANUAL_WEIGHT,
+            1_760_000_000,
+        );
+        store.save(&path).expect("寫出個人資料");
+        let loaded = PersonalStore::load(&path).expect("讀回個人資料");
+        assert_eq!(
+            loaded.language_reading_count(LanguageId::Ja, "き ょ う", "京"),
+            2
+        );
+        assert_eq!(loaded.language_surface_count(LanguageId::Ja, "京"), 2);
     }
 }

@@ -44,7 +44,9 @@ use crate::zh::syllable::{parse_reading, Syllable};
 pub use corrections::{Correction, RejectedSeg};
 pub use english::{english_token, EnglishCandidate, EnglishCommit, EnglishEvidence, NoEnglish};
 pub use evidence::UsageEvidence;
-pub use language::{CrossLanguage, LanguageId, LanguageNamespace, LanguageSelection};
+pub use language::{
+    CrossLanguage, LanguageEvidence, LanguageId, LanguageNamespace, LanguageSelection,
+};
 pub use pronoun::{PronounCount, PronounHabit, PronounSite};
 pub use prune::{PrunePolicy, PruneStats};
 pub use unlearn::Undo;
@@ -72,6 +74,14 @@ pub(crate) const VOCAB_COST: i32 = 1;
 
 /// 學習權重最多折抵多少成本。
 const LIFT_CAP: i32 = 1500;
+
+/// 每個語言命名空間、每張表的容量上限。
+///
+/// 日文學習與注音學習共用 [`Store`]，兩邊的語言資料都受這個上限約束。
+pub const MAX_LANGUAGE_TABLE: usize = 1024;
+
+/// 分語言學習的反悔步數。
+const MAX_LANGUAGE_NOTE_UNDO: usize = 32;
 
 /// 系統語言模型。
 pub trait SystemLm {
@@ -323,6 +333,9 @@ pub struct Store {
     pub languages: BTreeMap<String, LanguageNamespace>,
     /// 跨語言弱偏好。
     pub cross_language: CrossLanguage,
+    /// 分語言學習的反悔紀錄；不寫進個人資料。
+    #[serde(skip)]
+    pub(crate) language_notes: Vec<LanguageNote>,
     /// 自訂詞；前身放在 `Vocab` 而非 Store，不寫進個人資料。
     #[serde(skip)]
     pub vocab: BTreeMap<String, Vec<String>>,
@@ -361,6 +374,7 @@ impl Default for Store {
             symbol_stats: HashMap::new(),
             languages: BTreeMap::new(),
             cross_language: CrossLanguage::default(),
+            language_notes: Vec::new(),
             vocab: BTreeMap::new(),
         }
     }
@@ -482,6 +496,20 @@ impl Store {
         }
         for value in self.uni.values_mut() {
             *value *= factor;
+        }
+        // 分語言學習（含日文）使用整數次數，套用同一個半衰期；至少保留 1 次，
+        // 讓單筆學習不會因為一次衰減就消失，容量淘汰再處理長期不用的條目。
+        for ns in self.languages.values_mut() {
+            for entry in ns.surfaces.values_mut() {
+                entry.count = decayed_count(entry.count, factor);
+            }
+            for entry in ns.readings.values_mut() {
+                entry.count = decayed_count(entry.count, factor);
+            }
+            for entry in ns.contexts.values_mut() {
+                entry.count = decayed_count(entry.count, factor);
+            }
+            ns.selections = ns.surfaces.values().map(|entry| entry.count).sum();
         }
         self.total *= factor;
         self.time = now;
@@ -665,9 +693,327 @@ impl Store {
     }
 }
 
+/// 分語言學習的一次反悔紀錄。
+///
+/// [`Store::note_language_weighted`] 只會加權單一條目，因此反悔也只需要還原
+/// 這一個詞面的次數、它所屬命名空間的計數與主要語言計數。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct LanguageNote {
+    language: LanguageId,
+    surface: String,
+    surface_before: LanguageEvidence,
+    surface_had: bool,
+    reading: String,
+    reading_before: LanguageEvidence,
+    reading_had: bool,
+    context: String,
+    context_before: LanguageEvidence,
+    context_had: bool,
+    selections_before: u32,
+    updated_before: i64,
+    primary_before: u32,
+    primary_had: bool,
+    weight: u32,
+}
+
 /// 兩個字串組成 map 鍵。
 pub fn pair(a: &str, b: &str) -> String {
     format!("{a}\t{b}")
+}
+
+/// 分語言資料的容量清理結果。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LanguagePruneStats {
+    /// 詞面表移除的筆數。
+    pub surfaces: usize,
+    /// 讀音表移除的筆數。
+    pub readings: usize,
+    /// 左文表移除的筆數。
+    pub contexts: usize,
+}
+
+impl LanguagePruneStats {
+    /// 合計移除筆數。
+    pub fn total(&self) -> usize {
+        self.surfaces + self.readings + self.contexts
+    }
+}
+
+impl Store {
+    /// 在指定語言記一次選字。
+    ///
+    /// 這是日文與注音共用的學習入口：`reading` 是空白分隔的讀音鍵，`left`
+    /// 是呼叫端已正規化的左文，`surface` 是選定的詞面。`weight` 讓明確手選
+    /// 比被動接受累積更多次數。時間 `at` 為 0 時沿用 store 目前時間。
+    ///
+    /// 記錄會推進該語言的主要語言計數，並把三張表裁到
+    /// [`MAX_LANGUAGE_TABLE`]。同一次記錄可以反悔一次。
+    pub fn note_language_weighted(
+        &mut self,
+        id: LanguageId,
+        reading: &str,
+        surface: &str,
+        left: &str,
+        weight: u32,
+        at: i64,
+    ) {
+        if id == LanguageId::Und || surface.is_empty() || weight == 0 {
+            return;
+        }
+        let at = if at > 0 { at } else { self.time };
+        let reading_key = if reading.is_empty() {
+            String::new()
+        } else {
+            pair(reading, surface)
+        };
+        let context_key = if left.is_empty() {
+            String::new()
+        } else {
+            pair(left, surface)
+        };
+
+        let ns = self.languages.entry(id.as_str().to_string()).or_default();
+        let note = LanguageNote {
+            language: id,
+            surface: surface.to_string(),
+            surface_before: ns.surfaces.get(surface).copied().unwrap_or_default(),
+            surface_had: ns.surfaces.contains_key(surface),
+            reading: reading_key.clone(),
+            reading_before: ns.readings.get(&reading_key).copied().unwrap_or_default(),
+            reading_had: ns.readings.contains_key(&reading_key),
+            context: context_key.clone(),
+            context_before: ns.contexts.get(&context_key).copied().unwrap_or_default(),
+            context_had: ns.contexts.contains_key(&context_key),
+            selections_before: ns.selections,
+            updated_before: ns.updated,
+            primary_before: self
+                .cross_language
+                .primary
+                .get(id.as_str())
+                .copied()
+                .unwrap_or(0),
+            primary_had: self.cross_language.primary.contains_key(id.as_str()),
+            weight,
+        };
+
+        let entry = ns.surfaces.get(surface).copied().unwrap_or_default();
+        ns.surfaces
+            .insert(surface.to_string(), add_weight(entry, weight, at));
+        ns.selections = ns.selections.saturating_add(weight);
+        ns.updated = ns.updated.max(at);
+        if !reading_key.is_empty() {
+            let entry = ns.readings.get(&reading_key).copied().unwrap_or_default();
+            ns.readings
+                .insert(reading_key, add_weight(entry, weight, at));
+        }
+        if !context_key.is_empty() {
+            let entry = ns.contexts.get(&context_key).copied().unwrap_or_default();
+            ns.contexts
+                .insert(context_key, add_weight(entry, weight, at));
+        }
+        *self
+            .cross_language
+            .primary
+            .entry(id.as_str().to_string())
+            .or_default() += weight;
+        self.trim_language_tables(id);
+
+        self.language_notes.push(note);
+        if self.language_notes.len() > MAX_LANGUAGE_NOTE_UNDO {
+            let drop = self.language_notes.len() - MAX_LANGUAGE_NOTE_UNDO;
+            self.language_notes.drain(..drop);
+        }
+    }
+
+    /// 在指定語言記一次選字，權重 1。
+    pub fn note_language(
+        &mut self,
+        id: LanguageId,
+        reading: &str,
+        surface: &str,
+        left: &str,
+        at: i64,
+    ) {
+        self.note_language_weighted(id, reading, surface, left, 1, at);
+    }
+
+    /// 某語言選過這個詞面的次數。
+    pub fn language_surface_count(&self, id: LanguageId, surface: &str) -> u32 {
+        self.languages
+            .get(id.as_str())
+            .and_then(|ns| ns.surfaces.get(surface))
+            .map_or(0, |entry| entry.count)
+    }
+
+    /// 某語言在「讀音＋詞面」上被選過的次數。
+    pub fn language_reading_count(&self, id: LanguageId, reading: &str, surface: &str) -> u32 {
+        self.languages
+            .get(id.as_str())
+            .and_then(|ns| ns.readings.get(&pair(reading, surface)))
+            .map_or(0, |entry| entry.count)
+    }
+
+    /// 某語言在「左文＋詞面」上被選過的次數。
+    pub fn language_context_count(&self, id: LanguageId, left: &str, surface: &str) -> u32 {
+        self.languages
+            .get(id.as_str())
+            .and_then(|ns| ns.contexts.get(&pair(left, surface)))
+            .map_or(0, |entry| entry.count)
+    }
+
+    /// 某語言的選取總次數。
+    pub fn language_selections(&self, id: LanguageId) -> u32 {
+        self.languages
+            .get(id.as_str())
+            .map_or(0, |ns| ns.selections)
+    }
+
+    /// 反悔最近一次 [`Store::note_language_weighted`]；回傳是否真的還原。
+    ///
+    /// 只還原那一筆加權；記錄時被容量上限淘汰的其他條目不會回來。
+    pub fn undo_language_note(&mut self) -> bool {
+        let Some(note) = self.language_notes.pop() else {
+            return false;
+        };
+        let Some(ns) = self.languages.get_mut(note.language.as_str()) else {
+            return false;
+        };
+        restore_weight(
+            &mut ns.surfaces,
+            &note.surface,
+            note.surface_before,
+            note.surface_had,
+            note.weight,
+        );
+        if !note.reading.is_empty() {
+            restore_weight(
+                &mut ns.readings,
+                &note.reading,
+                note.reading_before,
+                note.reading_had,
+                note.weight,
+            );
+        }
+        if !note.context.is_empty() {
+            restore_weight(
+                &mut ns.contexts,
+                &note.context,
+                note.context_before,
+                note.context_had,
+                note.weight,
+            );
+        }
+        ns.selections = ns.selections.saturating_sub(note.weight);
+        ns.updated = note.updated_before;
+        if note.primary_had {
+            self.cross_language
+                .primary
+                .insert(note.language.as_str().to_string(), note.primary_before);
+        } else {
+            self.cross_language.primary.remove(note.language.as_str());
+        }
+        if ns.surfaces.is_empty() && ns.selections == 0 {
+            self.languages.remove(note.language.as_str());
+        }
+        true
+    }
+
+    /// 依 [`PrunePolicy`] 的容量上限清理每個語言命名空間。
+    ///
+    /// 上限取 `policy.max_word` 與 [`MAX_LANGUAGE_TABLE`] 的較小值；次數為 0
+    /// 的條目一律移除，其餘先淘汰次數少、時間舊的條目。日文與注音共用同一份
+    /// store，因此這裡的清理同時涵蓋兩邊。
+    pub fn prune_languages(&mut self, policy: PrunePolicy) -> LanguagePruneStats {
+        let limit = if policy.max_word == 0 {
+            MAX_LANGUAGE_TABLE
+        } else {
+            policy.max_word.min(MAX_LANGUAGE_TABLE)
+        };
+        let mut stats = LanguagePruneStats::default();
+        for ns in self.languages.values_mut() {
+            stats.surfaces += trim_language_table(&mut ns.surfaces, limit);
+            stats.readings += trim_language_table(&mut ns.readings, limit);
+            stats.contexts += trim_language_table(&mut ns.contexts, limit);
+            ns.selections = ns.surfaces.values().map(|entry| entry.count).sum();
+        }
+        self.languages
+            .retain(|_, ns| !ns.surfaces.is_empty() || ns.selections > 0);
+        stats
+    }
+
+    fn trim_language_tables(&mut self, id: LanguageId) {
+        let Some(ns) = self.languages.get_mut(id.as_str()) else {
+            return;
+        };
+        trim_language_table(&mut ns.surfaces, MAX_LANGUAGE_TABLE);
+        trim_language_table(&mut ns.readings, MAX_LANGUAGE_TABLE);
+        trim_language_table(&mut ns.contexts, MAX_LANGUAGE_TABLE);
+    }
+}
+
+fn add_weight(entry: LanguageEvidence, weight: u32, at: i64) -> LanguageEvidence {
+    LanguageEvidence {
+        count: entry.count.saturating_add(weight),
+        updated: entry.updated.max(at),
+    }
+}
+
+/// 依時間因子衰減整數次數，至少保留 1。
+fn decayed_count(count: u32, factor: f64) -> u32 {
+    if count <= 1 {
+        return count;
+    }
+    let scaled = (f64::from(count) * factor).round();
+    if scaled <= 1.0 {
+        1
+    } else if scaled >= f64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        scaled as u32
+    }
+}
+
+fn trim_language_table(table: &mut BTreeMap<String, LanguageEvidence>, limit: usize) -> usize {
+    let mut removed = 0;
+    table.retain(|_, entry| {
+        if entry.count == 0 {
+            removed += 1;
+            false
+        } else {
+            true
+        }
+    });
+    if table.len() <= limit {
+        return removed;
+    }
+    let mut keys: Vec<_> = table.keys().cloned().collect();
+    keys.sort_by_key(|key| {
+        let entry = table.get(key).copied().unwrap_or_default();
+        (entry.count, entry.updated, key.clone())
+    });
+    let drop = table.len() - limit;
+    for key in keys.into_iter().take(drop) {
+        table.remove(&key);
+        removed += 1;
+    }
+    removed
+}
+
+fn restore_weight(
+    table: &mut BTreeMap<String, LanguageEvidence>,
+    key: &str,
+    before: LanguageEvidence,
+    had: bool,
+    weight: u32,
+) {
+    if had {
+        table.insert(key.to_string(), before);
+    } else if let Some(entry) = table.get_mut(key) {
+        entry.count = entry.count.saturating_sub(weight);
+        if entry.count == 0 {
+            table.remove(key);
+        }
+    }
 }
 
 /// 讀音鍵：音節以單一空格分隔。
@@ -1200,5 +1546,81 @@ impl Model {
         if self.store.advance_time(now) {
             self.gen += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_note_language_weighted_counts_and_undo() {
+        let mut store = Store::new();
+        store.note_language_weighted(LanguageId::Ja, "き ょ う", "京", "京", 2, 100);
+        assert_eq!(store.language_surface_count(LanguageId::Ja, "京"), 2);
+        assert_eq!(
+            store.language_reading_count(LanguageId::Ja, "き ょ う", "京"),
+            2
+        );
+        assert_eq!(store.language_context_count(LanguageId::Ja, "京", "京"), 2);
+        assert_eq!(store.language_selections(LanguageId::Ja), 2);
+        assert_eq!(store.cross_language.primary["ja"], 2);
+
+        assert!(store.undo_language_note());
+        assert_eq!(store.language_selections(LanguageId::Ja), 0);
+        assert!(!store.languages.contains_key("ja"));
+        assert!(!store.cross_language.primary.contains_key("ja"));
+        assert!(!store.undo_language_note());
+    }
+
+    #[test]
+    fn test_note_language_keeps_tables_bounded() {
+        let mut store = Store::new();
+        for index in 0..(MAX_LANGUAGE_TABLE + 20) {
+            store.note_language(LanguageId::Ja, "あ", &format!("語{index}"), "", 1);
+        }
+        let ns = &store.languages["ja"];
+        assert_eq!(ns.surfaces.len(), MAX_LANGUAGE_TABLE);
+        assert_eq!(
+            ns.selections,
+            (MAX_LANGUAGE_TABLE + 20) as u32,
+            "selections 是累計次數，不因容量淘汰而減少"
+        );
+        // 次數相同時淘汰鍵值最小的條目，最新的 1024 筆留下。
+        assert!(!ns.surfaces.contains_key("語0"));
+        assert!(ns
+            .surfaces
+            .contains_key(&format!("語{}", MAX_LANGUAGE_TABLE + 19)));
+    }
+
+    #[test]
+    fn test_prune_languages_uses_policy_cap() {
+        let mut store = Store::new();
+        for index in 0..10 {
+            store.note_language(LanguageId::Ja, "あ", &format!("語{index}"), "", 1);
+        }
+        let policy = PrunePolicy {
+            max_word: 4,
+            ..PrunePolicy::default()
+        };
+        let stats = store.prune_languages(policy);
+        assert_eq!(stats.surfaces, 6);
+        assert_eq!(store.languages["ja"].surfaces.len(), 4);
+        // selections 依留下的詞面重算。
+        assert_eq!(store.language_selections(LanguageId::Ja), 4);
+    }
+
+    #[test]
+    fn test_language_counts_decay_but_keep_single_observation() {
+        let mut store = Store::new();
+        // 第一次推進只設定時間，不做衰減。
+        assert!(!store.advance_time(0));
+        store.note_language_weighted(LanguageId::Ja, "あ", "亜", "", 1, 0);
+        store.note_language_weighted(LanguageId::Ja, "あ", "唖", "", 100, 0);
+        assert!(store.advance_time(30 * DAY_SECONDS));
+        // 單次紀錄保留 1；100 次約剩一半。
+        assert_eq!(store.language_surface_count(LanguageId::Ja, "亜"), 1);
+        let kept = store.language_surface_count(LanguageId::Ja, "唖");
+        assert!((40..=60).contains(&kept), "30 日後約剩一半，得到 {kept}");
     }
 }

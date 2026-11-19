@@ -18,9 +18,10 @@ use std::sync::Arc;
 use crate::candidate::{Candidate, CandidateSource};
 use crate::decode::{Decoder, Hypothesis, Locks};
 use crate::emoji::{self, Stat};
-use crate::ja::decode::{JaContext, JaDecoder};
+use crate::ja::decode::{JaClause, JaContext, JaDecoder, JaResult};
 use crate::ja::input::RomajiInput;
 use crate::ja::live::{self, Controller as LiveController, Plan as LivePlan};
+use crate::ja::personal as ja_personal;
 use crate::key::{Key, KeyCode};
 use crate::lang::Mode;
 use crate::lattice::{InMemoryLexicon, Lattice};
@@ -225,6 +226,8 @@ pub struct Session {
     suggestion: Option<String>,
     /// 待選路徑的快照；提交時用來依實際片段學習。
     last_hypotheses: Vec<Hypothesis>,
+    /// 日文待選結果的快照；提交時用來依文節學習。
+    last_ja_results: Vec<JaResult>,
     /// 混合模式的英數按鍵推斷。
     ascii: AsciiInput,
     /// 目前開啟的候選選單。
@@ -302,6 +305,7 @@ impl Session {
             accepted_completion: None,
             suggestion: None,
             last_hypotheses: Vec::new(),
+            last_ja_results: Vec::new(),
             ascii: AsciiInput::new(),
             menu: None,
             palette_tab: 0,
@@ -318,6 +322,14 @@ impl Session {
     /// 目前模式。
     pub fn mode(&self) -> Mode {
         self.config.mode
+    }
+
+    /// 目前的個人化學習資料；宿主用它存檔。
+    ///
+    /// [`Session::new`] 會複製 [`SessionConfig::personal`]，因此學習結果只在
+    /// 這份工作階段內；要持久化時由宿主在適當時間取出並寫檔。
+    pub fn personal(&self) -> &PersonalStore {
+        &self.personal
     }
 
     /// 目前高亮的候選索引。
@@ -981,15 +993,35 @@ impl Session {
 
     /// 把指定候選記進個人學習；數字鍵直接選取時用得到。
     fn learn_candidate(&mut self, index: usize) {
-        if !self.config.learning || self.config.mode != Mode::Zh || self.menu.is_some() {
+        if !self.config.learning || self.menu.is_some() {
             return;
         }
+        match self.config.mode {
+            Mode::Zh => {
+                self.note_learning_event();
+                self.learn_zh_candidate(index);
+            }
+            Mode::Ja => {
+                self.note_learning_event();
+                self.learn_ja_candidate(index);
+            }
+            Mode::En | Mode::Mixed => {}
+        }
+    }
+
+    /// 推進時間並定期清理個人資料；上限與衰減沿用 `personal::prune`。
+    fn note_learning_event(&mut self) {
         self.learn_events += 1;
         self.personal.advance_time(now_seconds());
         if self.learn_events.is_multiple_of(LEARN_PRUNE_INTERVAL) {
-            self.personal
-                .prune_capacity(crate::personal::PrunePolicy::default());
+            let policy = crate::personal::PrunePolicy::default();
+            self.personal.prune_capacity(policy);
+            self.personal.prune_languages(policy);
         }
+    }
+
+    /// 把一次注音提交記進個人學習。
+    fn learn_zh_candidate(&mut self, index: usize) {
         let manual = self.candidate_window;
         let Some(candidate) = self.candidates.get(index).cloned() else {
             return;
@@ -1035,6 +1067,48 @@ impl Session {
                     .note_passive(&candidate.surface, &candidate.reading);
             }
         }
+    }
+
+    /// 把一次日文提交記進共用個人資料的 `ja` 命名空間。
+    ///
+    /// 優先使用這一輪 N-best 的文節切分；候選不是這一輪結果時，退化成整筆
+    /// 候選一個文節。明確手選（候選窗開著）比被動接受多一倍證據。
+    fn learn_ja_candidate(&mut self, index: usize) {
+        let Some(candidate) = self.candidates.get(index).cloned() else {
+            return;
+        };
+        let weight = if self.candidate_window {
+            ja_personal::UNIFIED_MANUAL_WEIGHT
+        } else {
+            ja_personal::UNIFIED_PASSIVE_WEIGHT
+        };
+        let clauses = match self
+            .last_ja_results
+            .iter()
+            .find(|result| result.surface() == candidate.surface)
+        {
+            Some(result) => result.clauses.clone(),
+            None => vec![JaClause {
+                reading: candidate.reading.clone(),
+                surface: candidate.surface.clone(),
+                segments: Vec::new(),
+                cost: candidate.cost,
+            }],
+        };
+        let left = self.committed.clone();
+        ja_personal::learn_unified(&mut self.personal, &clauses, &left, weight, now_seconds());
+    }
+
+    /// 反悔最近一次分語言學習；回傳是否有可反悔的紀錄。
+    ///
+    /// 只還原共用 store 記下的語言學習（日文與後續接上的語言），不影響注音的
+    /// 階層式計數。重建中組字內容後，排序會回到學習前的狀態。
+    pub fn undo_learning(&mut self) -> bool {
+        let undone = self.personal.undo_language_note();
+        if undone {
+            self.rebuild();
+        }
+        undone
     }
 
     /// 候選窗的反悔鍵：自訂詞刪除、學到的詞忘記。
@@ -1097,6 +1171,7 @@ impl Session {
         self.base.clear();
         self.pending.clear();
         self.last_hypotheses.clear();
+        self.last_ja_results.clear();
         self.accepted_completion = None;
         self.suggestion = None;
         self.menu = None;
@@ -1444,7 +1519,7 @@ impl Session {
             self.rebuild_ja_live(&units);
             return;
         }
-        let Some(decoder) = &self.config.ja else {
+        let Some(decoder) = self.config.ja.clone() else {
             self.base = reading;
             return;
         };
@@ -1452,24 +1527,37 @@ impl Session {
             left: self.committed.clone(),
             right: String::new(),
         };
-        let results = decoder.nbest(&reading, &ctx, self.max_candidates());
+        let chars: Vec<char> = reading.chars().collect();
+        let mut results = decoder.results(&chars, &ctx, self.max_candidates());
+        self.rank_ja_learning(&mut results, &ctx.left);
         let Some(best) = results.first() else {
             self.base = reading;
             return;
         };
-        self.base = best.surface.clone();
-        self.segments = best.segments.clone();
+        self.base = best.surface();
+        self.segments = best.conversion().segments;
         self.candidates = results
-            .into_iter()
+            .iter()
             .map(|result| {
+                let conversion = result.conversion();
                 Candidate::new(
-                    result.surface,
+                    conversion.surface,
                     reading.clone(),
-                    result.cost,
+                    conversion.cost,
                     CandidateSource::Lexicon,
                 )
             })
             .collect();
+        self.last_ja_results = results;
+    }
+
+    /// 依共用的日文學習資料重排 N-best；學習關閉時維持統計順序。
+    fn rank_ja_learning(&self, results: &mut [JaResult], left: &str) {
+        if !self.config.learning {
+            return;
+        }
+        let learning = ja_personal::UnifiedLearning::new(&self.personal);
+        learning.rank_results(results, left);
     }
 
     /// 逐字変換開啟時的日文重建：把讀音送進控制器，依決定畫出結果。
@@ -1513,22 +1601,27 @@ impl Session {
         self.segments = segments;
 
         let mut candidates = Vec::new();
+        let mut results = Vec::new();
         if plan.convert {
-            if let Some(decoder) = &self.config.ja {
-                candidates = decoder
-                    .nbest(reading, &JaContext::default(), self.max_candidates())
-                    .into_iter()
+            if let Some(decoder) = self.config.ja.clone() {
+                let chars: Vec<char> = reading.chars().collect();
+                results = decoder.results(&chars, &JaContext::default(), self.max_candidates());
+                self.rank_ja_learning(&mut results, &self.committed);
+                candidates = results
+                    .iter()
                     .map(|result| {
+                        let conversion = result.conversion();
                         Candidate::new(
-                            result.surface,
+                            conversion.surface,
                             reading.to_string(),
-                            result.cost,
+                            conversion.cost,
                             CandidateSource::Lexicon,
                         )
                     })
                     .collect();
             }
         }
+        self.last_ja_results = results;
         // 畫面上顯示的是高亮候選；第一個候選必須與逐字変換的結果一致。
         if candidates
             .first()
@@ -2533,6 +2626,84 @@ mod tests {
         for ch in keys.chars() {
             session.press(Key::char(ch, false));
         }
+    }
+
+    fn ja_entry(surface: &str, reading: &str, cost: i32) -> crate::ja::lexicon::JaEntry {
+        crate::ja::lexicon::JaEntry {
+            surface: surface.into(),
+            reading: reading.into(),
+            pos: Arc::from("名詞,普通名詞,一般,*"),
+            conj_type: Arc::from("*"),
+            conj_form: Arc::from("*"),
+            cost,
+            split: crate::ja::lexicon::Split::C,
+        }
+    }
+
+    /// 同讀音、成本差距可被學習翻盤的日文 session。
+    fn ja_learning_session(learning: bool) -> Session {
+        let source = LiveTestSource(vec![
+            ja_entry("今日", "きょう", 1_000),
+            ja_entry("京", "きょう", 1_400),
+            ja_entry("きょう", "きょう", 3_000),
+        ]);
+        let mut config = SessionConfig::new(Mode::Ja);
+        config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.learning = learning;
+        Session::new(config)
+    }
+
+    /// 手選第二候選後，同讀音的首選會改變；undo 回到原狀。
+    #[test]
+    fn test_ja_learning_ranks_manual_choice_first_and_undo_restores() {
+        use crate::personal::LanguageId;
+
+        let mut s = ja_learning_session(true);
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.candidates()[0].surface, "今日");
+        // 第一次方向鍵只開候選窗，第二次移到第二候選。
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "京");
+        assert_eq!(
+            s.personal()
+                .language_reading_count(LanguageId::Ja, "き ょ う", "京"),
+            2,
+            "明確手選記兩倍證據"
+        );
+
+        // 同一讀音再打一次：學習後的首選是剛剛手選的詞。
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.candidates()[0].surface, "京");
+
+        // 反悔後回到統計順序。
+        assert!(s.undo_learning());
+        assert_eq!(s.candidates()[0].surface, "今日");
+    }
+
+    /// 學習關閉時，手選第二候選不會改變下一次的首選。
+    #[test]
+    fn test_ja_learning_disabled_keeps_statistical_order() {
+        let mut s = ja_learning_session(false);
+        type_ja(&mut s, "kyou");
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "京");
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.candidates()[0].surface, "今日");
+    }
+
+    /// 單次被動接受不足以翻掉明顯的統計差距。
+    #[test]
+    fn test_ja_passive_learning_keeps_clear_statistical_winner() {
+        let mut s = ja_learning_session(true);
+        type_ja(&mut s, "kyou");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "今日");
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.candidates()[0].surface, "今日");
     }
 
     /// 沒有開啟逐字変換時，日文走原本的 nbest 流程，結果與先前相同。
