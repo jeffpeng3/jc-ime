@@ -130,7 +130,8 @@ embedding 佔一半參數，額外測了混合精度（linears 4-bit／5-bit、�
 | Q4K 全部 | 19.2 MiB | 98.81% | 90.5% |
 
 把詞嵌入換成 fp32 或 Q8_0 對排序一致率沒有影響，誤差來源是 8 層 encoder 的
-linear，所以不需要為 embedding 做特例。
+linear，所以不需要為 embedding 做特例。上表可用
+`candle-quant export --dtype q4k --embed-dtype q8_0` 重現。
 
 ## 數值：標點
 
