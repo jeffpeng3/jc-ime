@@ -196,6 +196,7 @@ version = "0.1.0"
 dependencies = [
  "jc-data",
  "jc-testdata",
+ "log",
  "serde",
  "serde_json",
  "sha2",
@@ -227,6 +228,18 @@ dependencies = [
  "jc-proto",
  "log",
  "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "jc-englishpack"
+version = "0.1.0"
+dependencies = [
+ "jc-core",
+ "jc-testdata",
+ "serde",
+ "serde_json",
+ "sha2",
  "thiserror",
 ]
 

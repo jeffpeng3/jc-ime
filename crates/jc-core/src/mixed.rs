@@ -20,8 +20,8 @@
 //! 語言邊界不加分隔符；游標位置以 UTF-16 code unit 計算（見
 //! [`MixedResult::cursor_utf16`]）。
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use crate::candidate::{Candidate, CandidateSource};
@@ -52,6 +52,170 @@ const WEIGHT_BASE: i32 = 2_000_000;
 
 /// 學習詞的權重，保證排在詞表詞前面。
 const LEARNED_WEIGHT: f64 = 1_000_000.0;
+
+/// 拼字建議每一鍵編輯距離加上的成本，讓建議排在完整前綴補完之後。
+const CORRECTION_PENALTY: i32 = 1_000;
+
+/// `words.bin` 的標頭；後面接小端序 `u32` 詞數。
+const PACK_MAGIC: &[u8] = b"0cEN\x00\x01";
+
+/// 資料包詞數上限。
+const MAX_PACK_WORDS: usize = 200_000;
+
+/// 資料包位元組上限。
+const MAX_PACK_BYTES: usize = 16 << 20;
+
+/// `manifest.json` 大小上限。
+const MAX_MANIFEST_BYTES: u64 = 64 << 10;
+
+/// `NOTICE.txt` 大小上限。
+const MAX_NOTICE_BYTES: u64 = 64 << 10;
+
+/// 沒有環境變數時使用的資料根目錄。
+pub const DEFAULT_DATA_ROOT: &str = "/mnt/work/jc/jc-ime-data";
+
+/// 資料根目錄下的英文資料包子目錄。
+pub const ENGLISH_PACK_SUBDIR: &str = "english";
+
+// ---------------------------------------------------------------------------
+// 英文資料包
+// ---------------------------------------------------------------------------
+
+/// 英文資料包裡的一個檔案（`words.bin`、`NOTICE.txt`）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct EnglishPackFile {
+    /// 明文內容的 SHA-256，小寫十六進位。
+    pub sha256: String,
+    /// 檔案位元組數。
+    pub size: u64,
+}
+
+/// 英文詞表的來源與授權。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct EnglishSource {
+    /// 來源名稱。
+    pub name: String,
+    /// 來源版本。
+    pub version: String,
+    /// 來源網址。
+    pub url: String,
+    /// 上游下載檔的 SHA-256。
+    pub sha256: String,
+    /// 授權名稱。
+    pub license: String,
+    /// 姓名標示。
+    pub attribution: String,
+    /// 上游 commit；舊資料沒有這個欄位。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+}
+
+/// `manifest.json`：資料包的詞數、來源與檔案雜湊。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct EnglishManifest {
+    /// 格式版本，目前只有 1。
+    pub format: u32,
+    /// 詞數，必須與 `words.bin` 一致。
+    pub words: usize,
+    /// 排序依據的說明。
+    pub ranking: String,
+    /// 詞表來源。
+    pub sources: Vec<EnglishSource>,
+    /// 建置輸入檔的 SHA-256。
+    #[serde(default)]
+    pub inputs: BTreeMap<String, String>,
+    /// 資料包內的檔案。
+    #[serde(default)]
+    pub files: BTreeMap<String, EnglishPackFile>,
+}
+
+impl EnglishManifest {
+    /// 檢查格式、詞數、來源與檔案雜湊欄位是否完整。
+    pub fn validate(&self) -> Result<(), MixedError> {
+        if self.format != 1
+            || self.words == 0
+            || self.words > MAX_PACK_WORDS
+            || self.ranking.is_empty()
+            || self.sources.is_empty()
+            || self.files.len() != 2
+        {
+            return Err(MixedError::Pack("manifest 格式不合法".to_string()));
+        }
+        for name in ["words.bin", "NOTICE.txt"] {
+            match self.files.get(name) {
+                Some(file) if file.size >= 1 && is_sha256_hex(&file.sha256) => {}
+                _ => {
+                    return Err(MixedError::Pack(format!(
+                        "manifest 缺少 {name} 的雜湊或大小"
+                    )))
+                }
+            }
+        }
+        for source in &self.sources {
+            if source.name.is_empty()
+                || source.version.is_empty()
+                || source.url.is_empty()
+                || source.license.is_empty()
+                || source.attribution.is_empty()
+                || !is_sha256_hex(&source.sha256)
+            {
+                return Err(MixedError::Pack("資料包缺少來源與授權".to_string()));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 回報 `text` 是不是 64 個小寫十六進位字元。
+pub fn is_sha256_hex(text: &str) -> bool {
+    text.len() == 64
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// 內容的 SHA-256，小寫十六進位。
+pub fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(data);
+    let mut out = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+/// 解析資料根目錄：`JC_IMEDATA`、`JC_TESTDATA`、[`DEFAULT_DATA_ROOT`]。
+///
+/// 環境變數指向 `0c-testdata` 時退回它的上層目錄，與 `jc-cli` 的慣例一致。
+pub fn data_root() -> Option<PathBuf> {
+    let candidate = std::env::var_os("JC_IMEDATA")
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var_os("JC_TESTDATA").filter(|v| !v.is_empty()))
+        .map_or_else(|| PathBuf::from(DEFAULT_DATA_ROOT), PathBuf::from);
+    data_root_from(&candidate)
+}
+
+fn data_root_from(candidate: &Path) -> Option<PathBuf> {
+    if !candidate.is_dir() {
+        return None;
+    }
+    if candidate.file_name().map(|n| n == "0c-testdata") == Some(true) {
+        return candidate.parent().map(Path::to_path_buf);
+    }
+    Some(candidate.to_path_buf())
+}
+
+/// 英文資料包目錄：`JC_ENGLISH_PACK`，否則資料根目錄下的 `english/`。
+pub fn english_pack_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("JC_ENGLISH_PACK").filter(|v| !v.is_empty()) {
+        let dir = PathBuf::from(dir);
+        return dir.is_dir().then_some(dir);
+    }
+    let dir = data_root()?.join(ENGLISH_PACK_SUBDIR);
+    dir.is_dir().then_some(dir)
+}
 
 // ---------------------------------------------------------------------------
 // 英數詞種類
@@ -655,6 +819,9 @@ pub enum MixedError {
     /// 詞表格式不合法。
     #[error("英文詞表格式不合法：{0}")]
     Format(&'static str),
+    /// 英文資料包驗證失敗。
+    #[error("英文資料包不合法：{0}")]
+    Pack(String),
     /// 注音詞格建立失敗。
     #[error("注音詞格建立失敗：{0}")]
     Lattice(#[from] LatticeError),
@@ -669,6 +836,17 @@ pub struct Suggestion {
     pub weight: f64,
     /// 是否來自學習詞。
     pub learned: bool,
+}
+
+/// 一個拼字建議。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Correction {
+    /// 建議的詞面（照查詢時的大小寫規則）。
+    pub text: String,
+    /// 與輸入的編輯距離。
+    pub distance: usize,
+    /// 詞表權重，越大越優先。
+    pub weight: f64,
 }
 
 /// 唯讀英文詞表。
@@ -689,6 +867,18 @@ impl Dictionary {
     where
         I: IntoIterator<Item = Word>,
     {
+        Self::new_filtered(words, std::iter::empty())
+    }
+
+    /// 由詞條建立詞表，並把 `blocked` 標成不可推薦。
+    ///
+    /// 被標記的詞仍然認得（[`Dictionary::has`] 為真），但前綴補完與拼字
+    /// 建議不會推薦它們。
+    pub fn new_filtered<I, S>(words: I, blocked: S) -> Self
+    where
+        I: IntoIterator<Item = Word>,
+        S: IntoIterator<Item = String>,
+    {
         let mut best: HashMap<String, f64> = HashMap::new();
         for w in words {
             let text = w.text.to_lowercase();
@@ -707,7 +897,14 @@ impl Dictionary {
             .map(|(text, weight)| Word { text, weight })
             .collect();
         words.sort_by(|a, b| a.text.cmp(&b.text));
-        let no_suggest = vec![false; words.len()];
+        let mut no_suggest = vec![false; words.len()];
+        for text in blocked {
+            let text = text.to_lowercase();
+            let i = words.partition_point(|w| w.text < text);
+            if words.get(i).map(|w| w.text.as_str()) == Some(text.as_str()) {
+                no_suggest[i] = true;
+            }
+        }
         Self { words, no_suggest }
     }
 
@@ -719,14 +916,10 @@ impl Dictionary {
 
     /// 解析 `0cEN` v1 格式的詞表。
     pub fn decode(data: &[u8]) -> Result<Self, MixedError> {
-        const MAGIC: &[u8] = b"0cEN\x00\x01";
-        const MAX_PACK_WORDS: usize = 200_000;
-        const MAX_PACK_BYTES: usize = 16 << 20;
-
         if data.len() > MAX_PACK_BYTES {
             return Err(MixedError::Format("資料包過大"));
         }
-        let Some(rest) = data.strip_prefix(MAGIC) else {
+        let Some(rest) = data.strip_prefix(PACK_MAGIC) else {
             return Err(MixedError::Format("標頭不合法"));
         };
         if rest.len() < 4 {
@@ -773,6 +966,139 @@ impl Dictionary {
             return Err(MixedError::Format("有多餘內容"));
         }
         Ok(Self { words, no_suggest })
+    }
+
+    /// 編成 `0cEN` v1 詞表位元組。
+    ///
+    /// 只寫詞面、權重與不可推薦旗標；索引在 [`Dictionary::decode`] 重建。
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(5 + self.words.len() * 16);
+        out.extend_from_slice(PACK_MAGIC);
+        out.extend_from_slice(&(self.words.len() as u32).to_le_bytes());
+        for (i, word) in self.words.iter().enumerate() {
+            let len = word.text.len().min(MAX_WORD_BYTES);
+            out.push(len as u8);
+            out.extend_from_slice(&word.text.as_bytes()[..len]);
+            out.extend_from_slice(&word.weight.to_le_bytes());
+            out.push(u8::from(self.no_suggest[i]));
+        }
+        out
+    }
+
+    /// 讀取並驗證一個英文資料包目錄。
+    ///
+    /// 目錄必須含 `manifest.json`、`words.bin` 與非空的 `NOTICE.txt`，
+    /// 兩個檔案的內容都要和 manifest 的大小與 SHA-256 一致。
+    pub fn load_pack(dir: &Path) -> Result<(Self, EnglishManifest), MixedError> {
+        let info = std::fs::symlink_metadata(dir)?;
+        if !info.is_dir() || info.file_type().is_symlink() {
+            return Err(MixedError::Pack("英文資料包必須是一般目錄".to_string()));
+        }
+        let manifest_bytes = read_regular_file(&dir.join("manifest.json"), MAX_MANIFEST_BYTES)?;
+        let manifest: EnglishManifest = serde_json::from_slice(&manifest_bytes)
+            .map_err(|_| MixedError::Pack("manifest 不是合法 JSON".to_string()))?;
+        manifest.validate()?;
+        let mut files: HashMap<&str, Vec<u8>> = HashMap::new();
+        for name in ["words.bin", "NOTICE.txt"] {
+            let limit = if name == "words.bin" {
+                MAX_PACK_BYTES as u64 + 64
+            } else {
+                MAX_NOTICE_BYTES
+            };
+            let data = read_regular_file(&dir.join(name), limit)?;
+            let want = &manifest.files[name];
+            if want.size != data.len() as u64 || want.sha256 != sha256_hex(&data) {
+                return Err(MixedError::Pack(format!("{name} 與 manifest 不符")));
+            }
+            files.insert(name, data);
+        }
+        let notice = files.remove("NOTICE.txt").unwrap_or_default();
+        if String::from_utf8_lossy(&notice).trim().is_empty() {
+            return Err(MixedError::Pack("授權聲明不可空白".to_string()));
+        }
+        let dict = Self::decode(&files["words.bin"])?;
+        if dict.len() != manifest.words {
+            return Err(MixedError::Pack("manifest 詞數不符".to_string()));
+        }
+        Ok((dict, manifest))
+    }
+
+    /// 拼字建議：回傳與 `typed` 編輯距離 1（6 個字元以上容許 2）以內的詞。
+    ///
+    /// 已經在詞表裡的完整單字不會有建議；不可推薦的詞也不會出現。結果先依
+    /// 距離、再依權重、最後依詞面排序。
+    pub fn corrections(&self, typed: &str, limit: usize) -> Vec<Correction> {
+        self.corrections_with_prior(typed, limit, 0.0)
+    }
+
+    /// 檢查可建議的編輯距離鄰居裡，有沒有權重達到 `minimum_prior` 的詞。
+    ///
+    /// 低權重的距離 1 詞不能把常見的距離 2 詞擠出前 k 名，因此這個查詢不看
+    /// 候選上限。
+    pub fn near_common(&self, typed: &str, minimum_prior: f64) -> bool {
+        if !(minimum_prior > 0.0) || !minimum_prior.is_finite() {
+            return false;
+        }
+        !self
+            .corrections_with_prior(typed, 1, minimum_prior)
+            .is_empty()
+    }
+
+    fn corrections_with_prior(
+        &self,
+        typed: &str,
+        limit: usize,
+        minimum_prior: f64,
+    ) -> Vec<Correction> {
+        if limit == 0
+            || typed.len() > MAX_WORD_BYTES
+            || !typed.chars().all(|c| c.is_ascii_alphabetic())
+            || self.has(typed)
+        {
+            return Vec::new();
+        }
+        let lower = typed.to_lowercase();
+        if !is_lower_ascii_word(&lower) || lower.len() < 3 {
+            return Vec::new();
+        }
+        let max_edits = if lower.len() >= 6 { 2 } else { 1 };
+        let limit = limit.min(MAX_SUGGESTIONS);
+        let all_caps = typed
+            .chars()
+            .all(|c| !c.is_ascii_alphabetic() || c.is_ascii_uppercase());
+        let title = typed.as_bytes().first().is_some_and(u8::is_ascii_uppercase);
+        let mut out: Vec<Correction> = Vec::new();
+        for (i, word) in self.words.iter().enumerate() {
+            if self.no_suggest[i] || word.weight < minimum_prior {
+                continue;
+            }
+            if word.text.len().abs_diff(lower.len()) > max_edits {
+                continue;
+            }
+            let Some(distance) = osa_within(&lower, &word.text, max_edits) else {
+                continue;
+            };
+            let text = if all_caps {
+                word.text.to_uppercase()
+            } else if title {
+                capitalize(&word.text)
+            } else {
+                word.text.clone()
+            };
+            out.push(Correction {
+                text,
+                distance,
+                weight: word.weight,
+            });
+        }
+        out.sort_by(|a, b| {
+            a.distance
+                .cmp(&b.distance)
+                .then_with(|| b.weight.total_cmp(&a.weight))
+                .then_with(|| a.text.cmp(&b.text))
+        });
+        out.truncate(limit);
+        out
     }
 
     /// 詞條數。
@@ -904,11 +1230,72 @@ fn is_lower_ascii_word(s: &str) -> bool {
     !s.is_empty() && s.len() <= MAX_WORD_BYTES && s.chars().all(|c| c.is_ascii_lowercase())
 }
 
+/// 以「最優字串對齊」距離比較兩個小寫詞；超過 `max_edits` 時回傳 `None`。
+///
+/// 容許插入、刪除、取代與相鄰互換，並在整列的距離都超過上限時提前放棄。
+fn osa_within(left: &str, right: &str, max_edits: usize) -> Option<usize> {
+    let a = left.as_bytes();
+    let b = right.as_bytes();
+    let m = b.len();
+    let mut row_prev2 = vec![0usize; m + 1];
+    let mut row_prev: Vec<usize> = (0..=m).collect();
+    let mut row_cur = vec![0usize; m + 1];
+    for i in 1..=a.len() {
+        row_cur[0] = i;
+        let mut row_min = i;
+        for j in 1..=m {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut best = (row_cur[j - 1] + 1)
+                .min(row_prev[j] + 1)
+                .min(row_prev[j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(row_prev2[j - 2] + 1);
+            }
+            row_cur[j] = best;
+            row_min = row_min.min(best);
+        }
+        if row_min > max_edits {
+            return None;
+        }
+        std::mem::swap(&mut row_prev2, &mut row_prev);
+        std::mem::swap(&mut row_prev, &mut row_cur);
+    }
+    let distance = row_prev[m];
+    (distance <= max_edits).then_some(distance)
+}
+
+/// 把小寫詞的第一個字母轉大寫。
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// 讀取一般檔案，拒絕符號連結與超過 `limit` 的內容。
+fn read_regular_file(path: &Path, limit: u64) -> Result<Vec<u8>, MixedError> {
+    let info = std::fs::symlink_metadata(path)?;
+    let to_pack = |reason: &str| MixedError::Pack(format!("{reason}：{}", path.display()));
+    if !info.file_type().is_file() {
+        return Err(to_pack("不是一般檔案"));
+    }
+    if info.len() > limit {
+        return Err(to_pack("檔案過大"));
+    }
+    let data = std::fs::read(path)?;
+    if data.len() as u64 > limit {
+        return Err(to_pack("檔案過大"));
+    }
+    Ok(data)
+}
+
 /// 英文查詢層：唯讀詞表加上個人學習詞。
 #[derive(Debug, Clone)]
 pub struct English {
     dict: Dictionary,
     learned: Vec<LearnedWord>,
+    origin: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -923,7 +1310,52 @@ impl English {
         Self {
             dict: dict.unwrap_or_else(|| prototype().clone()),
             learned: Vec::new(),
+            origin: None,
         }
+    }
+
+    /// 讀取一個英文資料包目錄。
+    pub fn from_pack_dir(dir: impl AsRef<Path>) -> Result<Self, MixedError> {
+        let dir = dir.as_ref();
+        let (dict, _manifest) = Dictionary::load_pack(dir)?;
+        Ok(Self {
+            dict,
+            learned: Vec::new(),
+            origin: Some(dir.join("words.bin")),
+        })
+    }
+
+    /// 載入系統上的英文詞表；找不到或載入失敗時退回 [`prototype`]。
+    ///
+    /// 目錄依 [`english_pack_dir`] 的規則解析。退回原型時會留一筆警告，
+    /// 方便分辨「沒有資料」與「詞表只有 104 個詞」。
+    pub fn load_default() -> Self {
+        let Some(dir) = english_pack_dir() else {
+            log::warn!("找不到英文資料包，英文只使用內建原型詞彙");
+            return Self::new(None);
+        };
+        match Self::from_pack_dir(&dir) {
+            Ok(english) => {
+                log::info!(
+                    "已載入英文詞表：{} 詞（{}）",
+                    english.dict.len(),
+                    dir.display()
+                );
+                english
+            }
+            Err(err) => {
+                log::warn!(
+                    "英文資料包 {} 載入失敗（{err}），改用內建原型詞彙",
+                    dir.display()
+                );
+                Self::new(None)
+            }
+        }
+    }
+
+    /// 詞表來源檔案；使用內建原型時是 `None`。
+    pub fn origin(&self) -> Option<&Path> {
+        self.origin.as_deref()
     }
 
     /// 底層詞表。
@@ -1036,22 +1468,60 @@ impl English {
             .map(|s| s.text)
     }
 
-    /// 把補完轉成 [`Candidate`]；原樣輸入的候選由呼叫端自己排在最前面。
+    /// 把補完與拼字建議轉成 [`Candidate`]；原樣輸入的候選由呼叫端自己排在
+    /// 最前面。
+    ///
+    /// 補完候選用完 `limit` 之前，才會補上編輯距離 1（或 2）的拼字建議。
+    /// 拼字建議的成本多一層 [`CORRECTION_PENALTY`] 乘以距離，因此一定排在
+    /// 完整前綴補完之後。
     pub fn candidates(&self, prefix: &str, limit: usize) -> Vec<Candidate> {
         if prefix.is_empty() || limit == 0 {
             return Vec::new();
         }
-        self.suggestions(prefix, limit)
-            .into_iter()
-            .map(|s| {
-                let source = if s.learned {
-                    CandidateSource::Personal
-                } else {
-                    CandidateSource::Lexicon
-                };
-                Candidate::new(s.text.clone(), s.text, cost_of_weight(s.weight), source)
-            })
-            .collect()
+        let suggestions = self.suggestions(prefix, limit);
+        let mut out: Vec<Candidate> = Vec::with_capacity(suggestions.len());
+        let mut seen: Vec<String> = Vec::with_capacity(suggestions.len());
+        for s in suggestions {
+            let key = s.text.to_lowercase();
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            let source = if s.learned {
+                CandidateSource::Personal
+            } else {
+                CandidateSource::Lexicon
+            };
+            out.push(Candidate::new(
+                s.text.clone(),
+                s.text,
+                cost_of_weight(s.weight),
+                source,
+            ));
+        }
+        let limit = limit.min(MAX_SUGGESTIONS);
+        if out.len() < limit
+            && prefix.chars().all(|c| c.is_ascii_alphabetic())
+            && !self.dict.has(prefix)
+        {
+            for correction in self.dict.corrections(prefix, limit - out.len()) {
+                let key = correction.text.to_lowercase();
+                if seen.contains(&key) {
+                    continue;
+                }
+                seen.push(key);
+                let cost = cost_of_weight(correction.weight)
+                    .saturating_add(CORRECTION_PENALTY.saturating_mul(correction.distance as i32));
+                out.push(Candidate::new(
+                    correction.text.clone(),
+                    correction.text,
+                    cost,
+                    CandidateSource::Lexicon,
+                ));
+            }
+        }
+        out.truncate(limit);
+        out
     }
 
     fn find(&self, text: &str) -> Option<&LearnedWord> {
@@ -1069,8 +1539,16 @@ impl English {
 
 impl Default for English {
     fn default() -> Self {
-        Self::new(None)
+        Self::load_default()
     }
+}
+
+/// 全行程共用的英文查詢層：優先用系統上的英文資料包，載入不到才退回原型。
+///
+/// 載入只做一次；之後所有 [`Router`] 與 [`AsciiPiece`] 都共用同一份唯讀詞表。
+pub fn default_english() -> &'static English {
+    static ENGLISH: OnceLock<English> = OnceLock::new();
+    ENGLISH.get_or_init(English::load_default)
 }
 
 impl Lookup for English {
@@ -1148,7 +1626,7 @@ pub fn literal_for(raw: &str, cfg: &Config, english: Option<&English>) -> bool {
             let lookup = english.map(|e| e as &dyn Lookup);
             let borrow: &dyn Lookup = match lookup {
                 Some(l) => l,
-                None => prototype(),
+                None => default_english(),
             };
             if raw.chars().count() >= cfg.min_english_len && !cfg.prefer_kana && borrow.has(raw) {
                 return true;
@@ -1305,11 +1783,11 @@ impl<'a> Router<'a> {
         self
     }
 
-    /// 查詢層：指定的英文查詢層，否則用內建原型詞彙。
-    fn lookup(&self) -> LookupRef<'_> {
+    /// 查詢層：指定的英文查詢層，否則用系統詞表（載不到時是內建原型）。
+    fn lookup(&self) -> &dyn Lookup {
         match self.english {
-            Some(e) => LookupRef::English(e),
-            None => LookupRef::Prototype,
+            Some(e) => e,
+            None => default_english(),
         }
     }
 
@@ -1390,10 +1868,10 @@ impl<'a> Router<'a> {
     }
 
     /// 取得英文查詢層的參照。
-    fn english(&self) -> EnglishRef<'_> {
+    fn english(&self) -> &English {
         match self.english {
-            Some(e) => EnglishRef::Shared(e),
-            None => EnglishRef::Prototype,
+            Some(e) => e,
+            None => default_english(),
         }
     }
 
@@ -1432,45 +1910,12 @@ impl<'a> Router<'a> {
 
     fn plan(&self, input: &str) -> Vec<Plan> {
         let cfg = self.config.normalized();
-        let look = self.lookup();
-        let lookup: &dyn Lookup = look.as_dyn();
+        let lookup: &dyn Lookup = self.lookup();
         let mut atoms = build_atoms(input, lookup, &cfg);
         group_words(&mut atoms, input);
         resolve_han(&mut atoms);
         resolve_symbols(&mut atoms);
         merge_atoms(&atoms, input)
-    }
-}
-
-/// 英文查詢層的借用形式，避免 `Option<&English>` 的生命週期外洩。
-enum LookupRef<'a> {
-    English(&'a English),
-    Prototype,
-}
-
-impl<'a> LookupRef<'a> {
-    fn as_dyn(&self) -> &'a dyn Lookup {
-        match self {
-            LookupRef::English(e) => *e,
-            LookupRef::Prototype => prototype(),
-        }
-    }
-}
-
-enum EnglishRef<'a> {
-    Shared(&'a English),
-    Prototype,
-}
-
-impl EnglishRef<'_> {
-    fn candidates(&self, prefix: &str, limit: usize) -> Vec<Candidate> {
-        match self {
-            EnglishRef::Shared(e) => e.candidates(prefix, limit),
-            EnglishRef::Prototype => {
-                let owned = English::new(None);
-                owned.candidates(prefix, limit)
-            }
-        }
     }
 }
 
@@ -2311,25 +2756,17 @@ impl AsciiInput {
     /// 英文自動補字建議：前綴補完優先，其次差一鍵的修正。
     pub fn suggestion(&self) -> Option<String> {
         let raw = &self.pending;
-        if raw.len() < 2 || !ascii_letters(raw) || prototype().has(raw) {
+        let english = default_english();
+        if raw.len() < 2 || !ascii_letters(raw) || english.has(raw) {
             return None;
         }
-        for suggestion in prototype().prefix(raw, 5) {
+        let dict = english.dictionary();
+        for suggestion in dict.prefix(raw, 5) {
             if suggestion.text.chars().count() >= raw.chars().count() + 2 {
                 return Some(suggestion.text);
             }
         }
-        let lower = raw.to_lowercase();
-        let mut best: Option<(f64, &str)> = None;
-        for word in prototype().words() {
-            if !one_edit_apart(&lower, &word.text) {
-                continue;
-            }
-            if best.is_none_or(|(weight, _)| word.weight > weight) {
-                best = Some((word.weight, &word.text));
-            }
-        }
-        best.map(|(_, text)| text.to_string())
+        dict.corrections(raw, 1).into_iter().next().map(|c| c.text)
     }
 
     /// 接受英文補字建議。
@@ -2418,51 +2855,6 @@ impl AsciiInput {
             None => self.pending.clone(),
         }
     }
-}
-
-/// 兩個字串是否只差一鍵（含相鄰互換）。
-fn one_edit_apart(left: &str, right: &str) -> bool {
-    let a: Vec<char> = left.chars().collect();
-    let b: Vec<char> = right.chars().collect();
-    if a == b {
-        return false;
-    }
-    let (long, short) = if a.len() >= b.len() {
-        (&a, &b)
-    } else {
-        (&b, &a)
-    };
-    if long.len() - short.len() > 1 {
-        return false;
-    }
-    let mut i = 0;
-    let mut j = 0;
-    let mut edits = 0;
-    while i < long.len() && j < short.len() {
-        if long[i] == short[j] {
-            i += 1;
-            j += 1;
-            continue;
-        }
-        edits += 1;
-        if edits > 1 {
-            return false;
-        }
-        if long.len() == short.len() {
-            if i + 1 < long.len()
-                && j + 1 < short.len()
-                && long[i + 1] == short[j]
-                && long[i] == short[j + 1]
-            {
-                return true;
-            }
-            i += 1;
-            j += 1;
-        } else {
-            i += 1;
-        }
-    }
-    edits + (long.len() - i) + (short.len() - j) <= 1
 }
 
 #[cfg(test)]
@@ -2845,6 +3237,240 @@ mod tests {
                 .to_string(),
             "英文詞表格式不合法：詞條截斷或過長"
         );
+    }
+
+    #[test]
+    fn test_codec_roundtrip_and_malformed_input() {
+        let d = Dictionary::new_filtered(
+            [Word::new("example", 5.0), Word::new("excluded", 10.0)],
+            ["excluded".to_string()],
+        );
+        let bytes = d.encode();
+        let back = Dictionary::decode(&bytes).expect("解碼");
+        assert_eq!(bytes, back.encode());
+        assert!(back.has("excluded"));
+        assert!(back.prefix("excl", 2).is_empty());
+        for i in 0..bytes.len() {
+            assert!(Dictionary::decode(&bytes[..i]).is_err(), "接受了截斷 {i}");
+        }
+        let mut extra = bytes.clone();
+        extra.push(0);
+        assert!(Dictionary::decode(&extra).is_err(), "接受了多餘內容");
+        let mut bad = bytes.clone();
+        bad[5] = 255;
+        bad[6] = 255;
+        bad[7] = 255;
+        assert!(Dictionary::decode(&bad).is_err(), "接受了過大的詞數");
+    }
+
+    #[test]
+    fn test_typo_channels_and_valid_word_protection() {
+        let d = prototype();
+        for (typed, want) in [
+            ("recieve", "receive"),
+            ("hellp", "hello"),
+            ("helo", "hello"),
+            ("helllo", "hello"),
+            ("teh", "the"),
+            ("RECIEVE", "RECEIVE"),
+        ] {
+            let got = d.corrections(typed, 1);
+            assert_eq!(got.len(), 1, "{typed}: {got:?}");
+            assert_eq!(got[0].text, want, "{typed}");
+        }
+        for text in ["from", "the", "api_v2", "https://example.com"] {
+            assert!(d.corrections(text, 3).is_empty(), "不該修正 {text}");
+        }
+    }
+
+    #[test]
+    fn test_common_neighbour_is_not_hidden_by_candidate_limit() {
+        let mut words = Vec::new();
+        for at in 0..6 {
+            for c in b'a'..=b'z' {
+                if c == b'x' {
+                    continue;
+                }
+                let mut text = *b"xxxxxx";
+                text[at] = c;
+                words.push(Word::new(
+                    String::from_utf8(text.to_vec()).expect("ASCII"),
+                    40.0,
+                ));
+            }
+        }
+        words.push(Word::new("xxeexx", 100.0));
+        let d = Dictionary::new(words);
+        assert!(
+            !d.corrections("xxxxxx", MAX_SUGGESTIONS)
+                .iter()
+                .any(|c| c.text == "xxeexx"),
+            "距離 2 的常見詞不該擠進前 32 名"
+        );
+        assert!(d.near_common("xxxxxx", 50.0));
+        assert!(!d.near_common("xxxxxx", 101.0));
+        assert!(!d.near_common("xxeexx", 50.0));
+    }
+
+    #[test]
+    fn test_prefix_covers_entire_dictionary() {
+        let mut words = Vec::new();
+        for i in 0..6000u32 {
+            let mut n = i;
+            let mut suffix = String::new();
+            for _ in 0..4 {
+                suffix.push(char::from(b'a' + (n % 26) as u8));
+                n /= 26;
+            }
+            words.push(Word::new(format!("a{suffix}"), 1.0));
+        }
+        words.push(Word::new("azzzz", 100.0));
+        words.push(Word::new("zebra", 90.0));
+        let d = Dictionary::new(words);
+        let got = d.prefix("a", 1);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].text, "azzzz");
+        let got = d.corrections("zebar", 1);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].text, "zebra");
+    }
+
+    #[test]
+    fn test_no_suggest_words_recognized_and_unicode_identifiers_untouched() {
+        let d = Dictionary::new_filtered(
+            [
+                Word::new("example", 9.0),
+                Word::new("examples", 3.0),
+                Word::new("excluded", 100.0),
+            ],
+            ["excluded".to_string()],
+        );
+        assert!(d.has("excluded"));
+        assert!(d.prefix("excl", 3).is_empty());
+        assert!(d.corrections("excludde", 3).is_empty());
+        let long = "x".repeat(1000);
+        for text in ["\u{212a}", "ſearch", "api_v2", "foo123", long.as_str()] {
+            assert!(!d.has(text), "has({text:?})");
+            assert!(d.prefix(text, 5).is_empty(), "prefix({text:?})");
+            assert!(d.corrections(text, 5).is_empty(), "corrections({text:?})");
+        }
+    }
+
+    #[test]
+    fn test_correction_matches_exhaustive_distance() {
+        fn generate(prefix: &str, depth: usize, out: &mut Vec<String>) {
+            if !prefix.is_empty() {
+                out.push(prefix.to_string());
+            }
+            if depth > 0 {
+                for c in ['a', 'b', 'c'] {
+                    generate(&format!("{prefix}{c}"), depth - 1, out);
+                }
+            }
+        }
+        let mut texts = Vec::new();
+        generate("", 4, &mut texts);
+        let words: Vec<Word> = texts
+            .iter()
+            .enumerate()
+            .map(|(i, text)| Word::new(text.clone(), (i + 1) as f64))
+            .collect();
+        let d = Dictionary::new(words);
+        for text in &texts {
+            for typed in [
+                format!("{text}x"),
+                format!("x{text}"),
+                format!("{text}xx"),
+                text.replace('a', "x"),
+            ] {
+                if typed.len() < 3 || d.has(&typed) {
+                    continue;
+                }
+                let max_edits = if typed.len() >= 6 { 2 } else { 1 };
+                let lower = typed.to_lowercase();
+                let mut want: Vec<Correction> = d
+                    .words()
+                    .iter()
+                    .filter_map(|candidate| {
+                        let distance = osa_distance(&lower, &candidate.text);
+                        (distance <= max_edits).then(|| Correction {
+                            text: candidate.text.clone(),
+                            distance,
+                            weight: candidate.weight,
+                        })
+                    })
+                    .collect();
+                want.sort_by(|a, b| {
+                    a.distance
+                        .cmp(&b.distance)
+                        .then_with(|| b.weight.total_cmp(&a.weight))
+                        .then_with(|| a.text.cmp(&b.text))
+                });
+                want.truncate(5);
+                assert_eq!(d.corrections(&typed, 5), want, "{typed}");
+            }
+        }
+    }
+
+    /// 測試用的最優字串對齊距離；不提前放棄，當作獨立對照。
+    fn osa_distance(left: &str, right: &str) -> usize {
+        let a = left.as_bytes();
+        let b = right.as_bytes();
+        let mut rows = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+        for (j, cell) in rows[0].iter_mut().enumerate() {
+            *cell = j;
+        }
+        for i in 1..=a.len() {
+            rows[i][0] = i;
+            for j in 1..=b.len() {
+                let cost = usize::from(a[i - 1] != b[j - 1]);
+                let mut best = (rows[i][j - 1] + 1)
+                    .min(rows[i - 1][j] + 1)
+                    .min(rows[i - 1][j - 1] + cost);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    best = best.min(rows[i - 2][j - 2] + 1);
+                }
+                rows[i][j] = best;
+            }
+        }
+        rows[a.len()][b.len()]
+    }
+
+    #[test]
+    fn test_english_candidates_append_corrections() {
+        let e = english();
+        let cands = e.candidates("recieve", 8);
+        assert_eq!(cands.first().map(|c| c.surface.as_str()), Some("receive"));
+        assert_eq!(cands[0].source, CandidateSource::Lexicon);
+        let exact = e.candidates("hello", 8);
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].surface, "hello");
+    }
+
+    #[test]
+    fn test_data_root_from_handles_testdata_dir() {
+        let root = std::env::temp_dir().join(format!("jc-mixed-root-{}", std::process::id()));
+        let nested = root.join("0c-testdata");
+        std::fs::create_dir_all(&nested).expect("建立測試資料夾");
+        assert_eq!(data_root_from(&nested), Some(root.clone()));
+        assert_eq!(data_root_from(&root), Some(root.clone()));
+        assert_eq!(data_root_from(&root.join("missing")), None);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn test_real_english_pack_loads() {
+        let words = jc_testdata::require_data!("english/words.bin");
+        let dir = words.parent().expect("資料包目錄");
+        let (dict, manifest) = Dictionary::load_pack(dir).expect("載入英文資料包");
+        assert_eq!(manifest.format, 1);
+        assert_eq!(dict.len(), manifest.words);
+        assert!(dict.len() > 80_000, "詞數 {}", dict.len());
+        assert!(dict.has("configuration"));
+        assert_eq!(dict.corrections("recieve", 1)[0].text, "receive");
+        let prefix = dict.prefix("confi", 1);
+        assert_eq!(prefix.len(), 1);
+        assert!(prefix[0].text.starts_with("confi"));
     }
 
     /// 測試用的日文詞條來源。
