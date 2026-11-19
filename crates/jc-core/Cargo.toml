@@ -7,3 +7,5 @@ rust-version.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+unicode-script = "0.5"
+unicode_categories = "0.1"
