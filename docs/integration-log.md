@@ -10,6 +10,7 @@
 | `c0-contracts` | `9280e26` | `aa5e32f` | 通過 | 2026-11-19（先前） |
 | `w1-proto-engine` | `569b523` | `f85d20b` | 通過 | 2026-11-19 20:28 |
 | `w1-data-ja` | `39daa6d` | `3da7a73` | 通過（修正後） | 2026-11-19 20:31 |
+| `w1-eval` | `776ac8c` | `dd00506` | 通過 | 2026-11-19 20:38 |
 
 ## 衝突與修正
 
@@ -23,3 +24,5 @@
   - `crates/jc-data/Cargo.toml`：新增 dev-dependency `jc-testdata = { path = "../jc-testdata" }`。
   - `crates/jc-data/src/ja/tests.rs`：移除本地 `testdata_root`／`testdata_path`／`require_data!`，改用 `jc_testdata::require_data!`。
   - 已對 `jc-data` 跑 `cargo fmt`。
+
+- `w1-eval`（合併 `dd00506`）：無衝突，`Cargo.lock` 由 git 自動合併；沒有編譯錯誤要修，未改任何程式碼。
