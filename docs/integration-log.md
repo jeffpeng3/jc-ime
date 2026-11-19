@@ -72,6 +72,7 @@
 | `rerank-wordlevel` | `277bd8e` | `9476f51` | fmt／clippy 通過；5 個 test 失敗 | 2026-11-20 03:35 |
 | `rerank-wordlevel`（修測試） | `2c25f3d` | `2e649f5` | 通過（fmt＋clippy＋test） | 2026-11-20 04:00 |
 | `defaults-policy` | `e116f5f` | `175f417` | 通過（fmt／clippy／test／兩個 eval） | 2026-11-20 04:08 |
+| `engine-data` | `24b876b` | `8aa5ab1` | clippy 通過；jc-engine 4 個 test 失敗 | 2026-11-20 04:20 |
 
 ## 衝突與修正
 
@@ -589,3 +590,26 @@
   gate：fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` exit 0（38 targets、898 passed、0 failed）。
   `eval zh-golden`：**45/45**、top-1 100.0%（`select-model：沒有推論`，因 golden 案例皆單音節，模型未觸發）。
   `eval ja --corpus modern-500`：top-1 **86.0%**、top-5 98.0%、boundary 88.2%、p50 3.147 ms。
+
+- `engine-data`（合併 `8aa5ab1`）：`jc-cli/src/data.rs` 自動合併（載入邏輯搬進 `jc-engine/src/loader.rs`，jc-cli 反向依賴）。
+  新增 `jc-engine/src/loader.rs`（762 行）、`tests/engine_data.rs`，`main.rs` 接上 `--data`／`JC_DATA`。
+
+  1) gate：`cargo clippy --workspace --all-targets -- -D warnings` exit 0；
+     `cargo test --workspace --no-fail-fast` exit 101（39 targets、907 passed、**4 failed**），全在 `jc-engine`：
+     `tests/stdio.rs` 的 `stdio_round_trip_and_clean_shutdown`（:38）、`version_mismatch_is_rejected_and_closed`（:38）、
+     `eof_without_requests_exits_cleanly`（:126，exit 1 而非 0），與 `tests/socket.rs` 的
+     `socket_serves_connections_sequentially_and_shutdown_cleans_up`（:46，5 秒內沒開始監聽）。
+     原因：`jc-engine` 現在沒給 `--data`／`JC_DATA` 就拒絕啟動（實測輸出
+     `jc-engine: 沒有指定 --data，且 JC_DATA 未設定`），這些整合測試仍用裸 `Command::new(env!("CARGO_BIN_EXE_jc-engine"))`
+     啟動，需由 engine-data 補上資料目錄。
+
+  2) stdio 實測（`jc-engine --data /mnt/work/jc/jc-ime-data`，握手→按鍵→snapshot→commit→shutdown）：
+     - `--mode mixed`：`ji3` → **我**；`watashiwa` → `watashiwa`（mixed 對純 ASCII 仍走英文直通，屬既有行為）。
+     - `--mode ja`：`watashiwa` → **私羽**（實際日文漢字，與既有 `私わ`／`私羽` 差異一致）；`ji3` → 時（日文讀法）。
+     結論：注音與日文都能轉出實際文字；要一次看到兩者需分別用 `mixed` 與 `ja` 模式。
+
+  3) 預設套用稽核：`zh_session_config` 用 `..SessionConfig::default()`，因此
+     **學習（`learning: true`）與模糊音（`DEFAULT_FUZZY_PAIRS` 四組）都有套用**；
+     但 **zh-select 沒有套用**：`SessionConfig` 沒有選字模型欄位，CLI 是靠全域 `zh::select::install` 安裝，
+     `jc-engine/src/loader.rs` 雖然有 `install_select_model`／`disable_select_model` 兩個函式，`main.rs` 從未呼叫，
+     所以引擎實際只走統計排序。這是實作缺口，依指示回報，沒有自行修改。
