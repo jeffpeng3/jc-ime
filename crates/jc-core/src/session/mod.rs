@@ -16,6 +16,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 mod core;
+mod input_style;
+
+pub use input_style::{
+    full_width_idle_keys, halfwidth_shift_keys, idle_keys, zhuyin_key_action, InputStyle, KeyAction,
+};
 
 use crate::candidate::{Candidate, CandidateSource};
 use crate::decode::{Decoder, Hypothesis, Locks};
@@ -111,6 +116,8 @@ pub struct SessionConfig {
     pub personal: PersonalStore,
     /// 個人化學習是否啟用；預設啟用，關閉時只讀不寫。
     pub learning: bool,
+    /// 輸入風格與鍵位；預設零規則，沿用既有鍵位。
+    pub style: InputStyle,
 }
 
 /// 固定替身重排設定。
@@ -149,6 +156,7 @@ impl Default for SessionConfig {
             punct: None,
             personal: PersonalStore::new(),
             learning: true,
+            style: InputStyle::default(),
         }
     }
 }
@@ -244,6 +252,12 @@ pub struct Session {
     pub(super) live_plan: Option<LivePlan>,
     /// 上次清理個人資料後累積的學習事件數。
     pub(super) learn_events: usize,
+    /// 輸入風格與鍵位；由設定複製進來。
+    pub(super) style: InputStyle,
+    /// 是否為全形（Shift＋空白切換）；風格狀態，不存檔。
+    pub(super) full_width: bool,
+    /// 微軟風格的反引號前導是否等待下一個字元。
+    pub(super) symbol_prefix: bool,
 }
 
 impl Default for Session {
@@ -269,6 +283,7 @@ impl Session {
         let personal = config.personal.clone();
         let lexicon = personal.augment_lexicon(&base_lexicon);
         let zh_lm = config.zh_lm.clone();
+        let style = config.style.clone();
         // 逐字変換控制器與日文解碼器共用同一份詞典；關閉時完全不建立。
         let live = if config.ja_live.enabled {
             config.ja.as_ref().map(|decoder| {
@@ -312,6 +327,9 @@ impl Session {
             live,
             live_plan: None,
             learn_events: 0,
+            style,
+            full_width: false,
+            symbol_prefix: false,
         }
     }
 
@@ -350,7 +368,7 @@ impl Session {
     pub fn press(&mut self, key: Key) -> Snapshot {
         if key.ctrl {
             self.press_ctrl(key);
-        } else if !self.menu_key(&key) {
+        } else if !self.style_key(&key) && !self.menu_key(&key) {
             match key.code {
                 KeyCode::Enter => self.finish_composition(),
                 KeyCode::Escape => self.clear_composition(),
@@ -440,11 +458,11 @@ impl Session {
         self.menu_tab_names(menu.kind).get(menu.tab).copied()
     }
 
-    /// 翻到候選的第 `page` 頁；頁面大小固定 10。
+    /// 翻到候選的第 `page` 頁；頁面大小由輸入風格決定，預設 10。
     ///
     /// 目前候選清單保留全部候選，翻頁只是把高亮移到該頁第一項。
     pub fn page(&mut self, page: usize) -> Snapshot {
-        let index = page.saturating_mul(PAGE_SIZE);
+        let index = page.saturating_mul(self.page_size());
         if index < self.candidates.len() {
             self.highlighted = index;
             self.candidate_window = true;
