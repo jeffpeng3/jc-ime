@@ -1,0 +1,122 @@
+{
+  "f16": {
+    "label": "f16",
+    "file_mb": 72.1,
+    "rss_load_mb": 90.2,
+    "load_s": 0.023,
+    "nocontext": {
+      "n": 200,
+      "raw_exact_pct": 51.5,
+      "nfkc_exact_pct": 58.0,
+      "accept_hit_pct": 69.0,
+      "accept_nfkc_hit_pct": 73.5
+    },
+    "context": {
+      "n": 100,
+      "raw_exact_pct": 51.0,
+      "nfkc_exact_pct": 60.0,
+      "accept_hit_pct": 68.0,
+      "accept_nfkc_hit_pct": 75.0
+    },
+    "nocontext_vs_f16": {
+      "exact": 1.0,
+      "char": 1.0,
+      "changed": 0
+    },
+    "context_vs_f16": {
+      "exact": 1.0,
+      "char": 1.0,
+      "changed": 0
+    }
+  },
+  "q8_0": {
+    "label": "Q8_0",
+    "file_mb": 38.7,
+    "rss_load_mb": 58.3,
+    "load_s": 0.033,
+    "nocontext": {
+      "n": 200,
+      "raw_exact_pct": 52.0,
+      "nfkc_exact_pct": 58.5,
+      "accept_hit_pct": 69.5,
+      "accept_nfkc_hit_pct": 74.0
+    },
+    "context": {
+      "n": 100,
+      "raw_exact_pct": 51.0,
+      "nfkc_exact_pct": 60.0,
+      "accept_hit_pct": 68.0,
+      "accept_nfkc_hit_pct": 75.0
+    },
+    "nocontext_vs_f16": {
+      "exact": 0.985,
+      "char": 0.9984848484848484,
+      "changed": 3
+    },
+    "context_vs_f16": {
+      "exact": 0.99,
+      "char": 0.9985714285714287,
+      "changed": 1
+    }
+  },
+  "q5_k_m": {
+    "label": "Q5_K_M",
+    "file_mb": 28.3,
+    "rss_load_mb": 48.2,
+    "load_s": 0.019,
+    "nocontext": {
+      "n": 200,
+      "raw_exact_pct": 52.0,
+      "nfkc_exact_pct": 59.0,
+      "accept_hit_pct": 68.5,
+      "accept_nfkc_hit_pct": 73.5
+    },
+    "context": {
+      "n": 100,
+      "raw_exact_pct": 53.0,
+      "nfkc_exact_pct": 61.0,
+      "accept_hit_pct": 69.0,
+      "accept_nfkc_hit_pct": 76.0
+    },
+    "nocontext_vs_f16": {
+      "exact": 0.925,
+      "char": 0.9849752725100287,
+      "changed": 15
+    },
+    "context_vs_f16": {
+      "exact": 0.95,
+      "char": 0.989892796092796,
+      "changed": 5
+    }
+  },
+  "q4_k_m": {
+    "label": "Q4_K_M",
+    "file_mb": 26.3,
+    "rss_load_mb": 46.3,
+    "load_s": 0.032,
+    "nocontext": {
+      "n": 200,
+      "raw_exact_pct": 50.5,
+      "nfkc_exact_pct": 57.0,
+      "accept_hit_pct": 68.5,
+      "accept_nfkc_hit_pct": 73.0
+    },
+    "context": {
+      "n": 100,
+      "raw_exact_pct": 51.0,
+      "nfkc_exact_pct": 61.0,
+      "accept_hit_pct": 69.0,
+      "accept_nfkc_hit_pct": 76.0
+    },
+    "nocontext_vs_f16": {
+      "exact": 0.945,
+      "char": 0.9828290092667821,
+      "changed": 11
+    },
+    "context_vs_f16": {
+      "exact": 0.97,
+      "char": 0.9914972114972115,
+      "changed": 3
+    }
+  }
+}
