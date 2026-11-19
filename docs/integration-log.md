@@ -19,6 +19,7 @@
 | `j2-ja-lexicon` | `e2fd3e7` | `dd09211` | 通過 | 2026-11-19 21:07 |
 | `j3-ja-decode` | `c014d52` | `ff4c955` | 通過 | 2026-11-19 21:31 |
 | `ja-pack-v2` | `86fe251` | `626d20f` | 通過 | 2026-11-19 21:53 |
+| `m1-mixed` | `c669d5b` | `918088e` | 通過 | 2026-11-19 21:56 |
 
 ## 衝突與修正
 
@@ -61,3 +62,6 @@
 
 - `ja-pack-v2`（合併 `626d20f`）：無衝突。`crates/jc-data/src/ja/` 的 `pack.rs`、`manifest.rs`、`error.rs`、`mod.rs`、`tests.rs`
   支援 v2 與連接矩陣；v1 讀取路徑保留。沒有編譯錯誤要修，未改任何實作。
+
+- `m1-mixed`（合併 `918088e`）：無衝突，兩個 commit（`119d281` 實作、`c669d5b` 宣告模組）。
+  新增 `crates/jc-core/src/mixed.rs`（2757 行），`lib.rs` 加 `pub mod mixed;`。沒有編譯錯誤要修，未改任何實作。
