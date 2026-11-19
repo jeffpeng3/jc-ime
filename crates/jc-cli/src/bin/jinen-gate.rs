@@ -410,7 +410,7 @@ fn echoes_context(context: &str, reading: &str, baseline: &str, candidate: &str)
         return false;
     }
     let span = base_len.max(key_len);
-    overlap >= span * 2 + 1 || out.len() >= overlap + base_len
+    overlap > span * 2 || out.len() >= overlap + base_len
 }
 
 /// 抽出有序的絵文字 cluster 序列；ZWJ、膚色、variation selector、keycap 都
@@ -669,7 +669,7 @@ fn is_dev(id: &str) -> bool {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x100_0000_01b3);
     }
-    hash % 2 == 0
+    hash.is_multiple_of(2)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
