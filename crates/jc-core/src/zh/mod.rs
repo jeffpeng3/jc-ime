@@ -2,12 +2,13 @@
 //!
 //! 這個模組負責把注音的各種寫法整理成統一的音節字串，交給 lattice 與解碼器：
 //! 音節結構與逐符號組音（[`Syllable`]、[`Composer`]）、拼音轉注音
-//! （[`pinyin`]）、實體按鍵排列（[`Keyboard`]）與累積按鍵的狀態機
-//! （[`ZhInput`]）。
+//! （[`pinyin`]）、實體按鍵排列（[`Keyboard`]）、累積按鍵的狀態機
+//! （[`ZhInput`]）與模糊音規則（[`fuzzy`]）。
 //!
 //! 音節的正規字串形式是「聲母 介音 韻母 聲調」，一聲不標、輕聲以 `˙` 放在
 //! 音節尾，與詞庫和個人學習檔的既有格式相同。
 
+pub mod fuzzy;
 pub mod han;
 pub mod input;
 pub mod keyboard;

@@ -1,23 +1,32 @@
 //! `eval` 子命令：注音 golden、日文題庫與模糊輸入。
 //!
-//! 輸出都是 `jc-eval` 的 [`jc_eval::Report`]：表格給人看，`--json` 給機器
-//! 比對。注音 golden 直接驅動 [`jc_core::session::Session`]，因為它的案例是
-//! 「按鍵序列」而不是單一讀音。
+//! 注音 golden 與日文題庫輸出 `jc-eval` 的 [`jc_eval::Report`]，模糊輸入
+//! 輸出 [`jc_eval::FuzzyReport`]（語言×擾動的 raw／fallback 指標）。表格
+//! 給人看，`--json` 給機器比對。注音 golden 直接驅動
+//! [`jc_core::session::Session`]，因為它的案例是「按鍵序列」而不是單一讀音。
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use jc_core::decode::{Decoder, Locks};
+use jc_core::ja::decode::JaContext;
+use jc_core::ja::input::{RomajiEvent, RomajiInput};
 use jc_core::key::{Key, KeyCode};
 use jc_core::lang::Mode;
+use jc_core::lattice::Lattice;
 use jc_core::session::{RerankOptions, Session, SessionConfig};
+use jc_core::zh::fuzzy as zh_fuzzy;
+use jc_core::zh::fuzzy::{Config as FuzzyConfig, Mode as FuzzyMode};
 use jc_core::zh::keyboard::Keyboard;
 use jc_core::zh::syllable::class_of;
 use jc_eval::{
-    evaluate, load_fuzzy_input, load_golden_zh, load_ja_corpus, load_ja_corpus_set, load_rules,
-    percentile, run_ja, CaseResult, CorpusMetrics, CorpusRun, EngineInfo, EvalCase, GoldenAction,
-    Report, Run, RunOptions,
+    fuzzy_corpus_problems, load_fuzzy_input, load_fuzzy_manifest, load_golden_zh, load_ja_corpus,
+    load_ja_corpus_set, load_rules, percentile, rank_of, run_ja, CaseResult, CorpusMetrics,
+    CorpusRun, EngineInfo, FuzzyCaseResult, FuzzyEngineInfo, FuzzyReport, FuzzyRunConfig,
+    GoldenAction, Report, Run, RunOptions,
 };
 
 use crate::cli::CliError;
@@ -200,16 +209,79 @@ pub fn ja(
 }
 
 /// 跑模糊輸入題庫。
+///
+/// 注音走產品預設的 `select` 模糊音設定：開候選時合併近音，不改自動顯示；
+/// 日文走同一個統計轉換器的 N-best。沒有日文 pack 時日文案例仍留在分母，
+/// 候選指標全部算未命中，`no_decoder` 記在降級原因。
 pub fn fuzzy(testdata: Option<PathBuf>, json: bool, out: &mut dyn Write) -> Result<(), CliError> {
     let dir = data::testdata_dir(testdata)?;
     let path = dir.join("fuzzy/fuzzy-input.json");
-    let (corpus, _sha) = load_fuzzy_input(&path)
+    let manifest_path = dir.join("fuzzy/fuzzy-input.manifest.json");
+    let (corpus, sha) = load_fuzzy_input(&path)
         .map_err(|err| CliError::eval(format!("讀取 {} 失敗：{err}", path.display())))?;
-    let cases: Vec<EvalCase> = corpus.items.iter().map(|item| item.eval_case()).collect();
-    let converter = crate::converter::load_auto(&dir)?;
-    let evaluation = evaluate(&converter, &cases, &RunOptions::default());
-    let mut report = Report::new(engine_info(&dir), "");
-    report.insert(corpus.name.clone(), evaluation.metrics.clone());
+    let (manifest, _manifest_sha) = load_fuzzy_manifest(&manifest_path)
+        .map_err(|err| CliError::eval(format!("讀取 {} 失敗：{err}", manifest_path.display())))?;
+    let problems = fuzzy_corpus_problems(&corpus, &sha, &manifest);
+    if !problems.is_empty() {
+        return Err(CliError::eval(format!(
+            "manifest 與題庫不符：{}",
+            problems.join("；")
+        )));
+    }
+
+    let resources = data::load_zh_resources(&dir.join("golden/zh/data"))?;
+    let root = data::data_root(&dir);
+    let ja = data::load_ja_decoder(&root).ok().map(Arc::new);
+    let pack = data::resolve_ja_pack(&root, None).ok();
+    let config = FuzzyConfig::all(FuzzyMode::Select);
+
+    let mut report = FuzzyReport::new(corpus.name.clone(), sha.clone(), corpus.seed);
+    report.engine = FuzzyEngineInfo {
+        data_dir: dir.display().to_string(),
+        lexicon_sha256: file_sha256(&dir.join("golden/zh/data/lexicon.tsv")),
+        lm_sha256: file_sha256(&dir.join("golden/zh/data/lm.tsv")),
+        japanese_pack: pack.as_ref().map(|path| jc_eval::FuzzyPackInfo {
+            path: path.display().to_string(),
+            sha256: file_sha256(path),
+            entries: 0,
+        }),
+        models: "none".to_string(),
+        models_used: false,
+        quality: manifest.quality.clone(),
+    };
+    report.config = FuzzyRunConfig {
+        top_n: FUZZY_TOP_N,
+        fuzzy: config.key(),
+        ranker: "score.Ranker statistical fallback (no model)".to_string(),
+        models: "none".to_string(),
+        quality: manifest.quality.clone(),
+    };
+
+    for item in &corpus.items {
+        let started = Instant::now();
+        let mut case = FuzzyCaseResult {
+            id: item.id.clone(),
+            language: item.language.clone(),
+            kind: item.kind.clone(),
+            reference: item.surface.clone(),
+            input: item.input.clone(),
+            noisy_reading: item.noisy_reading.clone(),
+            pending: item.pending.clone(),
+            ..FuzzyCaseResult::default()
+        };
+        let mut degraded = Vec::new();
+        match item.language.as_str() {
+            "zh" => run_fuzzy_zh(item, &resources, config, &mut case, &mut degraded),
+            "ja" => run_fuzzy_ja(item, ja.as_ref(), &mut case, &mut degraded),
+            other => degraded.push(format!("unknown_language:{other}")),
+        }
+        case.degraded = !degraded.is_empty();
+        case.degraded_reason = degraded.join(",");
+        case.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+        report.cases.push(case);
+    }
+    report.summarize();
+
     if json {
         writeln!(
             out,
@@ -273,6 +345,206 @@ fn fuzzy_pair(id: &str, mode: &str) -> Option<(char, char)> {
         "en-eng" => Some(('ㄣ', 'ㄥ')),
         _ => None,
     }
+}
+
+/// 模糊題庫一次取幾個候選。
+const FUZZY_TOP_N: usize = 8;
+
+/// 注音案例：展開近音與無聲調讀音，合併各變體的 N-best。
+fn run_fuzzy_zh(
+    item: &jc_eval::FuzzyItem,
+    resources: &data::ZhResources,
+    config: FuzzyConfig,
+    case: &mut FuzzyCaseResult,
+    degraded: &mut Vec<String>,
+) {
+    if item.noisy_reading.is_empty() {
+        degraded.push("no_reading".to_string());
+        set_fuzzy_empty(case);
+        case.miss_class = "noise".to_string();
+        return;
+    }
+    let syllables = jc_core::zh::syllable::parse_reading(&item.noisy_reading);
+    if syllables.is_empty() {
+        degraded.push("no_reading".to_string());
+        set_fuzzy_empty(case);
+        case.miss_class = "noise".to_string();
+        return;
+    }
+    let variants = config.variants(&syllables);
+    let mut best: BTreeMap<String, i32> = BTreeMap::new();
+    for variant in &variants {
+        let readings: Vec<String> = variant
+            .syllables
+            .iter()
+            .map(|syl| syl.as_str().to_string())
+            .collect();
+        let Ok(lattice) = Lattice::build(&readings, &resources.lexicon, &resources.ctx) else {
+            continue;
+        };
+        let decoder = Decoder::new(&resources.lexicon, &resources.ctx);
+        let (hypotheses, _) = decoder.nbest(&lattice, &Locks::new(), false, FUZZY_TOP_N);
+        for hypothesis in hypotheses {
+            let cost = hypothesis
+                .cost
+                .saturating_mul(10)
+                .saturating_add(variant.cost_tenths as i32);
+            best.entry(hypothesis.text)
+                .and_modify(|old| *old = (*old).min(cost))
+                .or_insert(cost);
+        }
+    }
+    let mut ranked: Vec<(String, i32)> = best.into_iter().collect();
+    ranked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let surfaces: Vec<String> = ranked.into_iter().map(|(surface, _)| surface).collect();
+    if surfaces.is_empty() {
+        degraded.push("no_candidates".to_string());
+    }
+    case.rank = rank_of(&surfaces, &item.surface);
+    case.raw_top5 = surfaces.iter().take(5).cloned().collect();
+    case.output = surfaces.first().cloned().unwrap_or_default();
+    case.intended = case.output == item.surface;
+    if case.output.is_empty() {
+        degraded.push("no_commit".to_string());
+    }
+    case.fallback_rank = case.rank;
+    case.fallback_top5 = case.raw_top5.clone();
+    case.fallback_intended = case.fallback_rank == 1;
+    case.fallback_outcome = if surfaces.is_empty() {
+        "none".to_string()
+    } else {
+        "fallback".to_string()
+    };
+    if case.rank == 0 {
+        case.miss_class = classify_zh_miss(item, resources, &variants);
+    }
+}
+
+/// 分類注音失誤：規則沒展開、詞典沒有、或候選排序把答案擠出前五。
+fn classify_zh_miss(
+    item: &jc_eval::FuzzyItem,
+    resources: &data::ZhResources,
+    variants: &[zh_fuzzy::Variant],
+) -> String {
+    use jc_core::lattice::Lexicon;
+    let mut original_reachable = false;
+    let mut surface_reachable = false;
+    for variant in variants {
+        let reading = variant
+            .syllables
+            .iter()
+            .map(|syl| syl.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if reading == item.reading {
+            original_reachable = true;
+        }
+        if resources
+            .lexicon
+            .lookup(&reading)
+            .iter()
+            .any(|entry| entry.surface == item.surface)
+        {
+            surface_reachable = true;
+            break;
+        }
+    }
+    if surface_reachable {
+        "ranking".to_string()
+    } else if original_reachable {
+        "dictionary".to_string()
+    } else if item.kind == "near-sound" {
+        "rule".to_string()
+    } else {
+        "noise".to_string()
+    }
+}
+
+/// 日文案例：統計轉換器的 N-best，加上羅馬字工作階段的實際提交。
+fn run_fuzzy_ja(
+    item: &jc_eval::FuzzyItem,
+    decoder: Option<&Arc<jc_core::ja::decode::JaDecoder>>,
+    case: &mut FuzzyCaseResult,
+    degraded: &mut Vec<String>,
+) {
+    let mut romaji = RomajiInput::new();
+    let mut unhandled = 0;
+    for ch in item.input.chars() {
+        if romaji.press(Key::char(ch, false)) == RomajiEvent::Rejected {
+            unhandled += 1;
+        }
+    }
+    if unhandled > 0 || !item.pending.is_empty() {
+        degraded.push("unhandled_keys".to_string());
+    }
+    if item.noisy_reading.is_empty() {
+        degraded.push("no_reading".to_string());
+        set_fuzzy_empty(case);
+        case.miss_class = "dictionary".to_string();
+        return;
+    }
+    let Some(decoder) = decoder else {
+        degraded.push("no_decoder".to_string());
+        set_fuzzy_empty(case);
+        case.miss_class = "dictionary".to_string();
+        return;
+    };
+    let results = decoder.nbest(&item.noisy_reading, &JaContext::default(), FUZZY_TOP_N);
+    let surfaces: Vec<String> = results
+        .iter()
+        .map(|result| result.surface.clone())
+        .filter(|surface| !surface.is_empty())
+        .collect();
+    if surfaces.is_empty() {
+        degraded.push("no_candidates".to_string());
+    }
+    case.rank = rank_of(&surfaces, &item.surface);
+    case.raw_top5 = surfaces.iter().take(5).cloned().collect();
+    case.fallback_rank = case.rank;
+    case.fallback_top5 = case.raw_top5.clone();
+    case.fallback_intended = case.fallback_rank == 1;
+    case.fallback_outcome = if surfaces.is_empty() {
+        "none".to_string()
+    } else {
+        "fallback".to_string()
+    };
+
+    let mut session = Session::new(jc_core::session::SessionConfig {
+        mode: Mode::Ja,
+        max_candidates: FUZZY_TOP_N,
+        ja: Some(Arc::clone(decoder)),
+        ..jc_core::session::SessionConfig::default()
+    });
+    for ch in item.input.chars() {
+        session.press(Key::char(ch, false));
+    }
+    session.press(Key::new(KeyCode::Enter, None, false));
+    case.output = session.commit();
+    case.intended = case.output == item.surface;
+    if case.output.is_empty() {
+        degraded.push("no_commit".to_string());
+    }
+    if case.rank == 0 {
+        case.miss_class = "dictionary".to_string();
+    }
+}
+
+fn set_fuzzy_empty(case: &mut FuzzyCaseResult) {
+    case.rank = 0;
+    case.raw_top5.clear();
+    case.output.clear();
+    case.intended = false;
+    case.fallback_rank = 0;
+    case.fallback_top5.clear();
+    case.fallback_intended = false;
+    case.fallback_outcome = "none".to_string();
+}
+
+fn file_sha256(path: &Path) -> String {
+    let Ok(raw) = std::fs::read(path) else {
+        return String::new();
+    };
+    jc_eval::sha256_hex(&raw)
 }
 
 /// 跑一個 golden 案例，回傳依序的 commit 字串。
@@ -505,6 +777,74 @@ mod tests {
             text.lines().any(|line| line.contains("45")),
             "45 個案例都要跑到：\n{text}"
         );
+    }
+
+    #[test]
+    fn fuzzy_reports_language_and_kind_groups() {
+        let dir = jc_testdata::require_data!("0c-testdata/fuzzy/fuzzy-input.json");
+        let testdata = dir.parent().and_then(Path::parent).unwrap().to_path_buf();
+        let mut out = Vec::new();
+        fuzzy(Some(testdata), true, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(report["corpus"], "fuzzy-input");
+        assert_eq!(report["cases"].as_array().unwrap().len(), 919);
+        let groups = report["groups"].as_array().unwrap();
+        assert!(groups.iter().any(|group| {
+            group["language"] == "zh" && group["kind"] == "near-sound" && group["n"] == 43
+        }));
+        assert!(groups.iter().any(|group| {
+            group["language"] == "ja" && group["kind"] == "wrong-key" && group["n"] == 200
+        }));
+        let all = groups
+            .iter()
+            .find(|group| group["language"].is_null() && group["kind"].is_null())
+            .expect("缺少全體合計");
+        assert_eq!(all["n"], 919);
+        assert_eq!(all["raw"]["n"], 919);
+        assert_eq!(all["fallback"]["n"], 919);
+    }
+
+    #[test]
+    fn fuzzy_near_sound_reaches_reference() {
+        let dir = jc_testdata::require_data!("0c-testdata/fuzzy/fuzzy-input.json");
+        let testdata = dir.parent().and_then(Path::parent).unwrap().to_path_buf();
+        let mut out = Vec::new();
+        fuzzy(Some(testdata), true, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let group = report["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["language"] == "zh" && group["kind"] == "near-sound")
+            .expect("缺少 zh/near-sound");
+        assert_eq!(group["n"], 43);
+        assert_eq!(group["raw"]["top1"], 43);
+        assert_eq!(group["raw"]["top5"], 43);
+    }
+
+    #[test]
+    fn fuzzy_rejects_manifest_mismatch() {
+        let dir = jc_testdata::require_data!("0c-testdata/fuzzy/fuzzy-input.json");
+        let source = dir.parent().and_then(Path::parent).unwrap();
+        let work = std::env::temp_dir().join(format!("jc-cli-fuzzy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(work.join("fuzzy")).unwrap();
+        std::fs::copy(&dir, work.join("fuzzy/fuzzy-input.json")).unwrap();
+        let manifest = source.join("fuzzy/fuzzy-input.manifest.json");
+        let mut value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+        value["sha256"] = serde_json::Value::String("0".repeat(64));
+        std::fs::write(
+            work.join("fuzzy/fuzzy-input.manifest.json"),
+            serde_json::to_string(&value).unwrap(),
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        let err = fuzzy(Some(work.clone()), false, &mut out).unwrap_err();
+        assert!(err.to_string().contains("manifest"), "{err}");
+        std::fs::remove_dir_all(&work).unwrap();
     }
 
     #[test]
