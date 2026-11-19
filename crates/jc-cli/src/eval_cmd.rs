@@ -125,6 +125,7 @@ pub fn zh_golden(options: GoldenOptions, out: &mut dyn Write) -> Result<(), CliE
                 == Some("page")
         });
         apply_options(&mut config, &case.options, paging, converter.as_ref());
+        apply_seed(&mut config, case.seed.as_ref());
         let mut session = Session::new(config);
         let started = Instant::now();
         let outcome = drive_case(&mut session, &case.actions);
@@ -641,6 +642,24 @@ fn apply_options(
         .collect();
 }
 
+/// 把題庫的個人化種子套進 session 設定。
+///
+/// golden 的 seed 只用來自訂詞與既有詞頻；每個案例都從乾淨的 store 開始，
+/// 不讀使用者目錄，因此重跑結果固定。
+fn apply_seed(config: &mut SessionConfig, seed: Option<&jc_eval::GoldenSeed>) {
+    let Some(seed) = seed else {
+        return;
+    };
+    for vocab in &seed.vocab {
+        for reading in &vocab.readings {
+            config.personal.add_vocab(&vocab.text, reading);
+        }
+    }
+    for (word, units) in &seed.unigrams {
+        config.personal.note_seed(word, *units);
+    }
+}
+
 /// 模糊音配對 id 對應到兩個注音符號；只接受 `select` 模式。
 fn fuzzy_pair(id: &str, mode: &str) -> Option<(char, char)> {
     if mode != "select" {
@@ -948,6 +967,12 @@ fn named_key(name: &str) -> Result<Option<Key>, String> {
         "Escape" => KeyCode::Escape,
         "Backspace" => KeyCode::Backspace,
         "Delete" => KeyCode::Delete,
+        "ShiftDelete" => {
+            return Ok(Some(Key::new(KeyCode::Delete, None, true)));
+        }
+        "ShiftBackspace" => {
+            return Ok(Some(Key::new(KeyCode::Backspace, None, true)));
+        }
         "Tab" => KeyCode::Tab,
         "Space" => KeyCode::Space,
         "Left" | "Up" => KeyCode::ArrowLeft,
@@ -994,7 +1019,14 @@ fn apply_request(session: &mut Session, request: &serde_json::Value) -> Result<(
             session.toggle_english();
             Ok(())
         }
-        "forget" => Ok(()),
+        "forget" => {
+            let word = request
+                .get("word")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            session.forget_word(word);
+            Ok(())
+        }
         other => Err(format!("請求 {other:?}")),
     }
 }

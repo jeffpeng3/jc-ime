@@ -18,6 +18,9 @@ use crate::cli::CliError;
 /// 沒有指定 `--testdata` 時使用的 `0c-testdata` 目錄。
 pub const DEFAULT_TESTDATA: &str = "/mnt/work/jc/jc-ime-data/0c-testdata";
 
+/// 個人化學習資料檔名。
+pub const PERSONAL_FILE: &str = "personal.json";
+
 /// 注音評測資源。
 #[derive(Debug, Clone)]
 pub struct ZhResources {
@@ -75,6 +78,26 @@ fn check_dir(dir: PathBuf) -> Result<PathBuf, CliError> {
     } else {
         Err(CliError::data(format!("找不到題庫目錄：{}", dir.display())))
     }
+}
+
+/// 從使用者資料目錄載入個人化學習資料。
+///
+/// 檔案不存在時回傳空資料；格式錯誤直接報錯，不靜默覆蓋使用者的學習結果。
+pub fn load_personal(dir: &Path) -> Result<jc_core::personal::PersonalStore, CliError> {
+    let path = dir.join(PERSONAL_FILE);
+    if !path.is_file() {
+        return Ok(jc_core::personal::PersonalStore::new());
+    }
+    jc_core::personal::PersonalStore::load(&path)
+        .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", path.display())))
+}
+
+/// 把個人化學習資料寫回使用者資料目錄。
+pub fn save_personal(dir: &Path, store: &jc_core::personal::PersonalStore) -> Result<(), CliError> {
+    let path = dir.join(PERSONAL_FILE);
+    store
+        .save(&path)
+        .map_err(|err| CliError::data(format!("寫入 {} 失敗：{err}", path.display())))
 }
 
 /// 載入注音固定詞典與成本設定。

@@ -9,6 +9,7 @@ use jc_core::candidate::Candidate;
 use jc_core::decode::{Decoder, Locks};
 use jc_core::ja::decode::{JaContext, JaDecoder};
 use jc_core::lattice::{InMemoryLexicon, Lattice};
+use jc_core::personal::PersonalStore;
 use jc_core::score::ScoreContext;
 use jc_core::zh::syllable::class_of;
 use jc_eval::Converter;
@@ -21,6 +22,7 @@ use crate::data::{self, ZhResources};
 #[derive(Debug, Clone)]
 pub struct ZhConverter {
     resources: ZhResources,
+    personal: PersonalStore,
 }
 
 /// 一次轉換的 bigram 查詢統計。
@@ -37,7 +39,16 @@ pub struct LmQueryStats {
 impl ZhConverter {
     /// 用固定詞典建立轉換器。
     pub fn new(resources: ZhResources) -> Self {
-        Self { resources }
+        Self {
+            resources,
+            personal: PersonalStore::new(),
+        }
+    }
+
+    /// 接上個人化學習資料；候選排序會套用單字手選與自訂詞。
+    pub fn with_personal(mut self, personal: PersonalStore) -> Self {
+        self.personal = personal;
+        self
     }
 
     /// 設定 bigram 內插權重 μ；照前身 `personal.Params.Mu`。
@@ -86,20 +97,19 @@ impl ZhConverter {
                 (hypotheses, LmQueryStats::default())
             }
         };
-        (
-            hypotheses
-                .into_iter()
-                .map(|hypothesis| {
-                    Candidate::new(
-                        hypothesis.text,
-                        reading.to_string(),
-                        hypothesis.cost,
-                        jc_core::candidate::CandidateSource::Lexicon,
-                    )
-                })
-                .collect(),
-            stats,
-        )
+        let mut ranked: Vec<Candidate> = hypotheses
+            .into_iter()
+            .map(|hypothesis| {
+                Candidate::new(
+                    hypothesis.text,
+                    reading.to_string(),
+                    hypothesis.cost,
+                    jc_core::candidate::CandidateSource::Lexicon,
+                )
+            })
+            .collect();
+        self.personal.rank_candidates(&mut ranked, reading);
+        (ranked, stats)
     }
 }
 
@@ -236,6 +246,8 @@ pub struct ConvertOptions {
     pub json: bool,
     /// 啟用注音選字模型重排。
     pub select_model: bool,
+    /// 個人化學習資料目錄；未指定時不載入。
+    pub user_data: Option<PathBuf>,
 }
 
 /// `convert` 子命令：單句轉換並列出 N-best。
@@ -257,6 +269,7 @@ pub fn convert(
         n,
         json,
         select_model,
+        user_data,
     } = options;
     #[cfg(feature = "onnx")]
     if select_model {
@@ -285,7 +298,14 @@ pub fn convert(
         if let Some(mu) = mu {
             resources.ctx.bigram_mu = mu;
         }
-        ZhConverter::new(resources).nbest_with_stats(reading, n)
+        let personal = match &user_data {
+            Some(dir) => data::load_personal(dir)?,
+            None => PersonalStore::new(),
+        };
+        resources.lexicon = personal.augment_lexicon(&resources.lexicon);
+        ZhConverter::new(resources)
+            .with_personal(personal)
+            .nbest_with_stats(reading, n)
     } else {
         let dir = data::testdata_dir(testdata)?;
         let decoder = data::load_ja_decoder(&data::data_root(&dir))?;

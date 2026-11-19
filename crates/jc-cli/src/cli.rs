@@ -104,6 +104,8 @@ pub enum Command {
         json: bool,
         /// 啟用注音選字模型重排。
         select_model: bool,
+        /// 個人化學習資料目錄；未指定時不載入。
+        user_data: Option<PathBuf>,
     },
     /// 對檔案中的每行讀音做轉換並計時。
     Bench {
@@ -283,6 +285,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     let mut n = 5usize;
     let mut json = false;
     let mut select_model = false;
+    let mut user_data = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -317,6 +320,10 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
             }
             "--stats" => stats = true,
             "--json" => json = true,
+            "--user-data" => {
+                index += 1;
+                user_data = Some(PathBuf::from(value(args, index, "--user-data")?));
+            }
             other if other.starts_with("--") => {
                 return Err(CliError::Usage(format!("convert 不認得的參數 {other}")));
             }
@@ -340,6 +347,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
         n,
         json,
         select_model,
+        user_data,
     })
 }
 
@@ -471,6 +479,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             n,
             json,
             select_model,
+            user_data,
         } => crate::converter::convert(
             crate::converter::ConvertOptions {
                 testdata: testdata.clone(),
@@ -481,6 +490,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 n: *n,
                 json: *json,
                 select_model: *select_model,
+                user_data: user_data.clone(),
             },
             reading,
             out,
@@ -505,7 +515,7 @@ pub fn usage() -> String {
          [--rerank on|off] [--json]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
-         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--json]\n  \
+         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--user-data <dir>] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
          --data 指向注音二進位資料包（lexicon.bin、lm.bin、manifest.json）；\n\
@@ -613,6 +623,7 @@ mod tests {
                 n: 3,
                 json: false,
                 select_model: false,
+                user_data: None,
             }
         );
     }
@@ -631,6 +642,7 @@ mod tests {
                 n: 5,
                 json: false,
                 select_model: true,
+                user_data: None,
             }
         );
         assert_eq!(
@@ -673,6 +685,7 @@ mod tests {
                 n: 5,
                 json: false,
                 select_model: false,
+                user_data: None,
             }
         );
         assert!(parse(&args(&["convert", "ㄚ", "--mu", "1.5"])).is_err());

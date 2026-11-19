@@ -15,6 +15,7 @@ pub mod lang;
 pub mod lattice;
 pub mod mixed;
 pub mod output;
+pub mod personal;
 pub mod punct;
 pub mod reading;
 pub mod score;
