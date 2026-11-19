@@ -34,6 +34,8 @@
 | `zh-data` | `333abac` | `b2f6d80` | 通過 | 2026-11-19 23:23 |
 | `zh-models` | `f188bf7` | `5d85e54` | 通過 | 2026-11-19 23:27 |
 | `docs-milestone` | `5f87d03` | `52ac22e` | 通過 | 2026-11-19 23:29 |
+| `ci-clippy` | `34055f4` | `34ecac4` | 通過 | 2026-11-19 23:30 |
+| `zh-symbols` | `f6db514` | `b6de2a9` | 通過 | 2026-11-19 23:30 |
 
 ## 衝突與修正
 
@@ -176,3 +178,8 @@
 - `docs-milestone`（合併 `52ac22e`）：無衝突，只有文件改動：`README.md`、`docs/architecture.md`、`docs/history.md` 更新到 M2，
   新增 `docs/status.md`。`cargo check` 全部 cached 通過，確認沒動到程式。
   `README.md` 的 `## 致謝` 段落仍在（文字重排換行，內容未變）。
+
+- `ci-clippy`（合併 `34ecac4`）：無衝突，29 個檔全部是 clippy／fmt 修正（245 增、158 刪），另有 `docs/port/ci-clippy.md`。
+  `cargo check --workspace --all-targets` 通過，0 warning。
+- `zh-symbols`（合併 `b6de2a9`）：`jc-core/src/session.rs` 自動合併，無衝突。新增 `symbols.rs`、`emoji.rs`、`punct.rs`，
+  `session.rs` 接上符號、表情、全形數字與補標點，`lib.rs` 加模組宣告。`cargo check --workspace --all-targets` 通過，0 warning。
