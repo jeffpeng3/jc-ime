@@ -98,6 +98,7 @@
 | `session-g1-input` | `45a73fa` | `ded267a` | test 2 個失敗（branch 自帶）；fmt／clippy／兩個 eval 通過 | 2026-11-20 06:26 |
 | `proto-extend` | `43c1741` | `a60766b` | test 剩同 2 個；fmt／clippy／兩個 eval 通過 | 2026-11-20 06:33 |
 | `session-g1-input`（修測試） | `4a493c3` | `f442cd4` | 通過（fmt／clippy／全量 test／兩個 eval） | 2026-11-20 06:37 |
+| `candle-quant` | `51f459c` | `1972ae1` | test 1 個失敗、clippy 1 個錯（皆 branch 自帶） | 2026-11-20 06:40 |
 
 ## 衝突與修正
 
@@ -906,3 +907,21 @@
 - `session-g1-input` 第二次合併（`f442cd4`，含 `4a493c3`）：無衝突，`input_style.rs` 修兩個測試（同音詞成本、全形英文改成累加預覽）。
   fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（44 targets、1017 passed、0 failed）。
   實測：`eval zh-golden` **45/45**；`eval ja modern-500` **86.0%**、p50 3.107 ms。全量測試回到全綠。
+
+- `candle-quant`（合併 `1972ae1`，含 `3f5b493`、`1580558`、`51f459c`）：`Cargo.toml`、`candle/mod.rs`、`candle/punct.rs`、
+  `lib.rs`、`punctuation_model.rs` 有衝突。解法：candle 三個檔案與 `punctuation_model.rs` 採 branch 版（量化 Layer／Encoder 泛型、
+  `punct_weights_path`、Q8_0/Q5K/Q4K 載入），再把 Jinen 接回：`pub mod jinen;` 與 `pub use candle::jinen::{Generation, Jinen};`；
+  `rerank.rs` 改用 branch 的 `weights_path`／`WEIGHTS_ENV`（原本我加的 `weights_path_with_env` 已成私有）。
+
+  gate：fmt exit 0；`cargo test --workspace --no-fail-fast` exit 101（45 targets、1021 passed、**1 failed**）；
+  `cargo clippy --workspace --all-targets -- -D warnings` exit 101（**1 個錯**）。兩者都在 branch 自己的檔案：
+  - `candle::quant::tests::quantized_levels_stay_close_to_fp32`（`candle/quant.rs:791`）：Q8_0 −0.79020256 vs fp32 −0.8029184，
+    差 0.0127 超過測試容許值。
+  - `candle/mod.rs:360` `Layer::new` 8 個參數，`clippy::too_many_arguments`。
+
+  量測（作者）：
+  - reranker **Q8_0**：35.2 MiB，100 次推論後 RSS **117 MiB**（fp32 300 MiB，**−61%**），逐對排序 **99.77%**，
+    端到端 modern-500 逐題與 fp32 相同（500/500）。
+  - Q5K 23.2 MiB／RSS 98.9 MiB，逐對 99.43% 但整組順序只有 **95.0%**；Q4K 19.2 MiB／92.3 MiB，整組順序 **90.5%**。
+  - 標點 Q8_0 字元一致 **99.65%**，Q5K／Q4K 掉到 99.22%／97.40%。
+  - 出貨建議：**Q8_0**（reranker 與標點都用），Q5K／Q4K 只當空間極限時的備案。
