@@ -26,9 +26,9 @@ use jc_core::zh::keyboard::Keyboard;
 use jc_core::zh::syllable::class_of;
 use jc_eval::{
     fuzzy_corpus_problems, load_fuzzy_input, load_fuzzy_manifest, load_golden_mixed,
-    load_golden_zh, load_ja_corpus, load_ja_corpus_set, load_rules, percentile, rank_of, run_ja,
+    load_golden_zh, load_ja_corpus, load_ja_corpus_dir, load_rules, percentile, rank_of, run_ja,
     CaseResult, CorpusMetrics, CorpusRun, EngineInfo, FuzzyCaseResult, FuzzyEngineInfo,
-    FuzzyReport, FuzzyRunConfig, GoldenAction, Report, Run, RunOptions,
+    FuzzyReport, FuzzyRunConfig, GoldenAction, JaCorpusEntry, Report, RuleSet, Run, RunOptions,
 };
 
 use crate::cli::{CliError, LeftMode};
@@ -232,39 +232,42 @@ fn write_select_stats(out: &mut dyn Write) -> Result<(), CliError> {
     Ok(())
 }
 
+/// `eval ja` 子命令的參數。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct JaOptions {
+    /// `0c-testdata` 目錄。
+    pub testdata: Option<PathBuf>,
+    /// `ja/` 目錄裡的題庫名稱，或直接給題庫 `.json` 路徑。
+    pub corpus: String,
+    /// 日文 pack；未指定時由 `JC_JA_PACK` 與資料根目錄決定。
+    pub pack: Option<PathBuf>,
+    /// 是否接上神經重排。
+    pub rerank: bool,
+    /// 左文來源。
+    pub left: LeftMode,
+    /// 輸出聚合報告 JSON。
+    pub json: bool,
+    /// 輸出含逐題結果的 JSON。
+    pub items: bool,
+}
+
 /// 跑單一日文題庫。
 ///
-/// `corpus` 可以是 `rules.json` 裡的題庫名稱，也可以是 `.json` 路徑；後者
-/// 讓 CLI 與 `ja-eval` 能用同一份小型題庫對照。`pack` 未指定時走
+/// `corpus` 可以是 `ja/` 目錄裡的題庫名稱，也可以是 `.json` 路徑；前者由
+/// 目錄掃描得到，檔名不寫死。`pack` 未指定時走
 /// [`data::resolve_ja_pack`] 的預設順序。
-pub fn ja(
-    testdata: Option<PathBuf>,
-    corpus: &str,
-    pack: Option<PathBuf>,
-    rerank: bool,
-    left: LeftMode,
-    json: bool,
-    out: &mut dyn Write,
-) -> Result<(), CliError> {
+pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
+    let JaOptions {
+        testdata,
+        corpus,
+        pack,
+        rerank,
+        left,
+        json,
+        items,
+    } = options;
     let dir = data::testdata_dir(testdata)?;
-    let rules_path = dir.join("ja/rules.json");
-    let rules = load_rules(&rules_path)
-        .map_err(|err| CliError::eval(format!("讀取 {} 失敗：{err}", rules_path.display())))?;
-    let selected = if Path::new(corpus).is_file() {
-        vec![load_ja_corpus(Path::new(corpus))
-            .map_err(|err| CliError::eval(format!("讀取 {corpus} 失敗：{err}")))?]
-    } else {
-        let entries = load_ja_corpus_set(&rules, &rules_path)
-            .map_err(|err| CliError::eval(format!("讀取日文題庫失敗：{err}")))?;
-        let selected: Vec<_> = entries
-            .into_iter()
-            .filter(|entry| entry.corpus.name == corpus)
-            .collect();
-        if selected.is_empty() {
-            return Err(CliError::eval(format!("rules.json 沒有題庫 {corpus:?}")));
-        }
-        selected
-    };
+    let (rules, selected) = select_ja_corpora(&dir, &corpus)?;
     let root = data::data_root(&dir);
     let decoder = data::load_ja_decoder_with_pack(&root, pack.as_deref())?;
     let reranker = if rerank {
@@ -291,7 +294,14 @@ pub fn ja(
     }
     let options = RunOptions::from_rules(&rules);
     let run = run_ja(&converter, &rules, &selected, engine_info(&dir), &options);
-    if json {
+    if items {
+        writeln!(
+            out,
+            "{}",
+            run.to_items_json_pretty()
+                .map_err(|err| CliError::eval(format!("輸出 JSON 失敗：{err}")))?
+        )?;
+    } else if json {
         writeln!(
             out,
             "{}",
@@ -322,6 +332,45 @@ pub fn ja(
         }
     }
     Ok(())
+}
+
+/// 依 `--corpus` 選出要跑的題庫。
+///
+/// 名稱比對以目錄掃描為準：`<testdata>/ja/*.json` 每份題庫都會被載入，
+/// 沒有寫死的題庫清單。`corpus` 是既有檔案路徑時直接讀那一個檔案，方便
+/// 拿小型子集對照。
+pub(crate) fn select_ja_corpora(
+    testdata: &Path,
+    corpus: &str,
+) -> Result<(RuleSet, Vec<JaCorpusEntry>), CliError> {
+    let ja_dir = testdata.join("ja");
+    let rules_path = ja_dir.join("rules.json");
+    let rules = load_rules(&rules_path)
+        .map_err(|err| CliError::eval(format!("讀取 {} 失敗：{err}", rules_path.display())))?;
+    if Path::new(corpus).is_file() {
+        let entry = load_ja_corpus(Path::new(corpus))
+            .map_err(|err| CliError::eval(format!("讀取 {corpus} 失敗：{err}")))?;
+        return Ok((rules, vec![entry]));
+    }
+    let entries = load_ja_corpus_dir(&ja_dir, &rules)
+        .map_err(|err| CliError::eval(format!("讀取日文題庫失敗：{err}")))?;
+    let selected: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.corpus.name == corpus)
+        .cloned()
+        .collect();
+    if selected.is_empty() {
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.corpus.name.as_str())
+            .collect();
+        return Err(CliError::eval(format!(
+            "{} 沒有題庫 {corpus:?}；目錄裡有：{}",
+            ja_dir.display(),
+            names.join("、")
+        )));
+    }
+    Ok((rules, selected))
 }
 
 /// 跑模糊輸入題庫。
@@ -1103,6 +1152,40 @@ mod tests {
             named_key("Ctrl+Shift+,").unwrap_err(),
             "按鍵 \"Ctrl+Shift+,\""
         );
+    }
+
+    #[test]
+    fn selects_corpus_by_directory_scan() {
+        let dir = std::env::temp_dir().join(format!("jc-cli-ja-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("ja")).unwrap();
+        let sample_a = r#"{"name":"sample-a","license":"CC0","source":"t",
+                "items":[{"id":"a","reading":"あい","surface":"愛"}]}"#;
+        std::fs::write(dir.join("ja/sample_a.json"), sample_a).unwrap();
+        let sha = jc_eval::sha256_hex(sample_a.as_bytes());
+        std::fs::write(
+            dir.join("ja/rules.json"),
+            format!(
+                r#"{{"schema":1,"version":"t","top_n":5,"timeout_ms":100,
+                    "corpora":{{"sample-a":{{"file":"sample_a.json",
+                    "sha256":"{sha}","count":1}}}}}}"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("ja/sample_b.json"),
+            r#"{"name":"sample-b","license":"CC0","source":"t",
+                "items":[{"id":"b","reading":"うみ","surface":"海"}]}"#,
+        )
+        .unwrap();
+        let (_, picked) = select_ja_corpora(&dir, "sample-b").unwrap();
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].corpus.name, "sample-b");
+        assert_eq!(picked[0].corpus.items.len(), 1);
+        let err = select_ja_corpora(&dir, "missing").unwrap_err().to_string();
+        assert!(err.contains("sample-a"), "{err}");
+        assert!(err.contains("sample-b"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -349,55 +349,168 @@ pub fn load_ja_corpus_set(rules: &RuleSet, rules_path: &Path) -> Result<Vec<JaCo
             path = base.join(path);
         }
         let mut entry = load_ja_corpus(&path)?;
-        if entry.sha256 != rule.sha256 {
-            return Err(EvalError::invalid(
-                &path,
-                format!("sha256 {} 與 rules pin {} 不符", entry.sha256, rule.sha256),
-            ));
-        }
-        if entry.corpus.name != *name {
-            return Err(EvalError::invalid(
-                &path,
-                format!(
-                    "題庫名稱 {:?} 與 rules key {:?} 不符",
-                    entry.corpus.name, name
-                ),
-            ));
-        }
-        if entry.corpus.items.len() != rule.count {
-            return Err(EvalError::invalid(
-                &path,
-                format!("{} 題，rules pin {}", entry.corpus.items.len(), rule.count),
-            ));
-        }
-        let scored = entry
-            .corpus
-            .items
-            .iter()
-            .filter(|item| !item.segments.is_empty())
-            .count();
-        if rule.boundary_cases != 0 && scored != rule.boundary_cases {
-            return Err(EvalError::invalid(
-                &path,
-                format!("{scored} 題有邊界，rules pin {}", rule.boundary_cases),
-            ));
-        }
-        if !rule.license.is_empty() && entry.corpus.license != rule.license {
-            return Err(EvalError::invalid(
-                &path,
-                format!("license {:?} 與 rules pin 不符", entry.corpus.license),
-            ));
-        }
-        if !rule.source.is_empty() && entry.corpus.source != rule.source {
-            return Err(EvalError::invalid(
-                &path,
-                format!("source {:?} 與 rules pin 不符", entry.corpus.source),
-            ));
-        }
+        check_against_rule(&entry, name, rule)?;
         entry.rule = rule.clone();
         out.push(entry);
     }
     Ok(out)
+}
+
+/// 掃描題庫目錄，載入目錄下的每一份日文題庫。
+///
+/// 題庫探索以目錄內容為準：目錄下每個帶 `items` 陣列、能解析成 [`JaCorpus`]
+/// 的 `.json` 都是一份題庫，檔名與題庫名都不寫死。`rules.json` 有 pin 的
+/// 題庫沿用 pin 驗證（sha256、題數、授權、來源）；沒有 pin 的題庫只做欄位
+/// 驗證，讓新題庫可以先量分數再凍結進 `rules.json`。
+///
+/// `rules.json`、`baseline.json` 這類沒有 `items` 的檔案會被跳過；有 pin 的
+/// 題庫檔若不存在或不是題庫，直接報錯，避免題庫悄悄消失。
+pub fn load_ja_corpus_dir(dir: &Path, rules: &RuleSet) -> Result<Vec<JaCorpusEntry>> {
+    let mut pinned: BTreeMap<PathBuf, (&str, &CorpusRule)> = BTreeMap::new();
+    for (name, rule) in &rules.corpora {
+        let mut path = PathBuf::from(&rule.file);
+        if path.is_relative() {
+            path = dir.join(path);
+        }
+        pinned.insert(path, (name.as_str(), rule));
+    }
+
+    let listing = std::fs::read_dir(dir).map_err(|source| EvalError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    let mut files = Vec::new();
+    for entry in listing {
+        let entry = entry.map_err(|source| EvalError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "json") || !path.is_file() {
+            continue;
+        }
+        files.push(path);
+    }
+    // pin 可能指向子目錄的檔案；那些檔案不在頂層掃描結果裡，補進來。
+    for path in pinned.keys() {
+        if path.is_file() && !files.contains(path) {
+            files.push(path.clone());
+        }
+    }
+    files.sort();
+
+    let mut out = Vec::new();
+    let mut names = BTreeSet::new();
+    let mut loaded = BTreeSet::new();
+    for path in files {
+        let raw = read_bytes(&path)?;
+        let probe: serde_json::Value = parse_json(&path, &raw)?;
+        if !probe.get("items").is_some_and(serde_json::Value::is_array) {
+            continue;
+        }
+        let corpus: JaCorpus = parse_json(&path, &raw)?;
+        validate_ja_corpus(&path, &corpus)?;
+        if !names.insert(corpus.name.clone()) {
+            return Err(EvalError::invalid(
+                &path,
+                format!("題庫名稱 {:?} 重複；目錄裡只能有一份", corpus.name),
+            ));
+        }
+        let sha256 = hex_digest(&raw);
+        let mut entry = JaCorpusEntry {
+            rule: CorpusRule::default(),
+            corpus,
+            sha256,
+            path: path.clone(),
+        };
+        match pinned.get(&path) {
+            Some((name, rule)) => {
+                check_against_rule(&entry, name, rule)?;
+                entry.rule = (*rule).clone();
+            }
+            None => {
+                entry.rule = CorpusRule {
+                    file: path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    sha256: entry.sha256.clone(),
+                    count: entry.corpus.items.len(),
+                    boundary_cases: entry
+                        .corpus
+                        .items
+                        .iter()
+                        .filter(|item| !item.segments.is_empty())
+                        .count(),
+                    license: entry.corpus.license.clone(),
+                    source: entry.corpus.source.clone(),
+                };
+            }
+        }
+        loaded.insert(path);
+        out.push(entry);
+    }
+
+    for (path, (name, _)) in &pinned {
+        if !loaded.contains(path) {
+            return Err(EvalError::invalid(
+                path,
+                format!("rules.json 的 {name} 指向這裡，但目錄裡沒有這份題庫"),
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// 檢查題庫是否仍然符合 `rules.json` 的 pin。
+fn check_against_rule(entry: &JaCorpusEntry, name: &str, rule: &CorpusRule) -> Result<()> {
+    let path = &entry.path;
+    if entry.sha256 != rule.sha256 {
+        return Err(EvalError::invalid(
+            path,
+            format!("sha256 {} 與 rules pin {} 不符", entry.sha256, rule.sha256),
+        ));
+    }
+    if entry.corpus.name != name {
+        return Err(EvalError::invalid(
+            path,
+            format!(
+                "題庫名稱 {:?} 與 rules key {:?} 不符",
+                entry.corpus.name, name
+            ),
+        ));
+    }
+    if entry.corpus.items.len() != rule.count {
+        return Err(EvalError::invalid(
+            path,
+            format!("{} 題，rules pin {}", entry.corpus.items.len(), rule.count),
+        ));
+    }
+    let scored = entry
+        .corpus
+        .items
+        .iter()
+        .filter(|item| !item.segments.is_empty())
+        .count();
+    if rule.boundary_cases != 0 && scored != rule.boundary_cases {
+        return Err(EvalError::invalid(
+            path,
+            format!("{scored} 題有邊界，rules pin {}", rule.boundary_cases),
+        ));
+    }
+    if !rule.license.is_empty() && entry.corpus.license != rule.license {
+        return Err(EvalError::invalid(
+            path,
+            format!("license {:?} 與 rules pin 不符", entry.corpus.license),
+        ));
+    }
+    if !rule.source.is_empty() && entry.corpus.source != rule.source {
+        return Err(EvalError::invalid(
+            path,
+            format!("source {:?} 與 rules pin 不符", entry.corpus.source),
+        ));
+    }
+    Ok(())
 }
 
 /// 讀取 `baseline.json`；形狀與 [`Report`] 相同。
@@ -803,6 +916,127 @@ mod tests {
             },
         );
         assert!(!rules.gate(&now, &base).passed);
+    }
+
+    /// 寫一份只 pin 指定題庫的 `rules.json`；sha256 取當下的檔案內容。
+    fn write_rule_set(dir: &Path, entries: &[(&str, &str)]) {
+        let raw = std::fs::read(dir.join("fixture/pin.json")).unwrap();
+        let sha = crate::sha256::hex_digest(&raw);
+        let mut corpora = String::new();
+        for (name, file) in entries {
+            if !corpora.is_empty() {
+                corpora.push(',');
+            }
+            corpora.push_str(&format!(
+                r#""{name}":{{"file":"fixture/{file}","sha256":"{sha}","count":2}}"#
+            ));
+        }
+        std::fs::write(
+            dir.join("rules.json"),
+            format!(
+                r#"{{"schema":1,"version":"t","top_n":5,"timeout_ms":100,"corpora":{{{corpora}}}}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn dir_scan_finds_unpinned_corpora() {
+        let dir = temp_dir("scan");
+        std::fs::create_dir_all(dir.join("fixture")).unwrap();
+        std::fs::write(
+            dir.join("fixture/pin.json"),
+            r#"{"name":"pin","license":"CC0","source":"t","count":2,
+                "items":[{"id":"a","reading":"あい","surface":"愛"},
+                         {"id":"b","reading":"あお","surface":"青"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("extra.json"),
+            r#"{"name":"extra","license":"CC0","source":"t","count":1,
+                "items":[{"id":"c","reading":"うみ","surface":"海"}]}"#,
+        )
+        .unwrap();
+        // 沒有 items 的檔案要跳過，不能當成題庫。
+        std::fs::write(
+            dir.join("baseline.json"),
+            r#"{"schema":1,"rules_sha256":"x","engine":{},"corpora":{}}"#,
+        )
+        .unwrap();
+        write_rule_set(&dir, &[("pin", "pin.json")]);
+
+        let rules_path = dir.join("rules.json");
+        let rules = load_rules(&rules_path).unwrap();
+        let entries = load_ja_corpus_dir(&dir, &rules).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.corpus.name.as_str()).collect();
+        assert_eq!(names, vec!["extra", "pin"]);
+        let extra = entries.iter().find(|e| e.corpus.name == "extra").unwrap();
+        assert_eq!(extra.rule.file, "extra.json");
+        assert_eq!(extra.rule.count, 1);
+        let pin = entries.iter().find(|e| e.corpus.name == "pin").unwrap();
+        assert_eq!(pin.rule.count, 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn dir_scan_rejects_pinned_hash_mismatch() {
+        let dir = temp_dir("scan-sha");
+        std::fs::create_dir_all(dir.join("fixture")).unwrap();
+        std::fs::write(
+            dir.join("fixture/pin.json"),
+            r#"{"name":"pin","license":"CC0","source":"t","count":1,
+                "items":[{"id":"a","reading":"あい","surface":"愛"}]}"#,
+        )
+        .unwrap();
+        write_rule_set(&dir, &[("pin", "pin.json")]);
+        let rules = load_rules(&dir.join("rules.json")).unwrap();
+        std::fs::write(
+            dir.join("fixture/pin.json"),
+            r#"{"name":"pin","license":"CC0","source":"t","count":1,
+                "items":[{"id":"a","reading":"あい","surface":"藍"}]}"#,
+        )
+        .unwrap();
+        let err = load_ja_corpus_dir(&dir, &rules).unwrap_err().to_string();
+        assert!(err.contains("rules pin"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn dir_scan_rejects_missing_pinned_file() {
+        let dir = temp_dir("scan-missing");
+        std::fs::create_dir_all(dir.join("fixture")).unwrap();
+        std::fs::write(
+            dir.join("fixture/pin.json"),
+            r#"{"name":"pin","license":"CC0","source":"t","count":1,
+                "items":[{"id":"a","reading":"あい","surface":"愛"}]}"#,
+        )
+        .unwrap();
+        write_rule_set(&dir, &[("pin", "pin.json")]);
+        std::fs::remove_file(dir.join("fixture/pin.json")).unwrap();
+        let rules = load_rules(&dir.join("rules.json")).unwrap();
+        let err = load_ja_corpus_dir(&dir, &rules).unwrap_err().to_string();
+        assert!(err.contains("目錄裡沒有這份題庫"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn real_ja_dir_discovers_ajimee() {
+        let rules_path = jc_testdata::require_data!("0c-testdata/ja/rules.json");
+        let rules = load_rules(&rules_path).unwrap();
+        let dir = rules_path.parent().unwrap();
+        let entries = load_ja_corpus_dir(dir, &rules).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.corpus.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["ajimee-200", "anthy-corpus1", "hard-cases", "modern-500"]
+        );
+        let ajimee = entries
+            .iter()
+            .find(|e| e.corpus.name == "ajimee-200")
+            .unwrap();
+        assert_eq!(ajimee.corpus.items.len(), 200);
+        assert_eq!(ajimee.rule.boundary_cases, 0);
+        assert!(!ajimee.corpus.items[0].accept.is_empty());
     }
 
     #[test]
