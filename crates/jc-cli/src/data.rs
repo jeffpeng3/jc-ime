@@ -519,8 +519,8 @@ pub fn install_select_model(testdata: Option<&Path>) -> Result<(), CliError> {
         .map_err(|err| CliError::data(format!("載入 zh-select 模型失敗：{err}")))?;
     jc_core::zh::select::install(model);
     eprintln!(
-        "警告：zh-select 尚未完成本引擎的權重與 margin 校準，\
-         zh-golden 沒有任何改善；正式使用請保持 --select-model off。"
+        "警告：zh-select 使用 0.5／3.0 的保守參數，已預設啟用但未經 Product dev 校準；\
+         需要關閉時用 --select-model off。"
     );
     Ok(())
 }

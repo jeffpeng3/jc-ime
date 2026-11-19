@@ -190,7 +190,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut rerank = None;
     let mut left = LeftMode::Off;
     let mut json = false;
-    let mut select_model = false;
+    let mut select_model = None;
     let mut index = 0;
     while index < rest.len() {
         match rest[index].as_str() {
@@ -208,7 +208,10 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
             }
             "--select-model" => {
                 index += 1;
-                select_model = switch(value(rest, index, "--select-model")?, "--select-model")?;
+                select_model = Some(switch(
+                    value(rest, index, "--select-model")?,
+                    "--select-model",
+                )?);
             }
             "--data" => {
                 index += 1;
@@ -261,7 +264,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 lm,
                 mu,
                 stats,
-                select_model,
+                select_model: select_model.unwrap_or(true),
                 json,
             })
         }
@@ -340,7 +343,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     let mut stats = false;
     let mut n = 5usize;
     let mut json = false;
-    let mut select_model = false;
+    let mut select_model = true;
     let mut punct = false;
     let mut user_data = None;
     let mut mode = None;
@@ -673,7 +676,7 @@ pub fn usage() -> String {
          --data 指向注音二進位資料包（lexicon.bin、lm.bin、manifest.json）；\n\
          指定時注音走真實詞庫並自動載入同目錄的 lm.bin。\n\
          --lm 覆寫 bigram 語言模型；--mu 是 bigram 與 unigram 的內插權重（預設 0.7）。\n\
-         --select-model on 需要 zh-select 模型與 ONNX Runtime；預設 off。\n\
+         --select-model on 需要 zh-select 模型與 ONNX Runtime；預設 on，可用 off 關閉。\n\
          --punct on 需要標點模型與 ONNX Runtime；預設 off，沒有模型時輸出與原本逐字相同。\n",
         env!("CARGO_PKG_VERSION")
     )
@@ -705,7 +708,7 @@ mod tests {
                 mu: None,
                 stats: false,
                 json: true,
-                select_model: false,
+                select_model: true,
             }
         );
     }
@@ -778,7 +781,7 @@ mod tests {
                 stats: false,
                 n: 3,
                 json: false,
-                select_model: false,
+                select_model: true,
                 punct: false,
                 user_data: None,
                 mode: None,
@@ -844,7 +847,7 @@ mod tests {
                 stats: false,
                 n: 5,
                 json: false,
-                select_model: false,
+                select_model: true,
                 punct: false,
                 user_data: None,
                 mode: None,
