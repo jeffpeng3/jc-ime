@@ -482,12 +482,21 @@ impl Controller {
     /// 把尾端除了最後一個文節以外的部分鎖住。
     ///
     /// 最後一個文節仍可能隨下一個かな改變，所以留在 `tail`；已鎖住的文節
-    /// 往後不會再被轉換。
+    /// 往後不會再被轉換。詞面仍是かな的文節（詞面與讀音相同）也留在
+    /// `tail`：那通常只是長詞的片段，例如輸入「きょ」時只有未知語かな，
+    /// 真正的詞要等「う」進來才成立。若鎖住這種前綴，跨界的詞就永遠
+    /// 找不到。
     fn advance_lock(&mut self) {
         if self.tail.len() <= 1 {
             return;
         }
-        let n = self.tail.len() - 1;
+        let mut n = self.tail.len() - 1;
+        while n > 0 && is_kana_clause(&self.tail[n - 1]) {
+            n -= 1;
+        }
+        if n == 0 {
+            return;
+        }
         let units = clauses_units(&self.tail[..n]);
         if units == 0 || self.cut + units > self.seq.len() {
             return;
@@ -552,6 +561,11 @@ fn clauses_units(clauses: &[JaClause]) -> usize {
 /// 單一文節的讀音單位數。
 fn clause_units(clause: &JaClause) -> usize {
     clause_reading(clause).chars().count()
+}
+
+/// 詞面是否仍與讀音相同，也就是還沒轉換成漢字的かな文節。
+fn is_kana_clause(clause: &JaClause) -> bool {
+    clause.surface == clause_reading(clause)
 }
 
 /// 文節讀音；`reading` 為空時由內部分詞的讀音串接。
