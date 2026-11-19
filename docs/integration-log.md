@@ -39,6 +39,7 @@
 | `english-pack` | `fd5d8cf` | `15055d2` | 通過（解衝突） | 2026-11-19 23:40 |
 | `fix-mixed-clippy` | `c57992c` | `77f2788` | 通過（fmt＋clippy） | 2026-11-19 23:47 |
 | `ci-lint` | `2732fb3` | `e08a59a` | 通過（fmt＋clippy） | 2026-11-19 23:47 |
+| `fix-windows-cfg` | `0131ebe` | `cf3beba` | 通過（check＋clippy） | 2026-11-20 00:03 |
 
 ## 衝突與修正
 
@@ -202,3 +203,10 @@
 
   驗證結果：`cargo fmt --all -- --check` exit 0；`cargo clippy --workspace --all-targets -- -D warnings` **exit 0**；
   `cargo check --workspace --all-targets` 也通過（0 warning）。
+
+- `fix-windows-cfg`（合併 `cf3beba`）：無衝突。`jc-engine/src/main.rs` 的 unix socket 路徑加 `#[cfg(unix)]`，
+  非 unix 提供同名 `serve_socket` 回 `named pipe 尚未實作…`，`--socket` 說明改用平台常數；
+  `jc-engine/tests/socket.rs` 加 `#![cfg(unix)]`。
+
+  驗證結果：`cargo check --workspace --all-targets` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0。
+  Windows（msvc）編譯由 CI 驗證，本機 Linux 不做交叉編譯。
