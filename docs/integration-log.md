@@ -96,6 +96,7 @@
 | `session-g3-symbols` | `c67c4e7` | `86d24e0` | 通過（fmt／clippy／test／兩個 eval） | 2026-11-20 06:08 |
 | `session-g2-segments` | `57e3a5d` | `1fd343d` | 通過（fmt／clippy／test／兩個 eval） | 2026-11-20 06:16 |
 | `session-g1-input` | `45a73fa` | `ded267a` | test 2 個失敗（branch 自帶）；fmt／clippy／兩個 eval 通過 | 2026-11-20 06:26 |
+| `proto-extend` | `43c1741` | `a60766b` | test 剩同 2 個；fmt／clippy／兩個 eval 通過 | 2026-11-20 06:33 |
 
 ## 衝突與修正
 
@@ -884,3 +885,19 @@
   5 ported（`input_style.go` 部分移植、`shift_symbol.go` 部分、`keypolicy.go`、`idle_keys.go`、`selection_keys.go`），
   4 n/a：`zhuyin_keys.go`（缺逐格來源與 literal 格陣列）、`zh_profile.go`（沒有 profile 抽象層）、
   `layout_readings.go`（只支援大千排列，無 `AltCost`）、`number_context.go`（解碼器沒有跨片段左文參數）。
+
+- `proto-extend`（合併 `a60766b`，含 `43c1741`）：`session/mod.rs` 兩處衝突。`press` 的 match 保留 main 的
+  `ArrowRight`／`ArrowLeft`／`Char` 分支並補 `_ => {}`（新鍵暫不處理）；`snapshot` 同時輸出 `cursor_rune` 與
+  main 版的 `segments()` 視圖。
+
+  gate：fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` exit 101（44 targets、1015 passed、**2 failed**），
+  兩個失敗仍是 `session-g1-input` 自帶的 `test_mcbopomofo_space_and_backslash` 與
+  `test_microsoft_width_is_state_and_includes_english`，與本 branch 無關。
+  實測：`eval zh-golden` **45/45**；`eval ja modern-500` **86.0%**、p50 3.203 ms。
+
+  協定變更：
+  - `PROTOCOL_VERSION` 升到 **2**（`crates/jc-proto/src/lib.rs`）。
+  - `Snapshot` 新增 `suggestion`／`label`／`navigating`／`cursor_rune`；前三者這一輪暫為空值（`Snapshot::default()`），
+    只有 `cursor_rune` 真的填了組字游標的 rune 位置。
+  - `KeyCode` 新增 `Down`／`Up`／`Home`／`End`／`PageUp`／`PageDown`／`ShiftTab`；session 目前以 `_ => {}` 忽略，
+    行為不變，等後續候選選取任務接上。
