@@ -43,8 +43,9 @@ pub use golden::{
     GOLDEN_FORMAT, MIXED_GOLDEN_FORMAT,
 };
 pub use ja::{
-    check_ja_corpus_provenance, load_baseline, load_ja_corpus, load_ja_corpus_set, load_rules,
-    run_ja, CorpusRule, Gate, JaCase, JaCorpus, JaCorpusEntry, RuleSet, JA_SCHEMA,
+    check_ja_corpus_provenance, load_baseline, load_ja_corpus, load_ja_corpus_dir,
+    load_ja_corpus_set, load_rules, run_ja, CorpusRule, Gate, JaCase, JaCorpus, JaCorpusEntry,
+    RuleSet, JA_SCHEMA,
 };
 pub use metrics::{
     boundary_counts, chunks, edit_distance, evaluate, harmonic, is_han, percentile, ratio,

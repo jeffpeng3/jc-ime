@@ -71,7 +71,7 @@ pub enum Command {
     EvalJa {
         /// `0c-testdata` 目錄。
         testdata: Option<PathBuf>,
-        /// `rules.json` 裡的題庫名稱，或直接給題庫 `.json` 路徑。
+        /// `ja/` 目錄裡的題庫名稱，或直接給題庫 `.json` 路徑。
         corpus: String,
         /// 日文 pack；未指定時由 `JC_JA_PACK` 與資料根目錄決定。
         pack: Option<PathBuf>,
@@ -81,6 +81,8 @@ pub enum Command {
         left: LeftMode,
         /// 輸出 JSON。
         json: bool,
+        /// 輸出含逐題結果的 JSON。
+        items: bool,
     },
     /// 跑模糊輸入題庫。
     EvalFuzzy {
@@ -190,6 +192,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut rerank = None;
     let mut left = LeftMode::Off;
     let mut json = false;
+    let mut items = false;
     let mut select_model = None;
     let mut index = 0;
     while index < rest.len() {
@@ -251,6 +254,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 };
             }
             "--json" => json = true,
+            "--items" => items = true,
             other => return Err(CliError::Usage(format!("eval 不認得的參數 {other}"))),
         }
         index += 1;
@@ -258,6 +262,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     match kind {
         "zh-golden" => {
             reject_ja_flags(rerank, left, "eval zh-golden")?;
+            reject_items(items, "eval zh-golden")?;
             Ok(Command::EvalZhGolden {
                 testdata,
                 data,
@@ -277,15 +282,18 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 rerank: rerank.unwrap_or(false),
                 left,
                 json,
+                items,
             })
         }
         "fuzzy" => {
             reject_zh_flags(data, lm, mu, stats, "eval fuzzy")?;
             reject_ja_flags(rerank, left, "eval fuzzy")?;
+            reject_items(items, "eval fuzzy")?;
             Ok(Command::EvalFuzzy { testdata, json })
         }
         "mixed" => {
             reject_ja_flags(rerank, left, "eval mixed")?;
+            reject_items(items, "eval mixed")?;
             Ok(Command::EvalMixed {
                 testdata,
                 data,
@@ -319,6 +327,14 @@ fn reject_ja_flags(rerank: Option<bool>, left: LeftMode, command: &str) -> Resul
     }
     if left != LeftMode::Off {
         return Err(CliError::Usage(format!("{command} 不接受 --left")));
+    }
+    Ok(())
+}
+
+/// `--items` 只有日文題庫輸出逐題結果，其他子命令不接受。
+fn reject_items(items: bool, command: &str) -> Result<(), CliError> {
+    if items {
+        return Err(CliError::Usage(format!("{command} 不接受 --items")));
     }
     Ok(())
 }
@@ -586,13 +602,17 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             rerank,
             left,
             json,
+            items,
         } => crate::eval_cmd::ja(
-            testdata.clone(),
-            corpus,
-            pack.clone(),
-            *rerank,
-            *left,
-            *json,
+            crate::eval_cmd::JaOptions {
+                testdata: testdata.clone(),
+                corpus: corpus.clone(),
+                pack: pack.clone(),
+                rerank: *rerank,
+                left: *left,
+                json: *json,
+                items: *items,
+            },
             out,
         ),
         Command::EvalFuzzy { testdata, json } => {
@@ -666,13 +686,14 @@ pub fn usage() -> String {
          用法：\n  \
          jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--select-model on|off] [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] \
-         [--rerank on|off] [--left off|rolling] [--json]\n  \
+         [--rerank on|off] [--left off|rolling] [--json] [--items]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
          jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--punct on|off] [--user-data <dir>] [--json]\n  \
          jc-cli tokenize ja [--testdata <dir>] [--vocab <model>] [--text <字串>]... [--diff] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
+         --corpus 是 ja/ 目錄裡的題庫名稱；目錄下每份題庫 json 都會被掃到。\n\
          --data 指向注音二進位資料包（lexicon.bin、lm.bin、manifest.json）；\n\
          指定時注音走真實詞庫並自動載入同目錄的 lm.bin。\n\
          --lm 覆寫 bigram 語言模型；--mu 是 bigram 與 unigram 的內插權重（預設 0.7）。\n\
@@ -724,6 +745,7 @@ mod tests {
                 rerank: false,
                 left: LeftMode::Off,
                 json: false,
+                items: false,
             }
         );
     }
@@ -747,6 +769,7 @@ mod tests {
                 rerank: false,
                 left: LeftMode::Off,
                 json: false,
+                items: false,
             }
         );
     }
@@ -762,10 +785,29 @@ mod tests {
                 rerank: true,
                 left: LeftMode::Off,
                 json: false,
+                items: false,
             }
         );
         assert!(parse(&args(&["eval", "ja", "--rerank", "maybe"])).is_err());
         assert!(parse(&args(&["eval", "fuzzy", "--rerank", "on"])).is_err());
+    }
+
+    #[test]
+    fn parses_ja_items_output() {
+        assert_eq!(
+            parse(&args(&["eval", "ja", "--items"])).unwrap(),
+            Command::EvalJa {
+                testdata: None,
+                corpus: "modern-500".to_string(),
+                pack: None,
+                rerank: false,
+                left: LeftMode::Off,
+                json: false,
+                items: true,
+            }
+        );
+        assert!(parse(&args(&["eval", "zh-golden", "--items"])).is_err());
+        assert!(parse(&args(&["eval", "mixed", "--items"])).is_err());
     }
 
     #[test]
