@@ -6,7 +6,8 @@
 //! 三條路徑共用同一個介面：
 //! - 注音：`zh::input::ZhInput` 累積音節，`decode::Decoder` 在詞格上解碼。
 //! - 日文：`ja::input::RomajiInput` 累積かな，`ja::decode::JaDecoder` 轉換。
-//! - 英文與混合：原始按鍵字元交給 `mixed::Router` 逐段路由。
+//! - 英文與混合：混合模式由 `mixed::AsciiInput` 推斷英數按鍵，其餘交給
+//!   `mixed::Router` 逐段路由。
 //!
 //! 沒有詞典時注音與日文仍可運作：詞格只有未知詞邊，輸出等於讀音本身，
 //! 方便在沒有資料的環境跑協定與薄層行為測試。
@@ -20,8 +21,8 @@ use crate::ja::input::RomajiInput;
 use crate::key::{Key, KeyCode};
 use crate::lang::Mode;
 use crate::lattice::{InMemoryLexicon, Lattice};
-use crate::mixed::Router;
-use crate::output::{utf16_len, Snapshot};
+use crate::mixed::{space_text, AsciiInput, AsciiPiece, Spacing};
+use crate::output::{utf16_len, HansConverter, Snapshot};
 use crate::score::ScoreContext;
 use crate::segment::{Script, Segment};
 use crate::zh::han::is_han;
@@ -69,6 +70,12 @@ pub struct SessionConfig {
     pub rerank: Option<RerankOptions>,
     /// 提交前補標點：在最後一個漢字前插入這個字元。
     pub punct_mark: Option<char>,
+    /// 英文自動補字；混合模式下用 Tab 接受。
+    pub english_autocomplete: bool,
+    /// 送出時在漢字與 ASCII 英文字母之間補半形空格。
+    pub cjk_latin_space: bool,
+    /// 繁體轉簡體的轉換器；`None` 時原樣送出。
+    pub simplified: Option<Arc<crate::zhconv::Converter>>,
 }
 
 /// 固定替身重排設定。
@@ -98,6 +105,9 @@ impl Default for SessionConfig {
             fuzzy_pairs: Vec::new(),
             rerank: None,
             punct_mark: None,
+            english_autocomplete: false,
+            cjk_latin_space: false,
+            simplified: None,
         }
     }
 }
@@ -144,6 +154,8 @@ pub struct Session {
     accepted_completion: Option<String>,
     /// 尾端補全建議。
     suggestion: Option<String>,
+    /// 混合模式的英數按鍵推斷。
+    ascii: AsciiInput,
 }
 
 impl Default for Session {
@@ -176,6 +188,7 @@ impl Session {
             pending_commit: None,
             accepted_completion: None,
             suggestion: None,
+            ascii: AsciiInput::new(),
         }
     }
 
@@ -213,7 +226,10 @@ impl Session {
                 KeyCode::Backspace => self.backspace(),
                 KeyCode::Space => self.space(),
                 KeyCode::Tab => {
-                    if !self.accept_suggestion() {
+                    let accepted = self.config.mode == Mode::Mixed
+                        && self.config.english_autocomplete
+                        && self.ascii.accept_suggestion();
+                    if !accepted && !self.accept_suggestion() {
                         self.move_highlight(1);
                     }
                 }
@@ -287,7 +303,10 @@ impl Session {
             self.clear_composition();
             return text;
         }
-        let text = self.puncted(self.current_text());
+        if self.config.mode == Mode::Mixed {
+            self.ascii.flush();
+        }
+        let text = self.finalize(self.current_text());
         self.clear_composition();
         text
     }
@@ -379,7 +398,12 @@ impl Session {
             Mode::Ja => {
                 self.romaji.press(Key::char(ch, false));
             }
-            Mode::En | Mode::Mixed => self.raw.push(ch),
+            Mode::En => self.raw.push(ch),
+            Mode::Mixed => {
+                if !self.ascii.tone(ch, &self.lexicon) {
+                    self.ascii.press(ch);
+                }
+            }
         }
     }
 
@@ -399,7 +423,7 @@ impl Session {
         let Some(candidate) = self.candidates.get(index).cloned() else {
             return false;
         };
-        self.pending_commit = Some(self.insert_literal(&candidate.surface));
+        self.pending_commit = Some(self.finalize(self.insert_literal(&candidate.surface)));
         self.clear_composition();
         true
     }
@@ -410,11 +434,12 @@ impl Session {
                 self.zh.press(Key::new(KeyCode::Space, None, false));
             }
             _ if self.candidate_window && !self.candidates.is_empty() => {
-                let text = self.current_text();
+                let text = self.finalize(self.current_text());
                 self.pending_commit = Some(text);
                 self.clear_composition();
             }
-            Mode::En | Mode::Mixed => self.raw.push(' '),
+            Mode::En => self.raw.push(' '),
+            Mode::Mixed => self.ascii.space(&self.lexicon),
             _ => {}
         }
     }
@@ -435,18 +460,42 @@ impl Session {
             Mode::Ja => {
                 self.romaji.backspace();
             }
-            Mode::En | Mode::Mixed => {
+            Mode::En => {
                 self.raw.pop();
+            }
+            Mode::Mixed => {
+                self.ascii.backspace();
             }
         }
     }
 
     fn finish_composition(&mut self) {
-        let text = self.puncted(self.current_text());
+        if self.config.mode == Mode::Mixed {
+            self.ascii.flush();
+        }
+        let text = match self.config.mode {
+            Mode::Mixed => self.mixed_surface(),
+            _ => self.current_text(),
+        };
+        let text = self.finalize(text);
         if !text.is_empty() {
             self.pending_commit = Some(text);
         }
         self.clear_composition();
+    }
+
+    /// 送出前套用簡體轉換與中英自動空格。
+    fn finalize(&self, text: String) -> String {
+        let text = self.puncted(text);
+        let text = match &self.config.simplified {
+            Some(converter) => converter.to_simplified(&text),
+            None => text,
+        };
+        if self.config.cjk_latin_space {
+            space_text(&text, Spacing::Always)
+        } else {
+            text
+        }
     }
 
     /// 依設定在最後一個漢字前插入標點。
@@ -487,6 +536,7 @@ impl Session {
     fn clear_composition(&mut self) {
         self.zh.reset();
         self.romaji.reset();
+        self.ascii.reset();
         self.literal.clear();
         self.literal_anchor = 0;
         self.literal_offset = 0;
@@ -503,6 +553,9 @@ impl Session {
 
     /// 目前要提交的文字：接受的補全優先，其次高亮候選，最後轉換結果。
     fn current_text(&self) -> String {
+        if self.config.mode == Mode::Mixed {
+            return self.mixed_surface();
+        }
         if let Some(text) = &self.accepted_completion {
             return format!("{}{}", self.insert_literal(text), self.pending);
         }
@@ -834,40 +887,85 @@ impl Session {
     }
 
     fn rebuild_mixed(&mut self) {
-        if self.raw.is_empty() {
+        if self.ascii.is_empty() {
             return;
         }
-        let mut router = Router::new();
-        if !self.lexicon.is_empty() {
-            router = router.with_zh(&self.lexicon, &self.ctx);
+        self.base = self.mixed_surface();
+        let mut at = 0usize;
+        self.segments = self
+            .ascii
+            .pieces()
+            .iter()
+            .map(|piece| {
+                let (text, mode, script) = match piece {
+                    AsciiPiece::Zh(syllable) => {
+                        (self.decode_syllable(syllable), Mode::Zh, Script::Bopomofo)
+                    }
+                    AsciiPiece::Literal(text) => (text.clone(), Mode::En, Script::Latin),
+                };
+                let start = at;
+                at += text.len();
+                Segment::new(start, at, mode, script)
+            })
+            .collect();
+        if !self.ascii.pending().is_empty() {
+            let pending = self.ascii.pending();
+            let start = at;
+            at += pending.len();
+            self.segments
+                .push(Segment::new(start, at, Mode::Zh, Script::Bopomofo));
         }
-        if let Some(decoder) = &self.config.ja {
-            router = router.with_ja(decoder.as_ref());
-        }
-        match router.convert(&self.raw) {
-            Ok(result) => {
-                self.base = result.surface.clone();
-                let mut at = 0usize;
-                self.segments = result
-                    .segments
-                    .iter()
-                    .map(|segment| {
-                        let start = at;
-                        at += segment.surface.len();
-                        Segment::new(start, at, segment.mode, segment.script)
-                    })
-                    .collect();
-                self.candidates.push(Candidate::new(
-                    result.surface,
-                    self.raw.clone(),
-                    result.cost,
-                    CandidateSource::Lexicon,
-                ));
+    }
+
+    /// 已完成的注音音節轉成字面。
+    fn decode_syllable(&self, syllable: &Syllable) -> String {
+        let reading = syllable.as_str();
+        let units = [reading];
+        match Lattice::build(&units, &self.lexicon, &self.ctx) {
+            Ok(lattice) => {
+                let decoder = Decoder::new(&self.lexicon, &self.ctx);
+                let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
+                decoder.conversion(&lattice, &segs, Mode::Zh).surface
             }
-            Err(_) => {
-                self.base = self.raw.clone();
+            Err(_) => reading.to_string(),
+        }
+    }
+
+    /// 混合模式的完整字面：注音片段解碼，英數照字面，待定按鍵照顯示。
+    fn mixed_surface(&self) -> String {
+        let mut out = String::new();
+        let mut run: Vec<String> = Vec::new();
+        let flush = |run: &mut Vec<String>, out: &mut String| {
+            if run.is_empty() {
+                return;
+            }
+            let units: Vec<&str> = run.iter().map(String::as_str).collect();
+            match Lattice::build(&units, &self.lexicon, &self.ctx) {
+                Ok(lattice) => {
+                    let decoder = Decoder::new(&self.lexicon, &self.ctx);
+                    let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
+                    out.push_str(&decoder.conversion(&lattice, &segs, Mode::Zh).surface);
+                }
+                Err(_) => {
+                    for unit in run.iter() {
+                        out.push_str(unit);
+                    }
+                }
+            }
+            run.clear();
+        };
+        for piece in self.ascii.pieces() {
+            match piece {
+                AsciiPiece::Zh(syllable) => run.push(syllable.as_str().to_string()),
+                AsciiPiece::Literal(text) => {
+                    flush(&mut run, &mut out);
+                    out.push_str(text);
+                }
             }
         }
+        flush(&mut run, &mut out);
+        out.push_str(&self.ascii.display_pending());
+        out
     }
 
     /// 把解碼片段轉成輸出字串上的位元組範圍。
@@ -915,6 +1013,13 @@ mod tests {
             ("程式", "ㄔㄥˊ ㄕˋ"),
             ("宗", "ㄗㄨㄥ"),
             ("中", "ㄓㄨㄥ"),
+            ("麻", "ㄇㄚˊ"),
+            ("煩", "ㄈㄢˊ"),
+            ("窩", "ㄨㄛ"),
+            ("龍", "ㄌㄨㄥˊ"),
+            ("風", "ㄈㄥ"),
+            ("學", "ㄒㄩㄝˊ"),
+            ("國", "ㄍㄨㄛˊ"),
         ] {
             lex.push(LexEntry::new(surface, reading, 0, 0));
         }
@@ -1122,6 +1227,107 @@ mod tests {
         type_syllable(&mut s, "ㄐㄧ");
         s.page(1);
         assert_eq!(s.highlighted_text(), Some("子"));
+    }
+
+    fn mixed_session() -> Session {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(lexicon());
+        Session::new(config)
+    }
+
+    fn type_keys(session: &mut Session, keys: &str) {
+        for ch in keys.chars() {
+            session.press(Key::char(ch, false));
+        }
+    }
+
+    /// 對照 `TestAutomaticMixedChineseEnglishChinese`：英數鍵在注音組字中
+    /// 由聲調鍵或空白決定是中文還是英文。
+    #[test]
+    fn test_automatic_mixed_chinese_english_chinese() {
+        for (keys, want) in [
+            ("ji3hellot ", "我hello吃"),
+            ("helloji3", "hello我"),
+            ("t ", "吃"),
+            ("a86z06", "麻煩"),
+            ("ji3hello worldji3", "我hello world我"),
+        ] {
+            let mut s = mixed_session();
+            type_keys(&mut s, keys);
+            let snap = s.press(Key::new(KeyCode::Enter, None, false));
+            assert_eq!(s.commit(), want, "{keys:?}");
+            assert_eq!(snap.preedit, "");
+        }
+    }
+
+    /// 對照 `TestMixedCompleteEnglishWordKeepsSpace`：完整英文詞接空白保留
+    /// 空白，組得成注音的字尾讓給中文。
+    #[test]
+    fn test_mixed_complete_english_word_keeps_space() {
+        for (keys, want) in [
+            ("hello ", "hello "),
+            ("helloji ", "hello窩"),
+            ("ji3hello ji3", "我hello 我"),
+        ] {
+            let mut s = mixed_session();
+            type_keys(&mut s, keys);
+            assert_eq!(s.snapshot().preedit, want, "{keys:?}");
+            s.press(Key::new(KeyCode::Enter, None, false));
+            assert_eq!(s.commit(), want, "{keys:?}");
+        }
+    }
+
+    #[test]
+    fn test_mixed_english_suggestion_and_completion() {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(lexicon());
+        config.english_autocomplete = true;
+        let mut s = Session::new(config);
+        type_keys(&mut s, "ji3hellp");
+        assert_eq!(s.snapshot().preedit, "我hellp");
+        s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(s.snapshot().preedit, "我hello");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "我hello");
+    }
+
+    /// 對照 `TestCJKLatinSpaceInMixedInput`：組字區照打的顯示，送出時才補空格。
+    #[test]
+    fn test_cjk_latin_space_in_mixed_input() {
+        for (keys, off, on) in [
+            ("ji3hellot ", "我hello吃", "我 hello 吃"),
+            ("ji3hello su3", "我hello 我", "我 hello 我"),
+        ] {
+            for space in [false, true] {
+                let mut config = SessionConfig::new(Mode::Mixed);
+                config.zh_lexicon = Some(lexicon());
+                config.cjk_latin_space = space;
+                let mut s = Session::new(config);
+                type_keys(&mut s, keys);
+                assert_eq!(s.snapshot().preedit, off, "{keys:?}");
+                s.press(Key::new(KeyCode::Enter, None, false));
+                assert_eq!(s.commit(), if space { on } else { off }, "{keys:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_simplified_output_converts_commit_only() {
+        let path = jc_testdata::require_data!("opencc");
+        let converter = crate::zhconv::tw2s_from_dir(&path).expect("讀取 OpenCC 字典");
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.simplified = Some(Arc::new(converter));
+        let mut s = Session::new(config);
+        type_syllable(&mut s, "ㄌㄨㄥˊ");
+        assert_eq!(s.snapshot().preedit, "龍");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "龙");
+
+        let mut s = session();
+        type_syllable(&mut s, "ㄈㄥ");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "風");
     }
 
     #[test]

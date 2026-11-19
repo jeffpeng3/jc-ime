@@ -38,6 +38,11 @@ pub fn zh_golden(
     let suite = load_golden_zh(&golden_dir)
         .map_err(|err| CliError::eval(format!("讀取注音 golden 失敗：{err}")))?;
     let resources = data::load_zh_resources(&golden_dir.join("data"))?;
+    let converter = if suite.cases().iter().any(|case| case.options.simplified) {
+        Some(Arc::new(data::load_zhconv(&data::data_root(&dir))?))
+    } else {
+        None
+    };
 
     let mut items = Vec::with_capacity(suite.cases().len());
     let mut durations = Vec::with_capacity(suite.cases().len());
@@ -59,7 +64,7 @@ pub fn zh_golden(
                 .and_then(|kind| kind.as_str())
                 == Some("page")
         });
-        apply_options(&mut config, &case.options, paging);
+        apply_options(&mut config, &case.options, paging, converter.as_ref());
         let mut session = Session::new(config);
         let started = Instant::now();
         let outcome = drive_case(&mut session, &case.actions);
@@ -223,9 +228,19 @@ pub fn fuzzy(testdata: Option<PathBuf>, json: bool, out: &mut dyn Write) -> Resu
 ///
 /// 只涵蓋 `jc-core` 已實作的選項；尚未接線的（簡繁轉換、混合輸入、
 /// 英文補完、補全門檻）留在分類表說明。
-fn apply_options(config: &mut SessionConfig, options: &jc_eval::GoldenOptions, paging: bool) {
+fn apply_options(
+    config: &mut SessionConfig,
+    options: &jc_eval::GoldenOptions,
+    paging: bool,
+    converter: Option<&Arc<jc_core::zhconv::Converter>>,
+) {
     config.toneless = options.toneless;
     config.ctrl_punct = options.ctrl_punct;
+    config.english_autocomplete = options.english_autocomplete;
+    config.cjk_latin_space = options.cjk_latin_space;
+    if options.simplified {
+        config.simplified = converter.cloned();
+    }
     // 翻頁案例需要第二頁的候選；其餘維持預設 5 個，避免長句 k-best 變慢。
     if paging {
         config.max_candidates = 13;

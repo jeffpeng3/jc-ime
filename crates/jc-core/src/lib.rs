@@ -19,6 +19,7 @@ pub mod score;
 pub mod segment;
 pub mod session;
 pub mod zh;
+pub mod zhconv;
 
 pub use candidate::{Candidate, CandidateSource};
 pub use decode::{Conversion, EngineError};

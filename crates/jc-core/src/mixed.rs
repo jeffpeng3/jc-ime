@@ -33,7 +33,8 @@ use crate::lang::Mode;
 use crate::lattice::{Lattice as ZhLattice, LatticeError, Lexicon};
 use crate::score::ScoreContext;
 use crate::segment::{detect as detect_script, Script, Segment};
-use crate::zh::syllable::{class_of, Class, TONE1};
+use crate::zh::keyboard::Keyboard;
+use crate::zh::syllable::{class_of, Class, Composer, Syllable, TONE1};
 
 /// 英文詞表單一詞的長度上限（位元組）。
 pub const MAX_WORD_BYTES: usize = 48;
@@ -2084,6 +2085,394 @@ fn merge_atoms(atoms: &[Atom], input: &str) -> Vec<Plan> {
         plans.push(plan);
     }
     plans
+}
+
+// ---------------------------------------------------------------------------
+// ASCII 按鍵推斷
+// ---------------------------------------------------------------------------
+
+/// 待定按鍵的一種解讀結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AsciiPiece {
+    /// 用聲調鍵完成的注音音節。
+    Zh(Syllable),
+    /// 照字面留下的英文、數字或標點。
+    Literal(String),
+}
+
+/// 查注音讀音是否能用目前的詞典解釋。
+///
+/// 對照前身 `mixedReachable` 與 `readingContinues`：音節本身有詞條或詞頭，
+/// 或接在前一個中文音節後面能成詞。
+fn reading_reachable(reading: &str, pieces: &[AsciiPiece], lexicon: &dyn Lexicon) -> bool {
+    if !lexicon.lookup(reading).is_empty() || !lexicon.prefix(reading).is_empty() {
+        return true;
+    }
+    let Some(AsciiPiece::Zh(previous)) = pieces.last() else {
+        return false;
+    };
+    let sequence = format!("{} {reading}", previous.as_str());
+    !lexicon.lookup(&sequence).is_empty() || !lexicon.prefix(&sequence).is_empty()
+}
+
+/// 用實體按鍵組成組音器。
+///
+/// 與 [`crate::zh::input::ZhInput`] 的差別：這裡是英數混打的待定按鍵，同一
+/// 類別重複出現時整串不算注音（`hello` 的 h／e 都是聲母），不做同類別覆蓋。
+fn compose_keys(raw: &str) -> Option<Composer> {
+    let keyboard = Keyboard::standard();
+    let mut composer = Composer::new();
+    let mut seen = [false; 3];
+    for key in raw.chars() {
+        let symbol = keyboard.symbol(key)?;
+        let class = class_of(symbol);
+        let index = match class {
+            Class::Initial => 0,
+            Class::Medial => 1,
+            Class::Final => 2,
+            _ => return None,
+        };
+        if seen[index] {
+            return None;
+        }
+        seen[index] = true;
+        composer.add(symbol);
+    }
+    if composer.empty() {
+        None
+    } else {
+        Some(composer)
+    }
+}
+
+/// 後段按鍵是否照聲母、介音、韻母的順序打。
+fn keys_in_syllable_order(keys: &str) -> bool {
+    let keyboard = Keyboard::standard();
+    let mut last = Class::None;
+    for key in keys.chars() {
+        let Some(symbol) = keyboard.symbol(key) else {
+            return false;
+        };
+        let class = class_of(symbol);
+        if class == Class::None || class <= last {
+            return false;
+        }
+        last = class;
+    }
+    !keys.is_empty()
+}
+
+fn ascii_letters(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|ch| ch.is_ascii_alphabetic())
+}
+
+/// `raw` 加上 `tone` 是否能組成詞典解釋得了的音節。
+fn mixed_reading(
+    raw: &str,
+    tone: char,
+    pieces: &[AsciiPiece],
+    lexicon: &dyn Lexicon,
+) -> Option<Syllable> {
+    let mut composer = compose_keys(raw)?;
+    let syllable = composer.add(tone)?;
+    reading_reachable(syllable.as_str(), pieces, lexicon).then_some(syllable)
+}
+
+/// 英數混打的待定按鍵：累積原始按鍵，聲調或空白才決定是注音還是英文。
+///
+/// 對應前身 `core/session/mixed.go` 的 `pendingKeys`、`mixedText`、
+/// `finishMixedTone` 與 `mixedBoundary` 的核心規則：
+///
+/// - 整串按鍵先試著組成注音音節，接聲調或空白後能成詞就當中文；
+/// - 組不成時從最長的英文前段切開，前段照字面、後段接聲調當中文
+///   （`helloji3` → `hello我`、`ji3hellot ` → `我hello吃`）；
+/// - 完整英文詞接空白時保留空白（`hello `）；
+/// - 都不是時整串照字面留下。
+#[derive(Debug, Clone, Default)]
+pub struct AsciiInput {
+    pending: String,
+    pieces: Vec<AsciiPiece>,
+}
+
+impl AsciiInput {
+    /// 建立空狀態。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 目前的原始按鍵。
+    pub fn pending(&self) -> &str {
+        &self.pending
+    }
+
+    /// 已完成的片段。
+    pub fn pieces(&self) -> &[AsciiPiece] {
+        &self.pieces
+    }
+
+    /// 是否沒有任何內容。
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty() && self.pieces.is_empty()
+    }
+
+    /// 清空。
+    pub fn reset(&mut self) {
+        self.pending.clear();
+        self.pieces.clear();
+    }
+
+    /// 已完成的注音音節，依序。
+    pub fn syllables(&self) -> Vec<Syllable> {
+        self.pieces
+            .iter()
+            .filter_map(|piece| match piece {
+                AsciiPiece::Zh(syllable) => Some(syllable.clone()),
+                AsciiPiece::Literal(_) => None,
+            })
+            .collect()
+    }
+
+    /// 加一個按鍵；空白與聲調鍵交給 [`AsciiInput::space`]／
+    /// [`AsciiInput::tone`]。
+    pub fn press(&mut self, ch: char) {
+        self.pending.push(ch);
+    }
+
+    /// 刪掉最後一個按鍵；待定按鍵沒有時刪掉最後一個片段的一個字。
+    pub fn backspace(&mut self) -> bool {
+        if self.pending.pop().is_some() {
+            return true;
+        }
+        match self.pieces.last_mut() {
+            Some(AsciiPiece::Literal(text)) => {
+                text.pop();
+                if text.is_empty() {
+                    self.pieces.pop();
+                }
+                true
+            }
+            Some(AsciiPiece::Zh(_)) => {
+                self.pieces.pop();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 空白：完成待定按鍵。
+    ///
+    /// 先試一聲讀音，再試英→中切點，最後照字面留下；完整英文詞保留空白。
+    pub fn space(&mut self, lexicon: &dyn Lexicon) {
+        if self.pending.is_empty() {
+            self.push_literal(" ");
+            return;
+        }
+        if let Some(syllable) = mixed_reading(&self.pending, TONE1, &self.pieces, lexicon) {
+            self.push_zh(syllable);
+            return;
+        }
+        if let Some((at, syllable)) = self.boundary(TONE1, lexicon) {
+            self.split_literal(at);
+            self.push_zh(syllable);
+            return;
+        }
+        let raw = std::mem::take(&mut self.pending);
+        if prototype().has(&raw) {
+            self.push_literal(&format!("{raw} "));
+        } else {
+            self.push_literal(&raw);
+        }
+    }
+
+    /// 聲調鍵：完成待定按鍵，或照字面留下。
+    ///
+    /// 回傳 `true` 表示按鍵已被待定按鍵吸收。
+    pub fn tone(&mut self, key: char, lexicon: &dyn Lexicon) -> bool {
+        let Some(symbol) = Keyboard::standard().symbol(key) else {
+            return false;
+        };
+        if class_of(symbol) != Class::Tone {
+            return false;
+        }
+        if self.pending.is_empty() {
+            return false;
+        }
+        if let Some(syllable) = mixed_reading(&self.pending, symbol, &self.pieces, lexicon) {
+            self.push_zh(syllable);
+            return true;
+        }
+        if let Some((at, syllable)) = self.boundary(symbol, lexicon) {
+            self.split_literal(at);
+            self.push_zh(syllable);
+            return true;
+        }
+        self.pending.push(key);
+        true
+    }
+
+    /// 送出前把剩下的待定按鍵照字面留下。
+    pub fn flush(&mut self) {
+        if !self.pending.is_empty() {
+            let raw = std::mem::take(&mut self.pending);
+            self.push_literal(&raw);
+        }
+    }
+
+    /// 英文自動補字建議：前綴補完優先，其次差一鍵的修正。
+    pub fn suggestion(&self) -> Option<String> {
+        let raw = &self.pending;
+        if raw.len() < 2 || !ascii_letters(raw) || prototype().has(raw) {
+            return None;
+        }
+        for suggestion in prototype().prefix(raw, 5) {
+            if suggestion.text.chars().count() >= raw.chars().count() + 2 {
+                return Some(suggestion.text);
+            }
+        }
+        let lower = raw.to_lowercase();
+        let mut best: Option<(f64, &str)> = None;
+        for word in prototype().words() {
+            if !one_edit_apart(&lower, &word.text) {
+                continue;
+            }
+            if best.map_or(true, |(weight, _)| word.weight > weight) {
+                best = Some((word.weight, &word.text));
+            }
+        }
+        best.map(|(_, text)| text.to_string())
+    }
+
+    /// 接受英文補字建議。
+    pub fn accept_suggestion(&mut self) -> bool {
+        match self.suggestion() {
+            Some(text) => {
+                self.pending = text;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 找英→中切點：回傳（前段長度, 後段音節）。
+    fn boundary(&self, tone: char, lexicon: &dyn Lexicon) -> Option<(usize, Syllable)> {
+        let raw = &self.pending;
+        let chars: Vec<char> = raw.chars().collect();
+        for at in (1..chars.len()).rev() {
+            let prefix: String = chars[..at].iter().collect();
+            let rest: String = chars[at..].iter().collect();
+            if !ascii_letters(&prefix) || !prototype().has(&prefix) {
+                continue;
+            }
+            if !keys_in_syllable_order(&rest) {
+                continue;
+            }
+            if let Some(syllable) = mixed_reading(&rest, tone, &self.pieces, lexicon) {
+                return Some((prefix.len(), syllable));
+            }
+        }
+        None
+    }
+
+    fn split_literal(&mut self, at: usize) {
+        let prefix: String = self.pending.chars().take(at).collect();
+        self.pending = self.pending.chars().skip(at).collect();
+        if !prefix.is_empty() {
+            self.push_literal(&prefix);
+        }
+    }
+
+    fn push_zh(&mut self, syllable: Syllable) {
+        self.pending.clear();
+        self.pieces.push(AsciiPiece::Zh(syllable));
+    }
+
+    fn push_literal(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(AsciiPiece::Literal(last)) = self.pieces.last_mut() {
+            last.push_str(text);
+        } else {
+            self.pieces.push(AsciiPiece::Literal(text.to_string()));
+        }
+    }
+
+    /// 組字區顯示：已完成的片段加上待定按鍵。
+    pub fn display(&self) -> String {
+        let mut out = String::new();
+        for piece in &self.pieces {
+            match piece {
+                AsciiPiece::Zh(syllable) => out.push_str(syllable.as_str()),
+                AsciiPiece::Literal(text) => out.push_str(text),
+            }
+        }
+        out.push_str(&self.pending_display());
+        out
+    }
+
+    /// 待定按鍵的顯示字串。
+    pub fn display_pending(&self) -> String {
+        self.pending_display()
+    }
+
+    /// 待定按鍵的顯示：能組成注音時顯示注音，英文或打不成注音時照字面。
+    fn pending_display(&self) -> String {
+        if self.pending.is_empty() {
+            return String::new();
+        }
+        if prototype().has(&self.pending) {
+            return self.pending.clone();
+        }
+        match compose_keys(&self.pending) {
+            Some(composer) => composer.string(),
+            None => self.pending.clone(),
+        }
+    }
+}
+
+/// 兩個字串是否只差一鍵（含相鄰互換）。
+fn one_edit_apart(left: &str, right: &str) -> bool {
+    let a: Vec<char> = left.chars().collect();
+    let b: Vec<char> = right.chars().collect();
+    if a == b {
+        return false;
+    }
+    let (long, short) = if a.len() >= b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    if long.len() - short.len() > 1 {
+        return false;
+    }
+    let mut i = 0;
+    let mut j = 0;
+    let mut edits = 0;
+    while i < long.len() && j < short.len() {
+        if long[i] == short[j] {
+            i += 1;
+            j += 1;
+            continue;
+        }
+        edits += 1;
+        if edits > 1 {
+            return false;
+        }
+        if long.len() == short.len() {
+            if i + 1 < long.len()
+                && j + 1 < short.len()
+                && long[i + 1] == short[j]
+                && long[i] == short[j + 1]
+            {
+                return true;
+            }
+            i += 1;
+            j += 1;
+        } else {
+            i += 1;
+        }
+    }
+    edits + (long.len() - i) + (short.len() - j) <= 1
 }
 
 #[cfg(test)]
