@@ -65,6 +65,7 @@
 | `zh-select-calibrate` | `b677022` | `9a04a60` | check 通過；clippy 出現 `onnx` cfg 警告 | 2026-11-20 02:46 |
 | `english-suggest` | `b93633a` | `359d425` | check 通過；clippy／test 失敗 | 2026-11-20 02:50 |
 | `zh-select-calibrate`（診斷） | `9f84483` | `eabae70` | check 通過 | 2026-11-20 03:04 |
+| `english-suggest`（混合修正） | `a9e8fb0` | `b9459ac` | test／clippy 剩他人失敗 | 2026-11-20 03:10 |
 
 ## 衝突與修正
 
@@ -497,3 +498,16 @@
   - 分數方向核對 7/7 正確（正確候選分數高於錯誤候選），沒有反向或正負號錯置。
   - 破壞最少的掃描點是 `weight = 0.5`、`margin = 3.0`，壓力 dev 仍破壞 2/161（1.24%）超過 1% 上限，
     因此 `--select-model` **預設維持 off**。
+
+- `english-suggest` 第二次合併（`b9459ac`，含 `a9e8fb0`）：無衝突，`jc-core/src/session.rs` 3 行，
+  修掉混合模式候選覆蓋整個組字字串的問題。
+
+  驗證：`cargo test --workspace --no-fail-fast` exit 101（38 targets、889 passed、**3 failed**），
+  `cargo clippy --workspace --all-targets -- -D warnings` exit 101（**13 個錯誤**）。兩個 gate 的失敗都不是本 branch：
+
+  - test 3 個全在 `jc-settings`（settings-core 既有）：`test_profile_layout_guard_cannot_be_bypassed_by_copy`、
+    `test_profile_locks_all_managed_entry_points`、`test_profiles_migration_and_complete_round_trip`。
+    先前的兩個 `Io(NotFound)` 測試這次通過（前一次執行已建出目錄），通過數由 886 升到 889。
+  - clippy 13 個全是 `crates/jc-cli/src/bin/zh-calibrate.rs` 的 `unexpected cfg condition value: onnx`
+    （行 15、90、97、149、164、258、276、378、417、464、534、585、690），屬 zh-select-calibrate。
+  - 本 branch 的 `session::tests::test_mixed_english_suggestion_and_completion` 已轉綠。
