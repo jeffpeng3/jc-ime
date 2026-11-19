@@ -263,7 +263,7 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
         testdata,
         corpus,
         pack,
-        rerank,
+        rerank: _,
         gate,
         left,
         json,
