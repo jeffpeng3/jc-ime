@@ -101,6 +101,7 @@
 | `candle-quant` | `51f459c` | `1972ae1` | test 1 個失敗、clippy 1 個錯（皆 branch 自帶） | 2026-11-20 06:40 |
 | `candle-quant`（修門檻） | `66347f4` | `77d8c1f` | 通過（fmt／clippy／全量 test） | 2026-11-20 06:52 |
 | `session-g4-mixed` | `6b9f1b5` | `8de9306` | 通過（fmt／clippy／test／三個 eval） | 2026-11-20 07:02 |
+| `session-g5-misc` | `12f161f` | `7379047` | 通過（fmt／clippy／test／三個 eval） | 2026-11-20 07:16 |
 
 ## 衝突與修正
 
@@ -945,3 +946,17 @@
   - `core/session/ja_cross.go` → n/a：日英同形需要語言 runtime 的 clause 與候選清單，目前 `Mode::Ja` 直接顯示最佳轉換。
   - `core/session/pronoun.go` → 模型已在 `personal/pronoun.rs`，但 Session 沒有 `personal::Model` 與 `path`／`hint` 顯示路徑，
     等 rerank／misc 群組接線。
+
+- `session-g5-misc`（合併 `7379047`，含 `12f161f`）：`session/mod.rs` 只有 mod 宣告衝突，取聯集（`pub mod misc;`、`mod mixed;`）。
+  新增 `session/misc.rs`（待定字面資料層、組字加詞、本地證據、文件文脈查詢、更正選取）。
+
+  gate：fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（45 targets、1044 passed、0 failed）。
+  實測：`eval mixed` **6/6**；`eval zh-golden` **45/45**；`eval ja modern-500` **86.0%**、p50 3.113 ms。
+
+  deferred 清單（資料層已就位，缺下游能力）：
+  - **`ZhInput` 逐格編輯**：`insertSyllableLiteral`／`restorePendingLiteral`／`retypeSyllableLiteral`／`clearPendingZhuyin`；
+    目前 `ZhInput` 只有尾端 push／pop，沒有依索引插入或移除音節的 API。
+  - **`Snapshot` 標示／notice**：`markState`／`markSegments`／候選窗反悔的 notice；`Snapshot` 沒有 `Notices`／`StyleMarked`，
+    `Candidate` 也沒有來源 ID，批次復原與重開候選無處可放。
+  - **`Decoder` 個人化成本接線**：`local_evidence` 已能建出證據，但 `decode::bias` 的 `reading_lift` 與 `correction_penalty`
+    仍是回 0 的掛鉤，`Decoder` 沒有依音節位置查證據的評分器；文件前文混分也缺 `Context`／`ContextID` 協定欄位。
