@@ -518,5 +518,5 @@
   `legal/THIRD-PARTY-NOTICES.md`、`NOTICE`、`docs/models.md`，README 授權段補上帳本與 NOTICE 連結。
 
   `cargo fmt --all -- --check` exit 0。`cargo clippy --workspace --all-targets -- -D warnings` 仍 exit 101，
-  15 個錯誤全是 `crates/jc-cli/src/bin/zh-calibrate.rs` 的 `unexpected cfg condition value: onnx`，
+  13 個錯誤全是 `crates/jc-cli/src/bin/zh-calibrate.rs` 的 `unexpected cfg condition value: onnx`，
   屬 zh-select-calibrate 待修項，與本 branch 無關。
