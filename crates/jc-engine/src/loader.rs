@@ -598,6 +598,7 @@ pub enum EngineDataError {
 /// 分級：
 /// - 注音 `lexicon.bin`、日文 pack 缺失或壞掉 → 啟動失敗。
 /// - `build-zh-bigram/lm.bin` 缺席 → 警告，退回 `build-zh/lm.bin`。
+/// - zh-select 存在就安裝；載入失敗只警告一次，維持統計排序。
 /// - 其餘模型（日文 tokenizer、reranker）缺席或壞掉 → 各記一次警告後繼續。
 pub fn load_engine_data(root: &Path) -> Result<EngineData, EngineDataError> {
     if !root.is_dir() {
@@ -626,9 +627,14 @@ pub fn load_engine_data(root: &Path) -> Result<EngineData, EngineDataError> {
     let mut decoder = load_ja_decoder_with_pack(root, Some(&pack))?;
     if models.is_dir() {
         decoder = decoder.with_reranker(Arc::new(LazyReranker::new(&models)));
+        // 選字模型在啟動時安裝；缺檔或 ONNX 不可用只警告一次，維持統計排序。
+        match install_select_model(&models) {
+            Ok(()) => log::info!("已安裝 zh-select 模型：{}", models.display()),
+            Err(err) => log::warn!("zh-select 不可用，維持統計排序：{err}"),
+        }
     } else {
         log::warn!(
-            "找不到模型目錄 {}，日文重排與其他模型停用",
+            "找不到模型目錄 {}，日文重排與 zh-select 停用",
             models.display()
         );
     }
