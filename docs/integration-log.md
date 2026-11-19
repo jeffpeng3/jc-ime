@@ -41,6 +41,7 @@
 | `ci-lint` | `2732fb3` | `e08a59a` | 通過（fmt＋clippy） | 2026-11-19 23:47 |
 | `fix-windows-cfg` | `0131ebe` | `cf3beba` | 通過（check＋clippy） | 2026-11-20 00:03 |
 | `mixed-e2e` | `7c94971` | `b7ee298` | 通過（check＋fmt＋clippy） | 2026-11-20 00:16 |
+| `zh-bigram` | `61b1ed5` | `b2d244f` | check 通過；clippy 退步 | 2026-11-20 00:20 |
 
 ## 衝突與修正
 
@@ -220,3 +221,20 @@
 
   Mixed 對照前身 6 個案例：**4 例完全一致**，2 例（`scenario-a-primary-ja`、`scenario-b-primary-zh`）
   只差日文詞面 `私わ`（前身）與 `私羽`（Rust），其餘輸出相同；原因是 Mozc pack 的詞面成本差異，不是路由錯誤。
+
+- `zh-bigram`（合併 `b2d244f`，含 `2a9eb10`、`61b1ed5`）：`jc-cli/src/cli.rs` 有 4 處衝突，照兩邊意圖都保留解：
+  加回 branch 的 `lm`／`mu`／`stats` 宣告與參數解析、`ja`／`fuzzy` 的 `reject_zh_flags` 檢查，同時保留 main 的 `eval mixed`
+  指令與 usage 行；`convert` 的 usage 採 branch 版（多了 `--lm`／`--mu`／`--stats`）。
+
+  bigram 已生效（實測）：
+  - `convert "ㄨㄛˇ ㄒㄧㄤˇ ㄔ" --lm build-zh-bigram/lm.bin --mu 0` → 20540；同指令 μ 預設 0.7 → **19238**。
+  - `eval zh-golden --lm build-zh-bigram/lm.bin --stats` → **41/45**，`bigram queries=22747 hits=9743`。
+  - `eval zh-golden`（不帶 `--lm`）也是 41/45。41/45 不變的原因是凍結詞庫每個讀音幾乎只有一個候選，
+    bigram 改得動分數但翻不動排名。
+  - 注意：帶 `--lm` 時失敗集合與預設不同（`candidates-digit`、`rerank-off` 退步，兩個 `learning-*` 反而通過），
+    通過數同為 41。
+
+  `cargo check --workspace --all-targets` exit 0、`cargo fmt --all -- --check` exit 0。
+  **`cargo clippy --workspace --all-targets -- -D warnings` 退步（exit 101）**，兩個新錯都來自本 branch，需回 zh-bigram 修：
+  - `crates/jc-cli/src/converter.rs:222`：`clippy::too_many_arguments`（`convert` 9 個參數，上限 7）。
+  - `crates/jc-core/src/score.rs:573`：`clippy::field_reassign_with_default`（測試內 `let mut ctx = ScoreContext::default(); ctx.bigram_mu = 0.0;`）。
