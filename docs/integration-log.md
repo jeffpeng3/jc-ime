@@ -20,6 +20,7 @@
 | `j3-ja-decode` | `c014d52` | `ff4c955` | 通過 | 2026-11-19 21:31 |
 | `ja-pack-v2` | `86fe251` | `626d20f` | 通過 | 2026-11-19 21:53 |
 | `m1-mixed` | `c669d5b` | `918088e` | 通過 | 2026-11-19 21:56 |
+| `ja-import` | `e404fa1` | `ff13578` | 通過 | 2026-11-19 22:00 |
 
 ## 衝突與修正
 
@@ -65,3 +66,7 @@
 
 - `m1-mixed`（合併 `918088e`）：無衝突，兩個 commit（`119d281` 實作、`c669d5b` 宣告模組）。
   新增 `crates/jc-core/src/mixed.rs`（2757 行），`lib.rs` 加 `pub mod mixed;`。沒有編譯錯誤要修，未改任何實作。
+
+- `ja-import`（合併 `ff13578`）：無衝突。新增 crate `crates/jc-jadic`（`error`、`import`、`mozc`、`pack`、`reading`、`lib`、`main`，2028 行），
+  workspace `Cargo.toml` 加 member，`Cargo.lock` 自動合併。沒有編譯錯誤要修，未改任何實作。
+  產出檔 `/mnt/work/jc/jc-ime-data/packs/ja-lexicon-mozc-v2.pack`（81.5M）與 manifest 在 git 外，不隨 repo 散布。
