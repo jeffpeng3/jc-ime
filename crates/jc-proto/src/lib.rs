@@ -93,10 +93,7 @@ mod tests {
             client: "test".into(),
         };
         let text = serde_json::to_string(&hello).unwrap();
-        assert_eq!(
-            text,
-            format!(r#"{{"op":"hello","protocol":1,"client":"test"}}"#)
-        );
+        assert_eq!(text, r#"{"op":"hello","protocol":1,"client":"test"}"#);
         assert_eq!(serde_json::from_str::<Request>(&text).unwrap(), hello);
     }
 

@@ -146,7 +146,7 @@ mod tests {
         let row = &batch.ids[..124];
         assert_eq!(row[0], 2, "BOS");
         // 左文 3 個 token，靠右放在 1..=60；最短切法是「▁東京都」一個 piece。
-        assert_eq!(row[0 + 1 + 60 - 1], id_of(&t, "▁東京都"));
+        assert_eq!(row[1 + 60 - 1], id_of(&t, "▁東京都"));
         assert_eq!(&row[1..60], &[0; 59]);
         assert_eq!(row[61], 3, "slot 前的 EOS");
         assert_eq!(row[62], id_of(&t, "▁東京"));
@@ -165,10 +165,12 @@ mod tests {
     #[test]
     fn candidate_longer_than_slot_is_truncated() {
         let t = tokenizer();
-        let mut spec = ModelSpec::default();
-        spec.seq_len = Some(8);
-        spec.candidate_slot = Some(4);
-        spec.context_tokens_per_side = Some(2);
+        let spec = ModelSpec {
+            seq_len: Some(8),
+            candidate_slot: Some(4),
+            context_tokens_per_side: Some(2),
+            ..Default::default()
+        };
         let long = "東京都東京都東京都";
         let batch = pack_batch(&t, &spec, "東京", &[long]).unwrap();
         assert_eq!(batch.ids.len(), 8);
@@ -189,8 +191,10 @@ mod tests {
 
     #[test]
     fn invalid_layout_is_rejected() {
-        let mut spec = ModelSpec::default();
-        spec.candidate_slot = Some(123);
+        let mut spec = ModelSpec {
+            candidate_slot: Some(123),
+            ..Default::default()
+        };
         assert!(validate_layout(&spec).is_err());
         spec.candidate_slot = Some(62);
         spec.context_tokens_per_side = Some(61);

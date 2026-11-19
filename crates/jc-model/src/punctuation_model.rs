@@ -117,6 +117,6 @@ mod tests {
 
     #[test]
     fn window_is_bounded() {
-        assert!(WINDOW > 0 && WINDOW <= 512);
+        const { assert!(WINDOW > 0 && WINDOW <= 512) };
     }
 }

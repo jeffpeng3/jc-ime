@@ -201,8 +201,10 @@ mod tests {
 
     #[test]
     fn zero_length_bonus_keeps_dictionary_cost() {
-        let mut ctx = ScoreContext::default();
-        ctx.length_bonus = 0;
+        let ctx = ScoreContext {
+            length_bonus: 0,
+            ..Default::default()
+        };
         assert_eq!(ctx.word_cost(42, 5), 42);
         assert_eq!(ctx.length_adjustment(5), 0);
     }

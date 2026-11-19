@@ -141,20 +141,20 @@ pub fn classify(text: &str, lookup: Option<&dyn Lookup>) -> Kind {
     if text.is_empty() {
         return Kind::Other;
     }
-    if all_japanese(&text) {
+    if all_japanese(text) {
         return Kind::Japanese;
     }
-    let a = analyze_alnum(&text);
+    let a = analyze_alnum(text);
     if a.fullwidth && a.alnum {
         return Kind::FullWidthAlnum;
     }
-    if is_email(&text) {
+    if is_email(text) {
         return Kind::Email;
     }
-    if is_url(&text) {
+    if is_url(text) {
         return Kind::Url;
     }
-    if a.ascii && a.letters && !a.digits && all_ascii_letters_or_apostrophe(&text) {
+    if a.ascii && a.letters && !a.digits && all_ascii_letters_or_apostrophe(text) {
         let probe = text.replace('\'', "");
         if lookup.is_some_and(|l| l.has(&probe)) {
             return Kind::English;
@@ -164,7 +164,7 @@ pub fn classify(text: &str, lookup: Option<&dyn Lookup>) -> Kind {
     if a.digits && !a.letters && a.ascii {
         return Kind::Number;
     }
-    if is_identifier(&text) {
+    if is_identifier(text) {
         return Kind::Identifier;
     }
     Kind::Other
@@ -692,7 +692,7 @@ impl Dictionary {
         let mut best: HashMap<String, f64> = HashMap::new();
         for w in words {
             let text = w.text.to_lowercase();
-            if !is_lower_ascii_word(&text) || !(w.weight > 0.0) || !w.weight.is_finite() {
+            if !is_lower_ascii_word(&text) || w.weight <= 0.0 || !w.weight.is_finite() {
                 continue;
             }
             match best.get(&text) {
@@ -759,7 +759,7 @@ impl Dictionary {
                 .to_string();
             if !is_lower_ascii_word(&text)
                 || text <= previous
-                || !(weight > 0.0)
+                || weight <= 0.0
                 || !weight.is_finite()
                 || flag > 1
             {
@@ -901,7 +901,7 @@ uninstall package path url https http foo bar";
 }
 
 fn is_lower_ascii_word(s: &str) -> bool {
-    !s.is_empty() && s.len() <= MAX_WORD_BYTES && s.chars().all(|c| matches!(c, 'a'..='z'))
+    !s.is_empty() && s.len() <= MAX_WORD_BYTES && s.chars().all(|c| c.is_ascii_lowercase())
 }
 
 /// 英文查詢層：唯讀詞表加上個人學習詞。
@@ -1263,6 +1263,7 @@ struct Plan {
 ///
 /// 三個轉換器都是選配：缺少注音詞典時注音片段照原樣輸出，缺少日文解碼器
 /// 時かな片段照原樣輸出。這樣沒有資料也能測試分段與語言判定。
+#[derive(Default)]
 pub struct Router<'a> {
     /// 設定。
     pub config: Config,
@@ -1272,17 +1273,6 @@ pub struct Router<'a> {
     pub zh: Option<ZhRoute<'a>>,
     /// 日文解碼器。
     pub ja: Option<&'a JaDecoder>,
-}
-
-impl Default for Router<'_> {
-    fn default() -> Self {
-        Self {
-            config: Config::default(),
-            english: None,
-            zh: None,
-            ja: None,
-        }
-    }
 }
 
 impl<'a> Router<'a> {
@@ -1358,7 +1348,7 @@ impl<'a> Router<'a> {
             let (text, c) = self.convert_plan(plan, input)?;
             cost = cost.saturating_add(c);
             let surface_text = if self.config.spacing == Spacing::Always {
-                apply_boundary_space(&mut surface, &text)
+                apply_boundary_space(&surface, &text)
             } else {
                 text
             };
@@ -1448,7 +1438,7 @@ impl<'a> Router<'a> {
         group_words(&mut atoms, input);
         resolve_han(&mut atoms);
         resolve_symbols(&mut atoms);
-        merge_atoms(&mut atoms, input)
+        merge_atoms(&atoms, input)
     }
 }
 
@@ -1937,7 +1927,7 @@ fn is_plain_lower(s: &str) -> bool {
 fn group_words(atoms: &mut Vec<Atom>, input: &str) {
     let mut i = 0usize;
     while i < atoms.len() {
-        if !is_plain_word(&atoms, i) {
+        if !is_plain_word(atoms, i) {
             i += 1;
             continue;
         }
@@ -1945,7 +1935,7 @@ fn group_words(atoms: &mut Vec<Atom>, input: &str) {
         let mut j = i;
         while j + 1 < atoms.len()
             && is_single_space(atoms.get(j), input)
-            && is_plain_word(&atoms, j + 1)
+            && is_plain_word(atoms, j + 1)
         {
             words.push(j + 1);
             j += 2;
@@ -2335,7 +2325,7 @@ impl AsciiInput {
             if !one_edit_apart(&lower, &word.text) {
                 continue;
             }
-            if best.map_or(true, |(weight, _)| word.weight > weight) {
+            if best.is_none_or(|(weight, _)| word.weight > weight) {
                 best = Some((word.weight, &word.text));
             }
         }
@@ -2939,9 +2929,11 @@ mod tests {
         lex.push(crate::lattice::LexEntry::new("巴", "ㄅㄚ", 5, 0));
         lex.push(crate::lattice::LexEntry::new("麻婆", "ㄇㄚˊ ㄆㄛˊ", 2, 0));
         lex.push(crate::lattice::LexEntry::new("豆腐", "ㄉㄡˋ ㄈㄨˇ", 2, 0));
-        let mut ctx = ScoreContext::default();
-        ctx.length_bonus = 0;
-        ctx.max_word_units = 8;
+        let ctx = ScoreContext {
+            length_bonus: 0,
+            max_word_units: 8,
+            ..Default::default()
+        };
         (lex, ctx)
     }
 
