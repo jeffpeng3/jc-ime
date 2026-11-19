@@ -53,6 +53,63 @@
 - 前身三個測試（`TestNormalize`、`TestEncodeViterbi`、`TestEncodeUnknown`）照搬
   id 與分數，確認 Viterbi 與 Go 版一致。
 
+## byte fallback 與 OOV 補測（2026-11-20）
+
+模型：`models/ja-tokenizer/public_core_ja.model`
+（sha256 `b25260c9c3d90a754c719e62eea6b8125f08448d48dd4d1755c18edbd00e2078`，
+32768 pieces，其中 type `BYTE` 256 個）；Python `sentencepiece` 0.2.3。
+
+### byte fallback 開啟（模型原樣）
+
+| 輸入 | Python SP ids | Python SP pieces | Rust ids | Rust pieces | 一致 |
+|---|---|---|---|---|---|
+| 𠮷 | 263,244,164,178,187 | ▁ `<0xF0>` `<0xA0>` `<0xAE>` `<0xB7>` | 263,244,164,178,187 | 同左 | ✅ |
+| 😀 | 263,244,163,156,132 | ▁ `<0xF0>` `<0x9F>` `<0x98>` `<0x80>` | 263,244,163,156,132 | 同左 | ✅ |
+| ① | 3729 | ▁① | 3729 | 同左 | ✅ |
+| 髙 | 263,21752 | ▁ 髙 | 263,21752 | 同左 | ✅ |
+| 東京𠮷 | 10015,244,164,178,187 | ▁東京 `<0xF0>` `<0xA0>` `<0xAE>` `<0xB7>` | 10015,244,164,178,187 | 同左 | ✅ |
+| a😀b | 1893,244,163,156,132,703 | ▁a `<0xF0>` `<0x9F>` `<0x98>` `<0x80>` b | 1893,244,163,156,132,703 | 同左 | ✅ |
+| 𠮷😀①髙 | 263,244,164,178,187,244,163,156,132,1309,21752 | ▁ bytes(𠮷) bytes(😀) ① 髙 | 263,244,164,178,187,244,163,156,132,1309,21752 | 同左 | ✅ |
+
+結論：模型有 256 個 BYTE piece 時，Rust 的 byte fallback 與 SP 完全一致，
+OOV 字元輸出 `<0xNN>`，不是 `<unk>`。`①`、`髙` 本身在詞表內，不觸發 fallback。
+
+### byte fallback 關閉（移除 256 個 BYTE piece，`byte_fallback=false`）
+
+這是 SP 唯一接受、且會對 OOV 輸出 `<unk>` 的合法設定。
+
+| 輸入 | Python SP ids | Rust ids | 一致 |
+|---|---|---|---|
+| 𠮷 | 7,1 | 7,1 | ✅ |
+| 😀 | 7,1 | 7,1 | ✅ |
+| ① | 3473 | 3473 | ✅ |
+| 髙 | 7,21496 | 7,21496 | ✅ |
+| 東京𠮷 | 9759,1 | 9759,1 | ✅ |
+| a😀b | 1637,1,447 | 1637,1,447 | ✅ |
+| 𠮷😀①髙 | 7,1,1053,21496 | 7,1,1053,21496 | ✅ |
+| 𠮷𠮷 | 7,1 | 7,1 | ✅ |
+
+（ids 因移除 256 個 piece 而位移；`1` 是 `<unk>`。Python `out_type=str` 對 unk
+會回傳原字面，Rust 的 `piece()` 回傳 `<unk>`，只影響字串表示，id 相同。）
+
+連續 OOV 會合并成一個 `<unk>`（`𠮷𠮷` → `[▁, <unk>]`），這是
+`sentencepiece_processor.cc` 的 `EncodeOptimized` 行為；本實作原先逐字輸出
+`[▁, <unk>, <unk>]`，已一起修正。
+
+### `byte_fallback=true` 但詞表缺 byte piece
+
+SP 的 loader 直接拒絕這種模型：
+
+```
+RuntimeError: INTERNAL: there are not 256 byte pieces although `byte_fallback` is true.
+```
+
+所以它不是 SP 可觀測的輸入，無法取得 oracle。SP 的 processor 在 byte fallback
+分支是逐位元組呼叫 `PieceToId(ByteToPiece(b))`，找不到就回傳 `<unk>`，且這條
+分支不合并連續 unk；本實作照這個行為實作（`byte_ids[b].unwrap_or(unk_id)`），
+單元測試 `unknown_runes_keep_unk_id_without_byte_pieces` 鎖住的是這個防禦性
+fallback，不是 SP 可載入模型的實測結果。
+
 ## 20 句對照
 
 `modern-500` 每 25 句抽一句，同一份詞表跑兩種切法：
