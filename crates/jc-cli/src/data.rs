@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use jc_core::ja::decode::{JaDecoder, JaWordMatch, JaWordSource};
-use jc_core::ja::lexicon::{JaEntry, SingleColumnCost};
+use jc_core::ja::decode::{JaDecoder, JaDictionary, JaWordMatch, JaWordSource};
+use jc_core::ja::lexicon::{JaEntry, JaLexicon, SingleColumnCost};
 use jc_core::lattice::{InMemoryLexicon, LexEntry};
 use jc_core::score::ScoreContext;
 
@@ -155,8 +155,11 @@ fn probability_cost(probability: f64) -> i32 {
     (-probability.ln() * 1000.0).round().min(100_000.0) as i32
 }
 
-/// 預設的日文詞典 pack。
-pub const DEFAULT_JA_PACK: &str = "packs/ja-lexicon-public-core.pack";
+/// 預設的日文詞典 pack（含 Mozc context 連接矩陣的 v2）。
+pub const DEFAULT_JA_PACK: &str = "packs/ja-lexicon-mozc-v2.pack";
+
+/// 找不到 v2 時退回的 v1 pack（只有詞性連接成本）。
+pub const FALLBACK_JA_PACK: &str = "packs/ja-lexicon-public-core.pack";
 
 /// 記憶體日文詞典：由 curated `words.tsv` 建立。
 ///
@@ -273,50 +276,82 @@ impl JaWordSource for TsvWordSource {
     }
 }
 
-/// 載入日文解碼器。
+/// 解析日文 pack 路徑。
 ///
-/// 優先使用與 baseline 相同的 curated `ja-src/lexicon/words.tsv` 與
-/// `ja-src/connection.tsv`；curated 詞庫不存在時才退回 pack：
-/// `JC_JA_PACK`、`packs/ja-lexicon-public-core.pack`、
-/// `packs/ja-lexicon-mozc-v2.pack`。
-pub fn load_ja_decoder(root: &Path) -> Result<JaDecoder, CliError> {
-    let words = root.join("ja-src/lexicon/words.tsv");
-    let connection = root.join("ja-src/connection.tsv");
-    if words.is_file() {
-        let source = TsvWordSource::load(&words)?;
-        let mut decoder = JaDecoder::new(Arc::new(source));
-        if connection.is_file() {
-            let cost = SingleColumnCost::load(&connection).map_err(|err| {
-                CliError::data(format!("讀取 {} 失敗：{err}", connection.display()))
-            })?;
-            decoder = decoder.with_connection(Arc::new(cost));
-        }
-        return Ok(decoder);
+/// 順序：`explicit`（`--pack`）、`JC_JA_PACK`、資料根目錄的
+/// [`DEFAULT_JA_PACK`]、[`FALLBACK_JA_PACK`]。都沒有時回傳錯誤；不寫死
+/// 絕對路徑，因此 `JC_TESTDATA` 指到其他資料根目錄時也找得到同一組 pack。
+pub fn resolve_ja_pack(root: &Path, explicit: Option<&Path>) -> Result<PathBuf, CliError> {
+    if let Some(path) = explicit {
+        return Ok(path.to_path_buf());
     }
-    let pack = match std::env::var_os("JC_JA_PACK") {
-        Some(value) if !value.is_empty() => PathBuf::from(value),
-        _ => {
-            let mut found = None;
-            for relative in [DEFAULT_JA_PACK, "packs/ja-lexicon-mozc-v2.pack"] {
-                let candidate = root.join(relative);
-                if candidate.is_file() {
-                    found = Some(candidate);
-                    break;
-                }
-            }
-            found.ok_or_else(|| {
-                CliError::data(format!(
-                    "找不到日文詞典：{} 或 {}",
-                    words.display(),
-                    root.join(DEFAULT_JA_PACK).display()
-                ))
-            })?
+    if let Some(value) = std::env::var_os("JC_JA_PACK") {
+        if !value.is_empty() {
+            return Ok(PathBuf::from(value));
         }
-    };
-    let mut decoder = JaDecoder::open(&pack)
+    }
+    for relative in [DEFAULT_JA_PACK, FALLBACK_JA_PACK] {
+        let candidate = root.join(relative);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(CliError::data(format!(
+        "找不到日文 pack：{} 或 {}；可用 --pack 指定",
+        root.join(DEFAULT_JA_PACK).display(),
+        root.join(FALLBACK_JA_PACK).display()
+    )))
+}
+
+/// 載入日文解碼器，使用預設 pack（見 [`resolve_ja_pack`]）。
+pub fn load_ja_decoder(root: &Path) -> Result<JaDecoder, CliError> {
+    load_ja_decoder_with_pack(root, None)
+}
+
+/// 載入日文解碼器，`pack` 覆寫預設 pack。
+///
+/// v2 pack 會同時接上詞條的 left／right ID 與 context 連接矩陣；v1 pack
+/// 沒有矩陣，退回 `ja-src/connection.tsv` 的詞性成本。兩條路徑都不會在
+/// 有 pack 時偷用 curated `words.tsv`，避免同一個 pack 在不同入口得到不同
+/// 分數。
+pub fn load_ja_decoder_with_pack(root: &Path, pack: Option<&Path>) -> Result<JaDecoder, CliError> {
+    match resolve_ja_pack(root, pack) {
+        Ok(pack) => open_pack_decoder(&pack, &root.join("ja-src/connection.tsv")),
+        Err(err) => {
+            let words = root.join("ja-src/lexicon/words.tsv");
+            if pack.is_none() && words.is_file() {
+                load_curated_decoder(&words, &root.join("ja-src/connection.tsv"))
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+/// 開啟 pack，並依 pack 能力接上 context 矩陣或詞性成本。
+fn open_pack_decoder(pack: &Path, connection: &Path) -> Result<JaDecoder, CliError> {
+    let lex = JaLexicon::open(pack)
         .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", pack.display())))?;
+    let context = lex.connection_cost();
+    let has_matrix = context.has_matrix();
+    let decoder = JaDecoder::new(Arc::new(JaDictionary::new(Arc::new(lex))));
+    if has_matrix {
+        return Ok(decoder.with_context_cost(Arc::new(context)));
+    }
     if connection.is_file() {
-        let cost = SingleColumnCost::load(&connection)
+        let cost = SingleColumnCost::load(connection)
+            .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", connection.display())))?;
+        return Ok(decoder.with_connection(Arc::new(cost)));
+    }
+    Ok(decoder)
+}
+
+/// 沒有 pack 時使用 curated `words.tsv` 的保底路徑。
+fn load_curated_decoder(words: &Path, connection: &Path) -> Result<JaDecoder, CliError> {
+    let source = TsvWordSource::load(words)?;
+    let mut decoder = JaDecoder::new(Arc::new(source));
+    if connection.is_file() {
+        let cost = SingleColumnCost::load(connection)
             .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", connection.display())))?;
         decoder = decoder.with_connection(Arc::new(cost));
     }
@@ -355,12 +390,34 @@ mod tests {
     }
 
     #[test]
-    fn curated_ja_lexicon_converts_a_sentence() {
+    fn default_pack_converts_a_sentence() {
         let Some(root) = jc_testdata::root() else {
             eprintln!("缺少測試資料：JC_TESTDATA");
             return;
         };
         let decoder = load_ja_decoder(&root).unwrap();
+        let results = decoder.nbest(
+            "わたしはほんをよむ。",
+            &jc_core::ja::decode::JaContext::default(),
+            1,
+        );
+        assert_eq!(
+            results.first().map(|result| result.surface.as_str()),
+            Some("私は本を読む。")
+        );
+    }
+
+    #[test]
+    fn curated_ja_lexicon_converts_a_sentence() {
+        let Some(root) = jc_testdata::root() else {
+            eprintln!("缺少測試資料：JC_TESTDATA");
+            return;
+        };
+        let decoder = load_curated_decoder(
+            &root.join("ja-src/lexicon/words.tsv"),
+            &root.join("ja-src/connection.tsv"),
+        )
+        .unwrap();
         let results = decoder.nbest(
             "わたしはほんをよむ。",
             &jc_core::ja::decode::JaContext::default(),
