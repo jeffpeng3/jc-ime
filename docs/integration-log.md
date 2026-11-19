@@ -95,6 +95,7 @@
 | `jinen-gating`（修 clippy） | `1c7ba21` | `64f49e8` | 通過（clippy＋全量 test） | 2026-11-20 06:05 |
 | `session-g3-symbols` | `c67c4e7` | `86d24e0` | 通過（fmt／clippy／test／兩個 eval） | 2026-11-20 06:08 |
 | `session-g2-segments` | `57e3a5d` | `1fd343d` | 通過（fmt／clippy／test／兩個 eval） | 2026-11-20 06:16 |
+| `session-g1-input` | `45a73fa` | `ded267a` | test 2 個失敗（branch 自帶）；fmt／clippy／兩個 eval 通過 | 2026-11-20 06:26 |
 
 ## 衝突與修正
 
@@ -866,3 +867,20 @@
   - `Candidate`／`Snapshot` 缺 `label` 欄位 → `candidate_labels.go` 無法移植。
   - `Snapshot` 沒有游標 rune（只有字元游標），`ZhInput` 也沒有組字中游標 → `segments.go` 的 `SetCursor` 標 n/a。
   - `ZhInput::press_char` 收到聲調鍵就直接完成音節，沒有「擋下聲調、留在暫存」的 hook → `tone_check.go` 無法移植。
+
+- `session-g1-input`（合併 `ded267a`，含 `45a73fa`）：`session/mod.rs` 兩處衝突。`mod` 宣告與 `pub use` 取聯集
+  （`input_style`＋`segments`＋`symbols`）；`press` 的派送順序解成
+  `!style_key && !menu_key` 外層、`segments_press` 內層，讓聲調鍵（g2）先於一般按鍵路徑處理，
+  同時保留 g1 的 `style_key` 攔截。新增 `session/input_style.rs`，`core.rs` 的數字選字改走 `selection_index`。
+
+  gate：fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` exit 101（44 targets、1001 passed、**2 failed**）：
+  - `session::input_style::tests::test_mcbopomofo_space_and_backslash`（`input_style.rs:835`）：期望 `景 `、得到 `井 `。
+  - `session::input_style::tests::test_microsoft_width_is_state_and_includes_english`（`input_style.rs:735`）：`A` 得到 `ａＡ`、期望 `Ａ`。
+  這兩者在 `session-g1-input` 分支單獨 checkout 後重跑也一樣失敗（已用暫存 worktree 驗證），
+  是該 task 自帶的紅測試，不是合併造成，需回 session-g1-input 修。
+
+  實測：`eval zh-golden` **45/45**；`eval ja modern-500` **86.0%**、top-5 98.0%、p50 3.114 ms。
+
+  5 ported（`input_style.go` 部分移植、`shift_symbol.go` 部分、`keypolicy.go`、`idle_keys.go`、`selection_keys.go`），
+  4 n/a：`zhuyin_keys.go`（缺逐格來源與 literal 格陣列）、`zh_profile.go`（沒有 profile 抽象層）、
+  `layout_readings.go`（只支援大千排列，無 `AltCost`）、`number_context.go`（解碼器沒有跨片段左文參數）。
