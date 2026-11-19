@@ -52,6 +52,7 @@
 | `core-misc` | `bc39909` | `2148cd6` | 通過 | 2026-11-20 01:10 |
 | `ja-personal` | `841b35f` | `cf0c235` | 通過 | 2026-11-20 01:12 |
 | `punct-wire` | `b79183c` | `117e2b9` | check／fmt／clippy 通過；3 個 test 失敗 | 2026-11-20 01:15 |
+| `ja-live-rewrite` | `d1a3dca` | `7b7047a` | 通過（check／fmt／clippy＋針對性 test） | 2026-11-20 01:16 |
 
 ## 衝突與修正
 
@@ -330,3 +331,11 @@
 
   兩個 `punct_plan` 失敗都在 punct-wire 新增的檔案內，且該檔沒有合併衝突，屬該 task 自身測試與實作不一致；
   `personal.rs` 同樣是 ja-personal 新增檔案。三個失敗都需回原 task 修。
+
+- `ja-live-rewrite`（合併 `7b7047a`）：`ja/mod.rs` 與 `session.rs` 自動合併，無衝突。新增 `ja/live.rs`（1099 行），
+  `ja/rewrite.rs` 補到 1057 行，`session.rs` 接上逐字変換與轉換後改寫。
+
+  驗證：`cargo check --workspace --all-targets` exit 0、`cargo fmt --all -- --check` exit 0、
+  `cargo clippy --workspace --all-targets -- -D warnings` exit 0；
+  `cargo test -p jc-core --lib ja::live` 13 passed、`ja::rewrite` 17 passed，皆 0 failed。
+  依指示沒有跑全量 `cargo test`（punct-wire／ja-personal 的 3 個已知失敗仍在修）。
