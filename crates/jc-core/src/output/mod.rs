@@ -8,6 +8,10 @@ use crate::candidate::Candidate;
 use crate::lang::Mode;
 use crate::segment::Segment;
 
+pub mod punct;
+
+pub use punct::{ModelPunctuator, OnnxPunctuator, PunctLatencyStats, SharedPunctuator};
+
 /// 輸出變體。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Variant {

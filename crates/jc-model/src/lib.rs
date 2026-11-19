@@ -7,7 +7,9 @@
 //! 啟用 `onnx` 後提供：
 //!
 //! - [`Reranker`]：日文候選重排，`score(left, candidate, right) -> Option<f32>`。
-//! - [`PunctuationModel`]：日文標點推論（`punctuate` 仍是 identity stub）。
+//! - [`PunctuationModel`]：日文標點推論，載入模型後 `punctuate(text)` 直接
+//!   回傳插入標點的文字。
+//! - [`ZhPunctuationModel`]：注音標點推論，規則同前身字元模型。
 //!
 //! 模型目錄預設放 `model.int8.onnx` 與 `vocab.json`；`vocab.json` 是
 //! `0c.sentencepiece.vocab/1`，只有詞表、沒有 piece 分數，因此
@@ -17,9 +19,12 @@ pub mod error;
 pub mod layout;
 pub mod manifest;
 pub mod punct;
+mod punct_plan;
 pub mod role;
 pub mod tokenizer;
 
+#[cfg(feature = "onnx")]
+pub mod punct_zh;
 #[cfg(feature = "onnx")]
 pub mod punctuation_model;
 #[cfg(feature = "onnx")]
@@ -37,6 +42,8 @@ pub use punct::{punctuate, IdentityPunctuator, Punctuator};
 pub use role::Role;
 pub use tokenizer::Tokenizer;
 
+#[cfg(feature = "onnx")]
+pub use punct_zh::ZhPunctuationModel;
 #[cfg(feature = "onnx")]
 pub use punctuation_model::PunctuationModel;
 #[cfg(feature = "onnx")]

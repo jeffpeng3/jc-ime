@@ -9,6 +9,7 @@ use jc_core::candidate::Candidate;
 use jc_core::decode::{Decoder, Locks};
 use jc_core::ja::decode::{JaContext, JaDecoder};
 use jc_core::lattice::{InMemoryLexicon, Lattice};
+use jc_core::output::ModelPunctuator;
 use jc_core::score::ScoreContext;
 use jc_core::zh::syllable::class_of;
 use jc_eval::Converter;
@@ -236,6 +237,8 @@ pub struct ConvertOptions {
     pub json: bool,
     /// 啟用注音選字模型重排。
     pub select_model: bool,
+    /// 送出時用標點模型補標點。
+    pub punct: bool,
 }
 
 /// `convert` 子命令：單句轉換並列出 N-best。
@@ -257,7 +260,9 @@ pub fn convert(
         n,
         json,
         select_model,
+        punct,
     } = options;
+    let punct_testdata = testdata.clone();
     #[cfg(feature = "onnx")]
     if select_model {
         data::install_select_model(testdata.as_deref())?;
@@ -302,6 +307,32 @@ pub fn convert(
             })
             .collect();
         (candidates, LmQueryStats::default())
+    };
+    let mode = if is_zhuyin(reading) {
+        jc_core::Mode::Zh
+    } else {
+        jc_core::Mode::Ja
+    };
+    let punctuator = if punct {
+        match data::load_punctuator(punct_testdata.as_deref(), mode) {
+            Ok(model) => Some(model),
+            Err(err) => {
+                eprintln!("警告：--punct on 無法載入標點模型，維持原文：{err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let candidates: Vec<Candidate> = match &punctuator {
+        Some(model) => candidates
+            .into_iter()
+            .map(|mut candidate| {
+                candidate.surface = model.punctuate(&candidate.surface, mode);
+                candidate
+            })
+            .collect(),
+        None => candidates,
     };
     if json {
         let rows: Vec<_> = candidates
@@ -359,6 +390,14 @@ pub fn convert(
     }
     if select_model {
         write_select_stats(out)?;
+    }
+    if let Some(model) = &punctuator {
+        let stats = model.stats();
+        writeln!(
+            out,
+            "punct：推論 {} 次，插入 {} 次，p50 {:.2} ms，p95 {:.2} ms",
+            stats.calls, stats.inserted, stats.p50_ms, stats.p95_ms
+        )?;
     }
     Ok(())
 }

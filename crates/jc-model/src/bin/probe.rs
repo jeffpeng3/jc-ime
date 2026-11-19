@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use jc_model::{ModelSpec, PunctuationModel, Reranker};
+use jc_model::{ModelSpec, PunctuationModel, Reranker, ZhPunctuationModel};
 
 fn main() {
     let mut models = PathBuf::from("/mnt/work/jc/jc-ime-data/models");
@@ -19,6 +19,7 @@ fn main() {
     let mut ort_lib: Option<PathBuf> = None;
     let mut left = String::from("今日は");
     let mut text = String::from("今日は晴れです");
+    let mut zh_text = String::from("好的我知道了明天見");
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -33,10 +34,11 @@ fn main() {
             "--ort-lib" => ort_lib = Some(PathBuf::from(value())),
             "--left" => left = value(),
             "--text" => text = value(),
+            "--zh-text" => zh_text = value(),
             "-h" | "--help" => {
                 println!(
                     "用法：probe [--models DIR] [--rerank-dir DIR] [--punct-dir DIR] \
-                     [--ort-lib LIB] [--left TEXT] [--text TEXT]"
+                     [--ort-lib LIB] [--left TEXT] [--text TEXT] [--zh-text TEXT]"
                 );
                 return;
             }
@@ -79,6 +81,20 @@ fn main() {
         ),
         None => println!("punctuation：延遲 {punct_ms:.2} ms，逾時或失敗（回 None）"),
     }
+    println!("punctuate：{:?} -> {:?}", text, punct.punctuate(&text));
+
+    let zh_dir = models.join("zh-punct");
+    let zh = match ZhPunctuationModel::load_with_spec(&zh_dir, &spec, ort_lib.as_deref()) {
+        Ok(model) => model,
+        Err(e) => fail(&format!("注音標點模型載入失敗：{e}")),
+    };
+    let started = Instant::now();
+    let zh_out = zh.punctuate(&zh_text);
+    let zh_ms = started.elapsed().as_secs_f64() * 1000.0;
+    println!(
+        "zh punctuate：{:?} -> {:?}（{zh_ms:.2} ms）",
+        zh_text, zh_out
+    );
 
     if scores.is_none() || logits.is_none() {
         std::process::exit(2);

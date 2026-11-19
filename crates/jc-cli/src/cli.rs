@@ -104,6 +104,8 @@ pub enum Command {
         json: bool,
         /// 啟用注音選字模型重排。
         select_model: bool,
+        /// 送出時用標點模型補標點；預設關閉。
+        punct: bool,
     },
     /// 對檔案中的每行讀音做轉換並計時。
     Bench {
@@ -283,6 +285,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     let mut n = 5usize;
     let mut json = false;
     let mut select_model = false;
+    let mut punct = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -297,6 +300,10 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
             "--select-model" => {
                 index += 1;
                 select_model = switch(value(args, index, "--select-model")?, "--select-model")?;
+            }
+            "--punct" => {
+                index += 1;
+                punct = switch(value(args, index, "--punct")?, "--punct")?;
             }
             "--lm" => {
                 index += 1;
@@ -340,6 +347,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
         n,
         json,
         select_model,
+        punct,
     })
 }
 
@@ -471,6 +479,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             n,
             json,
             select_model,
+            punct,
         } => crate::converter::convert(
             crate::converter::ConvertOptions {
                 testdata: testdata.clone(),
@@ -481,6 +490,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 n: *n,
                 json: *json,
                 select_model: *select_model,
+                punct: *punct,
             },
             reading,
             out,
@@ -505,13 +515,14 @@ pub fn usage() -> String {
          [--rerank on|off] [--json]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
-         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--json]\n  \
+         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--punct on|off] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
          --data 指向注音二進位資料包（lexicon.bin、lm.bin、manifest.json）；\n\
          指定時注音走真實詞庫並自動載入同目錄的 lm.bin。\n\
          --lm 覆寫 bigram 語言模型；--mu 是 bigram 與 unigram 的內插權重（預設 0.7）。\n\
-         --select-model on 需要 --features onnx；預設 off。\n",
+         --select-model on 需要 --features onnx；預設 off。\n\
+         --punct on 需要 --features onnx；預設 off，未開啟時輸出與原本逐字相同。\n",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -613,6 +624,7 @@ mod tests {
                 n: 3,
                 json: false,
                 select_model: false,
+                punct: false,
             }
         );
     }
@@ -631,6 +643,7 @@ mod tests {
                 n: 5,
                 json: false,
                 select_model: true,
+                punct: false,
             }
         );
         assert_eq!(
@@ -673,6 +686,7 @@ mod tests {
                 n: 5,
                 json: false,
                 select_model: false,
+                punct: false,
             }
         );
         assert!(parse(&args(&["convert", "ㄚ", "--mu", "1.5"])).is_err());
