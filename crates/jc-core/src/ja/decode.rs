@@ -1375,9 +1375,11 @@ impl JaDecoder {
         let total = pending.len();
         let gate = self.rerank_gate;
         pending.retain(|group| gate.allows(group.gap, group.candidates.len()));
-        // 成本差最小的詞群最不確定，先送；超過上限的留給統計。
+        // 成本差最小的詞群最不確定，優先入選；超過上限的留給統計。
         pending.sort_by_key(|group| (group.gap, group.start));
         pending.truncate(WORD_RERANK_MAX_GROUPS);
+        // 入選後照文本順序送，左文才是已解碼的前文；預算用盡時也先保住句首。
+        pending.sort_by_key(|group| group.start);
         reranker.note_gated(total, pending.len());
 
         let mut deltas: HashMap<(usize, usize), f64> = HashMap::new();
