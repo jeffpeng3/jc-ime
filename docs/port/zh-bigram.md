@@ -106,6 +106,34 @@ cargo run -p jc-cli --release -- eval zh-golden
 `--mu 0` 時 `build-zh-bigram` 的 5-best 與 `build-zh` 逐項相同（表面與
 成本都一樣），確認沒有 bigram 或關掉內插時完全退化。
 
-`eval zh-golden` 的基準不變：**35/45**（此分支 `docs/port/zh-golden.md`
-的現況；任務書寫的 41/45 不是這個 base 的數字）。加上
-`--lm build-zh-bigram/lm.bin` 仍是 35/45，失敗題目換了兩題，沒有淨退步。
+`convert` 的 `--stats` 直接顯示查詢次數：
+
+```text
+build-zh         bigram queries=0   hits=0
+build-zh-bigram  bigram queries=496 hits=1   # 命中的是 我→愛
+```
+
+`ㄨㄛˇ ㄞˋ` 的表面順序不變是資料決定的：五個候選的第一個詞都是「我」，
+而 `ㄞˋ` 的候選裡只有「愛」有 `我→愛` 的 bigram（`lm.bin` 中 我 的 997
+筆後接詞只有「愛」屬於這個讀音），所以 bigram 只把第一名拉得更前面，
+不會換位。真正會換位的輸入是 `ㄗㄞˋ ㄐㄧㄢˋ`（在見 ↔ 在建）。
+
+## 與 main 合併後
+
+base 合併 `main`（`af59d44`，含 `zh-golden-rest`）後：
+
+| 指令 | 結果 |
+|---|---|
+| `eval zh-golden` | **41/45** |
+| `eval zh-golden --lm build-zh-bigram/lm.bin --stats` | **41/45**，`bigram queries=22747 hits=9743` |
+| `eval zh-golden --lm ... --mu 0` | 41/45，成本與 μ=0.7 不同但通過題數相同 |
+
+golden 加 bigram 後查了 22,747 次、命中 9,743 次，分數確實改變（例如
+`ㄨㄛˇ ㄒㄧㄤˇ ㄔ` 的最佳成本 20540 → 19238），但 41/45 的通過集合不變：
+凍結詞庫每個讀音幾乎只有一個 `P(r|w)=1` 的候選，沒有能讓 bigram 翻盤的
+同分組合。
+
+候選順序不是由 `candidates_in_context` 決定的：這個方法在 workspace 沒有
+任何呼叫端，`Session::rebuild_zh` 的最佳路徑用 `Decoder::best`、候選清單
+用 `Decoder::nbest`，兩者都接上 `LmScorer`。所以「Viterbi 沒機會用
+bigram」不成立；`--stats` 的查詢次數是直接證據。

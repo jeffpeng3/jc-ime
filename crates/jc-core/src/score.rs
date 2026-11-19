@@ -13,6 +13,7 @@
 //! `personal.Model.Prob` 的內插：`μ·P_bi(w|prev) + (1−μ)·P_uni(w)`。
 //! μ 的預設值 [`DEFAULT_BIGRAM_MU`] 與調整方式都照前身 `personal.DefaultParams`。
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -265,6 +266,8 @@ pub trait BigramLm {
 #[derive(Clone)]
 pub struct ZhLm {
     inner: Arc<jc_data::zh::Lm>,
+    bi_queries: Arc<std::sync::atomic::AtomicU64>,
+    bi_hits: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl ZhLm {
@@ -272,6 +275,8 @@ impl ZhLm {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, jc_data::zh::ZhDataError> {
         Ok(Self {
             inner: Arc::new(jc_data::zh::Lm::open(path)?),
+            bi_queries: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            bi_hits: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 
@@ -279,6 +284,8 @@ impl ZhLm {
     pub fn from_lm(lm: jc_data::zh::Lm) -> Self {
         Self {
             inner: Arc::new(lm),
+            bi_queries: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            bi_hits: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -290,6 +297,16 @@ impl ZhLm {
     /// 詞數。
     pub fn words(&self) -> usize {
         self.inner.words()
+    }
+
+    /// 已查詢的 bigram 次數（所有 [`BigramLm::bi`] 呼叫）。
+    pub fn bi_queries(&self) -> u64 {
+        self.bi_queries.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 查到的 bigram 次數（`P_bi > 0`）。
+    pub fn bi_hits(&self) -> u64 {
+        self.bi_hits.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -308,7 +325,14 @@ impl BigramLm for ZhLm {
     }
 
     fn bi(&self, left: &str, word: &str) -> f64 {
-        self.inner.bi(left, word)
+        let p = self.inner.bi(left, word);
+        self.bi_queries
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if p > 0.0 {
+            self.bi_hits
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        p
     }
 
     fn bigram_count(&self) -> usize {
@@ -342,12 +366,31 @@ impl BigramLm for jc_data::zh::Lm {
 pub struct LmScorer<'a> {
     ctx: &'a ScoreContext,
     lm: &'a dyn BigramLm,
+    /// 查過幾次 bigram（不含模型沒有 bigram 的提早返回）。
+    queries: Cell<u64>,
+    /// 其中真的有這筆 bigram 的次數。
+    hits: Cell<u64>,
 }
 
 impl<'a> LmScorer<'a> {
     /// 用成本設定的 μ 與指定的語言模型建立評分器。
     pub fn new(ctx: &'a ScoreContext, lm: &'a dyn BigramLm) -> Self {
-        Self { ctx, lm }
+        Self {
+            ctx,
+            lm,
+            queries: Cell::new(0),
+            hits: Cell::new(0),
+        }
+    }
+
+    /// 已查詢的 bigram 次數。
+    pub fn queries(&self) -> u64 {
+        self.queries.get()
+    }
+
+    /// 查到的 bigram 次數（`P_bi > 0`）。
+    pub fn hits(&self) -> u64 {
+        self.hits.get()
     }
 
     /// 內插後的機率 `μ·P_bi(w|left) + (1−μ)·P_uni(w)`。
@@ -358,12 +401,22 @@ impl<'a> LmScorer<'a> {
     }
 
     /// 內插後相對 unigram 的成本差（毫成本）。
+    ///
+    /// 每次呼叫都計入 [`LmScorer::queries`]；`P_bi > 0` 時也計入
+    /// [`LmScorer::hits`]，供 CLI 證明 bigram 真的被查。
     pub fn delta(&self, left: &str, word: &str) -> i32 {
         if self.lm.bigram_count() == 0 {
             return 0;
         }
+        self.queries.set(self.queries.get() + 1);
+        let p_bi = self.lm.bi(left, word);
+        if p_bi > 0.0 {
+            self.hits.set(self.hits.get() + 1);
+        }
         let p_uni = self.lm.uni(word);
-        probability_cost(self.probability(left, word)).saturating_sub(probability_cost(p_uni))
+        let mu = self.ctx.bigram_mu;
+        let interpolated = mu * p_bi + (1.0 - mu) * p_uni;
+        probability_cost(interpolated).saturating_sub(probability_cost(p_uni))
     }
 }
 
@@ -500,6 +553,18 @@ mod tests {
             scorer.word_cost(Some("我"), "ㄞˋ", 30000, CandidateSource::Literal),
             30000
         );
+    }
+
+    #[test]
+    fn lm_scorer_counts_queries_and_hits() {
+        let ctx = ScoreContext::default();
+        let lm = FakeLm::new(&[(("我", "愛"), 0.0044)]);
+        let scorer = LmScorer::new(&ctx, &lm);
+        assert_eq!((scorer.queries(), scorer.hits()), (0, 0));
+        scorer.delta("我", "愛");
+        scorer.delta("我", "艾");
+        assert_eq!(scorer.queries(), 2);
+        assert_eq!(scorer.hits(), 1);
     }
 
     #[test]

@@ -23,6 +23,17 @@ pub struct ZhConverter {
     resources: ZhResources,
 }
 
+/// 一次轉換的 bigram 查詢統計。
+///
+/// 用來證明 bigram 真的有被查，而不是只有輸出剛好不同。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LmQueryStats {
+    /// 查詢次數。
+    pub queries: u64,
+    /// 查到 bigram 的次數。
+    pub hits: u64,
+}
+
 impl ZhConverter {
     /// 用固定詞典建立轉換器。
     pub fn new(resources: ZhResources) -> Self {
@@ -37,14 +48,19 @@ impl ZhConverter {
 
     /// 前 `n` 個候選；讀音是空白分隔的注音音節。
     pub fn nbest(&self, reading: &str, n: usize) -> Vec<Candidate> {
+        self.nbest_with_stats(reading, n).0
+    }
+
+    /// 與 [`ZhConverter::nbest`] 相同，另回傳 bigram 查詢統計。
+    pub fn nbest_with_stats(&self, reading: &str, n: usize) -> (Vec<Candidate>, LmQueryStats) {
         let syllables = jc_core::zh::syllable::parse_reading(reading);
         if syllables.is_empty() || n == 0 {
-            return Vec::new();
+            return (Vec::new(), LmQueryStats::default());
         }
         let units: Vec<&str> = syllables.iter().map(|s| s.as_str()).collect();
         let Ok(lattice) = Lattice::build(&units, &self.resources.lexicon, &self.resources.ctx)
         else {
-            return Vec::new();
+            return (Vec::new(), LmQueryStats::default());
         };
         let scorer = self
             .resources
@@ -52,27 +68,38 @@ impl ZhConverter {
             .as_deref()
             .filter(|lm| lm.bigrams() > 0)
             .map(|lm| jc_core::score::LmScorer::new(&self.resources.ctx, lm));
-        let decoder = match scorer.as_ref() {
+        let (hypotheses, stats) = match scorer.as_ref() {
             Some(scorer) => {
                 let mut decoder =
                     Decoder::new(&self.resources.lexicon, &self.resources.ctx).with_scorer(scorer);
                 decoder.beam = jc_core::decode::DEFAULT_BEAM;
-                decoder
+                let (hypotheses, _) = decoder.nbest(&lattice, &Locks::new(), false, n);
+                let stats = LmQueryStats {
+                    queries: scorer.queries(),
+                    hits: scorer.hits(),
+                };
+                (hypotheses, stats)
             }
-            None => Decoder::new(&self.resources.lexicon, &self.resources.ctx),
+            None => {
+                let decoder = Decoder::new(&self.resources.lexicon, &self.resources.ctx);
+                let (hypotheses, _) = decoder.nbest(&lattice, &Locks::new(), false, n);
+                (hypotheses, LmQueryStats::default())
+            }
         };
-        let (hypotheses, _) = decoder.nbest(&lattice, &Locks::new(), false, n);
-        hypotheses
-            .into_iter()
-            .map(|hypothesis| {
-                Candidate::new(
-                    hypothesis.text,
-                    reading.to_string(),
-                    hypothesis.cost,
-                    jc_core::candidate::CandidateSource::Lexicon,
-                )
-            })
-            .collect()
+        (
+            hypotheses
+                .into_iter()
+                .map(|hypothesis| {
+                    Candidate::new(
+                        hypothesis.text,
+                        reading.to_string(),
+                        hypothesis.cost,
+                        jc_core::candidate::CandidateSource::Lexicon,
+                    )
+                })
+                .collect(),
+            stats,
+        )
     }
 }
 
@@ -190,18 +217,20 @@ pub fn load_auto(testdata: &Path) -> Result<AutoConverter, CliError> {
 /// `convert` 子命令：單句轉換並列出 N-best。
 ///
 /// `--data` 指向注音二進位資料包時會自動載入同目錄的 `lm.bin`；`--lm`
-/// 可單獨覆寫語言模型。`--mu` 照前身 `personal.Params.Mu` 調整 bigram 內插。
+/// 可單獨覆寫語言模型。`--mu` 照前身 `personal.Params.Mu` 調整 bigram 內插；
+/// `--stats` 印出 bigram 查詢次數與命中次數。
 pub fn convert(
     testdata: Option<PathBuf>,
     data_dir: Option<PathBuf>,
     lm: Option<PathBuf>,
     mu: Option<f64>,
+    stats: bool,
     reading: &str,
     n: usize,
     json: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
-    let candidates = if is_zhuyin(reading) {
+    let (candidates, lm_stats) = if is_zhuyin(reading) {
         let mut resources = match &data_dir {
             Some(dir) => data::load_zh_bin_resources_with_lm(dir, lm.as_deref())?,
             None => {
@@ -216,11 +245,11 @@ pub fn convert(
         if let Some(mu) = mu {
             resources.ctx.bigram_mu = mu;
         }
-        ZhConverter::new(resources).nbest(reading, n)
+        ZhConverter::new(resources).nbest_with_stats(reading, n)
     } else {
         let dir = data::testdata_dir(testdata)?;
         let decoder = data::load_ja_decoder(&data::data_root(&dir))?;
-        JaConverter::new(decoder)
+        let candidates = JaConverter::new(decoder)
             .nbest(reading, n)
             .into_iter()
             .map(|conversion| {
@@ -231,7 +260,8 @@ pub fn convert(
                     jc_core::candidate::CandidateSource::Lexicon,
                 )
             })
-            .collect()
+            .collect();
+        (candidates, LmQueryStats::default())
     };
     if json {
         let rows: Vec<_> = candidates
@@ -245,6 +275,20 @@ pub fn convert(
                 })
             })
             .collect();
+        if stats {
+            let value = json!({
+                "candidates": rows,
+                "bigram_queries": lm_stats.queries,
+                "bigram_hits": lm_stats.hits,
+            });
+            writeln!(
+                out,
+                "{}",
+                serde_json::to_string_pretty(&value)
+                    .map_err(|err| CliError::eval(format!("輸出 JSON 失敗：{err}")))?
+            )?;
+            return Ok(());
+        }
         writeln!(
             out,
             "{}",
@@ -265,6 +309,13 @@ pub fn convert(
     }
     if candidates.is_empty() {
         writeln!(out, "（沒有候選：讀音 {reading:?}）")?;
+    }
+    if stats {
+        writeln!(
+            out,
+            "bigram queries={} hits={}",
+            lm_stats.queries, lm_stats.hits
+        )?;
     }
     Ok(())
 }
@@ -344,9 +395,17 @@ mod tests {
         let plain = ZhConverter::new(data::load_zh_bin_resources(&base).unwrap());
         let with_bigram = ZhConverter::new(data::load_zh_bin_resources(&bigram).unwrap());
         let plain_rows = plain.nbest("ㄨㄛˇ ㄞˋ", 5);
-        let bigram_rows = with_bigram.nbest("ㄨㄛˇ ㄞˋ", 5);
+        let (bigram_rows, stats) = with_bigram.nbest_with_stats("ㄨㄛˇ ㄞˋ", 5);
         assert_eq!(plain_rows[0].surface, "我愛");
         assert_eq!(bigram_rows[0].surface, "我愛");
+        // bigram 真的被查：至少查了 我→愛 與 句首→我 兩次，且 我→愛 命中。
+        assert!(stats.queries >= 2, "{stats:?}");
+        assert!(stats.hits >= 1, "{stats:?}");
+        // 沒有 bigram 的資料包不會建立評分器，查詢次數是 0。
+        assert_eq!(
+            plain.nbest_with_stats("ㄨㄛˇ ㄞˋ", 5).1,
+            LmQueryStats::default()
+        );
         // 我→愛 的 bigram 把常用組合抬升，與第二名的差距變大。
         assert!(
             bigram_rows[0].cost < plain_rows[0].cost,

@@ -48,6 +48,8 @@ pub enum Command {
         lm: Option<PathBuf>,
         /// bigram 內插權重 μ。
         mu: Option<f64>,
+        /// 印出 bigram 查詢次數與命中次數。
+        stats: bool,
         /// 輸出 JSON 而非表格。
         json: bool,
     },
@@ -81,6 +83,8 @@ pub enum Command {
         lm: Option<PathBuf>,
         /// bigram 內插權重 μ；未指定時用前身預設 0.7。
         mu: Option<f64>,
+        /// 印出 bigram 查詢次數與命中次數。
+        stats: bool,
         /// 取幾個候選。
         n: usize,
         /// 輸出 JSON。
@@ -133,6 +137,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut data = None;
     let mut lm = None;
     let mut mu = None;
+    let mut stats = false;
     let mut json = false;
     let mut index = 0;
     while index < rest.len() {
@@ -161,6 +166,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 index += 1;
                 mu = Some(parse_mu(value(rest, index, "--mu")?)?);
             }
+            "--stats" => stats = true,
             "--json" => json = true,
             other => return Err(CliError::Usage(format!("eval 不認得的參數 {other}"))),
         }
@@ -172,10 +178,11 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
             data,
             lm,
             mu,
+            stats,
             json,
         }),
         "ja" => {
-            reject_zh_flags(data, lm, mu, "eval ja")?;
+            reject_zh_flags(data, lm, mu, stats, "eval ja")?;
             Ok(Command::EvalJa {
                 testdata,
                 corpus,
@@ -184,7 +191,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
             })
         }
         "fuzzy" => {
-            reject_zh_flags(data, lm, mu, "eval fuzzy")?;
+            reject_zh_flags(data, lm, mu, stats, "eval fuzzy")?;
             Ok(Command::EvalFuzzy { testdata, json })
         }
         other => Err(CliError::Usage(format!("eval 不認得的題庫 {other}"))),
@@ -196,11 +203,12 @@ fn reject_zh_flags(
     data: Option<PathBuf>,
     lm: Option<PathBuf>,
     mu: Option<f64>,
+    stats: bool,
     command: &str,
 ) -> Result<(), CliError> {
-    if data.is_some() || lm.is_some() || mu.is_some() {
+    if data.is_some() || lm.is_some() || mu.is_some() || stats {
         return Err(CliError::Usage(format!(
-            "{command} 不接受 --data、--lm 或 --mu"
+            "{command} 不接受 --data、--lm、--mu 或 --stats"
         )));
     }
     Ok(())
@@ -223,6 +231,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     let mut data = None;
     let mut lm = None;
     let mut mu = None;
+    let mut stats = false;
     let mut n = 5usize;
     let mut json = false;
     let mut index = 0;
@@ -253,6 +262,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
                     return Err(CliError::Usage("--n 必須大於 0".to_string()));
                 }
             }
+            "--stats" => stats = true,
             "--json" => json = true,
             other if other.starts_with("--") => {
                 return Err(CliError::Usage(format!("convert 不認得的參數 {other}")));
@@ -273,6 +283,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
         data,
         lm,
         mu,
+        stats,
         n,
         json,
     })
@@ -355,10 +366,17 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             data,
             lm,
             mu,
+            stats,
             json,
-        } => {
-            crate::eval_cmd::zh_golden(testdata.clone(), data.clone(), lm.clone(), *mu, *json, out)
-        }
+        } => crate::eval_cmd::zh_golden(
+            testdata.clone(),
+            data.clone(),
+            lm.clone(),
+            *mu,
+            *stats,
+            *json,
+            out,
+        ),
         Command::EvalJa {
             testdata,
             corpus,
@@ -374,6 +392,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             data,
             lm,
             mu,
+            stats,
             n,
             json,
         } => crate::converter::convert(
@@ -381,6 +400,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             data.clone(),
             lm.clone(),
             *mu,
+            *stats,
             reading,
             *n,
             *json,
@@ -401,10 +421,10 @@ pub fn usage() -> String {
     format!(
         "jc-cli {}（開發工具）\n\n\
          用法：\n  \
-         jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--json]\n  \
+         jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] [--json]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
-         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--n 5] [--json]\n  \
+         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
          --data 指向注音二進位資料包（lexicon.bin、lm.bin、manifest.json）；\n\
@@ -438,6 +458,7 @@ mod tests {
                 data: None,
                 lm: None,
                 mu: None,
+                stats: false,
                 json: true,
             }
         );
@@ -487,6 +508,7 @@ mod tests {
                 data: None,
                 lm: None,
                 mu: None,
+                stats: false,
                 n: 3,
                 json: false,
             }
@@ -514,6 +536,7 @@ mod tests {
                 data: Some(PathBuf::from("/tmp/pack")),
                 lm: Some(PathBuf::from("/tmp/lm.bin")),
                 mu: Some(0.5),
+                stats: false,
                 n: 5,
                 json: false,
             }

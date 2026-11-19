@@ -45,6 +45,7 @@ pub fn zh_golden(
     data_dir: Option<PathBuf>,
     lm: Option<PathBuf>,
     mu: Option<f64>,
+    stats: bool,
     json: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
@@ -167,6 +168,14 @@ pub fn zh_golden(
     }
     write!(out, "{}", run.to_table())?;
     writeln!(out, "通過 {passed}/{n}")?;
+    if stats {
+        let (queries, hits) = resources
+            .lm
+            .as_ref()
+            .map(|lm| (lm.bi_queries(), lm.bi_hits()))
+            .unwrap_or((0, 0));
+        writeln!(out, "bigram queries={queries} hits={hits}")?;
+    }
     for (name, expected, actual) in &failures {
         writeln!(out, "  ✗ {name}: 期望 {expected:?}，得到 {actual:?}")?;
     }
@@ -782,7 +791,7 @@ mod tests {
             return;
         };
         let mut out = Vec::new();
-        zh_golden(Some(dir), None, None, None, false, &mut out).unwrap();
+        zh_golden(Some(dir), None, None, None, false, false, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("zh-golden"), "{text}");
         assert!(text.contains("通過"), "{text}");
