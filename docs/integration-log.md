@@ -76,6 +76,7 @@
 | `ja-ime-survey` | `4eac1ef` | `c9b8998` | check 通過 | 2026-11-20 04:16 |
 | `engine-data`（zh-select） | `8dc6235` | `d2aba42` | 通過（fmt／clippy／test） | 2026-11-20 04:28 |
 | `ja-personal-wire` | `ea161f8` | `b32beb2` | 通過（fmt／clippy／test） | 2026-11-20 04:28 |
+| `ajimee-eval` | `8663bea` | `7885302` | 通過（fmt／clippy／全量 test） | 2026-11-20 04:31 |
 
 ## 衝突與修正
 
@@ -634,3 +635,7 @@
   - `--mode mixed`：`ji3` → **我**（正確）。
   - `--mode ja`：`watashiwa` → **私羽**；Go 參考是 `私わ`，差異與先前 `mixed-e2e` 記錄一致（Mozc pack 詞面成本，
     不是路由或解碼錯誤），照實記錄不視為失敗。`--mode mixed` 下 `watashiwa` 仍走英文直通輸出 `watashiwa`。
+
+- `ajimee-eval`（合併 `7885302`）：`jc-cli/src/cli.rs` 自動合併，無衝突。`jc-eval/src/ja.rs` 加 306 行（目錄掃描題庫），
+  `eval_cmd.rs` 接上 `ajimee-200`，文件 `docs/port/ajimee-eval.md`。
+  gate：fmt exit 0、clippy exit 0、**定期全量 `cargo test --workspace --no-fail-fast` exit 0**（39 targets、931 passed、0 failed）。
