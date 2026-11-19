@@ -48,8 +48,9 @@
 | 片語切分 | 全小寫英文字以單一空白相連時視為一個片語一起判定；兩個字以上的片語裡，單一かな單位的短字不當羅馬字，因此 `desu is a good sentence` 是「日文段＋英文片語」。 |
 | かな前綴切分 | `kyouhaAPI`、`kyouhahttps://…` 會在英數段前切開，但只有大寫、數字、全角或已知英文詞開頭的後綴才切，避免把 `sentence` 誤切成かな。 |
 | 拼字建議 | `Corrections`／`NearCommon`（編輯距離通道）這輪不做，英文只做直通與前綴補完。 |
-| 詞表來源 | `data/english/words.bin` 目前不存在（打包器另有混淆與雜湊驗證，屬資料 pipeline）。沒有檔案時用 `prototype()`，有檔案時 `Dictionary::open` 直接讀明文 `0cEN` v1。 |
+| 詞表來源 | `/mnt/work/jc/ref/0c-ime/data/english/words.bin` 目前**不存在**（打包器另有混淆與雜湊驗證，屬資料 pipeline），所以預設走內建 `prototype()`。`Dictionary::open`／`decode` 已按 `0cEN\x00\x01` v1 實作，檔案補上後直接可用。 |
 | 游標 | `MixedResult::cursor_utf16` 是整句的 UTF-16 長度；`MixedSegment` 另有 `start_utf16`／`end_utf16`。`Conversion` 的 `Segment` 依既有慣例改用**輸出**位元組位移。 |
+| 模組宣告 | `lib.rs` 新增 `pub mod mixed;` 並轉出 `Router`、`MixedResult`、`MixedSegment`；`Mode::Mixed` 仍是唯一入口。 |
 
 ## 測試資料
 
