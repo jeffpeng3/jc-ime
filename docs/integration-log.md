@@ -103,6 +103,7 @@
 | `session-g4-mixed` | `6b9f1b5` | `8de9306` | 通過（fmt／clippy／test／三個 eval） | 2026-11-20 07:02 |
 | `session-g5-misc` | `12f161f` | `7379047` | 通過（fmt／clippy／test／三個 eval） | 2026-11-20 07:16 |
 | `session-g6-core` | `ffccac1` | `b7af358` | 通過（fmt／clippy／test／四個 eval） | 2026-11-20 07:37 |
+| `session-g4-mixed`（CI 修正） | `6b76ce1` | `fb4e7ab` | 通過（clippy＋全量 test） | 2026-11-20 07:58 |
 
 ## 衝突與修正
 
@@ -977,3 +978,10 @@
   - **選字鎖定**：選字後鎖定片段並留在組字區；Rust 目前直接送進待提交區，改成鎖定會動到四組題庫的既有輸出。
   - **`keepCandidates`**：候選窗跟著之後的組字留在畫面；會讓數字鍵在開窗後變成選字鍵，與現有題庫流程衝突。
   - **`related` label**：需要已提交左文的最後一個完整詞與文件前文權重。
+
+- `session-g4-mixed` 第二次合併（`fb4e7ab`，含 `6b76ce1`）：無衝突，`session/mixed.rs` 21 行，混合顯示測試改用注入的英文詞表。
+  `cargo clippy --workspace --all-targets -- -D warnings` exit 0；`cargo test --workspace --no-fail-fast` **exit 0**
+  （45 targets、1057 passed、0 failed）。
+
+  根因：該測試原本靠 `JC_TESTDATA` 的真實英文詞表，CI 沒有資料時走注音路徑，`display_pending("hi")` 就變成「ㄘㄛ」，
+  測試在不同環境得到不同結果。改成在測試內注入詞表後，不再依賴外部資料。
