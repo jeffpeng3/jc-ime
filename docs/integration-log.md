@@ -61,6 +61,9 @@
 | `personal-zh`（清 clippy） | `6faec7f` | `e5af3b8` | fmt／clippy／golden 通過；test 剩 4 個既有失敗 | 2026-11-20 01:35 |
 | `rerank-tokenizer`（SP 對齊） | `0eb7496` | `b07d098` | 通過（fmt／clippy／test） | 2026-11-20 01:57 |
 | `settings-core` | `aceda9f` | `52cb1b9` | check／fmt／clippy 通過；jc-settings 4 個 test 失敗 | 2026-11-20 02:36 |
+| `onnx-default` | `6942b66` | `79724ee` | check／fmt 通過 | 2026-11-20 02:44 |
+| `zh-select-calibrate` | `b677022` | `9a04a60` | check 通過；clippy 出現 `onnx` cfg 警告 | 2026-11-20 02:46 |
+| `english-suggest` | `b93633a` | `359d425` | check 通過；clippy／test 失敗 | 2026-11-20 02:50 |
 
 ## 衝突與修正
 
@@ -455,3 +458,28 @@
   刻意排除的範圍（記在 `docs/port/settings-core.md`）：UI 契約（`DisabledBy`／`DisabledReason`、Items、停用原因）、
   網路 fetch 與 pin（Hugging Face 下載、`valid_revision` 只保留驗證）、`internal/filelock`（跨 process 鎖，
   由呼叫端負責）、placeholder 測試（需要 `OC_PLACEHOLDER_MODELS` 的模型檔）。
+
+- 三條依序合併：`onnx-default`（`79724ee`，移除 `onnx` feature、改成執行期偵測 ONNX Runtime）、
+  `zh-select-calibrate`（`9a04a60`，新增 `zh-calibrate` bin 與 select margin 掃描）、
+  `english-suggest`（`359d425`，接上英文拼字建議與 `convert --mode en`）。
+  `english-suggest` 在 `jc-cli/src/converter.rs` 有衝突：branch 的 `#[cfg(not(feature = "onnx"))]` 檢查
+  在 `onnx-default` 之後已失效（feature 不存在），解衝突時移除該段，保留 `mode == En` 的候選路徑。
+
+  最終 gate：
+  | gate | 結果 |
+  |---|---|
+  | `cargo fmt --all -- --check` | exit 0 |
+  | `cargo clippy --workspace --all-targets -- -D warnings` | **exit 101：13 個錯誤** |
+  | `cargo test --workspace --no-fail-fast` | exit 101：38 targets、886 passed、**6 failed** |
+
+  clippy 錯誤全在 `crates/jc-cli/src/bin/zh-calibrate.rs`，`unexpected cfg condition value: onnx`，
+  行號 15、90、97、147、162、256、274、376、415、462、530（含 `#![cfg_attr]` 與各 `#[cfg(feature = "onnx")]`）。
+  來源是 `zh-select-calibrate` 仍用舊 feature 名稱，需回該 task 改成執行期偵測。
+
+  test 失敗 6 個：
+  - `jc-settings`（settings-core 既有，4＋1 個）：`tests::test_profile_layout_guard_cannot_be_bypassed_by_copy`、
+    `tests::test_profile_locks_all_managed_entry_points`、`tests::test_profiles_migration_and_complete_round_trip`、
+    `features_tests::test_left_shift_defaults_follow_platform_and_persists`、`features_tests::test_choice_settings_defaults_and_persist`
+    （後兩者都是存檔前沒建目錄的 `Io(NotFound)`）。
+  - `jc-core`（english-suggest 新帶入）：`session::tests::test_mixed_english_suggestion_and_completion`
+    （`session.rs:2130`，`left: "hellp"`、`right: "我hellp"`）。
