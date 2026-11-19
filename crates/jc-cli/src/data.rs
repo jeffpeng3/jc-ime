@@ -425,6 +425,10 @@ pub fn install_select_model(testdata: Option<&Path>) -> Result<(), CliError> {
     let model = jc_core::zh::select::SelectModel::load(&dir, None)
         .map_err(|err| CliError::data(format!("載入 zh-select 模型失敗：{err}")))?;
     jc_core::zh::select::install(model);
+    eprintln!(
+        "警告：zh-select 尚未完成本引擎的權重與 margin 校準，\
+         zh-golden 沒有任何改善；正式使用請保持 --select-model off。"
+    );
     Ok(())
 }
 

@@ -30,6 +30,12 @@ pub const MIN_SYLLABLES: usize = 2;
 pub const MAX_SYLLABLES: usize = 32;
 /// 單次推論預算。
 pub const DEFAULT_TIMEOUT_MS: u64 = 100;
+/// 覆寫首選所需的最小融合領先。
+///
+/// manifest 的 `margin = 0` 是 0c 引擎分數尺度的校準值。本引擎的成本換成
+/// 對數分數後，模型的空前文偏好會把「程式」換成「城市」，造成 zh-golden
+/// 退步。安全下限取 1 nat，未經更大題庫校準前不得調低。
+pub const MIN_OVERRIDE_MARGIN: f64 = 1.0;
 
 /// 選字模型的錯誤。
 #[derive(Debug, thiserror::Error)]
@@ -578,7 +584,7 @@ mod onnx {
     use ort::value::{Shape, Tensor};
 
     use super::{choose, cost_to_log_score, prepare, Arrays, Request, SelectError};
-    use super::{SelectManifest, Vocabulary, DEFAULT_TIMEOUT_MS};
+    use super::{SelectManifest, Vocabulary, DEFAULT_TIMEOUT_MS, MIN_OVERRIDE_MARGIN};
 
     static ENVIRONMENT: OnceLock<Environment> = OnceLock::new();
     static MODEL: OnceLock<Mutex<Option<Arc<SelectModel>>>> = OnceLock::new();
@@ -823,7 +829,8 @@ mod onnx {
             }
             let scores = self.score(context, reading, texts)?;
             let engine: Vec<f64> = costs.iter().map(|cost| cost_to_log_score(*cost)).collect();
-            let winner = choose(&engine, &scores, self.manifest.weight, self.manifest.margin);
+            let margin = self.manifest.margin.max(MIN_OVERRIDE_MARGIN);
+            let winner = choose(&engine, &scores, self.manifest.weight, margin);
             Ok((winner > 0).then_some(winner))
         }
     }
@@ -913,7 +920,8 @@ mod onnx {
             .iter()
             .map(|hypothesis| cost_to_log_score(hypothesis.cost))
             .collect();
-        let winner = choose(&engine, &neural, manifest.weight, manifest.margin);
+        let margin = manifest.margin.max(MIN_OVERRIDE_MARGIN);
+        let winner = choose(&engine, &neural, manifest.weight, margin);
         if winner > 0 && winner < hypotheses.len() {
             let promoted = hypotheses.remove(winner);
             hypotheses.insert(0, promoted);
@@ -1045,6 +1053,15 @@ mod tests {
         assert_eq!(choose(&[0.0, 0.0], &[0.0, f64::NAN], 2.0, 0.0), 0);
         assert_eq!(choose(&[0.0, 0.0], &[0.0, 1.0], 0.0, 0.0), 0);
         assert_eq!(choose(&[0.0, 0.0], &[0.0, 1.0], 2.0, -1.0), 0);
+    }
+
+    #[test]
+    fn test_observed_bad_override_is_blocked_by_safety_margin() {
+        // 「ㄔㄥˊ ㄕˋ」的實際分數：成本差 0.223、模型分差 0.4159195。
+        let engine = [-7.6, -7.823];
+        let neural = [-0.9937908053398132, -0.577910304069519];
+        assert_eq!(choose(&engine, &neural, 2.0, 0.0), 1);
+        assert_eq!(choose(&engine, &neural, 2.0, MIN_OVERRIDE_MARGIN), 0);
     }
 
     #[test]
