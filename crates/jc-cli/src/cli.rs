@@ -63,6 +63,15 @@ pub enum Command {
         /// 輸出 JSON。
         json: bool,
     },
+    /// 跑混合輸入 golden 的 6 個案例。
+    EvalMixed {
+        /// `0c-testdata` 目錄。
+        testdata: Option<PathBuf>,
+        /// 注音二進位資料包目錄；未指定時依序找 `<資料根>/build-zh` 與 golden 固定詞庫。
+        data: Option<PathBuf>,
+        /// 輸出 JSON。
+        json: bool,
+    },
     /// 單句轉換並列出 N-best。
     Convert {
         /// 讀音（注音音節或かな）。
@@ -113,13 +122,14 @@ pub fn parse(args: &[String]) -> Result<Command, CliError> {
 fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let Some(kind) = args.first().map(String::as_str) else {
         return Err(CliError::Usage(
-            "eval 需要 zh-golden、ja 或 fuzzy".to_string(),
+            "eval 需要 zh-golden、ja、fuzzy 或 mixed".to_string(),
         ));
     };
     let rest = &args[1..];
     let mut testdata = None;
     let mut corpus = "modern-500".to_string();
     let mut pack = None;
+    let mut data = None;
     let mut json = false;
     let mut index = 0;
     while index < rest.len() {
@@ -136,6 +146,10 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 index += 1;
                 pack = Some(PathBuf::from(value(rest, index, "--pack")?));
             }
+            "--data" => {
+                index += 1;
+                data = Some(PathBuf::from(value(rest, index, "--data")?));
+            }
             "--json" => json = true,
             other => return Err(CliError::Usage(format!("eval 不認得的參數 {other}"))),
         }
@@ -150,6 +164,11 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
             json,
         }),
         "fuzzy" => Ok(Command::EvalFuzzy { testdata, json }),
+        "mixed" => Ok(Command::EvalMixed {
+            testdata,
+            data,
+            json,
+        }),
         other => Err(CliError::Usage(format!("eval 不認得的題庫 {other}"))),
     }
 }
@@ -287,6 +306,11 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
         Command::EvalFuzzy { testdata, json } => {
             crate::eval_cmd::fuzzy(testdata.clone(), *json, out)
         }
+        Command::EvalMixed {
+            testdata,
+            data,
+            json,
+        } => crate::eval_cmd::mixed(testdata.clone(), data.clone(), *json, out),
         Command::Convert {
             reading,
             testdata,
@@ -312,6 +336,7 @@ pub fn usage() -> String {
          jc-cli eval zh-golden --testdata <dir> [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] [--json]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
+         jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
          jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--n 5] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
