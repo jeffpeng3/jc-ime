@@ -150,19 +150,8 @@ impl Engine {
 }
 
 /// 把核心快照轉成協定回應。
-///
-/// 協定的游標單位是字元（Unicode scalar value），核心快照是 UTF-16 code
-/// unit，這裡換算成字元數。
 fn state(snapshot: Snapshot) -> Response {
-    Response::State {
-        cursor: snapshot.preedit.chars().count(),
-        candidates: snapshot
-            .candidates
-            .into_iter()
-            .map(|candidate| candidate.surface)
-            .collect(),
-        preedit: snapshot.preedit,
-    }
+    Response::state(snapshot)
 }
 
 /// 服務一條連線直到 EOF、`Shutdown` 或協定錯誤。
@@ -217,6 +206,11 @@ mod tests {
         assert!(matches!(response, Response::Ready { .. }));
     }
 
+    /// 沒有候選的預期 State。
+    fn state_of(preedit: &str) -> Response {
+        Response::state(Snapshot::from_preedit(preedit))
+    }
+
     #[test]
     fn version_mismatch_closes_after_error() {
         let mut engine = Engine::new();
@@ -249,14 +243,7 @@ mod tests {
         engine.handle(Request::Key {
             key: Key::char('ㄚ', false),
         });
-        assert_eq!(
-            engine.handle(Request::Snapshot),
-            Response::State {
-                preedit: "ㄇㄚ".into(),
-                cursor: 2,
-                candidates: Vec::new(),
-            }
-        );
+        assert_eq!(engine.handle(Request::Snapshot), state_of("ㄇㄚ"));
         assert_eq!(
             engine.handle(Request::Commit),
             Response::Committed {
@@ -264,14 +251,7 @@ mod tests {
             }
         );
         assert_eq!(engine.composition(), "");
-        assert_eq!(
-            engine.handle(Request::Snapshot),
-            Response::State {
-                preedit: String::new(),
-                cursor: 0,
-                candidates: Vec::new(),
-            }
-        );
+        assert_eq!(engine.handle(Request::Snapshot), state_of(""));
     }
 
     #[test]
@@ -321,13 +301,16 @@ mod tests {
         let Response::State {
             preedit,
             cursor,
+            cursor_rune,
             candidates,
+            ..
         } = snapshot
         else {
             panic!("快照應是 State");
         };
         assert_eq!(preedit, "我");
         assert_eq!(cursor, 1);
+        assert_eq!(cursor_rune, 1);
         assert_eq!(candidates.first().map(String::as_str), Some("我"));
         assert_eq!(
             engine.handle(Request::Commit),

@@ -52,12 +52,8 @@ impl EngineProcess {
     }
 }
 
-fn state(preedit: &str, cursor: usize) -> Response {
-    Response::State {
-        preedit: preedit.into(),
-        cursor,
-        candidates: Vec::new(),
-    }
+fn state(preedit: &str) -> Response {
+    Response::state(jc_core::Snapshot::from_preedit(preedit))
 }
 
 #[test]
@@ -79,29 +75,29 @@ fn stdio_round_trip_and_clean_shutdown() {
         engine.call(&Request::Key {
             key: Key::char('ㄇ', false)
         }),
-        state("ㄇ", 1)
+        state("ㄇ")
     );
     assert_eq!(
         engine.call(&Request::Key {
             key: Key::char('ㄚ', false)
         }),
-        state("ㄇㄚ", 2)
+        state("ㄇㄚ")
     );
-    assert_eq!(engine.call(&Request::Snapshot), state("ㄇㄚ", 2));
+    assert_eq!(engine.call(&Request::Snapshot), state("ㄇㄚ"));
 
     assert_eq!(
         engine.call(&Request::Key {
             key: Key::new(KeyCode::Backspace, None, false)
         }),
-        state("ㄇ", 1)
+        state("ㄇ")
     );
     assert_eq!(
         engine.call(&Request::Commit),
         Response::Committed { text: "ㄇ".into() }
     );
-    assert_eq!(engine.call(&Request::Snapshot), state("", 0));
+    assert_eq!(engine.call(&Request::Snapshot), state(""));
 
-    assert_eq!(engine.call(&Request::Shutdown), state("", 0));
+    assert_eq!(engine.call(&Request::Shutdown), state(""));
     engine.expect_eof();
     assert_eq!(engine.wait(), 0, "Shutdown 應以 0 結束");
 }

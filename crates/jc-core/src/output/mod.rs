@@ -396,6 +396,22 @@ pub fn utf16_len(s: &str) -> usize {
     s.encode_utf16().count()
 }
 
+/// 以 Unicode scalar value 計算的字串長度。
+pub fn rune_len(s: &str) -> usize {
+    s.chars().count()
+}
+
+/// UTF-8 位元組位移換成 rune 位移。
+///
+/// 超出字串長度或落在字元中間時，取該位置之前最近的合法字元邊界。
+pub fn rune_offset(s: &str, byte_index: usize) -> usize {
+    let mut at = byte_index.min(s.len());
+    while at > 0 && !s.is_char_boundary(at) {
+        at -= 1;
+    }
+    rune_len(&s[..at])
+}
+
 /// UTF-8 位元組位移換成 UTF-16 code unit 位移。
 ///
 /// 超出字串長度時夾在結尾。
@@ -416,12 +432,29 @@ pub struct Snapshot {
     pub preedit: String,
     /// 游標位置，以 UTF-16 code unit 計算（配合各平台游標 API）。
     pub cursor_utf16: usize,
+    /// 游標位置，以 rune（Unicode scalar value）計算。
+    ///
+    /// 與 [`Snapshot::cursor_utf16`] 描述同一個位置；需要逐字擺放游標的
+    /// 外殼用這個欄位，不必自行把 UTF-8 位元組位移換算成 rune。
+    pub cursor_rune: usize,
     /// 組字字串的分段。
     pub segments: Vec<Segment>,
     /// 目前可選的候選。
     pub candidates: Vec<Candidate>,
     /// 目前高亮的候選索引；沒有候選時為 0。
     pub highlighted: usize,
+    /// Tab 會接受的補全尾綴；沒有建議時為 `None`。
+    ///
+    /// 這一輪只提供欄位，補全來源由後續任務接上。
+    pub suggestion: Option<String>,
+    /// 目前高亮候選的顯示原因（例如 `common`、`related`、`personal`）。
+    ///
+    /// 只供顯示，不參與排序；沒有標示時為 `None`。
+    pub label: Option<String>,
+    /// 使用者是否已進入明確的候選選取模式（例如按過上下鍵）。
+    ///
+    /// 候選窗顯示中但還沒開始選取時是 `false`。
+    pub navigating: bool,
 }
 
 impl Snapshot {
@@ -435,6 +468,7 @@ impl Snapshot {
         let preedit = preedit.into();
         Self {
             cursor_utf16: utf16_len(&preedit),
+            cursor_rune: rune_len(&preedit),
             preedit,
             ..Default::default()
         }
@@ -456,9 +490,13 @@ mod tests {
         let s = Snapshot::empty();
         assert_eq!(s.preedit, "");
         assert_eq!(s.cursor_utf16, 0);
+        assert_eq!(s.cursor_rune, 0);
         assert!(s.segments.is_empty());
         assert!(s.candidates.is_empty());
         assert_eq!(s.highlighted, 0);
+        assert_eq!(s.suggestion, None);
+        assert_eq!(s.label, None);
+        assert!(!s.navigating);
         assert!(s.is_empty());
     }
 
@@ -467,6 +505,7 @@ mod tests {
         let s = Snapshot {
             preedit: "ㄨㄛˇ".to_string(),
             cursor_utf16: 3,
+            cursor_rune: 3,
             segments: vec![Segment::new(
                 0,
                 9,
@@ -475,8 +514,10 @@ mod tests {
             )],
             candidates: vec![Candidate::new("我", "ㄨㄛˇ", 1, CandidateSource::Lexicon)],
             highlighted: 0,
+            ..Default::default()
         };
         assert_eq!(s.cursor_utf16, 3);
+        assert_eq!(s.cursor_rune, 3);
         assert_eq!(s.segments[0].len(), 9);
         assert_eq!(s.candidates[0].surface, "我");
         assert!(!s.is_empty());
@@ -491,6 +532,36 @@ mod tests {
         assert_eq!(utf16_offset("a我", 99), 2);
         let s = Snapshot::from_preedit("我😀");
         assert_eq!(s.cursor_utf16, 3);
+        assert_eq!(s.cursor_rune, 2);
+    }
+
+    #[test]
+    fn cursor_rune_converts_byte_offsets_on_char_boundary() {
+        assert_eq!(rune_len("abc"), 3);
+        assert_eq!(rune_len("我😀"), 2);
+        assert_eq!(rune_offset("abc", 2), 2);
+        assert_eq!(rune_offset("a我", 1), 1);
+        assert_eq!(rune_offset("a我", 2), 1, "落在字元中間取前一個邊界");
+        assert_eq!(rune_offset("a我", 4), 2);
+        assert_eq!(rune_offset("a我", 99), 2, "超出長度夾在結尾");
+        assert_eq!(rune_offset("", 0), 0);
+    }
+
+    #[test]
+    fn suggestion_label_and_navigating_default_to_unset() {
+        let s = Snapshot::from_preedit("ㄇㄚ");
+        assert_eq!(s.suggestion, None);
+        assert_eq!(s.label, None);
+        assert!(!s.navigating);
+        let filled = Snapshot {
+            suggestion: Some("ㄚ".to_string()),
+            label: Some("common".to_string()),
+            navigating: true,
+            ..s
+        };
+        assert_eq!(filled.suggestion.as_deref(), Some("ㄚ"));
+        assert_eq!(filled.label.as_deref(), Some("common"));
+        assert!(filled.navigating);
     }
 
     #[test]
