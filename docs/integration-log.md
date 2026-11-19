@@ -29,6 +29,7 @@
 | `bigram-data` | `3d96d6a` | `27ca97e` | 通過 | 2026-11-19 23:12 |
 | `eval-ja-ambiguous` | `f8fb416` | `ea85686` | 通過 | 2026-11-19 23:12 |
 | `zh-golden-rest` | `59b67ce` | `09abcd6` | 通過 | 2026-11-19 23:16 |
+| `jc-model` | `63d6049` | `8d4015c` | 通過 | 2026-11-19 23:18 |
 
 ## 衝突與修正
 
@@ -137,3 +138,11 @@
   剩 4 例全是學習依賴：`learning-select-preference`、`learning-forget-request`、
   `undo-learned-word`、`undo-custom-word`，期望值未動。
   zhconv 字典在 `/mnt/work/jc/jc-ime-data/opencc/`（OpenCC 1.4.2，Apache-2.0），git 外。
+
+- `jc-model`（合併 `8d4015c`）：`Cargo.lock` 自動合併。新增 `manifest.rs`、`layout.rs`、`tokenizer.rs`、`rerank.rs`、
+  `punctuation_model.rs`、`runtime.rs`、`role.rs`、`error.rs`、`punct.rs`、`bin/probe.rs`；`ort` 走 optional feature `onnx`，
+  預設建置不拉入。沒有編譯錯誤要修，未改任何實作。
+
+  效能（`bin/probe` 回報）：reranker **32 ms**、punctuation **2 ms**（單次推論延遲）。
+  行為差異：`vocab.json` 沒有 piece log-probability，tokenizer 改用**最長前綴匹配 + byte fallback**，
+  不做 unigram Viterbi；已寫在 `docs/port/jc-model.md`。
