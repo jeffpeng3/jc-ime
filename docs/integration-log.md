@@ -42,6 +42,7 @@
 | `fix-windows-cfg` | `0131ebe` | `cf3beba` | 通過（check＋clippy） | 2026-11-20 00:03 |
 | `mixed-e2e` | `7c94971` | `b7ee298` | 通過（check＋fmt＋clippy） | 2026-11-20 00:16 |
 | `zh-bigram` | `61b1ed5` | `b2d244f` | check 通過；clippy 退步 | 2026-11-20 00:20 |
+| `zh-bigram`（clippy 修正） | `3ecd2a7` | `807c41d` | 通過（fmt＋clippy） | 2026-11-20 00:23 |
 
 ## 衝突與修正
 
@@ -238,3 +239,8 @@
   **`cargo clippy --workspace --all-targets -- -D warnings` 退步（exit 101）**，兩個新錯都來自本 branch，需回 zh-bigram 修：
   - `crates/jc-cli/src/converter.rs:222`：`clippy::too_many_arguments`（`convert` 9 個參數，上限 7）。
   - `crates/jc-core/src/score.rs:573`：`clippy::field_reassign_with_default`（測試內 `let mut ctx = ScoreContext::default(); ctx.bigram_mu = 0.0;`）。
+
+- `zh-bigram` 第二次合併（`807c41d`，含 `3ecd2a7`）：`jc-cli/src/cli.rs` 自動合併，無衝突。
+  `converter.rs` 把 `convert` 的參數收成結構，`score.rs` 測試改用結構初始化，兩個 clippy 錯消失。
+  `cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` **exit 0**、
+  `cargo check --workspace --all-targets` 也通過。`eval zh-golden --lm … --stats` 仍為 41/45、queries=22747 hits=9743。
