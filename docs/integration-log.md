@@ -48,6 +48,7 @@
 | `zh-bigram`（nbest 修正） | `0ec571b` | `8180133` | 通過 | 2026-11-20 00:44 |
 | `fix-tests` | `3bda5a0` | `f660e30` | 通過 | 2026-11-20 00:44 |
 | `mixed-e2e`（片語合併） | `6c72b5e` | `301c423` | 通過 | 2026-11-20 00:44 |
+| `rerank-fix` | `5954b89` | `fadc139` | 通過（fmt＋clippy＋test） | 2026-11-20 01:04 |
 
 ## 衝突與修正
 
@@ -295,3 +296,18 @@
 
   `fix-tests` 的修復量：34 個失敗測試、9 個 target；4 個實作 bug（`InMemoryLexicon::prefix`、`Key.ctrl` 序列化、
   `Engine` shutdown 狀態、`Tokenizer::encode` 字串結尾），11 個測試期望值修正，其餘是測試機制修正。
+
+- `rerank-fix`（合併 `fadc139`）：`jc-cli/src/cli.rs` 有 8 處衝突，照兩邊意圖都保留解：
+  `LeftMode`／`--left off|rolling`／`reject_ja_flags` 與 main 的 `--select-model`、`GoldenOptions`、
+  `--data`／`--lm`／`--mu`／`--stats`、`eval mixed` 全部並存；usage 兩行合併。
+
+  驗證：`cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0、
+  `cargo test --workspace --no-fail-fast` **exit 0**（33 個 target、0 failed）。
+
+  結論：
+  - 位置布局**本來就正確**：shipped 圖的 pooling 是常數 `62`，`position_embedding` 索引從 61 起，
+    所以 slot 62 的候選拿到絕對位置 **122**，與訓練 checkpoint 一致；`model-wire-ja` 寫的「0..123」是誤讀。
+  - 左文 oracle 也只有 **20.5%**（空左文 21.0%、前一題 surface 24.0%、BOS 27.5%），模型在這批候選上排序力不足。
+  - 融合權重照前身修正後，`--rerank on` 的 top-1 反而掉到 **40.8%**（統計基準 86.0%，滾動左文 57.8%）。
+  - 原因：訓練候選是單一 SentencePiece token，評測餵整句 surface，**候選粒度不一致**；且 tokenizer 只有詞表、
+    **缺 piece 分數**，只能用最長前綴匹配近似。`--rerank` 維持 opt-in、預設 off。
