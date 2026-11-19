@@ -21,7 +21,7 @@
 | `ja-pack-v2` | `86fe251` | `626d20f` | 通過 | 2026-11-19 21:53 |
 | `m1-mixed` | `c669d5b` | `918088e` | 通過 | 2026-11-19 21:56 |
 | `ja-import` | `e404fa1` | `ff13578` | 通過 | 2026-11-19 22:00 |
-| `ja-context` | `4bc5df8` | `d3f6d3f` | 通過 | 2026-11-19 22:11 |
+| `ja-context` | `4bc5df8` | `83c2974` | 通過 | 2026-11-19 22:11 |
 
 ## 衝突與修正
 
@@ -72,7 +72,7 @@
   workspace `Cargo.toml` 加 member，`Cargo.lock` 自動合併。沒有編譯錯誤要修，未改任何實作。
   產出檔 `/mnt/work/jc/jc-ime-data/packs/ja-lexicon-mozc-v2.pack`（81.5M）與 manifest 在 git 外，不隨 repo 散布。
 
-- `ja-context`（合併 `d3f6d3f`）：無衝突。`ja/decode.rs`、`ja/lexicon.rs` 接上 pack v2 的 context 矩陣
+- `ja-context`（合併 `83c2974`）：無衝突。`ja/decode.rs`、`ja/lexicon.rs` 接上 pack v2 的 context 矩陣
   （`JaConnectionCost` 直接查 connection section，BOS／EOS 用 context ID 0，缺 ID 退回 POS）；
   新增 `crates/jc-cli/src/bin/ja-eval.rs`，`jc-cli/Cargo.toml` 與 `Cargo.lock` 同步補依賴。沒有編譯錯誤要修，未改任何實作。
 
