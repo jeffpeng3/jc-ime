@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use ort::session::Session;
 
-use crate::candle::{Backend, CandleReranker};
+use crate::candle::{Backend, CandleReranker, QuantReranker};
 use crate::error::{ModelError, Result};
 use crate::layout::{pack_batch, validate_layout, PackedBatch};
 use crate::manifest::ModelSpec;
@@ -38,6 +38,8 @@ enum Engine {
     Ort(Mutex<Session>),
     /// candle；forward 沒有內部可變狀態，鎖只為了與 ORT 介面一致。
     Candle(Mutex<CandleReranker>),
+    /// candle + GGUF 量化權重。
+    CandleQuant(Mutex<QuantReranker>),
 }
 
 impl Reranker {
@@ -85,7 +87,12 @@ impl Reranker {
                         crate::candle::WEIGHTS_ENV
                     ))
                 })?;
-                Engine::Candle(Mutex::new(CandleReranker::load(&weights, spec)?))
+                // `.gguf` 走量化權重；副檔名是 safetensors 時走 fp32。
+                if crate::candle::quant::is_gguf(&weights) {
+                    Engine::CandleQuant(Mutex::new(QuantReranker::load(&weights, spec)?))
+                } else {
+                    Engine::Candle(Mutex::new(CandleReranker::load(&weights, spec)?))
+                }
             }
         };
         Ok(Self {
@@ -99,7 +106,7 @@ impl Reranker {
     pub fn backend(&self) -> Backend {
         match self.engine {
             Engine::Ort(_) => Backend::Ort,
-            Engine::Candle(_) => Backend::Candle,
+            Engine::Candle(_) | Engine::CandleQuant(_) => Backend::Candle,
         }
     }
 
@@ -199,6 +206,12 @@ impl Reranker {
                 )
             }
             Engine::Candle(model) => {
+                let model = model
+                    .lock()
+                    .map_err(|_| ModelError::Candle("模型鎖已損壞".into()))?;
+                model.score_packed(batch)
+            }
+            Engine::CandleQuant(model) => {
                 let model = model
                     .lock()
                     .map_err(|_| ModelError::Candle("模型鎖已損壞".into()))?;

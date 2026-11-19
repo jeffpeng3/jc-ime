@@ -35,6 +35,10 @@ use crate::error::{ModelError, Result};
 use crate::layout::PackedBatch;
 use crate::manifest::ModelSpec;
 
+pub mod quant;
+
+pub use quant::{export_gguf, QuantDtype, QuantReranker, DEFAULT_QUANT_FILE};
+
 /// candle 後端的名稱。
 pub const BACKEND_NAME: &str = "candle";
 /// safetensors 權重檔的預設檔名。
@@ -216,18 +220,43 @@ pub fn weights_path(dir: &Path, spec: &ModelSpec) -> Option<PathBuf> {
     alternative.is_file().then_some(alternative)
 }
 
-struct Layer {
-    attn_in: Linear,
-    attn_out: Linear,
-    linear1: Linear,
-    linear2: Linear,
+/// linear 層的最小介面。
+///
+/// fp32 的 [`Linear`] 與 [`quant::QuantLinear`] 都接到同一個 encoder；量化版
+/// 的 forward 一樣輸出 fp32，差異只來自權重本身。
+pub(super) trait LinearOp: Send + Sync {
+    fn apply(&self, x: &Tensor) -> Result<Tensor>;
+}
+
+impl LinearOp for Linear {
+    fn apply(&self, x: &Tensor) -> Result<Tensor> {
+        linear_chunked(x, self)
+    }
+}
+
+/// 詞嵌入查表；量化版直接把 quantized 權重當查表用。
+pub(super) trait Lookup: Send + Sync {
+    fn lookup(&self, ids: &Tensor) -> Result<Tensor>;
+}
+
+impl Lookup for Embedding {
+    fn lookup(&self, ids: &Tensor) -> Result<Tensor> {
+        Embedding::forward(self, ids).map_err(inference)
+    }
+}
+
+struct Layer<L> {
+    attn_in: L,
+    attn_out: L,
+    linear1: L,
+    linear2: L,
     norm1_weight: Tensor,
     norm1_bias: Tensor,
     norm2_weight: Tensor,
     norm2_bias: Tensor,
 }
 
-impl Layer {
+impl Layer<Linear> {
     fn load(vb: &VarBuilder, prefix: &str, config: &CandleConfig) -> Result<Self> {
         let (d, ffn) = (config.d_model, config.ffn_dim);
         let attn_in = Linear::new(
@@ -262,33 +291,53 @@ impl Layer {
                     .map_err(inference)?,
             ),
         );
-        Ok(Self {
+        Ok(Self::new(
             attn_in,
             attn_out,
             linear1,
             linear2,
-            norm1_weight: vb
-                .get(d, &format!("{prefix}.norm1.weight"))
+            vb.get(d, &format!("{prefix}.norm1.weight"))
                 .map_err(inference)?,
-            norm1_bias: vb
-                .get(d, &format!("{prefix}.norm1.bias"))
+            vb.get(d, &format!("{prefix}.norm1.bias"))
                 .map_err(inference)?,
-            norm2_weight: vb
-                .get(d, &format!("{prefix}.norm2.weight"))
+            vb.get(d, &format!("{prefix}.norm2.weight"))
                 .map_err(inference)?,
-            norm2_bias: vb
-                .get(d, &format!("{prefix}.norm2.bias"))
+            vb.get(d, &format!("{prefix}.norm2.bias"))
                 .map_err(inference)?,
-        })
+        ))
+    }
+}
+
+impl<L: LinearOp> Layer<L> {
+    fn new(
+        attn_in: L,
+        attn_out: L,
+        linear1: L,
+        linear2: L,
+        norm1_weight: Tensor,
+        norm1_bias: Tensor,
+        norm2_weight: Tensor,
+        norm2_bias: Tensor,
+    ) -> Self {
+        Self {
+            attn_in,
+            attn_out,
+            linear1,
+            linear2,
+            norm1_weight,
+            norm1_bias,
+            norm2_weight,
+            norm2_bias,
+        }
     }
 
     fn forward(&self, hidden: &Tensor, mask: &Tensor, config: &CandleConfig) -> Result<Tensor> {
         let attended = self.attention(hidden, mask, config)?;
         let hidden = (hidden + attended).map_err(inference)?;
         let normed = self.norm2(&hidden)?;
-        let ffn = linear_chunked(&normed, &self.linear1)?;
+        let ffn = self.linear1.apply(&normed)?;
         let ffn = ffn.gelu_erf().map_err(inference)?;
-        let ffn = linear_chunked(&ffn, &self.linear2)?;
+        let ffn = self.linear2.apply(&ffn)?;
         (hidden + ffn).map_err(inference)
     }
 
@@ -301,7 +350,7 @@ impl Layer {
         let head_dim = config.head_dim().map_err(ModelError::Manifest)?;
         let normed = layer_norm(hidden, &self.norm1_weight, &self.norm1_bias, LAYER_NORM_EPS)
             .map_err(inference)?;
-        let projected = linear_chunked(&normed, &self.attn_in)?;
+        let projected = self.attn_in.apply(&normed)?;
         let parts = projected.chunk(3, D::Minus1).map_err(inference)?;
         let shape = (batch, seq, config.num_heads, head_dim);
         let query = parts[0]
@@ -332,7 +381,84 @@ impl Layer {
             .and_then(|t| t.contiguous())
             .and_then(|t| t.reshape((batch, seq, config.d_model)))
             .map_err(inference)?;
-        linear_chunked(&context, &self.attn_out)
+        self.attn_out.apply(&context)
+    }
+}
+
+/// 不含量化細節的 encoder；權重來源由 `L` 決定。
+struct Encoder<L> {
+    config: CandleConfig,
+    token_embedding: Box<dyn Lookup>,
+    position_embedding: Embedding,
+    embedding_norm_weight: Tensor,
+    embedding_norm_bias: Tensor,
+    layers: Vec<Layer<L>>,
+    final_norm_weight: Tensor,
+    final_norm_bias: Tensor,
+    score_head: Linear,
+}
+
+impl<L: LinearOp> Encoder<L> {
+    fn new(
+        config: CandleConfig,
+        token_embedding: Box<dyn Lookup>,
+        position_embedding: Embedding,
+        embedding_norm: (Tensor, Tensor),
+        layers: Vec<Layer<L>>,
+        final_norm: (Tensor, Tensor),
+        score_head: Linear,
+    ) -> Self {
+        Self {
+            config,
+            token_embedding,
+            position_embedding,
+            embedding_norm_weight: embedding_norm.0,
+            embedding_norm_bias: embedding_norm.1,
+            layers,
+            final_norm_weight: final_norm.0,
+            final_norm_bias: final_norm.1,
+            score_head,
+        }
+    }
+
+    /// encoder forward；`ids` 與 `positions` 同形，`mask` 是
+    /// `(rows, 1, 1, width)` 的加成遮罩。
+    fn forward(&self, ids: &Tensor, positions: &Tensor, mask: &Tensor) -> Result<Tensor> {
+        let tokens = self.token_embedding.lookup(ids)?;
+        let (rows, width) = positions.dims2().map_err(inference)?;
+        let positions = self
+            .position_embedding
+            .forward(&positions.reshape(rows * width).map_err(inference)?)
+            .and_then(|t| t.reshape((rows, width, self.config.d_model)))
+            .map_err(inference)?;
+        let mut hidden = tokens.broadcast_add(&positions).map_err(inference)?;
+        hidden = layer_norm(
+            &hidden,
+            &self.embedding_norm_weight,
+            &self.embedding_norm_bias,
+            LAYER_NORM_EPS,
+        )
+        .map_err(inference)?;
+        for layer in &self.layers {
+            hidden = layer.forward(&hidden, mask, &self.config)?;
+        }
+        let hidden = layer_norm(
+            &hidden,
+            &self.final_norm_weight,
+            &self.final_norm_bias,
+            LAYER_NORM_EPS,
+        )
+        .map_err(inference)?;
+        Ok(hidden)
+    }
+
+    /// 候選分數；`pooled` 是 `(rows, d_model)`。
+    fn score_head(&self, pooled: &Tensor) -> Result<Vec<f32>> {
+        Linear::forward(&self.score_head, pooled)
+            .and_then(|t| t.to_dtype(DType::F32))
+            .and_then(|t| t.flatten_all())
+            .and_then(|t| t.to_vec1::<f32>())
+            .map_err(inference)
     }
 }
 
@@ -343,14 +469,7 @@ impl Layer {
 pub struct CandleReranker {
     config: CandleConfig,
     device: Device,
-    token_embedding: Embedding,
-    position_embedding: Embedding,
-    embedding_norm_weight: Tensor,
-    embedding_norm_bias: Tensor,
-    layers: Vec<Layer>,
-    final_norm_weight: Tensor,
-    final_norm_bias: Tensor,
-    score_head: Linear,
+    encoder: Encoder<Linear>,
     positions: Vec<u32>,
 }
 
@@ -383,17 +502,25 @@ impl CandleReranker {
             vb.get((1, d), "score_head.weight").map_err(inference)?,
             Some(vb.get(1, "score_head.bias").map_err(inference)?),
         );
+        let encoder = Encoder::new(
+            config,
+            Box::new(token_embedding),
+            position_embedding,
+            (
+                vb.get(d, "embedding_norm.weight").map_err(inference)?,
+                vb.get(d, "embedding_norm.bias").map_err(inference)?,
+            ),
+            layers,
+            (
+                vb.get(d, "encoder.norm.weight").map_err(inference)?,
+                vb.get(d, "encoder.norm.bias").map_err(inference)?,
+            ),
+            score_head,
+        );
         Ok(Self {
             config,
             device,
-            token_embedding,
-            position_embedding,
-            embedding_norm_weight: vb.get(d, "embedding_norm.weight").map_err(inference)?,
-            embedding_norm_bias: vb.get(d, "embedding_norm.bias").map_err(inference)?,
-            layers,
-            final_norm_weight: vb.get(d, "encoder.norm.weight").map_err(inference)?,
-            final_norm_bias: vb.get(d, "encoder.norm.bias").map_err(inference)?,
-            score_head,
+            encoder,
             positions,
         })
     }
@@ -410,101 +537,77 @@ impl CandleReranker {
     /// 原本的絕對位置，池化改成每個列自己的候選索引。序列長度 124 全滿時
     /// 就是原本的計算。
     pub fn score_packed(&self, batch: &PackedBatch) -> Result<Vec<f32>> {
-        if batch.rows == 0 {
-            return Ok(Vec::new());
-        }
-        if batch.seq != self.positions.len() {
-            return Err(ModelError::Candle(format!(
-                "序列長度 {} 與位置的 {} 不符",
-                batch.seq,
-                self.positions.len()
-            )));
-        }
-        let rows = batch.rows;
-        let mut kept: Vec<Vec<usize>> = Vec::with_capacity(rows);
-        let mut pools = Vec::with_capacity(rows);
-        for row in 0..rows {
-            let base = row * batch.seq;
-            let slots: Vec<usize> = (0..batch.seq)
-                .filter(|&slot| batch.mask[base + slot] != 0)
-                .collect();
-            let pool = slots
-                .iter()
-                .position(|&slot| slot == self.config.pool_slot)
-                .ok_or_else(|| {
-                    ModelError::Candle(format!(
-                        "第 {row} 列的候選 slot {} 被遮罩",
-                        self.config.pool_slot
-                    ))
-                })?;
-            pools.push(pool);
-            kept.push(slots);
-        }
-        let width = kept.iter().map(Vec::len).max().unwrap_or(1);
-        let mut ids = vec![0u32; rows * width];
-        let mut positions = vec![0u32; rows * width];
-        let mut mask = vec![MASK_PENALTY; rows * width];
-        for (row, slots) in kept.iter().enumerate() {
-            let base = row * width;
-            for (index, &slot) in slots.iter().enumerate() {
-                let id = batch.ids[row * batch.seq + slot];
-                ids[base + index] = u32::try_from(id)
-                    .map_err(|_| ModelError::Candle(format!("token id {id} 不是合法的 u32")))?;
-                positions[base + index] = self.positions[slot];
-                mask[base + index] = 0.0;
-            }
-        }
-        let device = &self.device;
-        let ids = Tensor::from_vec(ids, (rows, width), device).map_err(inference)?;
-        let positions = Tensor::from_vec(positions, (rows, width), device).map_err(inference)?;
-        let mask = Tensor::from_vec(mask, (rows, 1, 1, width), device).map_err(inference)?;
-        let hidden = self.forward(&ids, &positions, &mask)?;
-        let mut pooled = Vec::with_capacity(rows);
-        for (row, &pool) in pools.iter().enumerate() {
-            pooled.push(
-                hidden
-                    .narrow(0, row, 1)
-                    .and_then(|t| t.narrow(1, pool, 1))
-                    .map_err(inference)?,
-            );
-        }
-        let pooled = Tensor::cat(&pooled, 0).map_err(inference)?;
-        self.score_head
-            .forward(&pooled)
-            .and_then(|t| t.reshape(rows))
-            .and_then(|t| t.to_vec1::<f32>())
-            .map_err(inference)
+        score_packed_with(&self.encoder, &self.positions, &self.device, batch)
     }
+}
 
-    /// encoder forward；`ids` 與 `positions` 同形，`mask` 是
-    /// `(rows, 1, 1, width)` 的加成遮罩。
-    fn forward(&self, ids: &Tensor, positions: &Tensor, mask: &Tensor) -> Result<Tensor> {
-        let tokens = self.token_embedding.forward(ids).map_err(inference)?;
-        let (rows, width) = positions.dims2().map_err(inference)?;
-        let positions = self
-            .position_embedding
-            .forward(&positions.reshape(rows * width).map_err(inference)?)
-            .and_then(|t| t.reshape((rows, width, self.config.d_model)))
-            .map_err(inference)?;
-        let mut hidden = tokens.broadcast_add(&positions).map_err(inference)?;
-        hidden = layer_norm(
-            &hidden,
-            &self.embedding_norm_weight,
-            &self.embedding_norm_bias,
-            LAYER_NORM_EPS,
-        )
-        .map_err(inference)?;
-        for layer in &self.layers {
-            hidden = layer.forward(&hidden, mask, &self.config)?;
-        }
-        layer_norm(
-            &hidden,
-            &self.final_norm_weight,
-            &self.final_norm_bias,
-            LAYER_NORM_EPS,
-        )
-        .map_err(inference)
+/// 兩個 reranker 共用的打分路徑；`positions` 是部署佈局的絕對位置表。
+fn score_packed_with<L: LinearOp>(
+    encoder: &Encoder<L>,
+    positions_table: &[u32],
+    device: &Device,
+    batch: &PackedBatch,
+) -> Result<Vec<f32>> {
+    let config = &encoder.config;
+    if batch.rows == 0 {
+        return Ok(Vec::new());
     }
+    if batch.seq != positions_table.len() {
+        return Err(ModelError::Candle(format!(
+            "序列長度 {} 與位置的 {} 不符",
+            batch.seq,
+            positions_table.len()
+        )));
+    }
+    let rows = batch.rows;
+    let mut kept: Vec<Vec<usize>> = Vec::with_capacity(rows);
+    let mut pools = Vec::with_capacity(rows);
+    for row in 0..rows {
+        let base = row * batch.seq;
+        let slots: Vec<usize> = (0..batch.seq)
+            .filter(|&slot| batch.mask[base + slot] != 0)
+            .collect();
+        let pool = slots
+            .iter()
+            .position(|&slot| slot == config.pool_slot)
+            .ok_or_else(|| {
+                ModelError::Candle(format!(
+                    "第 {row} 列的候選 slot {} 被遮罩",
+                    config.pool_slot
+                ))
+            })?;
+        pools.push(pool);
+        kept.push(slots);
+    }
+    let width = kept.iter().map(Vec::len).max().unwrap_or(1);
+    let mut ids = vec![0u32; rows * width];
+    let mut positions = vec![0u32; rows * width];
+    let mut mask = vec![MASK_PENALTY; rows * width];
+    for (row, slots) in kept.iter().enumerate() {
+        let base = row * width;
+        for (index, &slot) in slots.iter().enumerate() {
+            let id = batch.ids[row * batch.seq + slot];
+            ids[base + index] = u32::try_from(id)
+                .map_err(|_| ModelError::Candle(format!("token id {id} 不是合法的 u32")))?;
+            positions[base + index] = positions_table[slot];
+            mask[base + index] = 0.0;
+        }
+    }
+    let ids = Tensor::from_vec(ids, (rows, width), device).map_err(inference)?;
+    let positions = Tensor::from_vec(positions, (rows, width), device).map_err(inference)?;
+    let mask = Tensor::from_vec(mask, (rows, 1, 1, width), device).map_err(inference)?;
+    let hidden = encoder.forward(&ids, &positions, &mask)?;
+    let mut pooled = Vec::with_capacity(rows);
+    for (row, &pool) in pools.iter().enumerate() {
+        pooled.push(
+            hidden
+                .narrow(0, row, 1)
+                .and_then(|t| t.narrow(1, pool, 1))
+                .map_err(inference)?,
+        );
+    }
+    let pooled = Tensor::cat(&pooled, 0).map_err(inference)?;
+    encoder.score_head(&pooled)
 }
 
 /// 依輸出維度把 linear 切給 rayon 平行算。
@@ -514,18 +617,18 @@ impl CandleReranker {
 /// 每個元素仍是同一條 k 軸的和，所以數值與 [`Linear::forward`] 相同。
 fn linear_chunked(x: &Tensor, layer: &Linear) -> Result<Tensor> {
     let Some(bias) = layer.bias() else {
-        return layer.forward(x).map_err(inference);
+        return Linear::forward(layer, x).map_err(inference);
     };
     let (out, _) = layer.weight().dims2().map_err(inference)?;
     let dims = x.dims().to_vec();
     let Some(&k) = dims.last() else {
-        return layer.forward(x).map_err(inference);
+        return Linear::forward(layer, x).map_err(inference);
     };
     let rows = x.elem_count() / k;
     // 每個 chunk 至少 64 個輸出，避免 gemm 太碎。
     let chunks = rayon::current_num_threads().min(out / 64).max(1);
     if chunks <= 1 {
-        return layer.forward(x).map_err(inference);
+        return Linear::forward(layer, x).map_err(inference);
     }
     let flat = x.reshape((rows, k)).map_err(inference)?;
     let weight = layer.weight();
