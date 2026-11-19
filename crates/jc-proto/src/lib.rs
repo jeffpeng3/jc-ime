@@ -1,40 +1,115 @@
 //! 引擎與 wrapper 之間的協定。長度前綴 + JSON，跨行程且可除錯。
 //!
-//! 骨架：先固定請求／回應的外形與編解碼，欄位在 M1 起逐步長出。
+//! 訊框是 4-byte 小端長度前綴加上 JSON 內容；請求與回應都是列舉，以 `op`
+//! 欄位區分。回應一律是完整快照，wrapper 不需要自己保存組字狀態。
+
+pub mod frame;
+pub mod message;
 
 use serde::{Deserialize, Serialize};
 
+pub use frame::{DEFAULT_MAX_FRAME, HEADER_LEN};
+pub use message::{read_message, read_payload, write_message};
+
+/// 協定版本。握手時兩邊的版本必須相同。
 pub const PROTOCOL_VERSION: u32 = 1;
+
+/// 引擎端回報的錯誤種類。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    /// 握手的協定版本與 [`PROTOCOL_VERSION`] 不同。
+    VersionMismatch,
+    /// JSON 內容無法解碼，或缺少必要欄位。
+    BadFrame,
+    /// 訊框超過長度上限。
+    FrameTooLarge,
+    /// `op` 不是引擎認得的操作。
+    UnknownOp,
+    /// 引擎內部狀態不允許這個請求。
+    Internal,
+}
+
+/// 一個按鍵事件。
+///
+/// `jc-core` 目前還沒有公開的 `Key` 型別，所以這裡先放等價的本地型別；
+/// 整合時再換成 `jc-core` 的定義。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum Key {
+    /// 可列印字元。
+    Char(char),
+    /// 具名鍵。
+    Named(NamedKey),
+}
+
+/// 沒有對應字元的按鍵。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NamedKey {
+    Enter,
+    Escape,
+    Backspace,
+    Delete,
+    Tab,
+    ShiftTab,
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Space,
+}
 
 /// wrapper 送給引擎的請求。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
-    /// 握手，確認版本與可用能力。
-    Hello { protocol: u32 },
+    /// 握手，確認版本與客戶端身分。
+    Hello { protocol: u32, client: String },
     /// 送出一個按鍵。
-    Key { key: String },
+    Key { key: Key },
     /// 取得目前組字狀態。
     Snapshot,
     /// 送出目前的組字結果。
     Commit,
+    /// 要求引擎結束行程。
+    Shutdown,
+    /// 引擎不認得的操作。由 serde 的 `other` 收下，讓引擎可以回
+    /// [`ErrorCode::UnknownOp`] 而不是直接斷線。
+    #[serde(other)]
+    Unknown,
 }
 
 /// 引擎回給 wrapper 的結果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Response {
-    pub protocol: u32,
-    pub preedit: String,
-    pub cursor: usize,
-    pub candidates: Vec<String>,
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum Response {
+    /// 握手成功，附上引擎識別字串。
+    Ready { protocol: u32, engine: String },
+    /// 目前的完整組字快照。`cursor` 單位是字元（Unicode scalar value）。
+    State {
+        preedit: String,
+        cursor: usize,
+        candidates: Vec<String>,
+    },
+    /// 一次提交的結果。
+    Committed { text: String },
+    /// 請求被拒絕或處理失敗。
+    Error { code: ErrorCode, message: String },
 }
 
-/// 以 4-byte 小端長度前綴包住 JSON 內容。
-pub fn frame(payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(payload.len() + 4);
-    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(payload);
-    out
+impl Response {
+    /// 建立一個錯誤回應。
+    pub fn error(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self::Error {
+            code,
+            message: message.into(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -42,16 +117,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frame_prefixes_length() {
-        let f = frame(b"{}");
-        assert_eq!(&f[..4], &2u32.to_le_bytes());
-        assert_eq!(&f[4..], b"{}");
+    fn request_uses_op_tag() {
+        let text = serde_json::to_string(&Request::Snapshot).unwrap();
+        assert_eq!(text, r#"{"op":"snapshot"}"#);
+
+        let hello = Request::Hello {
+            protocol: PROTOCOL_VERSION,
+            client: "test".into(),
+        };
+        let text = serde_json::to_string(&hello).unwrap();
+        assert_eq!(
+            text,
+            format!(r#"{{"op":"hello","protocol":1,"client":"test"}}"#)
+        );
+        assert_eq!(serde_json::from_str::<Request>(&text).unwrap(), hello);
     }
 
     #[test]
-    fn request_round_trips() {
-        let r = Request::Key { key: "a".into() };
-        let text = serde_json::to_string(&r).unwrap();
-        assert_eq!(serde_json::from_str::<Request>(&text).unwrap(), r);
+    fn key_round_trips() {
+        for key in [Key::Char('ㄇ'), Key::Named(NamedKey::Backspace)] {
+            let req = Request::Key { key };
+            let text = serde_json::to_string(&req).unwrap();
+            assert_eq!(serde_json::from_str::<Request>(&text).unwrap(), req);
+        }
+    }
+
+    #[test]
+    fn unknown_op_is_captured_instead_of_failing() {
+        let req: Request = serde_json::from_str(r#"{"op":"teleport"}"#).unwrap();
+        assert_eq!(req, Request::Unknown);
+    }
+
+    #[test]
+    fn error_codes_are_snake_case() {
+        let resp = Response::error(ErrorCode::VersionMismatch, "版本不符");
+        let text = serde_json::to_string(&resp).unwrap();
+        assert_eq!(
+            text,
+            r#"{"op":"error","code":"version_mismatch","message":"版本不符"}"#
+        );
+        assert_eq!(serde_json::from_str::<Response>(&text).unwrap(), resp);
     }
 }
