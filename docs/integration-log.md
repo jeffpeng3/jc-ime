@@ -69,6 +69,7 @@
 | `legal-notices` | `d1be772` | `823eab9` | fmt 通過；clippy 剩 zh-calibrate | 2026-11-20 03:17 |
 | `zh-select-calibrate`（移除 cfg） | `741e59a` | `5fcf8ca` | 通過（clippy＋jc-cli test） | 2026-11-20 03:19 |
 | `settings-core`（修測試） | `87cfdf1` | `89a4f6f` | 通過（fmt＋clippy＋test） | 2026-11-20 03:28 |
+| `rerank-wordlevel` | `277bd8e` | `9476f51` | fmt／clippy 通過；5 個 test 失敗 | 2026-11-20 03:35 |
 
 ## 衝突與修正
 
@@ -533,3 +534,22 @@
   三個 gate 全過：`cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0、
   `cargo test --workspace --no-fail-fast` **exit 0**（38 targets、892 passed、0 failed）。
   先前 jc-settings 的 3 個失敗全部解除，main 全量測試歸零。
+
+- `rerank-wordlevel`（合併 `9476f51`）：`jc-core/src/ja/rerank.rs` 有衝突（檔頭說明與 `left_context` 註解）。
+  檔頭採 branch 的詞層級說明；`left_context` 保留 main 的實作與註解（含「切法非單調、不能提早停」的處理），
+  因為合併後的函式體已是該版本，branch 的簡化說明與實際行為不符。`layout.rs`、`rerank.rs`、`probe.rs` 自動合併。
+
+  量測（`modern-500`，`--rerank on`）：top-1 **82.0%**（`--rerank off` 86.0%）、top-5 **95.2%**、p50 **78.8 ms**（p95 146.49 ms、timeout 29.0%）。
+  只重排最有歧義的 1 個詞群時 top-1 是 85.2%，介入越多越接近 82.0%。
+  模型單獨排序 Rust 版 **83.0%**，與同一份模型在 Python 的 **83.0%** 完全一致，確認 Rust 端推論與前處理沒有偏差。
+
+  gate：`cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0、
+  `cargo test --workspace --no-fail-fast` exit 101（38 targets、890 passed、**5 failed**）。5 個失敗都在本 branch 的檔案，需回 rerank-wordlevel：
+  - `ja::rerank::tests::right_context_keeps_the_prefix_nearest_the_cursor`（`jc-core/src/ja/rerank.rs:380`）：
+    測試 fixture 把 `▁東京都` 當單一 piece，`right_context("東京都東京", 1)` 回 `東京都`，測試期望 `東京`。
+  - `layout::tests::candidate_piece_prefers_the_bare_piece`（`jc-model/src/layout.rs:238`）：fixture 有裸 `東`，
+    `candidate_piece` 回 261，測試期望 `▁東` 的 264。
+  - `layout::tests::candidate_longer_than_slot_is_truncated`（`layout.rs:258`）：mask 總和 6，期望 7。
+  - `layout::tests::empty_context_uses_bos_marker`（`layout.rs:297`）：piece id 266 vs 265。
+  - `layout::tests::real_tokenizer_fills_the_60_token_left_window`（`layout.rs:363`）：`context_ids` 會剝掉開頭 `▁`，
+    測試仍拿 `t.encode(left)[..60]` 直接比對（1324 vs 10015）。
