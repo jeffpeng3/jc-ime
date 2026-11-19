@@ -9,7 +9,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use super::error::PackError;
-use super::pack::{hex, sha256, Pack, FORMAT_VERSION};
+use super::pack::{hex, sha256, Pack, ENTRY_SIZE, ENTRY_SIZE_V2, FORMAT_VERSION_V2};
 
 /// manifest 支援的 schema。
 pub const MANIFEST_SCHEMA: &str = "0c-lexicon-manifest/1";
@@ -21,6 +21,12 @@ pub struct PackFormat {
     pub name: String,
     /// 格式版本。
     pub version: i64,
+    /// 每筆詞條的位元組數；v2 manifest 必須是 24。
+    #[serde(default)]
+    pub entry_size: Option<i64>,
+    /// context 數；v2 manifest 會記錄，v1 沒有。
+    #[serde(default)]
+    pub context_count: Option<i64>,
 }
 
 /// manifest 宣告的數量。
@@ -134,11 +140,37 @@ impl Manifest {
                 expected: "0c-jadic",
             });
         }
-        if self.pack_format.version != FORMAT_VERSION as i64 {
+        let header = pack.header();
+        if self.pack_format.version != header.format_version as i64 {
             return Err(PackError::ManifestFormatVersion {
                 actual: self.pack_format.version,
-                expected: FORMAT_VERSION as i64,
+                expected: header.format_version as i64,
             });
+        }
+        if header.format_version == FORMAT_VERSION_V2 {
+            if self.pack_format.entry_size != Some(ENTRY_SIZE_V2 as i64) {
+                return Err(PackError::ManifestEntrySize {
+                    actual: self.pack_format.entry_size,
+                    expected: ENTRY_SIZE_V2 as u16,
+                });
+            }
+            if let Some(context_count) = self.pack_format.context_count {
+                if context_count != header.context_count as i64 {
+                    return Err(PackError::ManifestCount {
+                        field: "pack_format.context_count",
+                        manifest: context_count,
+                        pack_field: "context_count",
+                        pack: header.context_count as i64,
+                    });
+                }
+            }
+        } else if let Some(size) = self.pack_format.entry_size {
+            if size != ENTRY_SIZE as i64 {
+                return Err(PackError::ManifestEntrySize {
+                    actual: self.pack_format.entry_size,
+                    expected: ENTRY_SIZE as u16,
+                });
+            }
         }
         match self.reading_script.as_str() {
             "hiragana" | "katakana" => {}
@@ -149,7 +181,6 @@ impl Manifest {
             }
         }
 
-        let header = pack.header();
         let counts = [
             (
                 "counts.entries",

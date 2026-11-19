@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::pack::{
-    hex, is_hiragana, sha256, Entry, Pack, Split, FORMAT_VERSION, HEADER_SIZE, MAGIC, TRAILER_SIZE,
+    hex, is_hiragana, sha256, Entry, Pack, Split, ENTRY_SIZE, ENTRY_SIZE_V2, FORMAT_VERSION,
+    FORMAT_VERSION_V2, HEADER_SIZE, HEADER_SIZE_V2, MAGIC, TRAILER_SIZE,
 };
 use super::{compare_entries, sort_surface_entries, Manifest, PackError};
 use jc_testdata::require_data;
@@ -35,6 +36,8 @@ struct EntryRec {
     form_id: u8,
     cost: i16,
     flags: u16,
+    left_id: u16,
+    right_id: u16,
 }
 
 fn put_u16(buf: &mut Vec<u8>, v: u16) {
@@ -59,13 +62,80 @@ fn table_bytes(strings: &[&str]) -> Vec<u8> {
     buf
 }
 
+struct BuildEntry<'a> {
+    surface: &'a str,
+    reading: &'a str,
+    pos: &'a str,
+    conj_type: &'a str,
+    conj_form: &'a str,
+    cost: i16,
+    flags: u16,
+    left_id: u16,
+    right_id: u16,
+}
+
+impl<'a> From<&'a TestEntry> for BuildEntry<'a> {
+    fn from(e: &'a TestEntry) -> Self {
+        BuildEntry {
+            surface: e.surface,
+            reading: e.reading,
+            pos: e.pos,
+            conj_type: e.conj_type,
+            conj_form: e.conj_form,
+            cost: e.cost,
+            flags: e.flags,
+            left_id: 0,
+            right_id: 0,
+        }
+    }
+}
+
 fn encode_test_pack(
     entries: &[TestEntry],
     pos: &[&str],
     types: &[&str],
     forms: &[&str],
 ) -> Vec<u8> {
+    let build: Vec<BuildEntry> = entries.iter().map(BuildEntry::from).collect();
+    encode_pack(&build, pos, types, forms, 0, &[])
+}
+
+fn encode_test_pack_v2(
+    entries: &[BuildEntry],
+    pos: &[&str],
+    types: &[&str],
+    forms: &[&str],
+    context_count: u16,
+    connection: &[i16],
+) -> Vec<u8> {
+    encode_pack(entries, pos, types, forms, context_count, connection)
+}
+
+fn encode_pack(
+    entries: &[BuildEntry],
+    pos: &[&str],
+    types: &[&str],
+    forms: &[&str],
+    context_count: u16,
+    connection: &[i16],
+) -> Vec<u8> {
     assert!(!entries.is_empty(), "測試 pack 至少需要一筆詞條");
+
+    let version = if context_count == 0 {
+        FORMAT_VERSION
+    } else {
+        FORMAT_VERSION_V2
+    };
+    let (header_size, entry_size) = if version == FORMAT_VERSION_V2 {
+        assert_eq!(
+            connection.len(),
+            context_count as usize * context_count as usize,
+            "測試矩陣長度必須是 context_count²"
+        );
+        (HEADER_SIZE_V2, ENTRY_SIZE_V2)
+    } else {
+        (HEADER_SIZE, ENTRY_SIZE)
+    };
 
     let mut pos: Vec<String> = if pos.is_empty() {
         vec!["名詞,普通名詞,一般,*".to_owned()]
@@ -102,7 +172,7 @@ fn encode_test_pack(
         .map(|(i, s)| (s.as_str(), i))
         .collect();
 
-    let mut sorted: Vec<&TestEntry> = entries.iter().collect();
+    let mut sorted: Vec<&BuildEntry> = entries.iter().collect();
     sorted.sort_by(|a, b| a.surface.cmp(b.surface));
 
     let mut surface_blob = Vec::new();
@@ -142,6 +212,8 @@ fn encode_test_pack(
             form_id: form_idx as u8,
             cost: e.cost,
             flags: e.flags,
+            left_id: e.left_id,
+            right_id: e.right_id,
         });
     }
 
@@ -178,18 +250,29 @@ fn encode_test_pack(
         entry_blob.push(r.form_id);
         entry_blob.extend_from_slice(&r.cost.to_le_bytes());
         put_u16(&mut entry_blob, r.flags);
+        if version == FORMAT_VERSION_V2 {
+            put_u16(&mut entry_blob, r.left_id);
+            put_u16(&mut entry_blob, r.right_id);
+        }
+    }
+    assert_eq!(entry_blob.len(), recs.len() * entry_size);
+
+    let mut connection_blob = Vec::new();
+    for cost in connection {
+        connection_blob.extend_from_slice(&cost.to_le_bytes());
     }
 
-    let mut offset = HEADER_SIZE;
-    let mut header = [0u8; HEADER_SIZE];
+    let mut offset = header_size;
+    let mut header = vec![0u8; header_size];
     header[..MAGIC.len()].copy_from_slice(&MAGIC);
-    header[8..10].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
-    header[10..12].copy_from_slice(&(HEADER_SIZE as u16).to_le_bytes());
+    header[8..10].copy_from_slice(&version.to_le_bytes());
+    header[10..12].copy_from_slice(&(header_size as u16).to_le_bytes());
     header[16..20].copy_from_slice(&(recs.len() as u32).to_le_bytes());
     header[20..24].copy_from_slice(&(seen.len() as u32).to_le_bytes());
     header[24..26].copy_from_slice(&(pos.len() as u16).to_le_bytes());
     header[26..28].copy_from_slice(&(types.len() as u16).to_le_bytes());
     header[28..30].copy_from_slice(&(forms.len() as u16).to_le_bytes());
+    header[30..32].copy_from_slice(&context_count.to_le_bytes());
 
     let mut set_section = |off_field: usize, len_field: usize, len: usize| {
         header[off_field..off_field + 4].copy_from_slice(&(offset as u32).to_le_bytes());
@@ -202,6 +285,9 @@ fn encode_test_pack(
     set_section(56, 60, index.len());
     set_section(64, 68, pos_table.len());
     set_section(72, 76, conj_table.len());
+    if version == FORMAT_VERSION_V2 {
+        set_section(80, 84, connection_blob.len());
+    }
 
     let mut out = Vec::new();
     out.extend_from_slice(&header);
@@ -211,6 +297,7 @@ fn encode_test_pack(
     out.extend_from_slice(&index);
     out.extend_from_slice(&pos_table);
     out.extend_from_slice(&conj_table);
+    out.extend_from_slice(&connection_blob);
     let sum = sha256(&out);
     out.extend_from_slice(&sum);
     out
@@ -268,6 +355,67 @@ fn sample_pack() -> Vec<u8> {
         &["名詞,普通名詞,一般,*", "動詞,一般,*,*"],
         &["*", "五段"],
         &["*", "終止形-一般"],
+    )
+}
+
+/// 合成 v2 pack：4×4 連接矩陣與帶 context id 的詞條。
+fn sample_v2_pack() -> Vec<u8> {
+    let mut connection = vec![0i16; 16];
+    connection[0] = 42;
+    connection[1 * 4 + 2] = -777;
+    connection[3 * 4 + 3] = 250;
+    encode_test_pack_v2(
+        &[
+            BuildEntry {
+                surface: "明日",
+                reading: "あした",
+                pos: "名詞,普通名詞,一般,*",
+                conj_type: "*",
+                conj_form: "*",
+                cost: 1000,
+                flags: 0,
+                left_id: 1,
+                right_id: 2,
+            },
+            BuildEntry {
+                surface: "味",
+                reading: "あじ",
+                pos: "名詞,普通名詞,一般,*",
+                conj_type: "*",
+                conj_form: "*",
+                cost: 1200,
+                flags: 0,
+                left_id: 3,
+                right_id: 3,
+            },
+            BuildEntry {
+                surface: "亜",
+                reading: "あ",
+                pos: "名詞,普通名詞,一般,*",
+                conj_type: "*",
+                conj_form: "*",
+                cost: 3000,
+                flags: 1,
+                left_id: 0,
+                right_id: 1,
+            },
+            BuildEntry {
+                surface: "食べる",
+                reading: "たべる",
+                pos: "動詞,一般,*,*",
+                conj_type: "五段",
+                conj_form: "終止形-一般",
+                cost: 800,
+                flags: 0,
+                left_id: 2,
+                right_id: 0,
+            },
+        ],
+        &["名詞,普通名詞,一般,*", "動詞,一般,*,*"],
+        &["*", "五段"],
+        &["*", "終止形-一般"],
+        4,
+        &connection,
     )
 }
 
@@ -388,6 +536,182 @@ fn test_parse_sample_pack() {
 }
 
 #[test]
+fn test_parse_sample_pack_v2() {
+    let data = sample_v2_pack();
+    let pack = open_bytes("sample_v2", &data).expect("解析 sample v2 pack");
+
+    assert_eq!(pack.format_version(), FORMAT_VERSION_V2);
+    assert_eq!(pack.entry_size(), ENTRY_SIZE_V2);
+    assert_eq!(pack.context_count(), 4);
+    assert_eq!(pack.header().header_size, HEADER_SIZE_V2 as u16);
+    assert_eq!(pack.entry_count(), 4);
+    assert_eq!(pack.surface_count(), 4);
+
+    let caps = pack.capabilities();
+    assert!(caps.context_ids);
+    assert!(caps.connection_matrix);
+
+    let ashita = &pack.lookup("明日")[0];
+    assert_eq!(ashita.left_id(), Some(1));
+    assert_eq!(ashita.right_id(), Some(2));
+    assert_eq!(pack.lookup("味")[0].left_id(), Some(3));
+    assert_eq!(pack.lookup("味")[0].right_id(), Some(3));
+    assert_eq!(pack.lookup("食べる")[0].left_id(), Some(2));
+    assert_eq!(pack.lookup("食べる")[0].right_id(), Some(0));
+    assert_eq!(pack.lookup("亜")[0].left_id(), Some(0));
+    assert_eq!(pack.lookup("亜")[0].right_id(), Some(1));
+
+    assert_eq!(pack.connection(0, 0), Some(42));
+    assert_eq!(pack.connection(1, 2), Some(-777));
+    assert_eq!(pack.connection(3, 3), Some(250));
+    assert_eq!(pack.connection(2, 1), Some(0));
+    assert_eq!(pack.connection(4, 0), None);
+    assert_eq!(pack.connection(0, 4), None);
+
+    let payload_end = data.len() - TRAILER_SIZE;
+    assert_eq!(pack.payload_sha256(), hex(&sha256(&data[..payload_end])));
+    assert_eq!(pack.file_sha256(), hex(&sha256(&data)));
+    pack.verify().expect("驗證 sample v2 pack");
+}
+
+#[test]
+fn test_v1_has_no_context_data() {
+    let pack = open_bytes("v1_no_context", &sample_pack()).expect("解析 v1 sample pack");
+
+    assert_eq!(pack.format_version(), FORMAT_VERSION);
+    assert_eq!(pack.entry_size(), ENTRY_SIZE);
+    assert_eq!(pack.context_count(), 0);
+    assert_eq!(pack.connection(0, 0), None);
+    assert_eq!(pack.header().connection_offset, 0);
+    assert_eq!(pack.header().connection_length, 0);
+    for entry in pack.entries() {
+        assert_eq!(entry.left_id(), None);
+        assert_eq!(entry.right_id(), None);
+    }
+}
+
+#[test]
+fn test_parse_rejects_v2_corruption() {
+    let base = sample_v2_pack();
+    let entries_off = read_u32(&base, 48) as usize;
+    let connection_off = read_u32(&base, 80) as usize;
+    assert!(connection_off > entries_off);
+
+    type Check = fn(&PackError) -> bool;
+    let cases: Vec<(&str, Vec<u8>, Check)> = vec![
+        ("header_size", put_u16_at(base.clone(), 10, 80), |e| {
+            matches!(
+                e,
+                PackError::BadHeaderSize {
+                    actual: 80,
+                    expected: 96
+                }
+            )
+        }),
+        (
+            "entry_stride",
+            reseal(put_u32_at(base.clone(), 52, 4 * ENTRY_SIZE as u32)),
+            |e| {
+                matches!(
+                    e,
+                    PackError::SectionLengthMismatch {
+                        section: "entries",
+                        ..
+                    }
+                )
+            },
+        ),
+        ("zero_context", put_u16_at(base.clone(), 30, 0), |e| {
+            matches!(
+                e,
+                PackError::EmptyCount {
+                    field: "context_count"
+                }
+            )
+        }),
+        ("reserved", put_u32_at(base.clone(), 88, 1), |e| {
+            matches!(e, PackError::NonZeroReserved32(1))
+        }),
+        (
+            "connection_length",
+            reseal(put_u32_at(base.clone(), 84, 30)),
+            |e| {
+                matches!(
+                    e,
+                    PackError::SectionLengthMismatch {
+                        section: "connection",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "connection_overrun",
+            reseal(put_u32_at(base.clone(), 80, 0xFF_FFFF)),
+            |e| {
+                matches!(
+                    e,
+                    PackError::SectionOutOfBounds {
+                        section: "connection",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "connection_overlap",
+            reseal(put_u32_at(base.clone(), 80, entries_off as u32)),
+            |e| matches!(e, PackError::SectionOverlap { .. }),
+        ),
+        (
+            "payload_byte",
+            toggle(base.clone(), HEADER_SIZE_V2 + 3),
+            |e| matches!(e, PackError::PayloadHashMismatch { .. }),
+        ),
+        ("trailer_byte", toggle(base.clone(), base.len() - 1), |e| {
+            matches!(e, PackError::PayloadHashMismatch { .. })
+        }),
+    ];
+
+    for (name, data, check) in cases {
+        let err = open_error(name, &data);
+        assert!(check(&err), "{name}：得到 {err:?}");
+    }
+
+    let mut bad = base.clone();
+    bad[entries_off + 20..entries_off + 22].copy_from_slice(&9u16.to_le_bytes());
+    let err = open_error("left_id", &reseal(bad));
+    assert!(
+        matches!(
+            err,
+            PackError::EntryContextOutOfRange {
+                id: 9,
+                context_count: 4,
+                side: "left_id",
+                ..
+            }
+        ),
+        "left_id：得到 {err:?}"
+    );
+
+    let mut bad = base.clone();
+    bad[entries_off + 22..entries_off + 24].copy_from_slice(&4u16.to_le_bytes());
+    let err = open_error("right_id", &reseal(bad));
+    assert!(
+        matches!(
+            err,
+            PackError::EntryContextOutOfRange {
+                id: 4,
+                context_count: 4,
+                side: "right_id",
+                ..
+            }
+        ),
+        "right_id：得到 {err:?}"
+    );
+}
+
+#[test]
 fn test_capabilities_v1_has_no_context_costs() {
     let pack = open_bytes("capabilities", &sample_pack()).expect("解析 sample pack");
     let caps = pack.capabilities();
@@ -410,8 +734,8 @@ fn test_parse_rejects_structural_corruption() {
         ("magic", mutate(base.clone(), 0, b'X'), |e| {
             matches!(e, PackError::BadMagic)
         }),
-        ("version", put_u16_at(base.clone(), 8, 2), |e| {
-            matches!(e, PackError::UnsupportedVersion { actual: 2, .. })
+        ("version", put_u16_at(base.clone(), 8, 3), |e| {
+            matches!(e, PackError::UnsupportedVersion { actual: 3, .. })
         }),
         ("header_size", put_u16_at(base.clone(), 10, 79), |e| {
             matches!(e, PackError::BadHeaderSize { actual: 79, .. })
@@ -820,16 +1144,16 @@ fn test_parse_accepts_prolonged_sound_mark() {
 // ---------------------------------------------------------------------------
 
 fn entry(cost: i16, reading: &str, pos_id: u16, conj_type: u8, conj_form: u8) -> Entry {
-    Entry {
-        surface: "同".into(),
-        reading: reading.into(),
+    Entry::for_test(
+        "同",
+        reading,
         pos_id,
         conj_type,
         conj_form,
         cost,
-        split: Split::C,
-        flags: 0,
-    }
+        Split::C,
+        0,
+    )
 }
 
 #[test]
@@ -867,46 +1191,10 @@ fn test_compare_entries() {
 #[test]
 fn test_sort_surface_entries_stable() {
     let mut entries = vec![
-        Entry {
-            cost: 500,
-            reading: "あ".into(),
-            pos_id: 0,
-            conj_type: 0,
-            conj_form: 2,
-            surface: "同".into(),
-            split: Split::C,
-            flags: 1,
-        },
-        Entry {
-            cost: 500,
-            reading: "あ".into(),
-            pos_id: 0,
-            conj_type: 0,
-            conj_form: 0,
-            surface: "同".into(),
-            split: Split::A,
-            flags: 2,
-        },
-        Entry {
-            cost: 500,
-            reading: "あ".into(),
-            pos_id: 0,
-            conj_type: 0,
-            conj_form: 0,
-            surface: "同".into(),
-            split: Split::B,
-            flags: 3,
-        },
-        Entry {
-            cost: 400,
-            reading: "え".into(),
-            pos_id: 0,
-            conj_type: 0,
-            conj_form: 0,
-            surface: "同".into(),
-            split: Split::C,
-            flags: 4,
-        },
+        Entry::for_test("同", "あ", 0, 0, 2, 500, Split::C, 1),
+        Entry::for_test("同", "あ", 0, 0, 0, 500, Split::A, 2),
+        Entry::for_test("同", "あ", 0, 0, 0, 500, Split::B, 3),
+        Entry::for_test("同", "え", 0, 0, 0, 400, Split::C, 4),
     ];
     sort_surface_entries(&mut entries);
     let got: Vec<u16> = entries.iter().map(|e| e.flags).collect();
@@ -924,7 +1212,9 @@ fn sample_manifest(pack: &Pack) -> Manifest {
         target: "public-core-pack".to_owned(),
         pack_format: super::PackFormat {
             name: "0c-jadic".to_owned(),
-            version: FORMAT_VERSION as i64,
+            version: pack.format_version() as i64,
+            entry_size: Some(pack.entry_size() as i64),
+            context_count: (pack.context_count() != 0).then(|| pack.context_count() as i64),
         },
         reading_script: "hiragana".to_owned(),
         counts: super::ManifestCounts {
@@ -1077,6 +1367,99 @@ fn test_manifest_verify_rejects_mismatch() {
 }
 
 #[test]
+fn test_manifest_verify_v2() {
+    let pack = open_bytes("manifest_v2_ok", &sample_v2_pack()).expect("解析 sample v2 pack");
+    let manifest = sample_manifest(&pack);
+    assert_eq!(manifest.pack_format.version, 2);
+    assert_eq!(manifest.pack_format.entry_size, Some(24));
+    assert_eq!(manifest.pack_format.context_count, Some(4));
+    manifest.verify(&pack).expect("v2 manifest 應配對");
+
+    let mut bad = sample_manifest(&pack);
+    bad.pack_format.entry_size = Some(20);
+    let err = bad.verify(&pack).expect_err("entry_size 錯誤應失敗");
+    assert!(
+        matches!(
+            err,
+            PackError::ManifestEntrySize {
+                actual: Some(20),
+                expected: 24
+            }
+        ),
+        "得到 {err:?}"
+    );
+
+    let mut bad = sample_manifest(&pack);
+    bad.pack_format.entry_size = None;
+    let err = bad.verify(&pack).expect_err("v2 缺少 entry_size 應失敗");
+    assert!(
+        matches!(
+            err,
+            PackError::ManifestEntrySize {
+                actual: None,
+                expected: 24
+            }
+        ),
+        "得到 {err:?}"
+    );
+
+    let mut bad = sample_manifest(&pack);
+    bad.pack_format.context_count = Some(5);
+    let err = bad.verify(&pack).expect_err("context_count 錯誤應失敗");
+    assert!(
+        matches!(
+            err,
+            PackError::ManifestCount {
+                field: "pack_format.context_count",
+                manifest: 5,
+                ..
+            }
+        ),
+        "得到 {err:?}"
+    );
+
+    let mut bad = sample_manifest(&pack);
+    bad.pack_format.version = 1;
+    let err = bad
+        .verify(&pack)
+        .expect_err("v2 pack 配 v1 manifest 應失敗");
+    assert!(
+        matches!(
+            err,
+            PackError::ManifestFormatVersion {
+                actual: 1,
+                expected: 2
+            }
+        ),
+        "得到 {err:?}"
+    );
+}
+
+#[test]
+fn test_manifest_v1_accepts_missing_entry_size() {
+    let pack = open_bytes("manifest_v1_size", &sample_pack()).expect("解析 sample pack");
+    let mut manifest = sample_manifest(&pack);
+    manifest.pack_format.entry_size = None;
+    manifest.verify(&pack).expect("v1 manifest 不需 entry_size");
+
+    manifest.pack_format.entry_size = Some(20);
+    manifest.verify(&pack).expect("v1 entry_size 20 應接受");
+
+    manifest.pack_format.entry_size = Some(24);
+    let err = manifest.verify(&pack).expect_err("v1 entry_size 24 應失敗");
+    assert!(
+        matches!(
+            err,
+            PackError::ManifestEntrySize {
+                actual: Some(24),
+                expected: 20
+            }
+        ),
+        "得到 {err:?}"
+    );
+}
+
+#[test]
 fn test_load_manifest_records_file_hash() {
     let path = temp_file(
         "manifest_load",
@@ -1175,4 +1558,42 @@ fn test_reference_pack() {
     manifest
         .verify_file(&manifest_path)
         .expect("manifest 檔案雜湊");
+}
+
+#[test]
+fn test_reference_pack_v1_has_no_context_data() {
+    let path = require_data!("packs/ja-lexicon-public-core.pack");
+    let pack = Pack::open(&path).expect("開啟 v1 參考 pack");
+
+    assert_eq!(pack.format_version(), FORMAT_VERSION);
+    assert_eq!(pack.entry_size(), ENTRY_SIZE);
+    assert_eq!(pack.context_count(), 0);
+    assert_eq!(pack.connection(0, 0), None);
+    for entry in pack.entries().iter().take(64) {
+        assert_eq!(entry.left_id(), None);
+        assert_eq!(entry.right_id(), None);
+    }
+    pack.verify().expect("v1 參考 pack 重新驗證");
+}
+
+#[test]
+fn test_mozc_v2_reference_pack() {
+    let path = require_data!("packs/ja-lexicon-mozc-v2.pack");
+    let pack = Pack::open(&path).expect("開啟 mozc v2 pack");
+
+    assert_eq!(pack.format_version(), FORMAT_VERSION_V2);
+    assert_eq!(pack.entry_size(), ENTRY_SIZE_V2);
+    assert_eq!(pack.context_count(), 2672);
+    assert!(pack.connection(0, 0).is_some(), "connection(0,0) 必須有值");
+    assert!(pack.connection(2671, 2671).is_some());
+
+    let contexts = u32::from(pack.context_count());
+    for entry in pack.entries().iter().step_by(997).take(128) {
+        let left = entry.left_id().expect("v2 詞條必須有 left_id");
+        let right = entry.right_id().expect("v2 詞條必須有 right_id");
+        assert!(u32::from(left) < contexts, "left_id {left} 越界");
+        assert!(u32::from(right) < contexts, "right_id {right} 越界");
+    }
+
+    pack.verify().expect("mozc v2 pack 重新驗證");
 }
