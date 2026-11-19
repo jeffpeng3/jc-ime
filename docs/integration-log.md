@@ -24,6 +24,7 @@
 | `ja-context` | `4bc5df8` | `83c2974` | 通過 | 2026-11-19 22:11 |
 | `m2-cli-session` | `26de34b` | `8b44bc1` | 通過 | 2026-11-19 22:27 |
 | `fix-cli-ja` | `a8fbc7e` | `7b7e8bc` | 通過 | 2026-11-19 22:41 |
+| `zh-golden` | `9068771` | `2e6156b` | 通過 | 2026-11-19 23:07 |
 
 ## 衝突與修正
 
@@ -99,3 +100,13 @@
 
   對齊結果：`jc-cli eval ja` 由 23.2% 升到 **86.0%**，與 `ja-eval` 同為 86.0%（modern-500、`--top 5`，兩者 top-5 均 98.0%）。
   `hard-cases` 前 5 題兩邊同為 `n=5`、top1 0.0%、top5 100.0%、boundary exact 100.0%。
+
+- `zh-golden`（合併 `2e6156b`）：git 自動合併 `jc-cli/src/data.rs`、`eval_cmd.rs`，無衝突。
+  `session.rs` 接上 toneless、翻頁、Tab 補全、toggle、Ctrl+,、標點替身、rerank、fuzzy select；
+  `key.rs`、`decode/mod.rs` 同步調整。沒有編譯錯誤要修，未改任何實作。
+
+  實測（`cargo run -p jc-cli --bin jc-cli -- eval zh-golden`）：**通過 35/45**，不是 41/45。
+  剩 10 例：4 例學習依賴（`learning-select-preference`、`learning-forget-request`、
+  `undo-learned-word`、`undo-custom-word`），6 例待 `zhconv` 與 mixed ASCII 按鍵推斷
+  （`simplified-commit`、`simplified-sentence`、`mixed-chinese-english-chinese`、
+  `mixed-english-prefix`、`english-completion`、`cjk-latin-space`）。分類與回報一致，總數差 6。
