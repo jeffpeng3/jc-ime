@@ -1109,6 +1109,9 @@ impl Session {
             self.candidates.get(self.highlighted),
         ) {
             (Some(text), _) => text.as_str(),
+            // 混合模式的候選只取代待定英數按鍵，`base` 已含前面的中文片段；
+            // 直接拿候選當整個組字字串會把中文吃掉。
+            (None, _) if self.config.mode == Mode::Mixed => self.base.as_str(),
             (None, Some(candidate)) => candidate.surface.as_str(),
             (None, None) => self.base.as_str(),
         };
