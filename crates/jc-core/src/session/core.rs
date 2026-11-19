@@ -5,7 +5,7 @@
 use super::*;
 
 /// 目前 Unix 秒數；時鐘早於 epoch 時回傳 0。
-fn now_seconds() -> i64 {
+pub(super) fn now_seconds() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs() as i64)
@@ -126,6 +126,7 @@ impl Session {
                 if !self.ascii.tone(ch, &self.lexicon) {
                     self.ascii.press(ch);
                 }
+                self.try_japanese_run();
             }
         }
     }
@@ -198,6 +199,7 @@ impl Session {
             }
             Mode::Ja => {
                 self.romaji.backspace();
+                self.leave_empty_japanese_run();
             }
             Mode::En => {
                 self.raw.pop();
@@ -457,7 +459,11 @@ impl Session {
                 self.note_learning_event();
                 self.learn_ja_candidate(index);
             }
-            Mode::En | Mode::Mixed => {}
+            Mode::En => {}
+            Mode::Mixed => {
+                self.note_learning_event();
+                self.learn_mixed_languages();
+            }
         }
     }
 
@@ -588,6 +594,10 @@ impl Session {
     }
 
     pub(super) fn clear_composition(&mut self) {
+        if self.ja_run {
+            self.config.mode = self.ja_prev_mode;
+            self.ja_run = false;
+        }
         self.zh.reset();
         self.romaji.reset();
         self.ascii.reset();
@@ -1119,7 +1129,7 @@ impl Session {
             }
         }
         // 前綴補完先排，拼字建議接在後面；打對的詞不會有建議。
-        let extra = english_candidates(&self.raw, limit);
+        let extra = super::mixed::english_candidates(&self.raw, limit);
         let mut seen: Vec<String> = self
             .candidates
             .iter()
@@ -1134,110 +1144,6 @@ impl Session {
             self.candidates.push(candidate);
         }
         self.candidates.truncate(limit);
-    }
-
-    pub(super) fn rebuild_mixed(&mut self) {
-        if self.ascii.is_empty() {
-            return;
-        }
-        self.base = self.mixed_surface();
-        let mut at = 0usize;
-        self.segments = self
-            .ascii
-            .pieces()
-            .iter()
-            .map(|piece| {
-                let (text, mode, script) = match piece {
-                    AsciiPiece::Zh(syllable) => {
-                        (self.decode_syllable(syllable), Mode::Zh, Script::Bopomofo)
-                    }
-                    AsciiPiece::Literal(text) => (text.clone(), Mode::En, Script::Latin),
-                };
-                let start = at;
-                at += text.len();
-                Segment::new(start, at, mode, script)
-            })
-            .collect();
-        if !self.ascii.pending().is_empty() {
-            let pending = self.ascii.pending();
-            let start = at;
-            at += pending.len();
-            self.segments
-                .push(Segment::new(start, at, Mode::Zh, Script::Bopomofo));
-        }
-        // 待定按鍵是英文詞時，候選先放原按鍵，再放前綴補完與拼字建議。
-        let raw = self.ascii.pending().to_string();
-        if raw.is_empty() {
-            return;
-        }
-        let limit = self.max_candidates();
-        self.candidates.push(Candidate::new(
-            raw.clone(),
-            raw.clone(),
-            0,
-            CandidateSource::Literal,
-        ));
-        let mut seen = vec![raw.to_lowercase()];
-        for candidate in english_candidates(&raw, limit) {
-            let key = candidate.surface.to_lowercase();
-            if seen.contains(&key) {
-                continue;
-            }
-            seen.push(key);
-            self.candidates.push(candidate);
-        }
-        self.candidates.truncate(limit);
-    }
-
-    /// 已完成的注音音節轉成字面。
-    pub(super) fn decode_syllable(&self, syllable: &Syllable) -> String {
-        let reading = syllable.as_str();
-        let units = [reading];
-        match Lattice::build(&units, &self.lexicon, &self.ctx) {
-            Ok(lattice) => {
-                let decoder = Decoder::new(&self.lexicon, &self.ctx);
-                let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
-                decoder.conversion(&lattice, &segs, Mode::Zh).surface
-            }
-            Err(_) => reading.to_string(),
-        }
-    }
-
-    /// 混合模式的完整字面：注音片段解碼，英數照字面，待定按鍵照顯示。
-    pub(super) fn mixed_surface(&self) -> String {
-        let mut out = String::new();
-        let mut run: Vec<String> = Vec::new();
-        let flush = |run: &mut Vec<String>, out: &mut String| {
-            if run.is_empty() {
-                return;
-            }
-            let units: Vec<&str> = run.iter().map(String::as_str).collect();
-            match Lattice::build(&units, &self.lexicon, &self.ctx) {
-                Ok(lattice) => {
-                    let decoder = Decoder::new(&self.lexicon, &self.ctx);
-                    let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
-                    out.push_str(&decoder.conversion(&lattice, &segs, Mode::Zh).surface);
-                }
-                Err(_) => {
-                    for unit in run.iter() {
-                        out.push_str(unit);
-                    }
-                }
-            }
-            run.clear();
-        };
-        for piece in self.ascii.pieces() {
-            match piece {
-                AsciiPiece::Zh(syllable) => run.push(syllable.as_str().to_string()),
-                AsciiPiece::Literal(text) => {
-                    flush(&mut run, &mut out);
-                    out.push_str(text);
-                }
-            }
-        }
-        flush(&mut run, &mut out);
-        out.push_str(&self.ascii.display_pending());
-        out
     }
 
     /// 把解碼片段轉成輸出字串上的位元組範圍。
@@ -1269,50 +1175,6 @@ impl Session {
         let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
         Some(decoder.conversion(&lattice, &segs, Mode::Zh).surface)
     }
-}
-
-/// 英文片段的候選：前綴補完先排，拼字建議接在後面。
-///
-/// 對照前身 `core/session/english_autocomplete.go` 的
-/// `refreshEnglishCandidates` 與 `core/session/mixed.go` 的
-/// `openMixedCandidates`：最多保留 3 個拼字建議，剩下的名額才給前綴補完，
-/// 這樣補完不會把拼字建議擠掉。拼字建議直接用已收進來的
-/// [`crate::mixed::Dictionary::corrections`]，沒有另寫演算法；打對的完整單字
-/// 不會有建議，建議保留查詢時的大小寫。
-fn english_candidates(raw: &str, limit: usize) -> Vec<Candidate> {
-    if limit == 0 || raw.chars().count() < 2 || !raw.chars().all(|c| c.is_ascii_alphabetic()) {
-        return Vec::new();
-    }
-    let english = crate::mixed::default_english();
-    let mut seen = vec![raw.to_lowercase()];
-    let mut corrections: Vec<Candidate> = Vec::new();
-    for candidate in english.spelling_candidates(raw, limit.saturating_add(3)) {
-        let key = candidate.surface.to_lowercase();
-        if seen.contains(&key) {
-            continue;
-        }
-        seen.push(key);
-        corrections.push(candidate);
-        if corrections.len() == 3 {
-            break;
-        }
-    }
-    let prefix_limit = limit.saturating_sub(corrections.len());
-    let mut out: Vec<Candidate> = Vec::new();
-    for candidate in english.completion_candidates(raw, limit.saturating_add(corrections.len())) {
-        if out.len() == prefix_limit {
-            break;
-        }
-        let key = candidate.surface.to_lowercase();
-        if seen.contains(&key) || candidate.surface.chars().count() <= raw.chars().count() {
-            continue;
-        }
-        seen.push(key);
-        out.push(candidate);
-    }
-    out.extend(corrections);
-    out.truncate(limit);
-    out
 }
 
 /// 有 bigram 時建立內插評分器；`lm.bin` 沒有 bigram 時回傳 `None`，
