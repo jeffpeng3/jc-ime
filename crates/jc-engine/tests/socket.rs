@@ -1,4 +1,8 @@
 //! 用 unix socket 起 `jc-engine`：序列服務多條連線，`Shutdown` 後清掉 socket。
+//!
+//! 非 unix 平台沒有 unix domain socket，整份測試不編譯。
+
+#![cfg(unix)]
 
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;

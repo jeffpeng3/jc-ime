@@ -89,10 +89,14 @@ impl Viterbi {
             return Vec::new();
         }
 
-        // dp[pos][last_pos] 是走到 pos、最後一條邊詞性為 last_pos 的前 n 條路徑。
-        let mut dp: Vec<BTreeMap<u16, Vec<Path>>> = vec![BTreeMap::new(); len + 1];
+        // dp[pos][(前一個詞面, 前一個詞性)] 是走到 pos 的前 n 條路徑。
+        //
+        // 有 bigram 時光看詞性不夠：同一個詞性可能對應不同前詞，之後的機率
+        // 也不同。鍵因此同時包含前一個詞面；沒有 bigram 時多出來的鍵只會
+        // 重複同樣的成本，結果不變。
+        let mut dp: Vec<BTreeMap<(String, u16), Vec<Path>>> = vec![BTreeMap::new(); len + 1];
         dp[0].insert(
-            BOS,
+            (String::new(), BOS),
             vec![Path {
                 edges: Vec::new(),
                 cost: 0,
@@ -108,20 +112,27 @@ impl Viterbi {
                 if edge.end <= pos || edge.end > len {
                     continue;
                 }
-                for (last, paths) in &states {
+                for ((left, last), paths) in &states {
+                    let left = (!left.is_empty()).then_some(left.as_str());
                     for path in paths {
                         let step = if path.edges.is_empty() {
-                            0
+                            scorer.edge_cost(None, BOS, edge)
                         } else {
-                            scorer.connection_cost(*last, edge.pos)
+                            scorer.edge_cost(left, *last, edge)
                         };
                         let mut next = Path {
                             edges: Vec::with_capacity(path.edges.len() + 1),
-                            cost: path.cost.saturating_add(step).saturating_add(edge.cost),
+                            cost: path.cost.saturating_add(step),
                         };
                         next.edges.extend_from_slice(&path.edges);
                         next.edges.push(edge.clone());
-                        insert_top(dp[edge.end].entry(edge.pos).or_default(), next, n);
+                        insert_top(
+                            dp[edge.end]
+                                .entry((edge.surface.clone(), edge.pos))
+                                .or_default(),
+                            next,
+                            n,
+                        );
                     }
                 }
             }

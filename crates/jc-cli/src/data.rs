@@ -11,7 +11,7 @@ use std::sync::Arc;
 use jc_core::ja::decode::{JaDecoder, JaDictionary, JaWordMatch, JaWordSource};
 use jc_core::ja::lexicon::{JaEntry, JaLexicon, SingleColumnCost};
 use jc_core::lattice::{InMemoryLexicon, LexEntry};
-use jc_core::score::ScoreContext;
+use jc_core::score::{BigramLm, ScoreContext, ZhLm};
 
 use crate::cli::CliError;
 
@@ -23,8 +23,10 @@ pub const DEFAULT_TESTDATA: &str = "/mnt/work/jc/jc-ime-data/0c-testdata";
 pub struct ZhResources {
     /// 固定詞典。
     pub lexicon: InMemoryLexicon,
-    /// 成本設定。
+    /// 成本設定（含 bigram 內插權重）。
     pub ctx: ScoreContext,
+    /// bigram 語言模型；`None` 表示只有詞典的 unigram 成本。
+    pub lm: Option<Arc<ZhLm>>,
 }
 
 /// 解析 `0c-testdata` 目錄。
@@ -80,6 +82,20 @@ fn check_dir(dir: PathBuf) -> Result<PathBuf, CliError> {
 /// `lexicon.tsv` 有詞面、讀音、P(r|w)；`lm.tsv` 有 unigram 機率。兩者都轉成
 /// 以千分之一為單位的負對數成本，長詞與高機率詞優先。
 pub fn load_zh_resources(data_dir: &Path) -> Result<ZhResources, CliError> {
+    load_zh_tsv_resources(data_dir, None)
+}
+
+/// 載入 golden 的 TSV 詞典，另外接上 `lm.bin` 的 bigram。
+///
+/// 詞條的 unigram 部分改用 `lm.bin` 的數值，避免同一條路徑上混用兩份
+/// 語言模型；`lm.tsv` 只在沒有指定 `lm.bin` 時使用。
+pub fn load_zh_resources_with_lm(data_dir: &Path, lm_path: &Path) -> Result<ZhResources, CliError> {
+    let lm = ZhLm::open(lm_path)
+        .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", lm_path.display())))?;
+    load_zh_tsv_resources(data_dir, Some(lm))
+}
+
+fn load_zh_tsv_resources(data_dir: &Path, bigram: Option<ZhLm>) -> Result<ZhResources, CliError> {
     let lexicon_path = data_dir.join("lexicon.tsv");
     let lm_path = data_dir.join("lm.tsv");
     let lm = load_lm(&lm_path)?;
@@ -107,7 +123,10 @@ pub fn load_zh_resources(data_dir: &Path) -> Result<ZhResources, CliError> {
                 fields[2]
             ))
         })?;
-        let lm_probability = lm.get(fields[0]).copied().unwrap_or(1.0e-6);
+        let lm_probability = match &bigram {
+            Some(lm) => lm.uni(fields[0]),
+            None => lm.get(fields[0]).copied().unwrap_or(1.0e-6),
+        };
         let cost = probability_cost(probability).saturating_add(probability_cost(lm_probability));
         lexicon.push(LexEntry::new(fields[0], fields[1], cost, 0));
     }
@@ -121,20 +140,37 @@ pub fn load_zh_resources(data_dir: &Path) -> Result<ZhResources, CliError> {
         unknown_cost: 30_000,
         ..ScoreContext::default()
     };
-    Ok(ZhResources { lexicon, ctx })
+    Ok(ZhResources {
+        lexicon,
+        ctx,
+        lm: bigram.map(Arc::new),
+    })
 }
 
 /// 載入注音二進位資料包（`lexicon.bin`、`lm.bin`、`manifest.json`）。
 ///
 /// 詞條成本沿用 golden 的換算：P(r|w) 與 unigram 機率各自轉成千分之一的
-/// 負對數成本後相加。bigram 不進成本模型，jc-core 的注音解碼器以詞性
-/// 連接成本取代前身的 bigram；需要 bigram 的查詢直接用 `jc_data::zh::Lm`。
+/// 負對數成本後相加。`lm.bin` 的 bigram 交給 [`jc_core::score::LmScorer`]；
+/// 沒有 bigram 的資料包完全退回 unigram 行為。
 pub fn load_zh_bin_resources(data_dir: &Path) -> Result<ZhResources, CliError> {
+    load_zh_bin_resources_with_lm(data_dir, None)
+}
+
+/// 載入注音二進位資料包，`lm_path` 可覆寫資料包內的 `lm.bin`。
+pub fn load_zh_bin_resources_with_lm(
+    data_dir: &Path,
+    lm_path: Option<&Path>,
+) -> Result<ZhResources, CliError> {
     let bundle = jc_data::zh::Bundle::open(data_dir)
         .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", data_dir.display())))?;
+    let lm = match lm_path {
+        Some(path) => ZhLm::open(path)
+            .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", path.display())))?,
+        None => ZhLm::from_lm(bundle.lm),
+    };
     let mut lexicon = InMemoryLexicon::new();
     for view in bundle.lexicon.entries() {
-        let unigram = bundle.lm.uni(view.surface);
+        let unigram = lm.uni(view.surface);
         let cost = probability_cost(view.prw as f64).saturating_add(probability_cost(unigram));
         lexicon.push(LexEntry::new(
             view.surface,
@@ -153,7 +189,11 @@ pub fn load_zh_bin_resources(data_dir: &Path) -> Result<ZhResources, CliError> {
         unknown_cost: 30_000,
         ..ScoreContext::default()
     };
-    Ok(ZhResources { lexicon, ctx })
+    Ok(ZhResources {
+        lexicon,
+        ctx,
+        lm: Some(Arc::new(lm)),
+    })
 }
 
 fn load_lm(path: &Path) -> Result<HashMap<String, f64>, CliError> {
@@ -179,12 +219,9 @@ fn load_lm(path: &Path) -> Result<HashMap<String, f64>, CliError> {
     Ok(lm)
 }
 
-/// 機率轉成整數成本；0 與極小值都給很大的成本。
+/// 機率轉成整數成本；與 [`jc_core::score::probability_cost`] 相同。
 fn probability_cost(probability: f64) -> i32 {
-    if probability <= 0.0 || !probability.is_finite() {
-        return 100_000;
-    }
-    (-probability.ln() * 1000.0).round().min(100_000.0) as i32
+    jc_core::score::probability_cost(probability)
 }
 
 /// 預設的日文詞典 pack（含 Mozc context 連接矩陣的 v2）。
@@ -454,6 +491,7 @@ pub fn zh_session_config(
         max_candidates: 5,
         zh_lexicon: Some(resources.lexicon.clone()),
         zh_ctx: Some(resources.ctx.clone()),
+        zh_lm: resources.lm.clone(),
         ..jc_core::session::SessionConfig::default()
     }
 }
@@ -473,6 +511,38 @@ mod tests {
     fn testdata_falls_back_to_missing_error() {
         let err = testdata_dir(Some(PathBuf::from("/no/such/jc-testdata"))).unwrap_err();
         assert!(err.to_string().contains("/no/such/jc-testdata"));
+    }
+
+    #[test]
+    fn bin_resources_load_lm_and_bigrams() {
+        let Some(plain) = jc_testdata::path("build-zh") else {
+            eprintln!("缺少測試資料：build-zh");
+            return;
+        };
+        let bigram = jc_testdata::require_data!("build-zh-bigram");
+        let plain = load_zh_bin_resources(&plain).unwrap();
+        let bigram = load_zh_bin_resources(&bigram).unwrap();
+        let plain_lm = plain.lm.expect("build-zh 仍有 lm.bin");
+        let bigram_lm = bigram.lm.expect("build-zh-bigram 有 lm.bin");
+        assert_eq!(plain_lm.bigrams(), 0);
+        assert!(bigram_lm.bigrams() > 0);
+        assert!((bigram_lm.bi("我", "愛") - 0.0044).abs() < 0.001);
+        assert_eq!(bigram.ctx.bigram_mu, 0.7);
+    }
+
+    #[test]
+    fn tsv_resources_can_attach_bigram_lm() {
+        let Some(root) = jc_testdata::root() else {
+            eprintln!("缺少測試資料：JC_TESTDATA");
+            return;
+        };
+        let golden = root.join("0c-testdata/golden/zh/data");
+        let lm = jc_testdata::require_data!("build-zh-bigram/lm.bin");
+        let resources = load_zh_resources_with_lm(&golden, &lm).unwrap();
+        let zh_lm = resources.lm.expect("指定 --lm 時要接上模型");
+        assert!(zh_lm.bigrams() > 0);
+        // unigram 改用 lm.bin 的數值：我 的機率與 golden lm.tsv 不同。
+        assert!((zh_lm.uni("我") - 0.0054).abs() < 0.0002);
     }
 
     #[test]
