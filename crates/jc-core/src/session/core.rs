@@ -600,6 +600,9 @@ impl Session {
         self.highlighted = 0;
         self.candidate_window = false;
         self.segments.clear();
+        self.locks.clear();
+        self.segment_manual = None;
+        self.pending_tone = None;
         self.base.clear();
         self.pending.clear();
         self.last_hypotheses.clear();
@@ -720,13 +723,17 @@ impl Session {
         }
         let readings = self.zh_readings(&syllables);
         let units: Vec<&str> = readings.iter().map(String::as_str).collect();
+        // 片段鎖定只涵蓋目前還在的音節；退格或送出後留下的過期鎖定直接丟掉。
+        let count = syllables.len();
+        self.locks
+            .retain(|&at, lock| at < count && at.saturating_add(lock.len) <= count);
         let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) else {
             self.base = units.join("");
             return;
         };
         let scorer = zh_scorer(&self.ctx, self.zh_lm.as_deref());
         let decoder = zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
-        let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
+        let (segs, _) = decoder.best(&lattice, &self.locks, false);
         let conversion = decoder.conversion(&lattice, &segs, Mode::Zh);
         self.base = conversion.surface;
         self.segments = Self::segments_of(&segs, Mode::Zh, Script::Bopomofo);
@@ -741,7 +748,7 @@ impl Session {
         let reading = readings.join(" ");
         let literal = readings.join("");
         let (mut hypotheses, _) =
-            decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
+            decoder.nbest(&lattice, &self.locks, false, self.max_candidates());
         if self.config.learning {
             self.personal.rank_hypotheses(&mut hypotheses, &reading);
         }
@@ -753,6 +760,10 @@ impl Session {
             self.segments = Self::segments_of(&best.segments, Mode::Zh, Script::Bopomofo);
         }
         self.last_hypotheses = hypotheses.clone();
+        let best_segments = hypotheses
+            .first()
+            .map(|hypothesis| hypothesis.segments.clone())
+            .unwrap_or_default();
         let mut candidates: Vec<Candidate> = hypotheses
             .into_iter()
             .map(|hypothesis| {
@@ -783,6 +794,21 @@ impl Session {
                     true
                 }
             });
+        }
+        // 尾端差一個符號的完整詞：一般候選只是顯示，選了才改字。
+        let phonetic = self.phonetic_candidates(&best_segments);
+        if !phonetic.is_empty() {
+            let mut seen: Vec<String> = candidates
+                .iter()
+                .map(|candidate| candidate.surface.clone())
+                .collect();
+            for candidate in phonetic {
+                if seen.contains(&candidate.surface) {
+                    continue;
+                }
+                seen.push(candidate.surface.clone());
+                candidates.push(candidate);
+            }
         }
         candidates.truncate(self.max_candidates());
         self.candidates = candidates;
