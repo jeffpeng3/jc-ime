@@ -411,13 +411,15 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             json,
             select_model,
         } => crate::eval_cmd::zh_golden(
-            testdata.clone(),
-            data.clone(),
-            lm.clone(),
-            *mu,
-            *stats,
-            *json,
-            *select_model,
+            crate::eval_cmd::GoldenOptions {
+                testdata: testdata.clone(),
+                data: data.clone(),
+                lm: lm.clone(),
+                mu: *mu,
+                stats: *stats,
+                json: *json,
+                select_model: *select_model,
+            },
             out,
         ),
         Command::EvalJa {

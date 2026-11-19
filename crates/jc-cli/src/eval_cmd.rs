@@ -35,6 +35,28 @@ use crate::cli::CliError;
 use crate::converter::JaConverter;
 use crate::data;
 
+/// `eval zh-golden` 子命令的參數。
+///
+/// 集中成一個型別，避免評測函式堆滿位置參數；欄位順序與用法都照
+/// [`crate::cli::Command::EvalZhGolden`]。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GoldenOptions {
+    /// `0c-testdata` 目錄。
+    pub testdata: Option<PathBuf>,
+    /// 注音二進位資料包目錄。
+    pub data: Option<PathBuf>,
+    /// 覆寫的 bigram 語言模型。
+    pub lm: Option<PathBuf>,
+    /// bigram 內插權重 μ。
+    pub mu: Option<f64>,
+    /// 印出 bigram 查詢統計。
+    pub stats: bool,
+    /// 輸出 JSON。
+    pub json: bool,
+    /// 啟用注音選字模型重排。
+    pub select_model: bool,
+}
+
 /// 注音 golden 的 45 個案例。
 ///
 /// 直接從 `cases.json` 載入，逐題跑按鍵序列，最後比對 `expected/*.jsonl`
@@ -42,16 +64,16 @@ use crate::data;
 ///
 /// 預設用 golden 自帶的 TSV 詞庫（沒有 bigram），因此基準分數不變；
 /// `data` 改用二進位資料包，`lm` 單獨接上 bigram 語言模型，`mu` 調整內插。
-pub fn zh_golden(
-    testdata: Option<PathBuf>,
-    data_dir: Option<PathBuf>,
-    lm: Option<PathBuf>,
-    mu: Option<f64>,
-    stats: bool,
-    json: bool,
-    select_model: bool,
-    out: &mut dyn Write,
-) -> Result<(), CliError> {
+pub fn zh_golden(options: GoldenOptions, out: &mut dyn Write) -> Result<(), CliError> {
+    let GoldenOptions {
+        testdata,
+        data: data_dir,
+        lm,
+        mu,
+        stats,
+        json,
+        select_model,
+    } = options;
     let dir = data::testdata_dir(testdata)?;
     #[cfg(feature = "onnx")]
     if select_model {
@@ -1013,7 +1035,14 @@ mod tests {
             return;
         };
         let mut out = Vec::new();
-        zh_golden(Some(dir), None, None, None, false, false, false, &mut out).unwrap();
+        zh_golden(
+            GoldenOptions {
+                testdata: Some(dir),
+                ..GoldenOptions::default()
+            },
+            &mut out,
+        )
+        .unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("zh-golden"), "{text}");
         assert!(text.contains("通過"), "{text}");
