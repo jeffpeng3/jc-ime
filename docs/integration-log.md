@@ -71,6 +71,7 @@
 | `settings-core`（修測試） | `87cfdf1` | `89a4f6f` | 通過（fmt＋clippy＋test） | 2026-11-20 03:28 |
 | `rerank-wordlevel` | `277bd8e` | `9476f51` | fmt／clippy 通過；5 個 test 失敗 | 2026-11-20 03:35 |
 | `rerank-wordlevel`（修測試） | `2c25f3d` | `2e649f5` | 通過（fmt＋clippy＋test） | 2026-11-20 04:00 |
+| `defaults-policy` | `e116f5f` | `175f417` | 通過（fmt／clippy／test／兩個 eval） | 2026-11-20 04:15 |
 
 ## 衝突與修正
 
@@ -582,3 +583,9 @@
   實際送模型 556 組，平均每題 1.1 次推論；**單次推論 p50 約 20 ms、p95 約 46–50 ms**。100 ms 預算只比整題中位數
   高 1.3–1.5 倍，一題碰到 2–3 次推論或第二次 Viterbi 落到尾端就會超過，所以 `eval timeout` 落在 **23–29%**；
   重排自身的 `timeout` 只有 **1–2 次**（1/500 到 2/500），兩者用的是不同計時器。
+
+- `defaults-policy`（合併 `175f417`）：無衝突。預設值改成學習開啟、模糊音四組全開、注音選字模型 on、`ja_rerank` false；
+  `session.rs` 的 `SessionConfig::default` 與 CLI 的資料載入同步調整。
+  gate：fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` exit 0（38 targets、898 passed、0 failed）。
+  `eval zh-golden`：**45/45**、top-1 100.0%（`select-model：沒有推論`，因 golden 案例皆單音節，模型未觸發）。
+  `eval ja --corpus modern-500`：top-1 **86.0%**、top-5 98.0%、boundary 88.2%、p50 3.147 ms。
