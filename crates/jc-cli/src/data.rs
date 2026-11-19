@@ -124,6 +124,38 @@ pub fn load_zh_resources(data_dir: &Path) -> Result<ZhResources, CliError> {
     Ok(ZhResources { lexicon, ctx })
 }
 
+/// 載入注音二進位資料包（`lexicon.bin`、`lm.bin`、`manifest.json`）。
+///
+/// 詞條成本沿用 golden 的換算：P(r|w) 與 unigram 機率各自轉成千分之一的
+/// 負對數成本後相加。bigram 不進成本模型，jc-core 的注音解碼器以詞性
+/// 連接成本取代前身的 bigram；需要 bigram 的查詢直接用 `jc_data::zh::Lm`。
+pub fn load_zh_bin_resources(data_dir: &Path) -> Result<ZhResources, CliError> {
+    let bundle = jc_data::zh::Bundle::open(data_dir)
+        .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", data_dir.display())))?;
+    let mut lexicon = InMemoryLexicon::new();
+    for view in bundle.lexicon.entries() {
+        let unigram = bundle.lm.uni(view.surface);
+        let cost = probability_cost(view.prw as f64).saturating_add(probability_cost(unigram));
+        lexicon.push(LexEntry::new(
+            view.surface,
+            bundle.lexicon.reading(view.index),
+            cost,
+            0,
+        ));
+    }
+    if lexicon.is_empty() {
+        return Err(CliError::data(format!(
+            "{} 沒有任何詞條",
+            data_dir.join("lexicon.bin").display()
+        )));
+    }
+    let ctx = ScoreContext {
+        unknown_cost: 30_000,
+        ..ScoreContext::default()
+    };
+    Ok(ZhResources { lexicon, ctx })
+}
+
 fn load_lm(path: &Path) -> Result<HashMap<String, f64>, CliError> {
     let text = std::fs::read_to_string(path)
         .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", path.display())))?;

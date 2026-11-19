@@ -15,12 +15,12 @@ use crate::data;
 /// 執行 bench。
 pub fn run(
     testdata: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
     file: &Path,
     repeat: usize,
     json: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
-    let dir = data::testdata_dir(testdata)?;
     let text = std::fs::read_to_string(file)
         .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", file.display())))?;
     let readings: Vec<&str> = text
@@ -31,7 +31,15 @@ pub fn run(
     if readings.is_empty() {
         return Err(CliError::data(format!("{} 沒有讀音", file.display())));
     }
-    let converter = crate::converter::load_auto(&dir)?;
+    let converter: Box<dyn Converter> = match &data_dir {
+        Some(dir) => Box::new(crate::converter::ZhConverter::new(
+            data::load_zh_bin_resources(dir)?,
+        )),
+        None => {
+            let dir = data::testdata_dir(testdata)?;
+            Box::new(crate::converter::load_auto(&dir)?)
+        }
+    };
 
     let mut durations = Vec::with_capacity(readings.len() * repeat);
     let mut rows = Vec::with_capacity(readings.len());

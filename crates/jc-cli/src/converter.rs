@@ -171,16 +171,23 @@ pub fn load_auto(testdata: &Path) -> Result<AutoConverter, CliError> {
 /// `convert` 子命令：單句轉換並列出 N-best。
 pub fn convert(
     testdata: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
     reading: &str,
     n: usize,
     json: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
-    let dir = data::testdata_dir(testdata)?;
     let candidates = if is_zhuyin(reading) {
-        let resources = data::load_zh_resources(&dir.join("golden/zh/data"))?;
+        let resources = match &data_dir {
+            Some(dir) => data::load_zh_bin_resources(dir)?,
+            None => {
+                let dir = data::testdata_dir(testdata)?;
+                data::load_zh_resources(&dir.join("golden/zh/data"))?
+            }
+        };
         ZhConverter::new(resources).nbest(reading, n)
     } else {
+        let dir = data::testdata_dir(testdata)?;
         let decoder = data::load_ja_decoder(&data::data_root(&dir))?;
         JaConverter::new(Arc::new(decoder))
             .nbest(reading, n)
@@ -284,5 +291,29 @@ mod tests {
         assert!(is_zhuyin("ㄨㄛˇ"));
         assert!(!is_zhuyin("わたし"));
         assert!(!is_zhuyin("ji3"));
+    }
+
+    #[test]
+    fn real_zh_lexicon_converts_wo_ai() {
+        let dir = jc_testdata::require_data!("build-zh");
+        let resources = data::load_zh_bin_resources(&dir).unwrap();
+        let converter = ZhConverter::new(resources);
+        let got = converter.convert("ㄨㄛˇ ㄞˋ", 5);
+        assert_eq!(got.first().map(String::as_str), Some("我愛"));
+    }
+
+    #[test]
+    fn bigram_pack_changes_nothing_in_the_unigram_cost_model() {
+        let Some(base) = jc_testdata::path("build-zh") else {
+            eprintln!("缺少測試資料：build-zh");
+            return;
+        };
+        let bigram = jc_testdata::require_data!("build-zh-bigram");
+        let plain = ZhConverter::new(data::load_zh_bin_resources(&base).unwrap());
+        let with_bigram = ZhConverter::new(data::load_zh_bin_resources(&bigram).unwrap());
+        let plain_best = plain.convert("ㄨㄛˇ ㄞˋ", 5);
+        let bigram_best = with_bigram.convert("ㄨㄛˇ ㄞˋ", 5);
+        // lexicon.bin 兩包相同，成本只用 unigram 與 P(r|w)，所以排序不變。
+        assert_eq!(plain_best, bigram_best);
     }
 }

@@ -98,6 +98,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc32fast"
+version = "1.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f97d3416d5337d15c4b0d78c8c91df922ca143f57ec20e2d1c188333047ef04"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -167,6 +176,7 @@ name = "jc-cli"
 version = "0.1.0"
 dependencies = [
  "jc-core",
+ "jc-data",
  "jc-eval",
  "jc-testdata",
  "serde",
@@ -192,6 +202,7 @@ dependencies = [
 name = "jc-data"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "jc-testdata",
  "memmap2",
  "serde",
