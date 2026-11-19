@@ -91,6 +91,7 @@
 | `quant-study` | `cf0926e` | `8e27af0` | check 通過 | 2026-11-20 05:38 |
 | `candle-punct` | `9705bb5` | `f9b2e69` | 通過（clippy＋全量 test） | 2026-11-20 05:46 |
 | `jinen-gating` | `f71d5cc` | `e610808` | test 通過；clippy 2 個錯 | 2026-11-20 05:55 |
+| `session-core-split` | `63b81e7` | `22831f0` | test／fmt／兩個 eval 通過；clippy 剩 jinen-gate | 2026-11-20 05:59 |
 
 ## 衝突與修正
 
@@ -817,3 +818,15 @@
 
   方法：門檻只用輸入側訊號，並只在每組題庫的 dev 半邊（題號 FNV-1a 雜湊 50/50 切分）挑選，holdout 半邊只回報、
   不參與選擇；dev 上要求「驗收 + 4pp」安全邊際，取 Jinen 呼叫率最低的組合。
+
+- `session-core-split`（合併 `22831f0`，含 `63b81e7`）：無衝突。`session.rs` 拆成 `session/mod.rs`（1390 行降到 44 行的差量）
+  與 `session/core.rs`（1317 行），欄位改 `pub(super)`，沒有改名或增刪欄位，行為不變。
+
+  gate：`cargo fmt --all -- --check` exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（44 targets、958 passed、0 failed）。
+  `cargo clippy --workspace --all-targets -- -D warnings` 仍 exit 101，但兩個錯都在 `jinen-gate.rs`（jinen-gating 帶入，
+  與本 branch 無關）。
+
+  實測：`eval zh-golden` **45/45**、top-1 100.0%；`eval ja --corpus modern-500` top-1 **86.0%**、top-5 98.0%、p50 3.085 ms。
+
+  欄位分組預定表（Stage 1–5）記在 `docs/port/session-core-split.md`，列出每個 `Session` 欄位的主群組、其他讀取者與備註，
+  後續拆檔照這張表走。
