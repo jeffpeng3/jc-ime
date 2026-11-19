@@ -76,6 +76,34 @@ pub const WORD_DRAFT_BONUS: f64 = 0.1;
 /// 一次轉換最多重排幾個詞群，控制延遲。
 pub const WORD_RERANK_MAX_GROUPS: usize = 3;
 
+/// 詞群要不要送模型的門檻。
+///
+/// 統計已經很確定的詞群不送模型：全量重排會把統計正確的簡單題改壞。
+/// 門檻只看統計成本與候選結構，不看答案。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WordGate {
+    /// 不設門檻，所有合格詞群都送。
+    Off,
+    /// 前兩名成本差小於 `gap`（詞成本＋連接成本，Mozc 原始整數）才送。
+    Gap(i32),
+    /// 候選數至少 `candidates` 個才送。
+    Candidates(usize),
+}
+
+impl WordGate {
+    /// 這個詞群是否通過門檻。
+    pub fn allows(&self, gap: i32, candidates: usize) -> bool {
+        match *self {
+            Self::Off => true,
+            Self::Gap(limit) => gap < limit,
+            Self::Candidates(min) => candidates >= min,
+        }
+    }
+}
+
+/// `--gate` 未指定時的建議門檻，由 `modern-500` 的掃描結果決定。
+pub const DEFAULT_WORD_RERANK_GATE: WordGate = WordGate::Gap(100);
+
 /// 融合分數差距換成詞成本的倍率。
 ///
 /// 1.0 表示「神經分數差 1 分」等於「詞成本差 1.0」（DP 尺度，即詞典的
@@ -481,6 +509,10 @@ pub trait JaReranker: Send + Sync {
     /// 某一組候選的排序被改寫；預設不做事。
     fn note_changed(&self) {}
 
+    /// 一次轉換的詞群統計：`total` 是門檻前的合格詞群數，`sent` 是實際
+    /// 送進模型的群組數。預設不做事。
+    fn note_gated(&self, _total: usize, _sent: usize) {}
+
     /// 單次轉換的推論預算。
     fn timeout(&self) -> Duration {
         Duration::from_millis(100)
@@ -720,6 +752,7 @@ pub struct JaDecoder {
     verifier: Option<Arc<dyn JaVerifier>>,
     reranker: Option<Arc<dyn JaReranker>>,
     rerank_enabled: bool,
+    rerank_gate: WordGate,
     prefer_hiragana: bool,
     lm: Option<Arc<LanguageModel>>,
     lm_weight: f64,
@@ -756,6 +789,7 @@ impl JaDecoder {
             verifier: None,
             reranker: None,
             rerank_enabled: true,
+            rerank_gate: DEFAULT_WORD_RERANK_GATE,
             prefer_hiragana: false,
             lm: None,
             lm_weight: 0.0,
@@ -843,6 +877,17 @@ impl JaDecoder {
     pub fn with_rerank_enabled(mut self, enabled: bool) -> Self {
         self.rerank_enabled = enabled;
         self
+    }
+
+    /// 設定詞群門檻；只有統計不確定的詞群會送模型。
+    pub fn with_rerank_gate(mut self, gate: WordGate) -> Self {
+        self.rerank_gate = gate;
+        self
+    }
+
+    /// 目前的詞群門檻。
+    pub fn rerank_gate(&self) -> WordGate {
+        self.rerank_gate
     }
 
     /// 重排器目前是否會實際執行。
@@ -1095,7 +1140,8 @@ impl JaDecoder {
             Some(best) => {
                 let prefixes = path_prefixes(&base_hyps, &lat, best.hyp, reading.len());
                 let suffixes = path_suffixes(&base_hyps, &lat, best.hyp, reading.len());
-                self.word_deltas(ctx, &lat, &prefixes, &suffixes, reranker, started)
+                let states = self.path_states(&base_hyps, &lat, best.hyp, reading.len());
+                self.word_deltas(ctx, &lat, &prefixes, &suffixes, &states, reranker, started)
             }
             None => {
                 reranker.end(false);
@@ -1196,58 +1242,102 @@ impl JaDecoder {
         (hyps, finals)
     }
 
+    /// 每個位置在統計第一名路徑上的左側狀態，供詞群的連接成本使用。
+    ///
+    /// 最佳路徑的節點邊界一定有值；節點內部（沒有詞弧起點）沿用進入該節點
+    /// 的狀態，只是估計不確定度用的近似值。
+    fn path_states(
+        &self,
+        hyps: &[Hypothesis],
+        lat: &Lattice,
+        best: usize,
+        len: usize,
+    ) -> Vec<StateKey> {
+        let mut out: Vec<Option<StateKey>> = vec![None; len + 1];
+        let mut nodes: Vec<&JaNode> = Vec::new();
+        let mut cursor = Some(best);
+        while let Some(id) = cursor {
+            if let Some((pos, index)) = hyps[id].node {
+                nodes.push(&lat.nodes(pos)[index]);
+            }
+            cursor = hyps[id].prev;
+        }
+        nodes.reverse();
+        let mut prev = self.initial_key();
+        for node in nodes {
+            for slot in out.iter_mut().take(node.end.min(len)).skip(node.start) {
+                if slot.is_none() {
+                    *slot = Some(prev.clone());
+                }
+            }
+            prev = StateKey {
+                pos: node.entry.pos_class(),
+                right_id: node.right_id,
+                ctx: None,
+            };
+        }
+        out[len] = Some(prev);
+        out.into_iter()
+            .map(|state| state.unwrap_or_else(|| self.initial_key()))
+            .collect()
+    }
+
     /// 對每個「同讀音多候選」的詞弧群組打分，回傳 `(start, node) -> 成本增量`。
     ///
     /// 左文是統計第一名的已解碼前文加上外部 `ctx.left`。任何一組失敗都只
     /// 影響自己；預算用盡時整批放棄（回 `None`），使用純統計結果。
+    ///
+    /// 只有通過 [`WordGate`] 的詞群才送模型；統計已經確定答案的詞群直接
+    /// 留給 Viterbi，避免模型把簡單題改壞。
+    #[allow(clippy::too_many_arguments)]
     fn word_deltas(
         &self,
         ctx: &JaContext,
         lat: &Lattice,
         prefixes: &[String],
         suffixes: &[String],
+        states: &[StateKey],
         reranker: &dyn JaReranker,
         started: Instant,
     ) -> Option<HashMap<(usize, usize), f64>> {
         let budget = reranker.timeout();
-        let mut pending: Vec<(usize, Vec<WordCandidate<'_>>)> = Vec::new();
+        let mut pending: Vec<WordGroup<'_>> = Vec::new();
         for (start, _) in prefixes.iter().enumerate() {
-            for group in word_groups(lat, start) {
-                pending.push((start, group));
+            for group in self.word_groups(lat, start, &states[start]) {
+                pending.push(group);
             }
         }
-        // 成本跨度最小的詞群最模糊，先送；超過上限的留給統計。
-        pending.sort_by_key(|(start, group)| {
-            let span = group
-                .last()
-                .map(|c| c.cost)
-                .unwrap_or(0)
-                .saturating_sub(group.first().map(|c| c.cost).unwrap_or(0));
-            (span, *start)
-        });
+        let total = pending.len();
+        let gate = self.rerank_gate;
+        pending.retain(|group| gate.allows(group.gap, group.candidates.len()));
+        // 成本差最小的詞群最不確定，先送；超過上限的留給統計。
+        pending.sort_by_key(|group| (group.gap, group.start));
         pending.truncate(WORD_RERANK_MAX_GROUPS);
+        reranker.note_gated(total, pending.len());
 
         let mut deltas: HashMap<(usize, usize), f64> = HashMap::new();
-        for (start, group) in pending {
+        for group in pending {
+            let start = group.start;
+            let candidates = &group.candidates;
             if started.elapsed() >= budget {
                 reranker.end(true);
                 return None;
             }
-            let end = group
+            let end = candidates
                 .first()
                 .and_then(|cand| cand.nodes.first())
                 .map(|&node| lat.nodes(start)[node].end)
                 .unwrap_or(start);
             let left = format!("{}{}", ctx.left, prefixes[start]);
             let right = format!("{}{}", suffixes[end], ctx.right);
-            let surfaces: Vec<&str> = group.iter().map(|c| c.surface).collect();
+            let surfaces: Vec<&str> = candidates.iter().map(|c| c.surface).collect();
             let Some(scores) = reranker.score_words(&left, &right, &surfaces) else {
                 continue;
             };
             if scores.len() != surfaces.len() {
                 continue;
             }
-            let costs: Vec<i32> = group.iter().map(|c| c.cost).collect();
+            let costs: Vec<i32> = candidates.iter().map(|c| c.cost).collect();
             let best_index = order_by_scores(
                 &scores
                     .iter()
@@ -1264,7 +1354,7 @@ impl JaDecoder {
                 reranker.note_changed();
             }
             let delta = word_delta(&costs, &scores);
-            for (index, cand) in group.iter().enumerate() {
+            for (index, cand) in candidates.iter().enumerate() {
                 if delta[index] == 0.0 {
                     continue;
                 }
@@ -1275,6 +1365,73 @@ impl JaDecoder {
         }
         reranker.end(false);
         Some(deltas)
+    }
+
+    /// 列出 `start` 起點上「同讀音多候選」的詞群。
+    ///
+    /// 群組以讀音終點分開，候選依「詞成本＋連接成本」排序（第一筆是統計
+    /// 第一名），並截斷到模型批次上限。連接成本用 `left` 這個統計路徑上的
+    /// 左側狀態計算，所以不確定度反映的是這句裡實際的競爭關係。
+    fn word_groups<'a>(
+        &self,
+        lat: &'a Lattice,
+        start: usize,
+        left: &StateKey,
+    ) -> Vec<WordGroup<'a>> {
+        let mut by_end: BTreeMap<usize, Vec<WordCandidate<'_>>> = BTreeMap::new();
+        for (index, node) in lat.nodes(start).iter().enumerate() {
+            if !scorable_surface(node) {
+                continue;
+            }
+            let total = node
+                .entry
+                .cost
+                .saturating_add(self.connection_cost(left, node));
+            let group = by_end.entry(node.end).or_default();
+            match group
+                .iter_mut()
+                .find(|cand| cand.surface == node.entry.surface.as_ref())
+            {
+                Some(cand) => {
+                    cand.cost = cand.cost.min(node.entry.cost);
+                    cand.total = cand.total.min(total);
+                    cand.nodes.push(index);
+                }
+                None => group.push(WordCandidate {
+                    surface: node.entry.surface.as_ref(),
+                    cost: node.entry.cost,
+                    total,
+                    nodes: vec![index],
+                }),
+            }
+        }
+        by_end
+            .into_values()
+            .filter_map(|mut candidates| {
+                if candidates.len() < 2 {
+                    return None;
+                }
+                candidates.sort_by(|a, b| {
+                    a.total
+                        .cmp(&b.total)
+                        .then_with(|| a.cost.cmp(&b.cost))
+                        .then_with(|| a.surface.cmp(b.surface))
+                });
+                let floor = candidates.first().map(|cand| cand.total).unwrap_or(0);
+                candidates
+                    .retain(|cand| cand.total.saturating_sub(floor) <= WORD_RERANK_COST_WINDOW);
+                candidates.truncate(WORD_RERANK_MAX_CANDIDATES);
+                if candidates.len() < 2 {
+                    return None;
+                }
+                let gap = candidates[1].total.saturating_sub(candidates[0].total);
+                Some(WordGroup {
+                    start,
+                    gap,
+                    candidates,
+                })
+            })
+            .collect()
     }
 
     fn result(&self, hyps: &[Hypothesis], sr: &SearchResult, lat: &Lattice) -> JaResult {
@@ -1371,8 +1528,20 @@ struct WordCandidate<'a> {
     surface: &'a str,
     /// 統計成本（詞典原始整數）。
     cost: i32,
+    /// 排序成本：詞成本＋連接成本，只用來決定統計名次與不確定度。
+    total: i32,
     /// 這個詞面在 lattice 上的詞弧編號；同詞面的重複詞條共用一個增量。
     nodes: Vec<usize>,
+}
+
+/// 同一段讀音、同一終點的多個詞面。
+struct WordGroup<'a> {
+    /// 起點（かな單位）。
+    start: usize,
+    /// 統計前兩名的排序成本差；越小越不確定。
+    gap: i32,
+    /// 依排序成本由低到高；第一筆是統計第一名。
+    candidates: Vec<WordCandidate<'a>>,
 }
 
 /// 這個詞弧是否值得送進詞層級重排。
@@ -1392,46 +1561,6 @@ fn scorable_surface(node: &JaNode) -> bool {
     surface
         .chars()
         .all(|c| matches!(c, '々' | '〆') || c.script() == UnicodeScript::Han)
-}
-
-/// 列出 `start` 起點上「同讀音多候選」的詞弧群組。
-///
-/// 群組以讀音終點分開，候選依統計成本排序（第一筆是統計第一名），並
-/// 截斷到模型批次上限。未知詞 fallback 與分佈外的詞面不參與重排。
-fn word_groups(lat: &Lattice, start: usize) -> Vec<Vec<WordCandidate<'_>>> {
-    let mut by_end: BTreeMap<usize, Vec<WordCandidate<'_>>> = BTreeMap::new();
-    for (index, node) in lat.nodes(start).iter().enumerate() {
-        if !scorable_surface(node) {
-            continue;
-        }
-        let group = by_end.entry(node.end).or_default();
-        match group
-            .iter_mut()
-            .find(|cand| cand.surface == node.entry.surface.as_ref())
-        {
-            Some(cand) => {
-                cand.cost = cand.cost.min(node.entry.cost);
-                cand.nodes.push(index);
-            }
-            None => group.push(WordCandidate {
-                surface: node.entry.surface.as_ref(),
-                cost: node.entry.cost,
-                nodes: vec![index],
-            }),
-        }
-    }
-    let mut groups: Vec<Vec<WordCandidate<'_>>> = by_end
-        .into_values()
-        .filter(|group| group.len() >= 2)
-        .collect();
-    for group in &mut groups {
-        group.sort_by(|a, b| a.cost.cmp(&b.cost).then_with(|| a.surface.cmp(b.surface)));
-        let floor = group.first().map(|cand| cand.cost).unwrap_or(0);
-        group.retain(|cand| cand.cost.saturating_sub(floor) <= WORD_RERANK_COST_WINDOW);
-        group.truncate(WORD_RERANK_MAX_CANDIDATES);
-    }
-    groups.retain(|group| group.len() >= 2);
-    groups
 }
 
 /// 每組候選的成本增量（DP 尺度）。
@@ -1932,7 +2061,9 @@ mod tests {
         let reranker = Arc::new(Prefer {
             calls: AtomicUsize::new(0),
         });
-        let enabled = test_decoder().with_reranker(reranker.clone());
+        let enabled = test_decoder()
+            .with_reranker(reranker.clone())
+            .with_rerank_gate(WordGate::Off);
         let reranked = enabled.results(&units("はし"), &JaContext::default(), 3);
         assert_eq!(reranked[0].surface(), "箸");
         assert_eq!(reranker.calls.load(Ordering::SeqCst), 1);
@@ -1966,7 +2097,9 @@ mod tests {
         }
 
         let reranker = Arc::new(Record::default());
-        let dec = test_decoder().with_reranker(reranker.clone());
+        let dec = test_decoder()
+            .with_reranker(reranker.clone())
+            .with_rerank_gate(WordGate::Off);
         let result = dec.results(&units("きょうはし"), &JaContext::default(), 1);
         assert_eq!(result[0].surface(), "今日橋");
         let lefts = reranker.lefts.lock().unwrap();
@@ -1995,7 +2128,9 @@ mod tests {
             }
         }
 
-        let dec = test_decoder().with_reranker(Arc::new(Expired));
+        let dec = test_decoder()
+            .with_reranker(Arc::new(Expired))
+            .with_rerank_gate(WordGate::Off);
         let result = dec.results(&units("はし"), &JaContext::default(), 3);
         assert_eq!(result[0].surface(), "橋");
     }
@@ -2017,11 +2152,63 @@ mod tests {
         let dec = test_decoder();
         let reading = units("はし");
         let lat = dec.builder(&JaContext::default()).build(&reading);
-        let groups = word_groups(&lat, 0);
+        let groups = dec.word_groups(&lat, 0, &dec.initial_key());
         assert_eq!(groups.len(), 1);
-        let surfaces: Vec<&str> = groups[0].iter().map(|c| c.surface).collect();
+        let group = &groups[0];
+        let surfaces: Vec<&str> = group.candidates.iter().map(|c| c.surface).collect();
         assert_eq!(surfaces, vec!["橋", "箸", "端"]);
-        assert_eq!(groups[0][0].cost, 1_000);
+        assert_eq!(group.candidates[0].cost, 1_000);
+        assert_eq!(
+            group.gap,
+            group.candidates[1].total - group.candidates[0].total
+        );
+        assert!(group.gap > 0);
+    }
+
+    #[test]
+    fn test_word_gate_only_lets_uncertain_groups_through() {
+        assert!(WordGate::Off.allows(10_000, 2));
+        assert!(WordGate::Gap(200).allows(199, 2));
+        assert!(!WordGate::Gap(200).allows(200, 2));
+        assert!(WordGate::Candidates(3).allows(10_000, 3));
+        assert!(!WordGate::Candidates(3).allows(0, 2));
+    }
+
+    #[test]
+    fn test_gate_skips_confident_groups() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Default)]
+        struct Count(AtomicUsize);
+
+        impl JaReranker for Count {
+            fn score_words(
+                &self,
+                _left: &str,
+                _right: &str,
+                candidates: &[&str],
+            ) -> Option<Vec<f32>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Some(vec![0.0; candidates.len()])
+            }
+        }
+
+        // 「はし」的三個候選成本差都超過 1，門檻 Gap(1) 不會送模型。
+        let reranker = Arc::new(Count::default());
+        let dec = test_decoder()
+            .with_reranker(reranker.clone())
+            .with_rerank_gate(WordGate::Gap(1));
+        let result = dec.results(&units("はし"), &JaContext::default(), 1);
+        assert_eq!(result[0].surface(), "橋");
+        assert_eq!(reranker.0.load(Ordering::SeqCst), 0);
+
+        // 門檻放寬後同一組會進模型。
+        let reranker = Arc::new(Count::default());
+        let dec = test_decoder()
+            .with_reranker(reranker.clone())
+            .with_rerank_gate(WordGate::Off);
+        let _ = dec.results(&units("はし"), &JaContext::default(), 1);
+        assert_eq!(reranker.0.load(Ordering::SeqCst), 1);
     }
 
     #[test]

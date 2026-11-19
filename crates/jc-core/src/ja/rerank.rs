@@ -52,8 +52,12 @@ pub enum RerankError {
 pub struct RerankStats {
     /// 觸發重排的轉換次數。
     pub calls: u64,
+    /// 門檻前的合格候選群組數。
+    pub groups_total: u64,
     /// 送進模型的候選群組數。
     pub groups: u64,
+    /// 因統計門檻跳過的群組數。
+    pub skipped: u64,
     /// 成功取得分數的群組數。
     pub scored: u64,
     /// 重排後第一名與統計第一名不同的群組數。
@@ -71,7 +75,9 @@ pub struct RerankStats {
 #[derive(Debug, Default)]
 struct StatsInner {
     calls: u64,
+    groups_total: u64,
     groups: u64,
+    skipped: u64,
     scored: u64,
     changed: u64,
     timeouts: u64,
@@ -137,7 +143,9 @@ impl NeuralReranker {
         latencies.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         RerankStats {
             calls: inner.calls,
+            groups_total: inner.groups_total,
             groups: inner.groups,
+            skipped: inner.skipped,
             scored: inner.scored,
             changed: inner.changed,
             timeouts: inner.timeouts,
@@ -261,6 +269,12 @@ impl JaReranker for NeuralReranker {
 
     fn note_changed(&self) {
         self.lock().changed += 1;
+    }
+
+    fn note_gated(&self, total: usize, sent: usize) {
+        let mut inner = self.lock();
+        inner.groups_total += total as u64;
+        inner.skipped += total.saturating_sub(sent) as u64;
     }
 
     fn timeout(&self) -> Duration {

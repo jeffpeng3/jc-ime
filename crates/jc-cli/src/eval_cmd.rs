@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use jc_core::decode::{Decoder, Locks};
-use jc_core::ja::decode::JaContext;
+use jc_core::ja::decode::{JaContext, WordGate};
 use jc_core::ja::input::{RomajiEvent, RomajiInput};
 use jc_core::key::{Key, KeyCode};
 use jc_core::lang::Mode;
@@ -243,6 +243,8 @@ pub struct JaOptions {
     pub pack: Option<PathBuf>,
     /// 是否接上神經重排。
     pub rerank: bool,
+    /// 詞群門檻；`None` 表示不重排。
+    pub gate: Option<WordGate>,
     /// 左文來源。
     pub left: LeftMode,
     /// 輸出聚合報告 JSON。
@@ -262,6 +264,7 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
         corpus,
         pack,
         rerank,
+        gate,
         left,
         json,
         items,
@@ -270,7 +273,7 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
     let (rules, selected) = select_ja_corpora(&dir, &corpus)?;
     let root = data::data_root(&dir);
     let decoder = data::load_ja_decoder_with_pack(&root, pack.as_deref())?;
-    let reranker = if rerank {
+    let reranker = if gate.is_some() {
         match data::load_ja_reranker(&root) {
             Ok(reranker) => Some(reranker),
             Err(err) => {
@@ -281,12 +284,12 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
     } else {
         None
     };
-    let decoder = match &reranker {
-        Some(reranker) => {
+    let decoder = match (&reranker, gate) {
+        (Some(reranker), Some(gate)) => {
             let trait_object: Arc<dyn jc_core::ja::decode::JaReranker> = reranker.clone();
-            decoder.with_reranker(trait_object)
+            decoder.with_reranker(trait_object).with_rerank_gate(gate)
         }
-        None => decoder,
+        _ => decoder,
     };
     let mut converter = JaConverter::new(decoder);
     if left == LeftMode::Rolling {
@@ -314,10 +317,12 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
     if let Some(reranker) = &reranker {
         let stats = reranker.stats();
         let line = format!(
-            "rerank：calls {}，groups {}，scored {}，changed {}，timeout {}，error {}，\
-             inference p50 {:.2} ms／p95 {:.2} ms\n",
+            "rerank：calls {}，groups_total {}，groups {}，skipped {}，scored {}，\
+             changed {}，timeout {}，error {}，inference p50 {:.2} ms／p95 {:.2} ms\n",
             stats.calls,
+            stats.groups_total,
             stats.groups,
+            stats.skipped,
             stats.scored,
             stats.changed,
             stats.timeouts,

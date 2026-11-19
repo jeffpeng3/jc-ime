@@ -6,6 +6,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+use jc_core::ja::decode::{WordGate, DEFAULT_WORD_RERANK_GATE};
 use jc_core::Mode;
 
 /// 日文評測的左文來源。
@@ -77,6 +78,8 @@ pub enum Command {
         pack: Option<PathBuf>,
         /// 是否接上神經重排；預設關閉，讓統計基準可重現。
         rerank: bool,
+        /// 詞群門檻：`off`、成本差上限 `N`，或 `cand:N`（候選數下限）。
+        gate: WordGate,
         /// 左文來源：`off` 不給左文，`rolling` 用前一題的輸出當左文。
         left: LeftMode,
         /// 輸出 JSON。
@@ -192,6 +195,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut mu = None;
     let mut stats = false;
     let mut rerank = None;
+    let mut gate = None;
     let mut left = LeftMode::Off;
     let mut json = false;
     let mut items = false;
@@ -243,6 +247,10 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                     }
                 });
             }
+            "--gate" => {
+                index += 1;
+                gate = Some(parse_gate(value(rest, index, "--gate")?)?);
+            }
             "--left" => {
                 index += 1;
                 left = match value(rest, index, "--left")? {
@@ -263,7 +271,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     }
     match kind {
         "zh-golden" => {
-            reject_ja_flags(rerank, left, "eval zh-golden")?;
+            reject_ja_flags(rerank, gate, left, "eval zh-golden")?;
             reject_items(items, "eval zh-golden")?;
             Ok(Command::EvalZhGolden {
                 testdata,
@@ -282,6 +290,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 corpus,
                 pack,
                 rerank: rerank.unwrap_or(false),
+                gate: gate.unwrap_or(DEFAULT_WORD_RERANK_GATE),
                 left,
                 json,
                 items,
@@ -289,12 +298,12 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
         }
         "fuzzy" => {
             reject_zh_flags(data, lm, mu, stats, "eval fuzzy")?;
-            reject_ja_flags(rerank, left, "eval fuzzy")?;
+            reject_ja_flags(rerank, gate, left, "eval fuzzy")?;
             reject_items(items, "eval fuzzy")?;
             Ok(Command::EvalFuzzy { testdata, json })
         }
         "mixed" => {
-            reject_ja_flags(rerank, left, "eval mixed")?;
+            reject_ja_flags(rerank, gate, left, "eval mixed")?;
             reject_items(items, "eval mixed")?;
             Ok(Command::EvalMixed {
                 testdata,
@@ -322,10 +331,18 @@ fn reject_zh_flags(
     Ok(())
 }
 
-/// 只有日文題庫接受 `--rerank` 與 `--left`。
-fn reject_ja_flags(rerank: Option<bool>, left: LeftMode, command: &str) -> Result<(), CliError> {
+/// 只有日文題庫接受 `--rerank`、`--gate` 與 `--left`。
+fn reject_ja_flags(
+    rerank: Option<bool>,
+    gate: Option<WordGate>,
+    left: LeftMode,
+    command: &str,
+) -> Result<(), CliError> {
     if rerank.is_some() {
         return Err(CliError::Usage(format!("{command} 不接受 --rerank")));
+    }
+    if gate.is_some() {
+        return Err(CliError::Usage(format!("{command} 不接受 --gate")));
     }
     if left != LeftMode::Off {
         return Err(CliError::Usage(format!("{command} 不接受 --left")));
@@ -339,6 +356,29 @@ fn reject_items(items: bool, command: &str) -> Result<(), CliError> {
         return Err(CliError::Usage(format!("{command} 不接受 --items")));
     }
     Ok(())
+}
+
+/// 解析詞群門檻：`off`、成本差上限，或 `cand:N` 的候選數下限。
+fn parse_gate(value: &str) -> Result<WordGate, CliError> {
+    if value == "off" {
+        return Ok(WordGate::Off);
+    }
+    if let Some(count) = value.strip_prefix("cand:") {
+        let count: usize = count
+            .parse()
+            .map_err(|_| CliError::Usage("--gate cand:N 需要正整數".to_string()))?;
+        if count < 2 {
+            return Err(CliError::Usage("--gate cand:N 的 N 至少 2".to_string()));
+        }
+        return Ok(WordGate::Candidates(count));
+    }
+    let gap: i32 = value
+        .parse()
+        .map_err(|_| CliError::Usage("--gate 需要 off、成本差或 cand:N".to_string()))?;
+    if gap < 0 {
+        return Err(CliError::Usage("--gate 的成本差不能是負數".to_string()));
+    }
+    Ok(WordGate::Gap(gap))
 }
 
 /// 解析 bigram 內插權重，範圍與前身 `Params.Mu` 相同。
@@ -614,6 +654,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             corpus,
             pack,
             rerank,
+            gate,
             left,
             json,
             items,
@@ -623,6 +664,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 corpus: corpus.clone(),
                 pack: pack.clone(),
                 rerank: *rerank,
+                gate: rerank.then_some(*gate),
                 left: *left,
                 json: *json,
                 items: *items,
@@ -702,7 +744,7 @@ pub fn usage() -> String {
          用法：\n  \
          jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--select-model on|off] [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] \
-         [--rerank on|off] [--left off|rolling] [--json] [--items]\n  \
+         [--rerank on|off] [--gate off|<成本差>|cand:<N>] [--left off|rolling] [--json] [--items]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
          jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--punct on|off] [--user-data <dir>] [--pick <n>] [--json]\n  \
@@ -760,6 +802,7 @@ mod tests {
                 corpus: "modern-500".to_string(),
                 pack: None,
                 rerank: false,
+                gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 json: false,
                 items: false,
@@ -784,6 +827,7 @@ mod tests {
                 corpus: "/tmp/subset.json".to_string(),
                 pack: Some(PathBuf::from("/tmp/ja.pack")),
                 rerank: false,
+                gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 json: false,
                 items: false,
@@ -800,6 +844,7 @@ mod tests {
                 corpus: "modern-500".to_string(),
                 pack: None,
                 rerank: true,
+                gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 json: false,
                 items: false,
@@ -818,6 +863,7 @@ mod tests {
                 corpus: "modern-500".to_string(),
                 pack: None,
                 rerank: false,
+                gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 json: false,
                 items: true,
@@ -825,6 +871,52 @@ mod tests {
         );
         assert!(parse(&args(&["eval", "zh-golden", "--items"])).is_err());
         assert!(parse(&args(&["eval", "mixed", "--items"])).is_err());
+    }
+
+    #[test]
+    fn parses_ja_gate_thresholds() {
+        assert_eq!(
+            parse(&args(&["eval", "ja", "--rerank", "on", "--gate", "200"])).unwrap(),
+            Command::EvalJa {
+                testdata: None,
+                corpus: "modern-500".to_string(),
+                pack: None,
+                rerank: true,
+                gate: WordGate::Gap(200),
+                left: LeftMode::Off,
+                json: false,
+                items: false,
+            }
+        );
+        assert_eq!(
+            parse(&args(&["eval", "ja", "--gate", "cand:3"])).unwrap(),
+            Command::EvalJa {
+                testdata: None,
+                corpus: "modern-500".to_string(),
+                pack: None,
+                rerank: false,
+                gate: WordGate::Candidates(3),
+                left: LeftMode::Off,
+                json: false,
+                items: false,
+            }
+        );
+        assert_eq!(
+            parse(&args(&["eval", "ja", "--gate", "off"])).unwrap(),
+            Command::EvalJa {
+                testdata: None,
+                corpus: "modern-500".to_string(),
+                pack: None,
+                rerank: false,
+                gate: WordGate::Off,
+                left: LeftMode::Off,
+                json: false,
+                items: false,
+            }
+        );
+        assert!(parse(&args(&["eval", "ja", "--gate", "-1"])).is_err());
+        assert!(parse(&args(&["eval", "ja", "--gate", "cand:1"])).is_err());
+        assert!(parse(&args(&["eval", "zh-golden", "--gate", "100"])).is_err());
     }
 
     #[test]
