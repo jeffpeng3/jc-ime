@@ -25,6 +25,7 @@
 | `m2-cli-session` | `26de34b` | `8b44bc1` | 通過 | 2026-11-19 22:27 |
 | `fix-cli-ja` | `a8fbc7e` | `7b7e8bc` | 通過 | 2026-11-19 22:41 |
 | `zh-golden` | `9068771` | `2e6156b` | 通過 | 2026-11-19 23:07 |
+| `jc-platform` | `92f57b2` | `7f19601` | 通過 | 2026-11-19 23:10 |
 
 ## 衝突與修正
 
@@ -110,3 +111,6 @@
   `undo-learned-word`、`undo-custom-word`），6 例待 `zhconv` 與 mixed ASCII 按鍵推斷
   （`simplified-commit`、`simplified-sentence`、`mixed-chinese-english-chinese`、
   `mixed-english-prefix`、`english-completion`、`cjk-latin-space`）。分類與回報一致，總數差 6。
+
+- `jc-platform`（合併 `7f19601`）：無衝突。新增 `clock.rs`、`headless.rs`、`host.rs`、`tests/contract.rs`，
+  改寫 `lib.rs` 的宿主契約；`Cargo.lock` 自動合併。沒有編譯錯誤要修，未改任何實作。
