@@ -358,6 +358,8 @@ pub fn ja_models_dir(root: &Path) -> PathBuf {
 }
 
 /// 載入日文解碼器，使用預設 pack（見 [`resolve_ja_pack`]）。
+///
+/// 助詞讀音交替一律開啟，`jc-engine` 與 `jc-cli` 共用同一條路徑。
 pub fn load_ja_decoder(root: &Path) -> Result<JaDecoder, LoadError> {
     load_ja_decoder_with_pack(root, None)
 }
@@ -382,7 +384,8 @@ fn open_pack_decoder(pack: &Path, connection: &Path) -> Result<JaDecoder, LoadEr
     let lex = JaLexicon::open(pack).map_err(|err| LoadError::read(pack, err))?;
     let context = lex.connection_cost();
     let has_matrix = context.has_matrix();
-    let decoder = JaDecoder::new(Arc::new(JaDictionary::new(Arc::new(lex))));
+    let decoder =
+        JaDecoder::new(Arc::new(JaDictionary::new(Arc::new(lex)))).with_particle_rewrite(true);
     if has_matrix {
         return Ok(decoder.with_context_cost(Arc::new(context)));
     }
@@ -395,9 +398,11 @@ fn open_pack_decoder(pack: &Path, connection: &Path) -> Result<JaDecoder, LoadEr
 }
 
 /// 沒有 pack 時使用 curated `words.tsv` 的保底路徑。
+///
+/// 與 pack 路徑一樣開啟助詞讀音交替。
 pub fn load_curated_decoder(words: &Path, connection: &Path) -> Result<JaDecoder, LoadError> {
     let source = TsvWordSource::load(words)?;
-    let mut decoder = JaDecoder::new(Arc::new(source));
+    let mut decoder = JaDecoder::new(Arc::new(source)).with_particle_rewrite(true);
     if connection.is_file() {
         let cost =
             SingleColumnCost::load(connection).map_err(|err| LoadError::read(connection, err))?;
@@ -702,6 +707,20 @@ mod tests {
         assert_eq!(
             results.first().map(|result| result.surface.as_str()),
             Some("私は本を読む。")
+        );
+    }
+
+    #[test]
+    fn default_pack_enables_particle_rewrite() {
+        let Some(root) = jc_testdata::root() else {
+            eprintln!("缺少測試資料：JC_TESTDATA");
+            return;
+        };
+        let decoder = load_ja_decoder(&root).unwrap();
+        let results = decoder.nbest("わたしわ", &jc_core::ja::decode::JaContext::default(), 1);
+        assert_eq!(
+            results.first().map(|result| result.surface.as_str()),
+            Some("私は")
         );
     }
 

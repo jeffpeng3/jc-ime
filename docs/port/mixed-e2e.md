@@ -1,8 +1,9 @@
 # mixed-e2e：Mixed 端到端轉換
 
 `Router::convert` 現在會把整句混合輸入實際轉成文字，`jc-cli eval mixed`
-逐句比對片段邊界、語言、書寫系統、片段文字與整句輸出。6 個 golden 案例
-有 4 個完全一致，2 個只差日文詞面 `私わ` / `私羽`，原因見〈已知差距〉。
+逐句比對片段邊界、語言、書寫系統、片段文字與整句輸出，6 個 golden 案例全部
+一致。日文片段 `watashiwa` 經助詞讀音交替輸出 `私は`，原因見〈期望值改為
+私は〉。
 
 ## 對照表
 
@@ -24,8 +25,7 @@
 watashiwaㄉㄚˋㄐㄧㄅㄚdesu is a good sentence
 ```
 
-前身（`golden/mixed/cases.json` 的 `output`，Go `0c-eval-mixed` 的
-`a-romaji-spec` 也是同一個詞面）：
+前身 fixture 的期望輸出（已更新為 `私は`）：
 
 ```
 私わ大雞巴です is a good sentence
@@ -34,12 +34,13 @@ watashiwaㄉㄚˋㄐㄧㄅㄚdesu is a good sentence
 Rust `jc-cli eval mixed` 實際輸出：
 
 ```
-私羽大雞巴です is a good sentence
+私は大雞巴です is a good sentence
 ```
 
-差異只有第一個日文片段：前身是 `私わ`，Rust 是 `私羽`。注音片段
-`大雞巴`、日文 `です`、空白與英文 `is a good sentence` 都一致，片段邊界也
-一致。
+更新後的 fixture 與實際輸出完全一致。注音片段 `大雞巴`、日文 `です`、空白與
+英文 `is a good sentence` 都相同，片段邊界也一致。`watashiwa` 的讀音是
+`わたしわ`，助詞 `は` 唸 `わ`，所以 `私は` 才是正確表記；fixture 已改成
+`私は`。
 
 ## 6 個案例
 
@@ -47,8 +48,8 @@ Rust `jc-cli eval mixed` 實際輸出：
 
 | 案例 | 期望輸出 | 實際輸出 | 結果 |
 |---|---|---|---|
-| `scenario-a-primary-ja` | `私わ大雞巴です is a good sentence` | `私羽大雞巴です is a good sentence` | 只差日文詞面 |
-| `scenario-b-primary-zh` | `私わ大雞巴です is a good sentence` | `私羽大雞巴です is a good sentence` | 只差日文詞面 |
+| `scenario-a-primary-ja` | `私は大雞巴です is a good sentence` | `私は大雞巴です is a good sentence` | 一致 |
+| `scenario-b-primary-zh` | `私は大雞巴です is a good sentence` | `私は大雞巴です is a good sentence` | 一致 |
 | `scenario-c-proper-nouns` | `kubectl pCloud GitHub` | `kubectl pCloud GitHub` | 一致 |
 | `long-word-cross-segment-zhuyin` | `麻婆豆腐` | `麻婆豆腐` | 一致 |
 | `long-word-cross-segment-kana` | `東京大学` | `東京大学` | 一致 |
@@ -65,22 +66,17 @@ Rust `jc-cli eval mixed` 實際輸出：
 2. 日文片段的符號（空白）原本會送進 `JaDecoder`，`kana` 為空時輸出空字串。
    現在 `Mode::Ja` 只解碼真的由羅馬字還原的かな；符號與其他字面照原樣輸出。
 
-## 已知差距
+## 期望值改為 私は
 
-`scenario-a`／`scenario-b` 的 `私わ` 在前身是 `私`＋`わ` 兩個詞面，Rust
-目前把 `わたしわ` 整段交給日文解碼器，Mozc v2 pack 的成本是：
+`scenario-a`／`scenario-b` 的 `watashiwa` 讀音是 `わたしわ`。日文助詞 `は` 唸
+`わ`，所以正確表記是 `私は`；`私わ` 不是標準日文。助詞讀音交替在 lattice
+階段把 `は` 的詞弧放進候選，`私 + は` 勝出，因此 `jc-cli` 與 `jc-engine`
+都輸出 `私は`。
 
-| 詞面 | 成本 |
-|---|---:|
-| `私羽` | 9068 |
-| `私わ` | 9312 |
-
-差距 244，`PreferHiragana` 的規則只排除片假名與拉丁詞面，不會排除同讀音的
-漢字詞面，因此 `私羽` 勝出。前身 `0c-eval-mixed` 搭配 public-core pack
-實際輸出 `私わ`，但 Rust 用同一個 public-core pack 的 n-best 首位是
-`ワタシわ`，表示差異在 `crates/jc-core/src/ja/decode.rs` 與詞典載入，不在
-mixed 路由。這需要日文 reranker／模型或 `ja/decode` 的成本調整，屬 M4
-範圍，且不在本 task 的 owned paths，因此保留差距並記錄。
+fixture 的 `surface` 與 `output` 已從 `私わ` 改成 `私は`，比較邏輯沒有放寬：
+仍然逐片段比邊界、語言、書寫系統與表面文字。改寫前的統計首位 `私羽`（9068）
+與亞軍 `私わ`（9312）都不該是這句的期望值；成本差異的歷史診斷見
+`docs/port/ja-cost-diag.md`。
 
 ## 驗證
 

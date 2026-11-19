@@ -269,7 +269,7 @@ impl PathCost {
 }
 
 /// 依位置展開所有完整路徑。
-fn enumerate<'a>(lat: &'a jc_core::ja::decode::Lattice, len: usize) -> Vec<Vec<&'a JaNode>> {
+fn enumerate(lat: &jc_core::ja::decode::Lattice, len: usize) -> Vec<Vec<&JaNode>> {
     fn walk<'a>(
         lat: &'a jc_core::ja::decode::Lattice,
         len: usize,
