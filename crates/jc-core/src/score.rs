@@ -569,8 +569,10 @@ mod tests {
 
     #[test]
     fn mu_zero_reproduces_unigram_costs() {
-        let mut ctx = ScoreContext::default();
-        ctx.bigram_mu = 0.0;
+        let ctx = ScoreContext {
+            bigram_mu: 0.0,
+            ..Default::default()
+        };
         let lm = FakeLm::new(&[(("我", "愛"), 0.9)]);
         let scorer = LmScorer::new(&ctx, &lm);
         assert_eq!(scorer.delta("我", "愛"), 0);

@@ -396,14 +396,16 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             n,
             json,
         } => crate::converter::convert(
-            testdata.clone(),
-            data.clone(),
-            lm.clone(),
-            *mu,
-            *stats,
+            crate::converter::ConvertOptions {
+                testdata: testdata.clone(),
+                data: data.clone(),
+                lm: lm.clone(),
+                mu: *mu,
+                stats: *stats,
+                n: *n,
+                json: *json,
+            },
             reading,
-            *n,
-            *json,
             out,
         ),
         Command::Bench {

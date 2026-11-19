@@ -214,22 +214,47 @@ pub fn load_auto(testdata: &Path) -> Result<AutoConverter, CliError> {
     ))
 }
 
+/// `convert` 子命令的參數。
+///
+/// 集中成一個型別，避免轉換函式堆滿位置參數；欄位順序與用法都照
+/// [`crate::cli::Command::Convert`]。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ConvertOptions {
+    /// `0c-testdata` 目錄。
+    pub testdata: Option<PathBuf>,
+    /// 注音二進位資料包目錄。
+    pub data: Option<PathBuf>,
+    /// 覆寫的 bigram 語言模型。
+    pub lm: Option<PathBuf>,
+    /// bigram 內插權重 μ。
+    pub mu: Option<f64>,
+    /// 印出 bigram 查詢統計。
+    pub stats: bool,
+    /// 取幾個候選。
+    pub n: usize,
+    /// 輸出 JSON。
+    pub json: bool,
+}
+
 /// `convert` 子命令：單句轉換並列出 N-best。
 ///
 /// `--data` 指向注音二進位資料包時會自動載入同目錄的 `lm.bin`；`--lm`
 /// 可單獨覆寫語言模型。`--mu` 照前身 `personal.Params.Mu` 調整 bigram 內插；
 /// `--stats` 印出 bigram 查詢次數與命中次數。
 pub fn convert(
-    testdata: Option<PathBuf>,
-    data_dir: Option<PathBuf>,
-    lm: Option<PathBuf>,
-    mu: Option<f64>,
-    stats: bool,
+    options: ConvertOptions,
     reading: &str,
-    n: usize,
-    json: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
+    let ConvertOptions {
+        testdata,
+        data: data_dir,
+        lm,
+        mu,
+        stats,
+        n,
+        json,
+    } = options;
     let (candidates, lm_stats) = if is_zhuyin(reading) {
         let mut resources = match &data_dir {
             Some(dir) => data::load_zh_bin_resources_with_lm(dir, lm.as_deref())?,
