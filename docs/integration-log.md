@@ -86,6 +86,7 @@
 | `rerank-gating`（left context 順序） | `b5d0e26` | `f681ed4` | clippy 通過；test 同上 | 2026-11-20 05:10 |
 | `jinen-eval` | `9bd13b1` | `e2d6cfb` | check 通過 | 2026-11-20 05:12 |
 | `mozkey-study` | `b8ad3ce` | `764ee82` | check 通過 | 2026-11-20 05:25 |
+| `ja-particle-rewrite`（golden＋engine） | `aa5797f` | `c04e85e` | 通過（clippy＋全量 test） | 2026-11-20 05:30 |
 
 ## 衝突與修正
 
@@ -741,3 +742,12 @@
 
   備註：main 工作區出現未追蹤的 `.cargo/config.toml`（aarch64 加 `-C target-feature=+fullfp16`，解 gemm-f16 編譯），
   不在本 branch 內，沒有 commit。
+
+- `ja-particle-rewrite` 第二次合併（`c04e85e`，含 `aa5797f`）：`eval_cmd.rs` 自動合併，無衝突。
+  mixed golden 的期望更新成 `私は`（6/6，原本 4/6）；`jc-engine/src/loader.rs` 載入日文解碼器時開啟 `with_particle_rewrite(true)`，
+  補上先前回報的缺口（CLI 與 engine 現在一致）。`docs/port/mixed-e2e.md` 同步更新。
+
+  gate：`cargo clippy --workspace --all-targets -- -D warnings` **exit 0**；
+  `cargo test --workspace --no-fail-fast` **exit 0**（41 targets、945 passed、0 failed）。全量測試至此全綠。
+
+  備註：main 的 `e868e4e` 已把 `.cargo/config.toml` 的 `+fullfp16` 收進版控，gemm-f16 在 aarch64 可以正常編譯。
