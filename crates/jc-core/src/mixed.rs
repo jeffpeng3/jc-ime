@@ -1036,12 +1036,11 @@ impl Dictionary {
     /// 低權重的距離 1 詞不能把常見的距離 2 詞擠出前 k 名，因此這個查詢不看
     /// 候選上限。
     pub fn near_common(&self, typed: &str, minimum_prior: f64) -> bool {
-        if !(minimum_prior > 0.0) || !minimum_prior.is_finite() {
-            return false;
-        }
-        !self
-            .corrections_with_prior(typed, 1, minimum_prior)
-            .is_empty()
+        let valid_prior = minimum_prior.is_finite() && minimum_prior > 0.0;
+        valid_prior
+            && !self
+                .corrections_with_prior(typed, 1, minimum_prior)
+                .is_empty()
     }
 
     fn corrections_with_prior(
