@@ -200,6 +200,12 @@ dependencies = [
 [[package]]
 name = "jc-eval"
 version = "0.1.0"
+dependencies = [
+ "jc-testdata",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "jc-model"
