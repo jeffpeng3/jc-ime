@@ -140,10 +140,9 @@ impl Session {
         {
             return false;
         }
-        let index = match ch {
-            '1'..='9' => ch as usize - '1' as usize,
-            '0' => 9,
-            _ => return false,
+        let index = match self.selection_index(ch) {
+            Some(index) => index,
+            None => return false,
         };
         let Some(candidate) = self.candidates.get(index).cloned() else {
             return false;
