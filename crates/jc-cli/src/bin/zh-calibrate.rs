@@ -140,6 +140,8 @@ fn run() -> Result<(), CliError> {
     }
     let rows = scan(&groups);
     print_table(&groups, &rows)?;
+    print_model_only(&groups)?;
+    print_direction(&model)?;
     Ok(())
 }
 
@@ -522,6 +524,164 @@ fn print_table(groups: &[DevGroup], rows: &[ScanRow]) -> Result<(), CliError> {
             writeln!(out, "沒有任何點滿足 broken <= {limit}").map_err(CliError::Io)?;
         }
     }
+    Ok(())
+}
+
+/// 只看模型分數排序的診斷。
+///
+/// 這個區塊不改任何產品行為，只用來分辨「模型本身排不出正確答案」與
+/// 「融合或 margin 讓模型無法發言」。
+#[cfg(feature = "onnx")]
+fn print_model_only(groups: &[DevGroup]) -> Result<(), CliError> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let mut total = 0usize;
+    let mut top1 = 0usize;
+    let mut ranked = 0usize;
+    let mut stat_wrong = 0usize;
+    let mut rescued = 0usize;
+    let mut reachable_wrong = 0usize;
+    let mut reachable_rescued = 0usize;
+    for group in groups {
+        total += 1;
+        let candidate = group
+            .candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| candidate.valid)
+            .max_by(|a, b| a.1.neural.total_cmp(&b.1.neural));
+        let Some((index, _)) = candidate else {
+            continue;
+        };
+        ranked += 1;
+        let stat_ok = group.candidates[0].text == group.surface;
+        let model_ok = group.candidates[index].text == group.surface;
+        top1 += usize::from(model_ok);
+        if !stat_ok {
+            stat_wrong += 1;
+            rescued += usize::from(model_ok);
+            if group.candidates.iter().any(|c| c.text == group.surface) {
+                reachable_wrong += 1;
+                reachable_rescued += usize::from(model_ok);
+            }
+        }
+    }
+    writeln!(
+        out,
+        "model-only top1 {}/{}（可評分 {}）；統計首選錯 {}，模型只靠分數救回 {}；\
+         其中答案可達 {}，救回 {}",
+        top1, total, ranked, stat_wrong, rescued, reachable_wrong, reachable_rescued
+    )
+    .map_err(CliError::Io)?;
+    Ok(())
+}
+
+/// 分數方向檢查。
+///
+/// 前身的 `internal/neural/native/input/testdata/golden.json` 只凍結
+/// `prepare()` 的陣列，沒有分數；它用的 17 字元詞表也不在真實模型內。
+/// 這裡取其中可評分的案例形狀（basic、shared_prefix、neutral），換成真實
+/// 詞表，加上模型 README 明確標示排序的實例，確認正確候選分數較高。
+#[cfg(feature = "onnx")]
+fn print_direction(model: &jc_core::zh::select::SelectModel) -> Result<(), CliError> {
+    struct Case {
+        name: &'static str,
+        context: &'static str,
+        reading: &'static [&'static str],
+        candidates: &'static [&'static str],
+        correct: usize,
+    }
+    const CASES: &[Case] = &[
+        // 前身 golden.json 的 basic 形狀。
+        Case {
+            name: "golden-basic",
+            context: "今天",
+            reading: &["ㄐㄧㄣ", "ㄊㄧㄢ"],
+            candidates: &["金天", "今天"],
+            correct: 1,
+        },
+        // 前身 golden.json 的 shared_prefix 形狀。
+        Case {
+            name: "golden-shared-prefix",
+            context: "",
+            reading: &["ㄐㄧㄣ", "ㄊㄧㄢ", "ㄊㄧㄢ", "ㄑㄧˋ"],
+            candidates: &["金天天氣", "今天天器", "今天天氣"],
+            correct: 2,
+        },
+        // 前身 golden.json 的 neutral 形狀。
+        Case {
+            name: "golden-neutral",
+            context: "這是",
+            reading: &["ㄨㄛˇ", "ㄇㄣ˙"],
+            candidates: &["我門", "我們"],
+            correct: 1,
+        },
+        // 模型 README 的實例。
+        Case {
+            name: "readme-期中考",
+            context: "下週就是",
+            reading: &["ㄑㄧˊ", "ㄓㄨㄥ", "ㄎㄠˇ"],
+            candidates: &["其中考", "期中考"],
+            correct: 1,
+        },
+        Case {
+            name: "readme-今天天氣很好",
+            context: "",
+            reading: &["ㄐㄧㄣ", "ㄊㄧㄢ", "ㄊㄧㄢ", "ㄑㄧˋ", "ㄏㄣˇ", "ㄏㄠˇ"],
+            candidates: &["金天天氣很好", "今天天氣很好", "今天天器很好"],
+            correct: 1,
+        },
+        Case {
+            name: "readme-無聲調期中考",
+            context: "下週就是",
+            reading: &["ㄑㄧ?", "ㄓㄨㄥ", "ㄎㄠ?"],
+            candidates: &["其中考", "期中考"],
+            correct: 1,
+        },
+        Case {
+            name: "readme-公園",
+            context: "今天天氣很好我們去",
+            reading: &["ㄍㄨㄥ", "ㄩㄢˊ"],
+            candidates: &["公元", "公園"],
+            correct: 1,
+        },
+    ];
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let mut passed = 0usize;
+    for case in CASES {
+        let reading: Vec<String> = case.reading.iter().map(|s| (*s).to_string()).collect();
+        let Ok(scores) = model.score(case.context, &reading, case.candidates) else {
+            writeln!(out, "{}：模型拒絕評分", case.name).map_err(CliError::Io)?;
+            continue;
+        };
+        let Some(best) = scores
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != case.correct)
+            .map(|(_, score)| *score)
+            .max_by(f64::total_cmp)
+        else {
+            continue;
+        };
+        let ok = scores[case.correct] > best;
+        passed += usize::from(ok);
+        writeln!(
+            out,
+            "{}：{}（正確 {:.4}、最佳錯誤 {:.4}）",
+            case.name,
+            if ok {
+                "正確候選較高"
+            } else {
+                "方向相反"
+            },
+            scores[case.correct],
+            best
+        )
+        .map_err(CliError::Io)?;
+    }
+    writeln!(out, "分數方向 {}/{}", passed, CASES.len()).map_err(CliError::Io)?;
     Ok(())
 }
 
