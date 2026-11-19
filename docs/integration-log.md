@@ -59,6 +59,7 @@
 | `personal-zh` | `8b43057` | `55f2067` | fmt／test／golden 通過；clippy 失敗 | 2026-11-20 01:29 |
 | `rerank-tokenizer` | `a9aebdc` | `bcb1515` | fmt／clippy 通過；4 個 test 失敗 | 2026-11-20 01:33 |
 | `personal-zh`（清 clippy） | `6faec7f` | `e5af3b8` | fmt／clippy／golden 通過；test 剩 4 個既有失敗 | 2026-11-20 01:35 |
+| `rerank-tokenizer`（SP 對齊） | `0eb7496` | `b07d098` | 通過（fmt／clippy／test） | 2026-11-20 01:57 |
 
 ## 衝突與修正
 
@@ -416,3 +417,15 @@
   `[▁, <unk>, <unk>, <unk>]` 與 `[▁, <unk>]`，並用 Python `sentencepiece` 0.2.3
   對真模型驗證 byte fallback 與連續 unk 合并，對照表見
   `docs/port/rerank-tokenizer.md` 的「byte fallback 與 OOV 補測」。
+
+- `rerank-tokenizer` 第二次合併（`b07d098`，含 `3770403`、`0eb7496`）：無衝突。
+  `spm.rs` 修掉 dummy prefix 重複（前導空白先去乾淨再加），並把「無 byte fallback 時連續 unknown 節點合并成一個 `<unk>`」
+  對齊 `sentencepiece_processor.cc` 的 `EncodeOptimized`。
+
+  驗證：`cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` **exit 0**、
+  `cargo test --workspace --no-fail-fast` **exit 0**（34 targets、787 passed、0 failed）。先前的 4 個正規化失敗全數解除。
+
+  byte fallback 對照（Python `sentencepiece` 0.2.3，`public_core_ja.model`，32768 pieces／256 BYTE）：
+  - 開啟：`𠮷`、`😀`、`東京𠮷`、`a😀b`、`𠮷😀①髙` 的 ids 與 pieces 全部與 SP 相同，OOV 走 `<0xNN>` 而非 `<unk>`。
+  - 關閉（移除 BYTE piece）：`𠮷` → `7,1`、`東京𠮷` → `9759,1`、`𠮷𠮷` → `7,1`，連續 OOV 合并成單一 `<unk>`，與 SP 一致。
+  - `byte_fallback=true` 但缺 byte piece 的模型，SP loader 會直接拒絕；Rust 保留防禦性 fallback 測試。
