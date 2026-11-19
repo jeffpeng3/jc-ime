@@ -675,7 +675,9 @@ impl<'a> Decoder<'a> {
 
     /// 詞條相對於其他同前綴詞條的權重。
     fn entry_weight(&self, entry: &LexEntry, _typed: usize) -> f64 {
-        (-f64::from(self.ctx.word_cost(entry.cost, entry.units()))).exp()
+        // 成本以千分之一為單位（毫成本），換回 nats 再取指數，避免下溢。
+        let cost = f64::from(self.ctx.word_cost(entry.cost, entry.units()));
+        (-cost / 1000.0).exp()
     }
 
     /// 把片段路徑轉成對外 [`Conversion`]。
