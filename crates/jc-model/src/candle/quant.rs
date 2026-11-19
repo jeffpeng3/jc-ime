@@ -145,6 +145,15 @@ impl ExportReport {
     }
 }
 
+/// 詞嵌入要不要用不同的等級；`None` 代表跟其他權重一樣。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingDtype {
+    /// 不量化，留 fp32。
+    F32,
+    /// 用指定等級。
+    Quant(QuantDtype),
+}
+
 /// 要量化的張量：四條 linear 與詞嵌入。
 fn is_quantized(name: &str) -> bool {
     matches!(
@@ -161,8 +170,26 @@ fn is_quantized(name: &str) -> bool {
             || name.ends_with(".linear2.weight")))
 }
 
+/// 接在 encoder 後面的分類頭；reranker 是 scalar，標點是 4 類。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Head {
+    /// reranker 的 `score_head`，輸出 1 維。
+    Score,
+    /// 標點模型的 `classifier`，輸出 4 類。
+    Classifier,
+}
+
+impl Head {
+    fn weights(self) -> [&'static str; 2] {
+        match self {
+            Self::Score => ["score_head.weight", "score_head.bias"],
+            Self::Classifier => ["classifier.weight", "classifier.bias"],
+        }
+    }
+}
+
 /// 模型裡所有張量名稱，順序固定。
-fn tensor_names(config: &CandleConfig) -> Vec<String> {
+fn tensor_names(config: &CandleConfig, head: Head) -> Vec<String> {
     let mut names = vec![
         "token_embedding.weight".to_string(),
         "position_embedding.weight".to_string(),
@@ -170,9 +197,10 @@ fn tensor_names(config: &CandleConfig) -> Vec<String> {
         "embedding_norm.bias".to_string(),
         "encoder.norm.weight".to_string(),
         "encoder.norm.bias".to_string(),
-        "score_head.weight".to_string(),
-        "score_head.bias".to_string(),
     ];
+    for name in head.weights() {
+        names.push(name.to_string());
+    }
     for index in 0..config.num_layers {
         let prefix = format!("encoder.layers.{index}");
         for suffix in [
@@ -205,16 +233,79 @@ pub fn export_gguf(
     quant: QuantDtype,
     spec: &ModelSpec,
 ) -> Result<ExportReport> {
-    let config = CandleConfig::for_spec(spec);
+    export_with_config(
+        input,
+        output,
+        quant,
+        &CandleConfig::for_spec(spec),
+        Head::Score,
+    )
+}
+
+/// 把標點模型的 fp32 safetensors 轉成指定等級的 GGUF。
+///
+/// 標點模型與 reranker 共用 encoder，差別只有最後的分類頭名稱。
+pub fn export_punct_gguf(input: &Path, output: &Path, quant: QuantDtype) -> Result<ExportReport> {
+    export_with_config(
+        input,
+        output,
+        quant,
+        &CandleConfig::for_punct(),
+        Head::Classifier,
+    )
+}
+
+fn export_with_config(
+    input: &Path,
+    output: &Path,
+    quant: QuantDtype,
+    config: &CandleConfig,
+    head: Head,
+) -> Result<ExportReport> {
+    export_with_embedding(input, output, quant, None, config, head)
+}
+
+/// 與 [`export_gguf`] 相同，但詞嵌入可以另外指定精度。
+pub fn export_gguf_with_embedding(
+    input: &Path,
+    output: &Path,
+    quant: QuantDtype,
+    embedding: EmbeddingDtype,
+    spec: &ModelSpec,
+) -> Result<ExportReport> {
+    export_with_embedding(
+        input,
+        output,
+        quant,
+        Some(embedding),
+        &CandleConfig::for_spec(spec),
+        Head::Score,
+    )
+}
+
+fn export_with_embedding(
+    input: &Path,
+    output: &Path,
+    quant: QuantDtype,
+    embedding: Option<EmbeddingDtype>,
+    config: &CandleConfig,
+    head: Head,
+) -> Result<ExportReport> {
     let device = Device::Cpu;
     let tensors = candle_core::safetensors::load(input, &device).map_err(inference)?;
     let mut entries = Vec::new();
     let mut quantized = Vec::new();
-    for name in tensor_names(&config) {
+    for name in tensor_names(config, head) {
         let tensor = tensors
             .get(&name)
             .ok_or_else(|| ModelError::Candle(format!("{} 缺少張量 {name}", input.display())))?;
-        let target = if is_quantized(&name) {
+        let target = if name == "token_embedding.weight" {
+            match embedding {
+                None => quant.ggml(),
+                Some(EmbeddingDtype::F32) => GgmlDType::F32,
+                Some(EmbeddingDtype::Quant(dtype)) => dtype.ggml(),
+            }
+        } else if is_quantized(&name) {
             quant.ggml()
         } else {
             GgmlDType::F32
@@ -378,78 +469,20 @@ impl QuantReranker {
         let device = Device::Cpu;
         let mut file = File::open(weights)?;
         let content = gguf_file::Content::read(&mut file).map_err(inference)?;
-        let quant = content
-            .metadata
-            .get(METADATA_QUANT)
-            .and_then(|value| match value {
-                gguf_file::Value::String(value) => value.parse().ok(),
-                _ => None,
-            })
-            .ok_or_else(|| {
-                ModelError::Candle(format!(
-                    "{} 的 metadata 沒有 {METADATA_QUANT}",
-                    weights.display()
-                ))
-            })?;
-        let d = config.d_model;
+        let quant = read_quant(&content, weights)?;
         let mut reader = GgufReader {
             content: &content,
             file,
         };
-        let token_embedding = QuantEmbedding {
-            weight: reader.quantized("token_embedding.weight")?,
-            hidden: d,
-        };
-        let position_embedding = Embedding::new(reader.f32("position_embedding.weight")?, d);
-        let mut layers = Vec::with_capacity(config.num_layers);
-        for index in 0..config.num_layers {
-            let prefix = format!("encoder.layers.{index}");
-            layers.push(Layer::new(
-                reader.linear(
-                    &format!("{prefix}.self_attn.in_proj_weight"),
-                    &format!("{prefix}.self_attn.in_proj_bias"),
-                )?,
-                reader.linear(
-                    &format!("{prefix}.self_attn.out_proj.weight"),
-                    &format!("{prefix}.self_attn.out_proj.bias"),
-                )?,
-                reader.linear(
-                    &format!("{prefix}.linear1.weight"),
-                    &format!("{prefix}.linear1.bias"),
-                )?,
-                reader.linear(
-                    &format!("{prefix}.linear2.weight"),
-                    &format!("{prefix}.linear2.bias"),
-                )?,
-                reader.f32(&format!("{prefix}.norm1.weight"))?,
-                reader.f32(&format!("{prefix}.norm1.bias"))?,
-                reader.f32(&format!("{prefix}.norm2.weight"))?,
-                reader.f32(&format!("{prefix}.norm2.bias"))?,
-            ));
-        }
+        let encoder = load_encoder(&mut reader, &config)?;
         let score_head = Linear::new(
             reader.f32("score_head.weight")?,
             Some(reader.f32("score_head.bias")?),
         );
-        let encoder = Encoder::new(
-            config,
-            Box::new(token_embedding),
-            position_embedding,
-            (
-                reader.f32("embedding_norm.weight")?,
-                reader.f32("embedding_norm.bias")?,
-            ),
-            layers,
-            (
-                reader.f32("encoder.norm.weight")?,
-                reader.f32("encoder.norm.bias")?,
-            ),
-            score_head,
-        );
         Ok(Self {
             config,
             device,
-            encoder,
+            encoder: with_head(encoder, score_head),
             positions,
             quant,
         })
@@ -469,6 +502,178 @@ impl QuantReranker {
     pub fn score_packed(&self, batch: &PackedBatch) -> Result<Vec<f32>> {
         score_packed_with(&self.encoder, &self.positions, &self.device, batch)
     }
+}
+
+/// 載入 GGUF 量化權重的 candle 標點模型。
+pub struct QuantPunctuation {
+    config: CandleConfig,
+    device: Device,
+    encoder: Encoder<QuantLinear>,
+    classifier: Linear,
+    quant: QuantDtype,
+}
+
+impl QuantPunctuation {
+    /// 從 GGUF 載入權重；分類頭留 fp32。
+    pub fn load(weights: &Path) -> Result<Self> {
+        let config = CandleConfig::for_punct();
+        let device = Device::Cpu;
+        let mut file = File::open(weights)?;
+        let content = gguf_file::Content::read(&mut file).map_err(inference)?;
+        let quant = read_quant(&content, weights)?;
+        let mut reader = GgufReader {
+            content: &content,
+            file,
+        };
+        let encoder = load_encoder(&mut reader, &config)?;
+        let classifier = Linear::new(
+            reader.f32("classifier.weight")?,
+            Some(reader.f32("classifier.bias")?),
+        );
+        Ok(Self {
+            config,
+            device,
+            encoder,
+            classifier,
+            quant,
+        })
+    }
+
+    /// 架構參數。
+    pub fn config(&self) -> &CandleConfig {
+        &self.config
+    }
+
+    /// 量化等級。
+    pub fn quant(&self) -> QuantDtype {
+        self.quant
+    }
+
+    /// 為多個 token 序列跑一次 batch forward。
+    ///
+    /// 回傳 `[rows][len][4]` logits；短序列補 pad 後以 attention mask 遮掉，
+    /// 只回傳每一列自己的真實長度。空輸入回傳空向量。
+    pub fn logits(&self, windows: &[Vec<i64>]) -> Result<Vec<Vec<Vec<f32>>>> {
+        if windows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = windows.len();
+        let width = windows.iter().map(Vec::len).max().unwrap_or(0);
+        if width == 0 {
+            return Ok(vec![Vec::new(); rows]);
+        }
+        if width > self.config.max_positions {
+            return Err(ModelError::Candle(format!(
+                "candle：序列長度 {width} 超過 max_positions {}",
+                self.config.max_positions
+            )));
+        }
+        let mut ids = vec![0u32; rows * width];
+        let mut mask = vec![0i64; rows * width];
+        for (row, window) in windows.iter().enumerate() {
+            for (column, id) in window.iter().enumerate() {
+                ids[row * width + column] = u32::try_from(*id)
+                    .map_err(|_| ModelError::Candle(format!("token id {id} 不是合法的 u32")))?;
+                mask[row * width + column] = 1;
+            }
+        }
+        let positions: Vec<u32> = (0..width as u32).cycle().take(rows * width).collect();
+        let ids = Tensor::from_vec(ids, (rows, width), &self.device).map_err(inference)?;
+        let positions =
+            Tensor::from_vec(positions, (rows, width), &self.device).map_err(inference)?;
+        let additive = super::additive_mask(&mask, rows, width);
+        let hidden = self.encoder.forward(&ids, &positions, additive.as_ref())?;
+        let logits = self
+            .classifier
+            .forward(&hidden)
+            .and_then(|tensor| tensor.to_vec3::<f32>())
+            .map_err(inference)?;
+        Ok(logits
+            .into_iter()
+            .zip(windows)
+            .map(|(row, window)| row.into_iter().take(window.len()).collect())
+            .collect())
+    }
+
+    /// 單一序列的 logits；回傳 `[len][4]`。
+    pub fn logits_one(&self, ids: &[i64]) -> Result<Vec<Vec<f32>>> {
+        let mut rows = self.logits(std::slice::from_ref(&ids.to_vec()))?;
+        Ok(rows.pop().unwrap_or_default())
+    }
+}
+
+/// 讀 GGUF metadata 裡的量化等級。
+fn read_quant(content: &gguf_file::Content, path: &Path) -> Result<QuantDtype> {
+    content
+        .metadata
+        .get(METADATA_QUANT)
+        .and_then(|value| match value {
+            gguf_file::Value::String(value) => value.parse().ok(),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            ModelError::Candle(format!(
+                "{} 的 metadata 沒有 {METADATA_QUANT}",
+                path.display()
+            ))
+        })
+}
+
+/// 從 GGUF 讀出 encoder 的全部權重；分類頭由呼叫端接上。
+fn load_encoder(reader: &mut GgufReader, config: &CandleConfig) -> Result<Encoder<QuantLinear>> {
+    let d = config.d_model;
+    let token_embedding = QuantEmbedding {
+        weight: reader.quantized("token_embedding.weight")?,
+        hidden: d,
+    };
+    let position_embedding = Embedding::new(reader.f32("position_embedding.weight")?, d);
+    let mut layers = Vec::with_capacity(config.num_layers);
+    for index in 0..config.num_layers {
+        let prefix = format!("encoder.layers.{index}");
+        layers.push(Layer::new(
+            reader.linear(
+                &format!("{prefix}.self_attn.in_proj_weight"),
+                &format!("{prefix}.self_attn.in_proj_bias"),
+            )?,
+            reader.linear(
+                &format!("{prefix}.self_attn.out_proj.weight"),
+                &format!("{prefix}.self_attn.out_proj.bias"),
+            )?,
+            reader.linear(
+                &format!("{prefix}.linear1.weight"),
+                &format!("{prefix}.linear1.bias"),
+            )?,
+            reader.linear(
+                &format!("{prefix}.linear2.weight"),
+                &format!("{prefix}.linear2.bias"),
+            )?,
+            reader.f32(&format!("{prefix}.norm1.weight"))?,
+            reader.f32(&format!("{prefix}.norm1.bias"))?,
+            reader.f32(&format!("{prefix}.norm2.weight"))?,
+            reader.f32(&format!("{prefix}.norm2.bias"))?,
+        ));
+    }
+    Ok(Encoder::new(
+        *config,
+        Box::new(token_embedding),
+        position_embedding,
+        (
+            reader.f32("embedding_norm.weight")?,
+            reader.f32("embedding_norm.bias")?,
+        ),
+        layers,
+        (
+            reader.f32("encoder.norm.weight")?,
+            reader.f32("encoder.norm.bias")?,
+        ),
+        None,
+    ))
+}
+
+/// 把 scalar head 接到 encoder 上；reranker 的 forward 會用到。
+fn with_head(mut encoder: Encoder<QuantLinear>, head: Linear) -> Encoder<QuantLinear> {
+    encoder.score_head = Some(head);
+    encoder
 }
 
 /// 檔案是不是 GGUF。
@@ -529,6 +734,36 @@ mod tests {
         assert!(!is_quantized("encoder.layers.3.linear1.bias"));
         assert!(!is_quantized("encoder.layers.3.norm1.weight"));
         assert!(!is_quantized("score_head.weight"));
+    }
+
+    /// 標點模型的量化等級：載入、跑 forward，argmax 與 fp32 一致。
+    #[test]
+    fn punct_quantized_levels_load() {
+        let weights =
+            jc_testdata::require_data!("models/punctuation-public-core/model.safetensors");
+        let fp32 = crate::candle::CandlePunctuation::load(&weights).unwrap();
+        let windows = vec![vec![2i64, 100, 200, 300, 400, 500, 3]];
+        let want = fp32.logits(&windows).unwrap();
+        let dir = std::env::temp_dir().join(format!("jc-quant-punct-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for quant in QuantDtype::all() {
+            let path = dir.join(format!("{quant}.gguf"));
+            export_punct_gguf(&weights, &path, quant).unwrap();
+            let model = QuantPunctuation::load(&path).unwrap();
+            assert_eq!(model.quant(), quant);
+            let got = model.logits(&windows).unwrap();
+            for (row, (got, want)) in got[0].iter().zip(&want[0]).enumerate() {
+                let argmax = |values: &[f32]| {
+                    values
+                        .iter()
+                        .enumerate()
+                        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                        .map(|(index, _)| index)
+                };
+                assert_eq!(argmax(got), argmax(want), "{quant} token {row}");
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 三種量化等級都要能載入並跑 forward，且 logits 與 fp32 差距有限。

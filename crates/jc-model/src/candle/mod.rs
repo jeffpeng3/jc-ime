@@ -14,6 +14,9 @@
 //! `seq_len = 2 * context_tokens + 4` 且 `candidate_slot = context_tokens + 2`
 //! 就成立，否則載入時就報錯。
 //!
+//! 同一個 encoder 也給標點模型用：位置改成 `arange(seq)`，每個 token 各自
+//! 輸出 4 類 logits，見 [`punct::CandlePunctuation`]。
+//!
 //! 權重來自 PyTorch checkpoint 轉出的 safetensors，轉檔腳本見
 //! `scripts/convert-reranker-safetensors.py`。載入順序：
 //!
@@ -22,6 +25,11 @@
 //! 3. manifest `model` 欄位同名但副檔名換成 `.safetensors`。
 //!
 //! 模型檔不進 git；找不到時回 [`ModelError::Candle`]，呼叫端退回統計排序。
+//!
+//! 量化權重是同一條 forward 的另一種權重格式：[`QuantReranker`] 與
+//! [`QuantPunctuation`] 從 GGUF 讀 ggml 量化區塊，載入後不還原成 fp32。
+//! 檔案放 `models/quant/candle/<model>/<dtype>/model.gguf`，`.gguf` 副檔名
+//! 會自動走量化路徑。
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -35,18 +43,27 @@ use crate::error::{ModelError, Result};
 use crate::layout::PackedBatch;
 use crate::manifest::ModelSpec;
 
+pub mod punct;
 pub mod quant;
 
-pub use quant::{export_gguf, QuantDtype, QuantReranker, DEFAULT_QUANT_FILE};
+pub use punct::CandlePunctuation;
+pub use quant::{
+    export_gguf, export_gguf_with_embedding, export_punct_gguf, EmbeddingDtype, QuantDtype,
+    QuantPunctuation, QuantReranker, DEFAULT_QUANT_FILE,
+};
 
 /// candle 後端的名稱。
 pub const BACKEND_NAME: &str = "candle";
 /// safetensors 權重檔的預設檔名。
 pub const DEFAULT_WEIGHTS_FILE: &str = "model.safetensors";
-/// 覆寫權重路徑的環境變數。
+/// 覆寫 reranker 權重路徑的環境變數。
 pub const WEIGHTS_ENV: &str = "JC_RERANK_WEIGHTS";
-/// 覆寫預設後端的環境變數；值為 `ort` 或 `candle`。
+/// 覆寫標點模型權重路徑的環境變數。
+pub const PUNCT_WEIGHTS_ENV: &str = "JC_PUNCT_WEIGHTS";
+/// 覆寫 reranker 預設後端的環境變數；值為 `ort` 或 `candle`。
 pub const BACKEND_ENV: &str = "JC_RERANK_BACKEND";
+/// 覆寫標點模型預設後端的環境變數；值為 `ort` 或 `candle`。
+pub const PUNCT_BACKEND_ENV: &str = "JC_PUNCT_BACKEND";
 /// LayerNorm 的 epsilon，與 PyTorch `nn.LayerNorm` 預設值一致。
 const LAYER_NORM_EPS: f32 = 1e-5;
 /// 位置嵌入的列數；訓練設定 `max_positions = 512`。
@@ -116,9 +133,13 @@ pub fn default_backend() -> Backend {
     match DEFAULT_BACKEND.load(Ordering::Relaxed) {
         0 => Backend::Ort,
         1 => Backend::Candle,
-        _ => std::env::var(BACKEND_ENV)
-            .ok()
-            .and_then(|value| value.parse().ok())
+        _ => [BACKEND_ENV, PUNCT_BACKEND_ENV]
+            .iter()
+            .find_map(|name| {
+                std::env::var(name)
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+            })
             .unwrap_or(Backend::Ort),
     }
 }
@@ -138,6 +159,8 @@ pub struct CandleConfig {
     pub ffn_dim: usize,
     /// 池化 slot，等於 `candidate_slot`。
     pub pool_slot: usize,
+    /// 位置嵌入的列數；兩個模型都是 512。
+    pub max_positions: usize,
 }
 
 impl CandleConfig {
@@ -150,6 +173,20 @@ impl CandleConfig {
             num_heads: 8,
             ffn_dim: 1024,
             pool_slot: spec.candidate_slot(),
+            max_positions: MAX_POSITIONS,
+        }
+    }
+
+    /// 標點模型的架構；只有位置與 head 不同，encoder 完全一樣。
+    pub fn for_punct() -> Self {
+        Self {
+            vocab_size: 32768,
+            d_model: 512,
+            num_layers: 8,
+            num_heads: 8,
+            ffn_dim: 1024,
+            pool_slot: 0,
+            max_positions: MAX_POSITIONS,
         }
     }
 
@@ -203,7 +240,17 @@ pub fn position_ids(spec: &ModelSpec) -> std::result::Result<Vec<u32>, String> {
 /// 依序看 [`WEIGHTS_ENV`]、`model.safetensors`、`<model 檔名>.safetensors`。
 /// 都不存在時回 `None`。
 pub fn weights_path(dir: &Path, spec: &ModelSpec) -> Option<PathBuf> {
-    if let Some(value) = std::env::var_os(WEIGHTS_ENV) {
+    weights_path_with_env(dir, spec, WEIGHTS_ENV)
+}
+
+/// 標點模型的權重路徑；規則與 [`weights_path`] 相同，環境變數換成
+/// [`PUNCT_WEIGHTS_ENV`]。
+pub fn punct_weights_path(dir: &Path, spec: &ModelSpec) -> Option<PathBuf> {
+    weights_path_with_env(dir, spec, PUNCT_WEIGHTS_ENV)
+}
+
+fn weights_path_with_env(dir: &Path, spec: &ModelSpec, env: &str) -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os(env) {
         let path = PathBuf::from(value);
         if path.is_file() {
             return Some(path);
@@ -331,7 +378,12 @@ impl<L: LinearOp> Layer<L> {
         }
     }
 
-    fn forward(&self, hidden: &Tensor, mask: &Tensor, config: &CandleConfig) -> Result<Tensor> {
+    fn forward(
+        &self,
+        hidden: &Tensor,
+        mask: Option<&Tensor>,
+        config: &CandleConfig,
+    ) -> Result<Tensor> {
         let attended = self.attention(hidden, mask, config)?;
         let hidden = (hidden + attended).map_err(inference)?;
         let normed = self.norm2(&hidden)?;
@@ -345,7 +397,12 @@ impl<L: LinearOp> Layer<L> {
         layer_norm(hidden, &self.norm2_weight, &self.norm2_bias, LAYER_NORM_EPS).map_err(inference)
     }
 
-    fn attention(&self, hidden: &Tensor, mask: &Tensor, config: &CandleConfig) -> Result<Tensor> {
+    fn attention(
+        &self,
+        hidden: &Tensor,
+        mask: Option<&Tensor>,
+        config: &CandleConfig,
+    ) -> Result<Tensor> {
         let (batch, seq, _) = hidden.dims3().map_err(inference)?;
         let head_dim = config.head_dim().map_err(ModelError::Manifest)?;
         let normed = layer_norm(hidden, &self.norm1_weight, &self.norm1_bias, LAYER_NORM_EPS)
@@ -372,9 +429,12 @@ impl<L: LinearOp> Layer<L> {
         let scores = query
             .matmul(&key.transpose(2, 3).map_err(inference)?)
             .and_then(|t| t.affine(scale, 0.0))
-            .and_then(|t| t.broadcast_add(mask))
-            .and_then(|t| softmax(&t, D::Minus1))
             .map_err(inference)?;
+        let scores = match mask {
+            Some(mask) => scores.broadcast_add(mask).map_err(inference)?,
+            None => scores,
+        };
+        let scores = softmax(&scores, D::Minus1).map_err(inference)?;
         let context = scores
             .matmul(&value)
             .and_then(|t| t.transpose(1, 2))
@@ -395,7 +455,42 @@ struct Encoder<L> {
     layers: Vec<Layer<L>>,
     final_norm_weight: Tensor,
     final_norm_bias: Tensor,
-    score_head: Linear,
+    score_head: Option<Linear>,
+}
+
+impl Encoder<Linear> {
+    /// 從 safetensors 載入 encoder；head 由呼叫端自己接。
+    pub(crate) fn load(vb: &VarBuilder, config: &CandleConfig) -> Result<Self> {
+        let d = config.d_model;
+        let token_embedding = Embedding::new(
+            vb.get((config.vocab_size, d), "token_embedding.weight")
+                .map_err(inference)?,
+            d,
+        );
+        let position_embedding = Embedding::new(
+            vb.get((config.max_positions, d), "position_embedding.weight")
+                .map_err(inference)?,
+            d,
+        );
+        let layers = (0..config.num_layers)
+            .map(|index| Layer::load(vb, &format!("encoder.layers.{index}"), config))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self::new(
+            *config,
+            Box::new(token_embedding),
+            position_embedding,
+            (
+                vb.get(d, "embedding_norm.weight").map_err(inference)?,
+                vb.get(d, "embedding_norm.bias").map_err(inference)?,
+            ),
+            layers,
+            (
+                vb.get(d, "encoder.norm.weight").map_err(inference)?,
+                vb.get(d, "encoder.norm.bias").map_err(inference)?,
+            ),
+            None,
+        ))
+    }
 }
 
 impl<L: LinearOp> Encoder<L> {
@@ -406,7 +501,7 @@ impl<L: LinearOp> Encoder<L> {
         embedding_norm: (Tensor, Tensor),
         layers: Vec<Layer<L>>,
         final_norm: (Tensor, Tensor),
-        score_head: Linear,
+        score_head: Option<Linear>,
     ) -> Self {
         Self {
             config,
@@ -422,8 +517,8 @@ impl<L: LinearOp> Encoder<L> {
     }
 
     /// encoder forward；`ids` 與 `positions` 同形，`mask` 是
-    /// `(rows, 1, 1, width)` 的加成遮罩。
-    fn forward(&self, ids: &Tensor, positions: &Tensor, mask: &Tensor) -> Result<Tensor> {
+    /// `(rows, 1, 1, width)` 的加成遮罩，`None` 代表全部可 attend。
+    fn forward(&self, ids: &Tensor, positions: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
         let tokens = self.token_embedding.lookup(ids)?;
         let (rows, width) = positions.dims2().map_err(inference)?;
         let positions = self
@@ -454,7 +549,11 @@ impl<L: LinearOp> Encoder<L> {
 
     /// 候選分數；`pooled` 是 `(rows, d_model)`。
     fn score_head(&self, pooled: &Tensor) -> Result<Vec<f32>> {
-        Linear::forward(&self.score_head, pooled)
+        let head = self
+            .score_head
+            .as_ref()
+            .ok_or_else(|| ModelError::Candle("encoder 沒有 scalar head".into()))?;
+        Linear::forward(head, pooled)
             .and_then(|t| t.to_dtype(DType::F32))
             .and_then(|t| t.flatten_all())
             .and_then(|t| t.to_vec1::<f32>())
@@ -515,7 +614,7 @@ impl CandleReranker {
                 vb.get(d, "encoder.norm.weight").map_err(inference)?,
                 vb.get(d, "encoder.norm.bias").map_err(inference)?,
             ),
-            score_head,
+            Some(score_head),
         );
         Ok(Self {
             config,
@@ -596,7 +695,7 @@ fn score_packed_with<L: LinearOp>(
     let ids = Tensor::from_vec(ids, (rows, width), device).map_err(inference)?;
     let positions = Tensor::from_vec(positions, (rows, width), device).map_err(inference)?;
     let mask = Tensor::from_vec(mask, (rows, 1, 1, width), device).map_err(inference)?;
-    let hidden = encoder.forward(&ids, &positions, &mask)?;
+    let hidden = encoder.forward(&ids, &positions, Some(&mask))?;
     let mut pooled = Vec::with_capacity(rows);
     for (row, &pool) in pools.iter().enumerate() {
         pooled.push(
@@ -654,6 +753,35 @@ fn linear_chunked(x: &Tensor, layer: &Linear) -> Result<Tensor> {
 
 fn inference(err: candle_core::Error) -> ModelError {
     ModelError::Candle(err.to_string())
+}
+
+/// 把 padding mask 轉成 `(rows, 1, 1, width)` 的加成遮罩。
+///
+/// `None` 代表全部是真 token，可以完全跳過遮罩加法。
+pub(crate) fn additive_mask(mask: &[i64], rows: usize, width: usize) -> Option<Tensor> {
+    if mask[..rows * width].iter().all(|value| *value != 0) {
+        return None;
+    }
+    let mut values = vec![MASK_PENALTY; rows * width];
+    for (index, value) in mask[..rows * width].iter().enumerate() {
+        if *value != 0 {
+            values[index] = 0.0;
+        }
+    }
+    Tensor::from_vec(values, (rows, 1, 1, width), &Device::Cpu).ok()
+}
+
+/// 載入 fp32 safetensors 的共用入口。
+pub(crate) fn load_weights(weights: &Path) -> Result<(Device, VarBuilder<'static>)> {
+    // VarBuilder 內含 mmap 的 tensor 資料，與 `weights` 的 lifetime 無關；
+    // 這裡延長成 'static 讓呼叫端能把 encoder 與分類頭一起載入。
+    let device = Device::Cpu;
+    // SAFETY: 權重檔在行程生命週期內不會被改寫；mmap 只讀取。
+    let builder: VarBuilder<'static> = unsafe {
+        VarBuilder::from_mmaped_safetensors(&[weights.to_path_buf()], DType::F32, &device)
+    }
+    .map_err(inference)?;
+    Ok((device, builder))
 }
 
 #[cfg(test)]
