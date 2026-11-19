@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 mod core;
 mod input_style;
+mod mixed;
 mod segments;
 pub mod symbols;
 
@@ -35,7 +36,7 @@ use crate::ja::personal as ja_personal;
 use crate::key::{Key, KeyCode};
 use crate::lang::Mode;
 use crate::lattice::{InMemoryLexicon, Lattice};
-use crate::mixed::{space_text, AsciiInput, AsciiPiece, Spacing};
+use crate::mixed::{space_text, Spacing};
 use crate::output::{rune_len, utf16_len, HansConverter, SharedPunctuator, Snapshot};
 use crate::personal::PersonalStore;
 use crate::punct::{self, Edit};
@@ -45,6 +46,7 @@ use crate::segment::{Script, Segment};
 use crate::zh::han::is_han;
 use crate::zh::input::ZhInput;
 use crate::zh::syllable::Syllable;
+use mixed::AsciiInput;
 
 /// 這個 crate 的語意版本，供協定握手與診斷使用。
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -244,6 +246,13 @@ pub struct Session {
     pub(super) last_ja_results: Vec<JaResult>,
     /// 混合模式的英數按鍵推斷。
     pub(super) ascii: AsciiInput,
+    /// 混合模式依按鍵推斷出來的日文片段。
+    ///
+    /// 有值時 [`Session::config`] 的 `mode` 暫時是 [`Mode::Ja`]，送出或取消後
+    /// 回到原本的模式（對照 `ja_mixed.go` 的 `japaneseRun`）。
+    pub(super) ja_run: bool,
+    /// 日文推斷前的模式；結束日文片段時還原。
+    pub(super) ja_prev_mode: Mode,
     /// 目前開啟的候選選單。
     pub(super) menu: Option<Menu>,
     /// 表情分頁的最後選擇；下次開選單時沿用。
@@ -331,6 +340,8 @@ impl Session {
             last_hypotheses: Vec::new(),
             last_ja_results: Vec::new(),
             ascii: AsciiInput::new(),
+            ja_run: false,
+            ja_prev_mode: Mode::Mixed,
             menu: None,
             palette_tab: 0,
             symbol_recent: Vec::new(),
