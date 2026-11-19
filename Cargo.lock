@@ -170,6 +170,7 @@ version = "0.1.0"
 name = "jc-core"
 version = "0.1.0"
 dependencies = [
+ "jc-testdata",
  "thiserror",
  "unicode-script",
  "unicode_categories",
