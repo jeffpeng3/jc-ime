@@ -100,6 +100,7 @@
 | `session-g1-input`（修測試） | `4a493c3` | `f442cd4` | 通過（fmt／clippy／全量 test／兩個 eval） | 2026-11-20 06:37 |
 | `candle-quant` | `51f459c` | `1972ae1` | test 1 個失敗、clippy 1 個錯（皆 branch 自帶） | 2026-11-20 06:40 |
 | `candle-quant`（修門檻） | `66347f4` | `77d8c1f` | 通過（fmt／clippy／全量 test） | 2026-11-20 06:52 |
+| `session-g4-mixed` | `6b9f1b5` | `8de9306` | 通過（fmt／clippy／test／三個 eval） | 2026-11-20 07:02 |
 
 ## 衝突與修正
 
@@ -931,3 +932,16 @@
   解掉 `too_many_arguments`；量化測試門檻依實測差距調整（Q8_0 容許值放寬到實測誤差之上）。
   fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（45 targets、1022 passed、0 failed）。
   先前 1 個 test 與 1 個 clippy 錯全部解除，全量測試回到全綠。
+
+- `session-g4-mixed`（合併 `8de9306`，含 `6b9f1b5`）：無衝突。混合狀態搬進 `session/mixed.rs`（944 行），
+  `mixed.rs` 只留 `Router` 與英文詞表，`core.rs` 的混打重建改呼叫新模組；`mod.rs` 加 `ja_run`／`ja_prev_mode`。
+
+  gate：fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（45 targets、1029 passed、0 failed）。
+  實測：`eval mixed` **6/6**；`eval zh-golden` **45/45**；`eval ja modern-500` **86.0%**、p50 3.100 ms。
+
+  n/a 清單與理由：
+  - `core/session/language.go` → n/a：Rust 用 `Mode`＋`SessionConfig`，沒有可插拔的 `lang.Profile`／`languageRuntime`，
+    `SetLanguage`／`InputMethod` 也沒有產品介面。
+  - `core/session/ja_cross.go` → n/a：日英同形需要語言 runtime 的 clause 與候選清單，目前 `Mode::Ja` 直接顯示最佳轉換。
+  - `core/session/pronoun.go` → 模型已在 `personal/pronoun.rs`，但 Session 沒有 `personal::Model` 與 `path`／`hint` 顯示路徑，
+    等 rerank／misc 群組接線。
