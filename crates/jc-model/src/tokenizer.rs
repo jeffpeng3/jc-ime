@@ -1,13 +1,15 @@
-//! 0c SentencePiece 詞表與前處理。
+//! 0c 日文 SentencePiece 詞表與前處理。
 //!
-//! 模型包附的 `vocab.json` 格式是 `0c.sentencepiece.vocab/1`：只有
-//! `id_to_piece` 與 `special_tokens`，**沒有** SentencePiece 的 piece
-//! log-probability。因此這裡不能用 unigram Viterbi 還原訓練時的切法，
-//! 改採最長前綴匹配（maximal munch），找不到 piece 的位元組再走 byte
-//! fallback。這個限制寫在 `docs/port/jc-model.md`。
+//! 有兩種來源：
 //!
-//! 正規化沿用前身 `internal/spm` 的 identity normalizer：移除多餘空白、
-//! 加上 dummy prefix、把空白轉成 U+2581。
+//! - **SentencePiece 模型**（`*.model`，`ModelProto`）：含 piece 的
+//!   log-probability，走真正的 unigram Viterbi，見 [`crate::spm`]。這是預設路徑。
+//! - **只有詞表的 `vocab.json`**（`0c.sentencepiece.vocab/1`）：沒有 piece
+//!   分數，無法還原訓練時的切法，只能改用最長前綴匹配（maximal munch）近似。
+//!   這個格式留著給舊模型包與對照用。
+//!
+//! 兩個來源共用同一套正規化語意（identity 規則、合併空白、dummy prefix、
+//! 空白轉 U+2581）；`vocab.json` 沒有 `normalizer_spec`，用固定預設值。
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -17,6 +19,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::error::{ModelError, Result};
+use crate::spm;
 
 /// 一個 token 在正規化字串中的 rune 範圍，以及是否來自 byte fallback。
 ///
@@ -34,16 +37,26 @@ pub struct TokenSpan {
     pub byte: bool,
 }
 
-/// 支援的 vocab 格式。
+/// 支援的 `vocab.json` 格式。
 pub const VOCAB_SCHEMA: &str = "0c.sentencepiece.vocab/1";
 
 /// 空白轉義字元（U+2581）。
 pub const SPACE: char = '\u{2581}';
 
+/// 編碼策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strategy {
+    /// unigram Viterbi，使用 piece 分數；需要 SentencePiece 模型。
+    Unigram,
+    /// 最長前綴匹配；只有詞表時的近似解。
+    MaxMatch,
+}
+
 /// 前處理後的 tokenizer。
 #[derive(Debug, Clone)]
 pub struct Tokenizer {
     pieces: Vec<String>,
+    /// 只含可匹配 piece 的索引，給最長前綴匹配用。
     ids: HashMap<String, u32>,
     byte_ids: [Option<u32>; 256],
     max_piece_bytes: usize,
@@ -52,6 +65,8 @@ pub struct Tokenizer {
     eos_id: u32,
     pad_id: u32,
     model_name: String,
+    strategy: Strategy,
+    spm: Option<spm::Model>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,14 +83,72 @@ struct RawVocab {
 }
 
 impl Tokenizer {
-    /// 從 `vocab.json` 載入。
+    /// 載入 tokenizer 檔。
+    ///
+    /// 內容以 `{` 開頭視為 `vocab.json`，其餘視為 SentencePiece 的
+    /// `ModelProto`；不看副檔名，方便 manifest 任意命名。
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let raw = fs::read(path)?;
-        Self::from_json(&raw).map_err(|e| ModelError::tokenizer(format!("{}：{e}", path.display())))
+        Self::from_bytes(&raw)
+            .map_err(|e| ModelError::tokenizer(format!("{}：{e}", path.display())))
     }
 
-    /// 從 JSON bytes 載入。
+    /// 從檔案內容載入，自動判斷格式。
+    pub fn from_bytes(raw: &[u8]) -> Result<Self> {
+        let head = raw.iter().find(|b| !b.is_ascii_whitespace());
+        match head {
+            Some(b'{') => Self::from_json(raw),
+            Some(_) => Self::from_spm_bytes(raw),
+            None => Err(ModelError::tokenizer("tokenizer 檔是空的")),
+        }
+    }
+
+    /// 從 SentencePiece `ModelProto` 載入，使用 unigram Viterbi。
+    pub fn from_spm_bytes(raw: &[u8]) -> Result<Self> {
+        let model = spm::Model::parse(raw)?;
+        let n = model.len();
+        let mut ids = HashMap::with_capacity(n);
+        let mut byte_ids = [None; 256];
+        for id in 0..n as u32 {
+            let Some(piece) = model.piece(id) else {
+                continue;
+            };
+            if piece.is_empty() {
+                continue;
+            }
+            match model.piece_type(id) {
+                Some(spm::PieceType::Normal) | Some(spm::PieceType::UserDefined) => {
+                    // 重複的 piece 保留先出現的 id，與 SentencePiece 一致。
+                    ids.entry(piece.to_string()).or_insert(id);
+                }
+                Some(spm::PieceType::Byte) => {
+                    if let Some(b) = parse_byte_piece(piece) {
+                        byte_ids[b as usize].get_or_insert(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let max_piece_bytes = ids.keys().map(|p| p.len()).max().unwrap_or(0).min(128);
+        Ok(Self {
+            pieces: (0..n as u32)
+                .map(|id| model.piece(id).unwrap_or_default().to_string())
+                .collect(),
+            ids,
+            byte_ids,
+            max_piece_bytes,
+            unk_id: model.unk_id(),
+            bos_id: model.bos_id(),
+            eos_id: model.eos_id(),
+            pad_id: model.pad_id(),
+            model_name: "sentencepiece".to_string(),
+            strategy: Strategy::Unigram,
+            spm: Some(model),
+        })
+    }
+
+    /// 從 `vocab.json` 載入，使用最長前綴匹配。
     pub fn from_json(raw: &[u8]) -> Result<Self> {
         let v: RawVocab = serde_json::from_slice(raw)
             .map_err(|e| ModelError::tokenizer(format!("JSON 解析失敗：{e}")))?;
@@ -115,29 +188,17 @@ impl Tokenizer {
             }
         }
 
-        let mut byte_ids = [None; 256];
-        for (b, slot) in byte_ids.iter_mut().enumerate() {
-            let upper = format!("<0x{b:02X}>");
-            let lower = format!("<0x{b:02x}>");
-            if let Some((idx, _)) = v
-                .id_to_piece
-                .iter()
-                .enumerate()
-                .find(|(_, p)| **p == upper || **p == lower)
-            {
-                *slot = Some(idx as u32);
-            }
-        }
-
         let special_ids = [unk_id, bos_id, eos_id, pad_id];
-        let mut ids = HashMap::with_capacity(v.id_to_piece.len());
+        let mut ids = HashMap::with_capacity(n);
+        let mut byte_ids = [None; 256];
         let mut max_piece_bytes = 0;
         for (idx, piece) in v.id_to_piece.iter().enumerate() {
             let id = idx as u32;
-            if piece.is_empty()
-                || special_ids.contains(&id)
-                || piece.starts_with("<0x") && piece.ends_with('>')
-            {
+            if let Some(b) = parse_byte_piece(piece) {
+                byte_ids[b as usize].get_or_insert(id);
+                continue;
+            }
+            if piece.is_empty() || special_ids.contains(&id) {
                 continue;
             }
             ids.entry(piece.clone()).or_insert(id);
@@ -156,6 +217,8 @@ impl Tokenizer {
             eos_id,
             pad_id,
             model_name: v.model.unwrap_or_default(),
+            strategy: Strategy::MaxMatch,
+            spm: None,
         })
     }
 
@@ -169,9 +232,38 @@ impl Tokenizer {
         self.pieces.is_empty()
     }
 
-    /// 模型名稱（vocab.json 的 `model` 欄位）。
+    /// 模型名稱：`vocab.json` 的 `model` 欄位，或 `sentencepiece`。
     pub fn model_name(&self) -> &str {
         &self.model_name
+    }
+
+    /// 目前使用的編碼策略。
+    pub fn strategy(&self) -> Strategy {
+        self.strategy
+    }
+
+    /// 正規化規則名稱；只有 SentencePiece 模型有。
+    pub fn normalizer_rule(&self) -> Option<&str> {
+        self.spm.as_ref().map(|m| m.normalizer().rule.as_str())
+    }
+
+    /// 是否支援 byte fallback。
+    pub fn byte_fallback(&self) -> bool {
+        match &self.spm {
+            Some(model) => model.byte_fallback(),
+            None => self.byte_ids.iter().any(Option::is_some),
+        }
+    }
+
+    /// 同一份詞表改用最長前綴匹配。
+    ///
+    /// 詞表不變，只換切法；用來量測「沒有 piece 分數」與「有 piece 分數」
+    /// 的差別，見 `docs/port/rerank-tokenizer.md`。
+    pub fn as_max_match(&self) -> Self {
+        Self {
+            strategy: Strategy::MaxMatch,
+            ..self.clone()
+        }
     }
 
     /// `<unk>` id。
@@ -195,12 +287,34 @@ impl Tokenizer {
     }
 
     /// 查 piece 的 id；不存在時回傳 `None`。
+    ///
+    /// 與 SentencePiece 的 `PieceToId` 一樣看得到控制符與 byte piece（線性
+    /// 掃描詞表，只給測試與工具用；編碼走另一份只看一般 piece 的索引）。
     pub fn piece_id(&self, piece: &str) -> Option<u32> {
-        self.ids.get(piece).copied()
+        self.pieces
+            .iter()
+            .position(|p| p == piece)
+            .map(|id| id as u32)
+    }
+
+    /// 查 id 的 piece 文字。
+    pub fn piece(&self, id: u32) -> Option<&str> {
+        self.pieces.get(id as usize).map(String::as_str)
+    }
+
+    /// 查 id 的 unigram 分數；最長前綴匹配或 `vocab.json` 沒有分數時回傳 `None`。
+    pub fn score(&self, id: u32) -> Option<f32> {
+        if self.strategy != Strategy::Unigram {
+            return None;
+        }
+        self.spm.as_ref().and_then(|m| m.score(id))
     }
 
     /// 前處理：trim、合併空白、加 dummy prefix、把空白轉成 U+2581。
     pub fn normalize(&self, text: &str) -> String {
+        if let Some(model) = &self.spm {
+            return model.normalize(text);
+        }
         self.normalize_map(text).0
     }
 
@@ -248,6 +362,11 @@ impl Tokenizer {
 
     /// 編碼成 token id。
     pub fn encode(&self, text: &str) -> Vec<u32> {
+        if self.strategy == Strategy::Unigram {
+            if let Some(model) = &self.spm {
+                return model.encode(text);
+            }
+        }
         self.encode_with_map(text)
             .0
             .into_iter()
@@ -354,9 +473,20 @@ impl Tokenizer {
     }
 }
 
+/// 解析 `<0xNN>` 形式的 byte piece。
+fn parse_byte_piece(piece: &str) -> Option<u8> {
+    let hex = piece.strip_prefix("<0x")?.strip_suffix('>')?;
+    if hex.len() != 2 {
+        return None;
+    }
+    u8::from_str_radix(hex, 16).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spm::{ModelProto, NormalizerSpec, Piece, PieceType, TrainerSpec};
+    use prost::Message;
 
     /// 造一份小詞表：4 個 special、256 個 byte piece、其餘為測試 piece。
     fn vocab() -> Vec<u8> {
@@ -401,18 +531,169 @@ mod tests {
         t.pieces.iter().position(|p| p == piece).unwrap() as u32
     }
 
+    /// 小 SentencePiece 模型：`▁東京都` 的分數很差，Viterbi 會拆開。
+    fn spm_bytes() -> Vec<u8> {
+        let mut pieces = vec![
+            piece("<pad>", 0.0, PieceType::Control),
+            piece("<unk>", 0.0, PieceType::Unknown),
+            piece("<s>", 0.0, PieceType::Control),
+            piece("</s>", 0.0, PieceType::Control),
+        ];
+        for b in 0..=255u16 {
+            pieces.push(piece(&format!("<0x{b:02X}>"), 0.0, PieceType::Byte));
+        }
+        for (p, score) in [
+            ("▁", -3.0),
+            ("▁東", -4.0),
+            ("▁東京", -2.0),
+            ("▁東京都", -9.0),
+            ("東京", -1.0),
+            ("東", -2.5),
+            ("京", -2.5),
+            ("都", -2.0),
+        ] {
+            pieces.push(piece(p, score, PieceType::Normal));
+        }
+        let proto = ModelProto {
+            pieces,
+            trainer_spec: Some(TrainerSpec {
+                model_type: Some(1),
+                byte_fallback: Some(true),
+                unk_id: Some(1),
+                bos_id: Some(2),
+                eos_id: Some(3),
+                pad_id: Some(0),
+            }),
+            normalizer_spec: Some(NormalizerSpec {
+                name: "identity".into(),
+                precompiled_charsmap: Vec::new(),
+                add_dummy_prefix: Some(true),
+                remove_extra_whitespaces: Some(true),
+                escape_whitespaces: Some(true),
+            }),
+        };
+        let mut buf = Vec::new();
+        proto.encode(&mut buf).unwrap();
+        buf
+    }
+
+    fn piece(text: &str, score: f32, kind: PieceType) -> Piece {
+        Piece {
+            piece: text.to_string(),
+            score,
+            r#type: kind as i32,
+        }
+    }
+
+    fn spm_tokenizer() -> Tokenizer {
+        Tokenizer::from_spm_bytes(&spm_bytes()).unwrap()
+    }
+
+    /// 前身 `internal/spm/spm_test.go` 的 `testModel`：同一份 id 配置與分數。
+    fn go_model(byte_fallback: bool) -> Vec<u8> {
+        let mut pieces = vec![
+            piece("<unk>", 0.0, PieceType::Unknown),
+            piece("<s>", 0.0, PieceType::Control),
+            piece("</s>", 0.0, PieceType::Control),
+            piece("<pad>", 0.0, PieceType::Control),
+            piece("▁", -1.0, PieceType::Normal),
+            piece("▁a", -2.0, PieceType::Normal),
+            piece("a", -3.0, PieceType::Normal),
+            piece("b", -4.0, PieceType::Normal),
+            piece("▁ab", -5.0, PieceType::Normal),
+            piece("ab", -6.0, PieceType::Normal),
+        ];
+        if byte_fallback {
+            for name in ["<0xE3>", "<0x81>", "<0x82>", "<0x80>"] {
+                pieces.push(piece(name, 0.0, PieceType::Byte));
+            }
+        }
+        let proto = ModelProto {
+            pieces,
+            trainer_spec: Some(TrainerSpec {
+                model_type: Some(1),
+                byte_fallback: Some(byte_fallback),
+                unk_id: Some(0),
+                bos_id: Some(1),
+                eos_id: Some(2),
+                pad_id: Some(3),
+            }),
+            normalizer_spec: Some(NormalizerSpec {
+                name: "identity".into(),
+                precompiled_charsmap: Vec::new(),
+                add_dummy_prefix: Some(true),
+                remove_extra_whitespaces: Some(true),
+                escape_whitespaces: Some(true),
+            }),
+        };
+        let mut buf = Vec::new();
+        proto.encode(&mut buf).unwrap();
+        buf
+    }
+
+    fn go_tokenizer(byte_fallback: bool) -> Tokenizer {
+        Tokenizer::from_spm_bytes(&go_model(byte_fallback)).unwrap()
+    }
+
+    /// 前身 `TestNormalize`。
     #[test]
-    fn normalize_adds_dummy_prefix_and_collapses_spaces() {
-        let t = tokenizer();
-        assert_eq!(t.normalize("東京都"), "▁東京都");
-        assert_eq!(t.normalize("  東京  都  "), "▁東京▁都");
-        assert_eq!(t.normalize(""), "");
-        assert_eq!(t.normalize("   "), "");
+    fn test_normalize() {
+        let t = go_tokenizer(false);
+        for (input, want) in [
+            ("", ""),
+            ("   ", ""),
+            ("a", "▁a"),
+            ("  a  b ", "▁a▁b"),
+            ("a b", "▁a▁b"),
+            ("a  b  c", "▁a▁b▁c"),
+            ("\t a", "▁\t▁a"),
+        ] {
+            assert_eq!(t.normalize(input), want, "normalize({input:?})");
+        }
+    }
+
+    /// 前身 `TestEncodeViterbi`。
+    #[test]
+    fn test_encode_viterbi() {
+        let t = go_tokenizer(false);
+        assert!(t.encode("").is_empty());
+        // ▁a 勝過 ▁+a；▁ab 勝過 ▁a+b。
+        assert_eq!(t.encode("a"), vec![5]);
+        assert_eq!(t.encode("ab"), vec![8]);
+        // 這個模型沒有 ▁b，所以「a b」是 ▁a ▁ b。
+        assert_eq!(t.encode("a b"), vec![5, 4, 7]);
+    }
+
+    /// 前身 `TestEncodeUnknown`。
+    #[test]
+    fn test_encode_unknown() {
+        // 沒有 byte fallback：未知字是一個 unknown piece。
+        assert_eq!(go_tokenizer(false).encode("あ"), vec![4, 0]);
+        // 有 byte fallback：展開成 UTF-8 byte piece。
+        let t = go_tokenizer(true);
+        let want = vec![
+            4,
+            t.piece_id("<0xE3>").unwrap(),
+            t.piece_id("<0x81>").unwrap(),
+            t.piece_id("<0x82>").unwrap(),
+        ];
+        assert_eq!(t.encode("あ"), want);
     }
 
     #[test]
-    fn encode_prefers_longest_piece() {
+    fn normalize_adds_dummy_prefix_and_collapses_spaces() {
+        for t in [tokenizer(), spm_tokenizer()] {
+            assert_eq!(t.normalize("東京都"), "▁東京都");
+            assert_eq!(t.normalize("  東京  都  "), "▁東京▁都");
+            assert_eq!(t.normalize(""), "");
+            assert_eq!(t.normalize("   "), "");
+        }
+    }
+
+    #[test]
+    fn encode_prefers_longest_piece_without_scores() {
         let t = tokenizer();
+        assert_eq!(t.strategy(), Strategy::MaxMatch);
         assert_eq!(t.encode("東京都"), vec![id_of(&t, "▁東京都")]);
         assert_eq!(
             t.encode("大阪"),
@@ -475,10 +756,11 @@ mod tests {
 
     #[test]
     fn decode_roundtrips_pieces_and_byte_fallback() {
-        let t = tokenizer();
-        assert_eq!(t.decode(&t.encode("東京都")), " 東京都");
-        assert_eq!(t.decode(&t.encode("あ")), " あ");
-        assert_eq!(t.decode(&[t.pad_id()]), "");
+        for t in [tokenizer(), spm_tokenizer()] {
+            assert_eq!(t.decode(&t.encode("東京都")), " 東京都");
+            assert_eq!(t.decode(&t.encode("あ")), " あ");
+            assert_eq!(t.decode(&[t.pad_id()]), "");
+        }
     }
 
     #[test]
@@ -501,18 +783,84 @@ mod tests {
     }
 
     #[test]
-    fn real_vocab_encodes_japanese() {
-        let path = jc_testdata::require_data!("models/reranker-extra/vocab.json");
+    fn from_bytes_detects_both_formats() {
+        assert_eq!(
+            Tokenizer::from_bytes(&vocab()).unwrap().strategy(),
+            Strategy::MaxMatch
+        );
+        let t = Tokenizer::from_bytes(&spm_bytes()).unwrap();
+        assert_eq!(t.strategy(), Strategy::Unigram);
+        assert_eq!(t.model_name(), "sentencepiece");
+        assert_eq!(t.normalizer_rule(), Some("identity"));
+        assert!(t.byte_fallback());
+        assert!(matches!(
+            Tokenizer::from_bytes(b""),
+            Err(ModelError::Tokenizer(_))
+        ));
+    }
+
+    #[test]
+    fn unigram_beats_max_match_when_the_long_piece_scores_badly() {
+        let t = spm_tokenizer();
+        assert_eq!(
+            t.encode("東京都"),
+            vec![t.piece_id("▁東京").unwrap(), t.piece_id("都").unwrap()]
+        );
+        // 同一份詞表改成最長前綴匹配，會挑最長的「▁東京都」。
+        let plain = t.as_max_match();
+        assert_eq!(plain.strategy(), Strategy::MaxMatch);
+        assert_eq!(plain.encode("東京都"), vec![t.piece_id("▁東京都").unwrap()]);
+        assert_eq!(plain.score(plain.encode("東京都")[0]), None);
+    }
+
+    #[test]
+    fn real_model_metadata_matches_the_released_file() {
+        let path = jc_testdata::require_data!("models/ja-tokenizer/public_core_ja.model");
         let t = Tokenizer::load(&path).unwrap();
         assert_eq!(t.len(), 32768);
-        assert_eq!(t.model_name(), "public_core_ja");
-        let ids = t.encode("東京都に行く");
-        assert!(!ids.is_empty());
-        assert!(ids.len() <= "東京都に行く".len() * 3);
-        assert!(ids.iter().all(|&id| (id as usize) < t.len()));
-        assert_eq!(
-            t.decode(&ids),
-            t.normalize("東京都に行く").replace(SPACE, " ")
-        );
+        assert_eq!(t.strategy(), Strategy::Unigram);
+        assert_eq!(t.normalizer_rule(), Some("identity"));
+        assert!(t.byte_fallback());
+        assert_eq!(t.unk_id(), 1);
+        assert_eq!(t.bos_id(), 2);
+        assert_eq!(t.eos_id(), 3);
+        assert_eq!(t.pad_id(), 0);
+        assert_eq!(t.piece(263), Some("▁"));
+        assert!(t.score(263).is_some());
+    }
+
+    /// 期望值由前身的 Python `sentencepiece` 0.2.3 產生。
+    #[test]
+    fn real_model_matches_sentencepiece_exactly() {
+        let path = jc_testdata::require_data!("models/ja-tokenizer/public_core_ja.model");
+        let t = Tokenizer::load(&path).unwrap();
+        let cases: [(&str, &[u32]); 8] = [
+            ("東京都に行く", &[7693, 11446]),
+            (
+                "吾輩は猫である。名前はまだ無い。",
+                &[263, 8563, 13065, 264, 5268, 291, 261, 6205, 5140, 6580, 261],
+            ),
+            ("ｶﾀｶﾅ", &[263, 28718, 11642, 28718, 31062]),
+            ("😀絵文字", &[263, 244, 163, 156, 132, 20938]),
+            ("ABC abc 123", &[263, 22351, 263, 5953, 676, 1445, 332]),
+            ("コンピューター", &[263, 3353, 461]),
+            ("東京  都", &[10015, 263, 3468]),
+            ("<0x41>", &[263, 4470, 1256, 1152, 4137, 1498]),
+        ];
+        for (text, want) in cases {
+            assert_eq!(t.encode(text), want, "{text}");
+        }
+        assert!(t.encode("").is_empty());
+        assert!(t.encode("   ").is_empty());
+    }
+
+    #[test]
+    fn real_model_decode_roundtrips() {
+        let path = jc_testdata::require_data!("models/ja-tokenizer/public_core_ja.model");
+        let t = Tokenizer::load(&path).unwrap();
+        for text in ["東京都に行く", "ｶﾀｶﾅ", "😀絵文字", "ABC abc 123"] {
+            let ids = t.encode(text);
+            assert_eq!(t.decode(&ids), t.normalize(text).replace(SPACE, " "));
+        }
     }
 }
