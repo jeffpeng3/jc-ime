@@ -1025,7 +1025,10 @@ mod tests {
             named_key("<").unwrap().map(|key| key.code),
             Some(KeyCode::Char('<'))
         );
-        assert!(named_key("Ctrl+,").is_err());
+        assert!(named_key("<").is_ok());
+        let ctrl_comma = named_key("Ctrl+,").unwrap().unwrap();
+        assert_eq!(ctrl_comma.code, KeyCode::Char(','));
+        assert!(ctrl_comma.ctrl);
     }
 
     #[test]
