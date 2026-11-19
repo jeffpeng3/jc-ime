@@ -70,6 +70,7 @@
 | `zh-select-calibrate`（移除 cfg） | `741e59a` | `5fcf8ca` | 通過（clippy＋jc-cli test） | 2026-11-20 03:19 |
 | `settings-core`（修測試） | `87cfdf1` | `89a4f6f` | 通過（fmt＋clippy＋test） | 2026-11-20 03:28 |
 | `rerank-wordlevel` | `277bd8e` | `9476f51` | fmt／clippy 通過；5 個 test 失敗 | 2026-11-20 03:35 |
+| `rerank-wordlevel`（修測試） | `2c25f3d` | `2e649f5` | 通過（fmt＋clippy＋test） | 2026-11-20 04:00 |
 
 ## 衝突與修正
 
@@ -569,3 +570,15 @@
   gate：`cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0、
   `cargo test --workspace --no-fail-fast` **exit 0**（38 targets、895 passed、1 ignored）。
   重跑 `modern-500 --rerank on`：timeout 23.2%，與原紀錄 29.0% 同屬延遲尾端，差異來自機器負載。
+
+- `rerank-wordlevel` 第二次合併（`2e649f5`，含 `2c25f3d`）：無衝突，修 5 個測試期望（未改產品行為），
+  `ja/rerank.rs` 右文 fixture 改期望 `東京都`、`layout.rs` 候選 slot 改比裸 piece、截斷 mask 改 6、
+  真實 tokenizer 測試先依 `context_ids` 剝詞首 `▁`。
+
+  gate：`cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0、
+  `cargo test --workspace --no-fail-fast` **exit 0**（38 targets、895 passed、0 failed）。
+
+  timeout 解釋（作者補在 `docs/port/rerank-wordlevel.md`）：500 題挑出 3973 個詞群、截到每題 3 組後剩 1452 組，
+  實際送模型 556 組，平均每題 1.1 次推論；**單次推論 p50 約 20 ms、p95 約 46–50 ms**。100 ms 預算只比整題中位數
+  高 1.3–1.5 倍，一題碰到 2–3 次推論或第二次 Viterbi 落到尾端就會超過，所以 `eval timeout` 落在 **23–29%**；
+  重排自身的 `timeout` 只有 **1–2 次**（1/500 到 2/500），兩者用的是不同計時器。
