@@ -12,10 +12,12 @@
 //! 沒有詞典時注音與日文仍可運作：詞格只有未知詞邊，輸出等於讀音本身，
 //! 方便在沒有資料的環境跑協定與薄層行為測試。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::candidate::{Candidate, CandidateSource};
 use crate::decode::{Decoder, Locks};
+use crate::emoji::{self, Stat};
 use crate::ja::decode::{JaContext, JaDecoder};
 use crate::ja::input::RomajiInput;
 use crate::key::{Key, KeyCode};
@@ -23,8 +25,10 @@ use crate::lang::Mode;
 use crate::lattice::{InMemoryLexicon, Lattice};
 use crate::mixed::{space_text, AsciiInput, AsciiPiece, Spacing};
 use crate::output::{utf16_len, HansConverter, Snapshot};
+use crate::punct::{self, Edit};
 use crate::score::ScoreContext;
 use crate::segment::{Script, Segment};
+use crate::symbols;
 use crate::zh::han::is_han;
 use crate::zh::input::ZhInput;
 use crate::zh::syllable::Syllable;
@@ -122,6 +126,24 @@ impl SessionConfig {
     }
 }
 
+/// 候選選單的種類。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuKind {
+    /// 反引號開的符號選單。
+    Symbols,
+    /// 等號開的表情選單。
+    Emoji,
+}
+
+/// 開啟中的候選選單。
+#[derive(Debug, Clone, Copy)]
+struct Menu {
+    /// 選單種類。
+    kind: MenuKind,
+    /// 目前分頁序號。
+    tab: usize,
+}
+
 /// 一次輸入的工作階段。
 ///
 /// 只保留組字所需的狀態；送出後立即清空，因此呼叫端每次都用快照重畫。
@@ -156,6 +178,18 @@ pub struct Session {
     suggestion: Option<String>,
     /// 混合模式的英數按鍵推斷。
     ascii: AsciiInput,
+    /// 目前開啟的候選選單。
+    menu: Option<Menu>,
+    /// 表情分頁的最後選擇；下次開選單時沿用。
+    palette_tab: usize,
+    /// 符號選單「最近」分頁的順序。
+    symbol_recent: Vec<String>,
+    /// 符號「最近」清單的常用分數。
+    symbol_stats: HashMap<String, Stat>,
+    /// 表情選單「最近」分頁的順序。
+    emoji_recent: Vec<String>,
+    /// 表情「最近」清單的常用分數。
+    emoji_stats: HashMap<String, Stat>,
 }
 
 impl Default for Session {
@@ -189,6 +223,12 @@ impl Session {
             accepted_completion: None,
             suggestion: None,
             ascii: AsciiInput::new(),
+            menu: None,
+            palette_tab: 0,
+            symbol_recent: Vec::new(),
+            symbol_stats: HashMap::new(),
+            emoji_recent: Vec::new(),
+            emoji_stats: HashMap::new(),
         }
     }
 
@@ -219,7 +259,7 @@ impl Session {
     pub fn press(&mut self, key: Key) -> Snapshot {
         if key.ctrl {
             self.press_ctrl(key);
-        } else {
+        } else if !self.menu_key(&key) {
             match key.code {
                 KeyCode::Enter => self.finish_composition(),
                 KeyCode::Escape | KeyCode::Delete => self.clear_composition(),
@@ -260,6 +300,46 @@ impl Session {
             Mode::En
         };
         self.set_mode(mode)
+    }
+
+    /// 開啟符號選單；有最近使用的符號時從「最近」開，否則從第一個分類開。
+    pub fn open_symbol_menu(&mut self) -> Snapshot {
+        let tab = usize::from(!self.symbol_recent.is_empty());
+        self.open_menu(MenuKind::Symbols, tab)
+    }
+
+    /// 依名稱開啟符號分頁；名稱不存在時回到第一個分頁。
+    pub fn open_symbol_tab(&mut self, name: &str) -> Snapshot {
+        let names = self.menu_tab_names(MenuKind::Symbols);
+        let tab = names.iter().position(|item| *item == name).unwrap_or(0);
+        self.open_menu(MenuKind::Symbols, tab)
+    }
+
+    /// 開啟表情選單，沿用上次真的選了東西的分頁。
+    pub fn open_palette(&mut self) -> Snapshot {
+        self.open_menu(MenuKind::Emoji, self.palette_tab)
+    }
+
+    /// 依種類開啟表情分頁；`"kaomoji"` 是顏文字，其他值開表情。
+    pub fn open_emoji(&mut self, kind: &str) -> Snapshot {
+        let tab = usize::from(kind == "kaomoji");
+        self.open_menu(MenuKind::Emoji, tab)
+    }
+
+    /// 符號選單「最近」分頁保存的順序。
+    pub fn symbol_recent(&self) -> &[String] {
+        &self.symbol_recent
+    }
+
+    /// 表情選單「最近」分頁保存的順序。
+    pub fn emoji_recent(&self) -> &[String] {
+        &self.emoji_recent
+    }
+
+    /// 目前選單分頁的名稱；沒有開選單時回傳 `None`。
+    pub fn menu_tab(&self) -> Option<&'static str> {
+        let menu = self.menu?;
+        self.menu_tab_names(menu.kind).get(menu.tab).copied()
     }
 
     /// 翻到候選的第 `page` 頁；頁面大小固定 10。
@@ -303,6 +383,7 @@ impl Session {
             self.clear_composition();
             return text;
         }
+        self.remember_selection();
         if self.config.mode == Mode::Mixed {
             self.ascii.flush();
         }
@@ -373,28 +454,59 @@ impl Session {
             self.candidate_window = false;
             return;
         }
+        if self.menu.is_some() {
+            let kind = self.menu.map(|menu| menu.kind);
+            if ch == '=' && kind == Some(MenuKind::Emoji) {
+                self.menu = None;
+                self.candidate_window = false;
+                self.highlighted = 0;
+                self.push_literal("=");
+                return;
+            }
+            if ch == '`' && kind == Some(MenuKind::Symbols) {
+                self.menu = None;
+                self.candidate_window = false;
+                self.highlighted = 0;
+                return;
+            }
+            self.menu = None;
+            self.highlighted = 0;
+        }
         self.candidate_window = false;
         if !window {
             self.highlighted = 0;
         }
         match self.config.mode {
-            Mode::Zh => match self.zh.press(Key::char(ch, false)) {
-                crate::zh::input::ZhInputEvent::Consumed
-                | crate::zh::input::ZhInputEvent::SyllableComplete(_) => {}
-                crate::zh::input::ZhInputEvent::Commit(reading) => {
-                    // 空白鍵在沒有未完成注音時提交；改用轉換後的結果。
-                    if let Some(text) = self.convert_reading(&reading) {
-                        self.pending_commit = Some(text);
-                        self.zh.reset();
+            Mode::Zh => {
+                if self.zh.pending().is_empty() {
+                    if ch == '`' {
+                        let tab = usize::from(!self.symbol_recent.is_empty());
+                        self.open_menu(MenuKind::Symbols, tab);
+                        return;
+                    }
+                    if ch == '=' {
+                        self.open_menu(MenuKind::Emoji, self.palette_tab);
+                        return;
                     }
                 }
-                crate::zh::input::ZhInputEvent::Cancel => self.zh.reset(),
-                crate::zh::input::ZhInputEvent::Ignored => {
-                    let punct = self.zh.keyboard().punct(ch);
-                    let text = punct.map(str::to_string).unwrap_or_else(|| ch.to_string());
-                    self.push_literal(&text);
+                match self.zh.press(Key::char(ch, false)) {
+                    crate::zh::input::ZhInputEvent::Consumed
+                    | crate::zh::input::ZhInputEvent::SyllableComplete(_) => {}
+                    crate::zh::input::ZhInputEvent::Commit(reading) => {
+                        // 空白鍵在沒有未完成注音時提交；改用轉換後的結果。
+                        if let Some(text) = self.convert_reading(&reading) {
+                            self.pending_commit = Some(text);
+                            self.zh.reset();
+                        }
+                    }
+                    crate::zh::input::ZhInputEvent::Cancel => self.zh.reset(),
+                    crate::zh::input::ZhInputEvent::Ignored => {
+                        let punct = self.zh.keyboard().punct(ch);
+                        let text = punct.map(str::to_string).unwrap_or_else(|| ch.to_string());
+                        self.push_literal(&text);
+                    }
                 }
-            },
+            }
             Mode::Ja => {
                 self.romaji.press(Key::char(ch, false));
             }
@@ -411,7 +523,9 @@ impl Session {
     fn select_by_digit(&mut self, ch: char) -> bool {
         if self.candidates.is_empty()
             || !self.candidate_window
-            || (self.config.mode == Mode::Zh && !self.zh.pending().is_empty())
+            || (self.config.mode == Mode::Zh
+                && !self.zh.pending().is_empty()
+                && self.menu.is_none())
         {
             return false;
         }
@@ -423,7 +537,13 @@ impl Session {
         let Some(candidate) = self.candidates.get(index).cloned() else {
             return false;
         };
-        self.pending_commit = Some(self.finalize(self.insert_literal(&candidate.surface)));
+        self.remember_selection();
+        let text = if self.menu.is_some() {
+            self.compose_literal(&candidate.surface)
+        } else {
+            self.insert_literal(&candidate.surface)
+        };
+        self.pending_commit = Some(self.finalize(text));
         self.clear_composition();
         true
     }
@@ -434,6 +554,7 @@ impl Session {
                 self.zh.press(Key::new(KeyCode::Space, None, false));
             }
             _ if self.candidate_window && !self.candidates.is_empty() => {
+                self.remember_selection();
                 let text = self.finalize(self.current_text());
                 self.pending_commit = Some(text);
                 self.clear_composition();
@@ -473,6 +594,7 @@ impl Session {
         if self.config.mode == Mode::Mixed {
             self.ascii.flush();
         }
+        self.remember_selection();
         let text = match self.config.mode {
             Mode::Mixed => self.mixed_surface(),
             _ => self.current_text(),
@@ -498,22 +620,170 @@ impl Session {
         }
     }
 
-    /// 依設定在最後一個漢字前插入標點。
+    /// 依設定在最後一個漢字前插入標點；規則同 [`punct::apply`]。
     fn puncted(&self, text: String) -> String {
         let Some(mark) = self.config.punct_mark else {
             return text;
         };
-        let Some((index, _)) = text.char_indices().rev().find(|(_, ch)| is_han(*ch)) else {
+        let chars: Vec<char> = text.chars().collect();
+        let Some(offset) = chars.iter().rposition(|ch| is_han(*ch)) else {
             return text;
         };
-        if index == 0 {
-            return text;
+        let edits = [Edit::new(offset, mark.to_string())];
+        match punct::apply(&text, &edits) {
+            (out, true) => out,
+            (_, false) => text,
         }
-        let mut out = String::with_capacity(text.len() + mark.len_utf8());
-        out.push_str(&text[..index]);
-        out.push(mark);
-        out.push_str(&text[index..]);
-        out
+    }
+
+    /// 開啟選單並重建候選；選取時插入到目前組字尾端。
+    fn open_menu(&mut self, kind: MenuKind, tab: usize) -> Snapshot {
+        if self.literal.is_empty() {
+            self.literal_anchor = self.zh.syllables().len();
+        }
+        self.literal_offset = self
+            .segments
+            .last()
+            .map(|segment| segment.end)
+            .unwrap_or(self.base.len());
+        let names = self.menu_tab_names(kind);
+        let tab = tab.min(names.len().saturating_sub(1));
+        self.menu = Some(Menu { kind, tab });
+        self.highlighted = 0;
+        self.candidate_window = true;
+        self.rebuild();
+        self.snapshot()
+    }
+
+    /// 選單的分頁名稱。
+    fn menu_tab_names(&self, kind: MenuKind) -> Vec<&'static str> {
+        match kind {
+            MenuKind::Symbols => {
+                let mut names = Vec::new();
+                if !self.symbol_recent.is_empty() {
+                    names.push(symbols::RECENT);
+                }
+                names.extend(symbols::TABS.iter().map(|tab| tab.name));
+                names
+            }
+            MenuKind::Emoji => vec!["emoji", "kaomoji"],
+        }
+    }
+
+    /// 目前分頁的候選字面。
+    fn menu_items(&self, menu: Menu) -> Vec<String> {
+        match menu.kind {
+            MenuKind::Symbols => {
+                let names = self.menu_tab_names(menu.kind);
+                let Some(name) = names.get(menu.tab) else {
+                    return Vec::new();
+                };
+                if *name == symbols::RECENT {
+                    symbols::clean_recent(&self.symbol_recent)
+                        .into_iter()
+                        .take(PAGE_SIZE)
+                        .collect()
+                } else {
+                    symbols::tab_items(name)
+                        .map(|items| items.iter().map(|item| (*item).to_string()).collect())
+                        .unwrap_or_default()
+                }
+            }
+            MenuKind::Emoji => {
+                let kind = if menu.tab == 0 { "emoji" } else { "kaomoji" };
+                let mut items = Vec::new();
+                if kind == "emoji" {
+                    items.push("=".to_string());
+                }
+                items.extend(emoji::palette(kind, &self.emoji_recent));
+                items
+            }
+        }
+    }
+
+    fn rebuild_menu(&mut self) {
+        let Some(menu) = self.menu else {
+            return;
+        };
+        let items = self.menu_items(menu);
+        self.candidates = items
+            .into_iter()
+            .map(|text| Candidate::new(text, "", 0, CandidateSource::Literal))
+            .collect();
+        self.candidate_window = true;
+        if self.highlighted >= self.candidates.len() {
+            self.highlighted = 0;
+        }
+    }
+
+    /// 選單開啟時的 Tab／Shift＋Tab 與退格；其他按鍵交回一般處理。
+    fn menu_key(&mut self, key: &Key) -> bool {
+        let Some(menu) = self.menu else {
+            return false;
+        };
+        match key.code {
+            KeyCode::Tab => {
+                let names = self.menu_tab_names(menu.kind);
+                if names.is_empty() {
+                    return false;
+                }
+                let step = if key.shift { -1 } else { 1 };
+                let len = names.len() as isize;
+                let tab = (menu.tab as isize + step).rem_euclid(len) as usize;
+                self.menu = Some(Menu {
+                    kind: menu.kind,
+                    tab,
+                });
+                self.highlighted = 0;
+                true
+            }
+            KeyCode::Backspace => {
+                // 只關選單，不刪除已組好的字。
+                self.menu = None;
+                self.candidate_window = false;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 記下從選單選取的字面；只有明確開啟選單時才算。
+    fn remember_selection(&mut self) {
+        let Some(menu) = self.menu else {
+            return;
+        };
+        let Some(text) = self
+            .candidates
+            .get(self.highlighted)
+            .map(|candidate| candidate.surface.clone())
+        else {
+            return;
+        };
+        match menu.kind {
+            MenuKind::Symbols => {
+                if symbols::contains(&text) {
+                    let order = symbols::clean_recent(&self.symbol_recent);
+                    let (order, stats) =
+                        emoji::rank(&order, &self.symbol_stats, &text, 0, symbols::MAX_RECENT);
+                    self.symbol_recent = order;
+                    self.symbol_stats = stats;
+                }
+            }
+            MenuKind::Emoji => {
+                if text != "=" {
+                    let (order, stats) = emoji::rank(
+                        &self.emoji_recent,
+                        &self.emoji_stats,
+                        &text,
+                        0,
+                        emoji::MAX_RECENT,
+                    );
+                    self.emoji_recent = order;
+                    self.emoji_stats = stats;
+                    self.palette_tab = menu.tab;
+                }
+            }
+        }
     }
 
     fn move_highlight(&mut self, delta: isize) {
@@ -549,12 +819,18 @@ impl Session {
         self.pending.clear();
         self.accepted_completion = None;
         self.suggestion = None;
+        self.menu = None;
     }
 
     /// 目前要提交的文字：接受的補全優先，其次高亮候選，最後轉換結果。
     fn current_text(&self) -> String {
         if self.config.mode == Mode::Mixed {
             return self.mixed_surface();
+        }
+        if self.menu.is_some() {
+            if let Some(candidate) = self.candidates.get(self.highlighted) {
+                return self.compose_literal(&candidate.surface);
+            }
         }
         if let Some(text) = &self.accepted_completion {
             return format!("{}{}", self.insert_literal(text), self.pending);
@@ -576,6 +852,10 @@ impl Session {
 
     /// 顯示用字串：高亮候選反映在組字區。
     fn base_with_highlight(&self) -> String {
+        if self.menu.is_some() {
+            // 選單開啟時組字區維持原樣，候選只是待選清單。
+            return self.preedit_string();
+        }
         let base = match (
             &self.accepted_completion,
             self.candidates.get(self.highlighted),
@@ -603,7 +883,25 @@ impl Session {
         out
     }
 
+    /// 把選單選取的字面插回目前組字結果的對應位置。
+    fn compose_literal(&self, text: &str) -> String {
+        let mut offset = self.literal_offset.min(self.base.len());
+        while offset > 0 && !self.base.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        let mut out = String::with_capacity(self.base.len() + self.literal.len() + text.len());
+        out.push_str(&self.base[..offset]);
+        out.push_str(&self.literal);
+        out.push_str(text);
+        out.push_str(&self.base[offset..]);
+        out
+    }
+
     fn rebuild(&mut self) {
+        if self.menu.is_some() {
+            self.rebuild_menu();
+            return;
+        }
         self.base.clear();
         self.pending.clear();
         self.candidates.clear();
@@ -880,6 +1178,16 @@ impl Session {
                 0,
                 CandidateSource::Literal,
             ));
+            if let Some(full) = symbols::width_variant(&self.raw) {
+                if full != self.raw {
+                    self.candidates.push(Candidate::new(
+                        full,
+                        self.raw.clone(),
+                        1,
+                        CandidateSource::Literal,
+                    ));
+                }
+            }
         }
     }
 
@@ -1335,5 +1643,136 @@ mod tests {
         s.reset();
         assert_eq!(s.commit(), "");
         assert_eq!(s.snapshot().preedit, "");
+    }
+
+    /// 對照 `TestSymbolMenuTabs`：反引號從標點開，Tab／Shift＋Tab 換分頁，
+    /// 選了就插入目前組字尾端。
+    #[test]
+    fn test_symbol_menu_tabs() {
+        let mut s = session();
+        let snap = s.press(Key::char('`', false));
+        assert_eq!(s.menu_tab(), Some("標點"));
+        assert_eq!(snap.candidates[0].surface, "，");
+        assert!(snap.candidates.len() > PAGE_SIZE);
+
+        let mut seen = Vec::new();
+        for _ in 0..symbols::TABS.len() {
+            seen.push(s.menu_tab().unwrap_or(""));
+            s.press(Key::new(KeyCode::Tab, None, false));
+        }
+        assert_eq!(
+            seen,
+            ["標點", "括號引號", "數學", "箭頭", "圖形", "編號", "注音"]
+        );
+        assert_eq!(s.menu_tab(), Some("標點"), "Tab 頭尾相接");
+
+        s.press(Key::new(KeyCode::Tab, None, true));
+        assert_eq!(s.menu_tab(), Some("注音"), "Shift＋Tab 往前");
+
+        type_syllable(&mut s, "ㄨㄛˇ");
+        s.press(Key::char('`', false));
+        assert_eq!(s.snapshot().preedit, "我", "開選單不動組字");
+        s.press(Key::char('7', false)); // 標點分頁第 7 項是「；」
+        assert_eq!(s.commit(), "我；");
+        assert_eq!(s.symbol_recent(), ["；"]);
+    }
+
+    /// 對照 `TestSymbolMenuRecentTab`：有紀錄時從「最近」開，只放一頁。
+    #[test]
+    fn test_symbol_menu_recent_tab() {
+        let mut s = session();
+        s.press(Key::char('`', false));
+        s.press(Key::char('1', false)); // 「，」
+        assert_eq!(s.commit(), "，");
+        assert_eq!(s.symbol_recent(), ["，"]);
+        let snap = s.press(Key::char('`', false));
+        assert_eq!(s.menu_tab(), Some(symbols::RECENT));
+        assert_eq!(snap.candidates.len(), 1);
+        assert_eq!(snap.candidates[0].surface, "，");
+
+        // Esc 關閉選單，保留原本組字。
+        type_syllable(&mut s, "ㄨㄛˇ");
+        s.press(Key::char('`', false));
+        let snap = s.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(snap.preedit, "我");
+        assert!(snap.candidates.is_empty());
+    }
+
+    /// 前身 `symbolGroups` 會用到的鍵盤標點與多字元符號都要在選單目錄裡。
+    #[test]
+    fn test_symbol_menu_keeps_every_keyboard_symbol() {
+        let keyboard = crate::zh::keyboard::Keyboard::standard();
+        for key in "<>?:\"!~[]{}\\()&'^_".chars() {
+            if let Some(punct) = keyboard.punct(key) {
+                assert!(
+                    symbols::contains(punct),
+                    "符號選單少了鍵盤 {key:?} 的 {punct:?}"
+                );
+            }
+        }
+        for item in ["……", "——", "←", "→", "↑", "↓"] {
+            assert!(symbols::contains(item), "符號選單少了 {item:?}");
+        }
+    }
+
+    /// 對照 `TestPaletteDirectSelectionAndEscapes` 的等號選單：`=` 開表情，
+    /// Tab 換顏文字，選了就記下最近使用。
+    #[test]
+    fn test_emoji_palette_selection_and_recent() {
+        let mut s = session();
+        let snap = s.press(Key::char('=', false));
+        assert_eq!(s.menu_tab(), Some("emoji"));
+        assert_eq!(snap.candidates[0].surface, "=");
+        assert_eq!(snap.candidates[1].surface, "😀");
+
+        s.press(Key::char('2', false)); // 第二項「😀」
+        assert_eq!(s.commit(), "😀");
+        assert_eq!(s.emoji_recent(), ["😀"]);
+
+        s.press(Key::char('=', false));
+        assert_eq!(s.menu_tab(), Some("emoji"));
+        assert_eq!(s.candidates()[1].surface, "😀", "最近使用的排前面");
+
+        s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(s.menu_tab(), Some("kaomoji"));
+        s.press(Key::char('1', false));
+        assert_eq!(s.commit(), "(^_^)");
+        assert_eq!(s.emoji_recent(), ["😀", "(^_^)"]);
+
+        // 下次直接開在上次選用的分頁。
+        s.press(Key::char('=', false));
+        assert_eq!(s.menu_tab(), Some("kaomoji"));
+    }
+
+    /// 對照 `TestPaletteDefaultEqualsChoiceAndOptOut`：等號本身是第一項，
+    /// 選它不會被記成最近使用的表情。
+    #[test]
+    fn test_emoji_palette_equals_is_literal() {
+        let mut s = session();
+        s.press(Key::char('=', false));
+        s.press(Key::char('1', false));
+        assert_eq!(s.commit(), "=");
+        assert!(s.emoji_recent().is_empty());
+
+        // 選單開著再按一次等號，直接留下半形等號。
+        s.press(Key::char('=', false));
+        let snap = s.press(Key::char('=', false));
+        assert_eq!(snap.preedit, "=");
+        assert!(snap.candidates.is_empty());
+        assert_eq!(s.commit(), "=");
+    }
+
+    /// 全形數字：英文模式打出 ASCII 數字時，候選提供 `０-９` 變體。
+    #[test]
+    fn test_full_width_digit_candidates() {
+        let mut s = Session::new(SessionConfig::new(Mode::En));
+        for ch in "123".chars() {
+            s.press(Key::char(ch, false));
+        }
+        assert_eq!(s.snapshot().preedit, "123");
+        s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(s.candidates()[1].surface, "１２３");
+        s.press(Key::char('2', false));
+        assert_eq!(s.commit(), "１２３");
     }
 }
