@@ -2,48 +2,27 @@
 //!
 //! 這個 crate 不得依賴任何作業系統 API，所有平台相關行為都由
 //! `jc-platform` 的 trait 注入，方便在 Linux 上開發與測試。
+//!
+//! 本檔只負責宣告 module 與轉出公開型別；各 module 的實作由各自的
+//! 移植 task 補上，後續不需要再改動這裡。
 
-/// 輸入模式。Mixed 是唯一會同時接受注音、日文羅馬字與英文的模式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    Zh,
-    Ja,
-    En,
-}
+pub mod candidate;
+pub mod decode;
+pub mod ja;
+pub mod key;
+pub mod lang;
+pub mod lattice;
+pub mod output;
+pub mod reading;
+pub mod score;
+pub mod segment;
+pub mod session;
+pub mod zh;
 
-/// 組字區中的一個片段。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Segment {
-    pub start: usize,
-    pub end: usize,
-    pub mode: Mode,
-}
-
-impl Segment {
-    pub fn len(&self) -> usize {
-        self.end.saturating_sub(self.start)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
-/// 這個 crate 的語意版本，供協定握手與診斷使用。
-pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn segment_length_is_end_minus_start() {
-        let s = Segment {
-            start: 2,
-            end: 5,
-            mode: Mode::Ja,
-        };
-        assert_eq!(s.len(), 3);
-        assert!(!s.is_empty());
-    }
-}
+pub use candidate::{Candidate, CandidateSource};
+pub use decode::{Conversion, EngineError};
+pub use key::{Key, KeyCode};
+pub use lang::Mode;
+pub use output::Snapshot;
+pub use segment::{Script, Segment};
+pub use session::CORE_VERSION;

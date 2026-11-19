@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/jc-core",
+    "crates/jc-testdata",
     "crates/jc-data",
     "crates/jc-model",
     "crates/jc-proto",
