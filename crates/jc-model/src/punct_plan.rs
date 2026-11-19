@@ -200,7 +200,9 @@ mod tests {
         assert_eq!(window_starts(129, 128, 64), vec![0, 1]);
         assert_eq!(window_starts(256, 128, 64), vec![0, 64, 128]);
         assert_eq!(window_starts(300, 128, 64), vec![0, 64, 128, 172]);
-        assert_eq!(window_starts(300, 128, 0), vec![0, 1, 2, 172]);
+        // stride 0 視同 1，逐格前進後再補貼齊結尾的 172。
+        let dense: Vec<usize> = (0..=172).collect();
+        assert_eq!(window_starts(300, 128, 0), dense);
     }
 
     #[test]
@@ -210,10 +212,13 @@ mod tests {
             vec![vec![1.0, 0.0], vec![9.0, 0.0], vec![9.0, 0.0]],
             vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
         ];
-        let merged = merge_window_rows(3, 3, &starts, &rows);
+        // n=4、window=3：位置 1 由第一個視窗的中央列勝出，位置 2 由第二個
+        // 視窗的中央列勝出；邊緣列不會蓋掉中央列。
+        let merged = merge_window_rows(4, 3, &starts, &rows);
         assert_eq!(merged[0], Some(vec![1.0, 0.0]));
-        assert_eq!(merged[1], Some(vec![0.0, 1.0]));
+        assert_eq!(merged[1], Some(vec![9.0, 0.0]));
         assert_eq!(merged[2], Some(vec![0.0, 1.0]));
+        assert_eq!(merged[3], Some(vec![0.0, 1.0]));
     }
 
     #[test]
