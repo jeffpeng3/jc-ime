@@ -6,6 +6,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# 轉發到 `jc-core` 的日文 reranker 接線；預設建置不拉入 ONNX Runtime。
+onnx = ["jc-core/onnx"]
+
 [dependencies]
 jc-core = { path = "../jc-core" }
 jc-data = { path = "../jc-data" }
