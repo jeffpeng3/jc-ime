@@ -1,23 +1,24 @@
-//! 引擎行程的組字佔位實作與請求／回應迴圈。
+//! 引擎行程的請求／回應迴圈。
 //!
-//! 這一層只處理協定與行程行為；真正的轉換邏輯之後接上。目前引擎狀態只有
-//! 握手結果與組字字串，`Key` 字元直接附加、`Backspace` 刪一個字元。
+//! 這一層只處理協定與行程行為；組字與轉換全部交給 `jc_core::Session`。
+//! 每次請求都回傳完整快照，wrapper 不需要自己保存狀態。
 
 use std::io::{Read, Write};
 
+use jc_core::session::{Session, SessionConfig};
+use jc_core::{KeyCode, Snapshot};
 use jc_proto::message::{read_message, ProtoError};
-use jc_proto::{write_message, ErrorCode, Key, NamedKey, Request, Response, PROTOCOL_VERSION};
+use jc_proto::{write_message, ErrorCode, Request, Response, PROTOCOL_VERSION};
 
 /// 回報給 wrapper 的引擎識別字串。
 pub fn engine_label() -> String {
     format!("jc-engine {}", env!("CARGO_PKG_VERSION"))
 }
 
-/// 協定引擎。狀態刻意保持最小，等轉換器接上再擴充。
-#[derive(Debug, Clone)]
+/// 協定引擎。組字狀態全部在 [`Session`] 裡。
 pub struct Engine {
     hello: bool,
-    composition: String,
+    session: Session,
     close_connection: bool,
     shutdown: bool,
 }
@@ -29,19 +30,24 @@ impl Default for Engine {
 }
 
 impl Engine {
-    /// 建立一個尚未握手的引擎。
+    /// 建立一個尚未握手、沒有額外資料的引擎。
     pub fn new() -> Self {
+        Self::with_session(Session::new(SessionConfig::default()))
+    }
+
+    /// 用指定的工作階段建立引擎。
+    pub fn with_session(session: Session) -> Self {
         Self {
             hello: false,
-            composition: String::new(),
+            session,
             close_connection: false,
             shutdown: false,
         }
     }
 
     /// 目前的組字字串。
-    pub fn composition(&self) -> &str {
-        &self.composition
+    pub fn composition(&self) -> String {
+        self.session.preedit()
     }
 
     /// 這一條連線是否該收掉（版本不符或收到 `Shutdown`）。
@@ -59,7 +65,7 @@ impl Engine {
     /// `Shutdown` 是全行程的旗標，不會被清掉。
     pub fn reset_session(&mut self) {
         self.hello = false;
-        self.composition.clear();
+        self.session.reset();
         self.close_connection = false;
     }
 
@@ -87,15 +93,15 @@ impl Engine {
                 if !self.hello {
                     return Response::error(ErrorCode::Internal, "尚未完成握手");
                 }
-                match key {
-                    Key::Char(ch) => self.composition.push(ch),
-                    Key::Named(NamedKey::Backspace) => {
-                        self.composition.pop();
+                let enters = key.code == KeyCode::Enter;
+                let snapshot = self.session.press(key);
+                if enters {
+                    let text = self.session.commit();
+                    if !text.is_empty() {
+                        return Response::Committed { text };
                     }
-                    Key::Named(NamedKey::Enter) => return self.commit(),
-                    _ => {}
                 }
-                self.snapshot()
+                state(snapshot)
             }
             Request::Snapshot => {
                 if !self.hello {
@@ -117,20 +123,32 @@ impl Engine {
         }
     }
 
-    /// 目前的完整快照。候選要等轉換器接上才會有內容。
+    /// 目前的完整快照。
     fn snapshot(&self) -> Response {
-        Response::State {
-            preedit: self.composition.clone(),
-            cursor: self.composition.chars().count(),
-            candidates: Vec::new(),
-        }
+        state(self.session.snapshot())
     }
 
     /// 取走目前的組字並回傳提交結果。
     fn commit(&mut self) -> Response {
         Response::Committed {
-            text: std::mem::take(&mut self.composition),
+            text: self.session.commit(),
         }
+    }
+}
+
+/// 把核心快照轉成協定回應。
+///
+/// 協定的游標單位是字元（Unicode scalar value），核心快照是 UTF-16 code
+/// unit，這裡換算成字元數。
+fn state(snapshot: Snapshot) -> Response {
+    Response::State {
+        cursor: snapshot.preedit.chars().count(),
+        candidates: snapshot
+            .candidates
+            .into_iter()
+            .map(|candidate| candidate.surface)
+            .collect(),
+        preedit: snapshot.preedit,
     }
 }
 
@@ -175,6 +193,7 @@ pub enum ServeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jc_core::Key;
     use std::io::Cursor;
 
     fn hello(engine: &mut Engine) {
@@ -212,10 +231,10 @@ mod tests {
         let mut engine = Engine::new();
         hello(&mut engine);
         engine.handle(Request::Key {
-            key: Key::Char('ㄇ'),
+            key: Key::char('ㄇ', false),
         });
         engine.handle(Request::Key {
-            key: Key::Char('ㄚ'),
+            key: Key::char('ㄚ', false),
         });
         assert_eq!(
             engine.handle(Request::Snapshot),
@@ -247,10 +266,12 @@ mod tests {
         let mut engine = Engine::new();
         hello(&mut engine);
         for ch in "注音".chars() {
-            engine.handle(Request::Key { key: Key::Char(ch) });
+            engine.handle(Request::Key {
+                key: Key::char(ch, false),
+            });
         }
         engine.handle(Request::Key {
-            key: Key::Named(NamedKey::Backspace),
+            key: Key::new(KeyCode::Backspace, None, false),
         });
         assert_eq!(engine.composition(), "注");
     }
@@ -263,6 +284,40 @@ mod tests {
             Response::error(ErrorCode::Internal, "尚未完成握手")
         );
         assert_eq!(engine.composition(), "");
+    }
+
+    #[test]
+    fn key_produces_converted_candidates() {
+        use jc_core::lattice::{InMemoryLexicon, LexEntry};
+
+        let mut lexicon = InMemoryLexicon::new();
+        lexicon.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
+        let mut config = SessionConfig::default();
+        config.zh_lexicon = Some(lexicon);
+        let mut engine = Engine::with_session(Session::new(config));
+        hello(&mut engine);
+
+        for ch in "ji3".chars() {
+            engine.handle(Request::Key {
+                key: Key::char(ch, false),
+            });
+        }
+        let snapshot = engine.handle(Request::Snapshot);
+        let Response::State {
+            preedit,
+            cursor,
+            candidates,
+        } = snapshot
+        else {
+            panic!("快照應是 State");
+        };
+        assert_eq!(preedit, "我");
+        assert_eq!(cursor, 1);
+        assert_eq!(candidates.first().map(String::as_str), Some("我"));
+        assert_eq!(
+            engine.handle(Request::Commit),
+            Response::Committed { text: "我".into() }
+        );
     }
 
     #[test]

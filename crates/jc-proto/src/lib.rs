@@ -9,6 +9,7 @@ pub mod message;
 use serde::{Deserialize, Serialize};
 
 pub use frame::{DEFAULT_MAX_FRAME, HEADER_LEN};
+pub use jc_core::{Key, KeyCode};
 pub use message::{read_message, read_payload, write_message};
 
 /// 協定版本。握手時兩邊的版本必須相同。
@@ -28,40 +29,6 @@ pub enum ErrorCode {
     UnknownOp,
     /// 引擎內部狀態不允許這個請求。
     Internal,
-}
-
-/// 一個按鍵事件。
-///
-/// `jc-core` 目前還沒有公開的 `Key` 型別，所以這裡先放等價的本地型別；
-/// 整合時再換成 `jc-core` 的定義。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum Key {
-    /// 可列印字元。
-    Char(char),
-    /// 具名鍵。
-    Named(NamedKey),
-}
-
-/// 沒有對應字元的按鍵。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NamedKey {
-    Enter,
-    Escape,
-    Backspace,
-    Delete,
-    Tab,
-    ShiftTab,
-    Left,
-    Right,
-    Up,
-    Down,
-    Home,
-    End,
-    PageUp,
-    PageDown,
-    Space,
 }
 
 /// wrapper 送給引擎的請求。
@@ -135,11 +102,26 @@ mod tests {
 
     #[test]
     fn key_round_trips() {
-        for key in [Key::Char('ㄇ'), Key::Named(NamedKey::Backspace)] {
+        for key in [
+            Key::char('ㄇ', false),
+            Key::new(KeyCode::Backspace, None, false),
+        ] {
             let req = Request::Key { key };
             let text = serde_json::to_string(&req).unwrap();
             assert_eq!(serde_json::from_str::<Request>(&text).unwrap(), req);
         }
+    }
+
+    #[test]
+    fn key_uses_core_shape() {
+        let text = serde_json::to_string(&Request::Key {
+            key: Key::char('ㄇ', false),
+        })
+        .unwrap();
+        assert_eq!(
+            text,
+            r#"{"op":"key","key":{"code":{"kind":"char","value":"ㄇ"},"text":"ㄇ","shift":false}}"#
+        );
     }
 
     #[test]

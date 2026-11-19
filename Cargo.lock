@@ -169,6 +169,9 @@ dependencies = [
  "jc-core",
  "jc-eval",
  "jc-testdata",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -177,6 +180,7 @@ version = "0.1.0"
 dependencies = [
  "jc-data",
  "jc-testdata",
+ "serde",
  "serde_json",
  "sha2",
  "thiserror",
@@ -202,6 +206,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "env_logger",
+ "jc-core",
  "jc-proto",
  "log",
  "serde_json",
@@ -240,6 +245,7 @@ version = "0.1.0"
 name = "jc-proto"
 version = "0.1.0"
 dependencies = [
+ "jc-core",
  "serde",
  "serde_json",
  "thiserror",
