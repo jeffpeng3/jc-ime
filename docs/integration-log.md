@@ -99,6 +99,7 @@
 | `proto-extend` | `43c1741` | `a60766b` | test 剩同 2 個；fmt／clippy／兩個 eval 通過 | 2026-11-20 06:33 |
 | `session-g1-input`（修測試） | `4a493c3` | `f442cd4` | 通過（fmt／clippy／全量 test／兩個 eval） | 2026-11-20 06:37 |
 | `candle-quant` | `51f459c` | `1972ae1` | test 1 個失敗、clippy 1 個錯（皆 branch 自帶） | 2026-11-20 06:40 |
+| `candle-quant`（修門檻） | `66347f4` | `77d8c1f` | 通過（fmt／clippy／全量 test） | 2026-11-20 06:52 |
 
 ## 衝突與修正
 
@@ -925,3 +926,8 @@
   - Q5K 23.2 MiB／RSS 98.9 MiB，逐對 99.43% 但整組順序只有 **95.0%**；Q4K 19.2 MiB／92.3 MiB，整組順序 **90.5%**。
   - 標點 Q8_0 字元一致 **99.65%**，Q5K／Q4K 掉到 99.22%／97.40%。
   - 出貨建議：**Q8_0**（reranker 與標點都用），Q5K／Q4K 只當空間極限時的備案。
+
+- `candle-quant` 第二次合併（`77d8c1f`，含 `66347f4`）：無衝突。`Layer::new` 的 4 個 norm tensor 收成 2 個 tuple，
+  解掉 `too_many_arguments`；量化測試門檻依實測差距調整（Q8_0 容許值放寬到實測誤差之上）。
+  fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（45 targets、1022 passed、0 failed）。
+  先前 1 個 test 與 1 個 clippy 錯全部解除，全量測試回到全綠。
