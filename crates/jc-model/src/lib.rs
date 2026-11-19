@@ -9,15 +9,16 @@
 //! - [`Reranker`]：日文候選重排，`score(left, candidate, right) -> Option<f32>`。
 //! - [`PunctuationModel`]：日文標點推論（`punctuate` 仍是 identity stub）。
 //!
-//! 模型目錄預設放 `model.int8.onnx` 與 `vocab.json`；`vocab.json` 是
-//! `0c.sentencepiece.vocab/1`，只有詞表、沒有 piece 分數，因此
-//! [`Tokenizer`] 採最長前綴匹配，詳見模組文件。
+//! 模型目錄預設放 `model.int8.onnx` 與 tokenizer。tokenizer 可以是
+//! SentencePiece 的 `*.model`（走 unigram Viterbi，見 [`spm`]），也可以是
+//! 只有詞表的 `vocab.json`（`0c.sentencepiece.vocab/1`，退回最長前綴匹配）。
 
 pub mod error;
 pub mod layout;
 pub mod manifest;
 pub mod punct;
 pub mod role;
+pub mod spm;
 pub mod tokenizer;
 
 #[cfg(feature = "onnx")]
@@ -35,7 +36,7 @@ pub use manifest::{
 };
 pub use punct::{punctuate, IdentityPunctuator, Punctuator};
 pub use role::Role;
-pub use tokenizer::Tokenizer;
+pub use tokenizer::{Strategy, Tokenizer};
 
 #[cfg(feature = "onnx")]
 pub use punctuation_model::PunctuationModel;

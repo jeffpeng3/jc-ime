@@ -11,9 +11,13 @@ default = []
 onnx = ["dep:ort"]
 
 [dependencies]
+# SentencePiece 的 `.model` 是 protobuf；只解推論需要的欄位，不引入 C++ 相依。
+prost = "0.14"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# `nmt_nfkc` 系列規則的字元折疊。
+unicode-normalization = "0.1"
 ort = { version = "=2.0.0-rc.15", default-features = false, features = [
     "std",
     "load-dynamic",

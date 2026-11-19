@@ -240,4 +240,27 @@ mod tests {
         assert_eq!(batch.ids[2], id_of(&t, "東京"));
         assert_eq!(batch.ids[3], 3, "分隔符固定在 slot - 1");
     }
+
+    /// 真正的 SentencePiece 模型：左文上限 60 token、靠右對齊、保留前段。
+    #[test]
+    fn real_tokenizer_fills_the_60_token_left_window() {
+        let path = jc_testdata::require_data!("models/ja-tokenizer/public_core_ja.model");
+        let t = Tokenizer::load(&path).unwrap();
+        let spec = ModelSpec::default();
+        // 「東京都」每次 1 個 token，這裡湊出遠超過 60 個 token 的左文。
+        let left = "東京都".repeat(80);
+        let all = t.encode(&left);
+        assert!(all.len() > 60, "左文必須超過上限，實際 {} token", all.len());
+
+        let batch = pack_batch(&t, &spec, Some(&left), &["東京"]).unwrap();
+        let row = &batch.ids[..batch.seq];
+        let want: Vec<i64> = all[..60].iter().map(|&id| i64::from(id)).collect();
+        // 左文區 1..=60 全部填滿，而且是真的 token 不是 PAD。
+        assert_eq!(batch.mask[1..=60].iter().sum::<i64>(), 60);
+        assert!(row[1..=60].iter().all(|&id| id != spec.padding_id()));
+        // 靠右對齊：最後一個左文 token 緊鄰分隔符，內容是前 60 個 token。
+        assert_eq!(&row[1..=60], &want[..]);
+        assert_eq!(row[61], spec.eos_id());
+        assert_eq!(row[62] as u32, t.encode("東京")[0]);
+    }
 }

@@ -117,6 +117,19 @@ pub enum Command {
         /// 啟用注音選字模型重排。
         select_model: bool,
     },
+    /// 印出 SentencePiece unigram 與最長前綴匹配的切法對照。
+    TokenizeJa {
+        /// `0c-testdata` 目錄。
+        testdata: Option<PathBuf>,
+        /// tokenizer 檔；未指定時用資料根目錄的 SentencePiece 模型。
+        vocab: Option<PathBuf>,
+        /// 要切分的文字；空的時候從 stdin 逐行讀。
+        texts: Vec<String>,
+        /// 只印兩種切法不同的句子。
+        diff: bool,
+        /// 輸出 JSON。
+        json: bool,
+    },
     /// 對檔案中的每行讀音做轉換並計時。
     Bench {
         /// 每行一個讀音。
@@ -146,6 +159,7 @@ pub fn parse(args: &[String]) -> Result<Command, CliError> {
         "-V" | "--version" | "version" => Ok(Command::Version),
         "eval" => parse_eval(&args[1..]),
         "convert" => parse_convert(&args[1..]),
+        "tokenize" => parse_tokenize(&args[1..]),
         "bench" => parse_bench(&args[1..]),
         other => Err(CliError::Usage(format!("不認得的子命令 {other}"))),
     }
@@ -390,6 +404,50 @@ fn switch(value: &str, flag: &str) -> Result<bool, CliError> {
     }
 }
 
+/// 解析 `tokenize ja`。
+fn parse_tokenize(args: &[String]) -> Result<Command, CliError> {
+    let Some(kind) = args.first().map(String::as_str) else {
+        return Err(CliError::Usage("tokenize 需要 ja".to_string()));
+    };
+    if kind != "ja" {
+        return Err(CliError::Usage(format!("tokenize 只支援 ja，收到 {kind}")));
+    }
+    let rest = &args[1..];
+    let mut testdata = None;
+    let mut vocab = None;
+    let mut texts = Vec::new();
+    let mut diff = false;
+    let mut json = false;
+    let mut index = 0;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--testdata" => {
+                index += 1;
+                testdata = Some(PathBuf::from(value(rest, index, "--testdata")?));
+            }
+            "--vocab" => {
+                index += 1;
+                vocab = Some(PathBuf::from(value(rest, index, "--vocab")?));
+            }
+            "--text" => {
+                index += 1;
+                texts.push(value(rest, index, "--text")?.to_string());
+            }
+            "--diff" => diff = true,
+            "--json" => json = true,
+            other => return Err(CliError::Usage(format!("tokenize 不認得的參數 {other}"))),
+        }
+        index += 1;
+    }
+    Ok(Command::TokenizeJa {
+        testdata,
+        vocab,
+        texts,
+        diff,
+        json,
+    })
+}
+
 fn parse_bench(args: &[String]) -> Result<Command, CliError> {
     let mut file = None;
     let mut testdata = None;
@@ -530,6 +588,22 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             reading,
             out,
         ),
+        Command::TokenizeJa {
+            testdata,
+            vocab,
+            texts,
+            diff,
+            json,
+        } => crate::tokenize::ja(
+            crate::tokenize::TokenizeOptions {
+                testdata: testdata.clone(),
+                vocab: vocab.clone(),
+                texts: texts.clone(),
+                diff: *diff,
+                json: *json,
+            },
+            out,
+        ),
         Command::Bench {
             file,
             testdata,
@@ -551,6 +625,7 @@ pub fn usage() -> String {
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
          jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--json]\n  \
+         jc-cli tokenize ja [--testdata <dir>] [--vocab <model>] [--text <字串>]... [--diff] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
          --data 指向注音二進位資料包（lexicon.bin、lm.bin、manifest.json）；\n\
@@ -734,6 +809,33 @@ mod tests {
         assert!(parse(&args(&["eval", "zh-golden", "--testdata"])).is_err());
         assert!(parse(&args(&["bench"])).is_err());
         assert!(parse(&args(&["eval", "nope"])).is_err());
+    }
+
+    #[test]
+    fn parses_tokenize_ja_texts() {
+        assert_eq!(
+            parse(&args(&[
+                "tokenize",
+                "ja",
+                "--text",
+                "東京都",
+                "--text",
+                "大阪",
+                "--diff",
+                "--json",
+            ]))
+            .unwrap(),
+            Command::TokenizeJa {
+                testdata: None,
+                vocab: None,
+                texts: vec!["東京都".to_string(), "大阪".to_string()],
+                diff: true,
+                json: true,
+            }
+        );
+        assert!(parse(&args(&["tokenize"])).is_err());
+        assert!(parse(&args(&["tokenize", "zh"])).is_err());
+        assert!(parse(&args(&["tokenize", "ja", "--text"])).is_err());
     }
 
     #[test]
