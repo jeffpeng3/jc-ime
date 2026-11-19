@@ -163,16 +163,17 @@ fn fake_scheduler_fires_due_timers_in_time_order() {
     assert_eq!(third, TimerId::new(3));
     assert_eq!(scheduler.pending_count(), 3);
 
-    assert!(scheduler.advance_ms(49).is_empty());
+    // 第三個在 100ms、第二個在 120ms 到期，依到期時間順序送出。
+    assert_eq!(scheduler.advance_ms(49), vec![third, second]);
     assert_eq!(scheduler.now_ms(), 149);
-
-    assert_eq!(scheduler.advance_ms(1), vec![third, second]);
-    assert_eq!(scheduler.now_ms(), 150);
     assert_eq!(scheduler.pending_count(), 1);
-    assert!(scheduler.is_pending(first));
 
-    assert_eq!(scheduler.advance_ms(0), vec![first]);
+    // 第一個在 150ms 到期。
+    assert_eq!(scheduler.advance_ms(1), vec![first]);
+    assert_eq!(scheduler.now_ms(), 150);
     assert_eq!(scheduler.pending_count(), 0);
+    assert!(!scheduler.is_pending(first));
+
     assert!(scheduler.advance_ms(1000).is_empty());
 }
 

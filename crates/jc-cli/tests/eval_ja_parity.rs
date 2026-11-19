@@ -26,13 +26,20 @@ fn write_subset(source: &Path) -> PathBuf {
 
 /// 解析 `Report::to_table` 的資料列：`top1`／`top5` 百分比。
 fn parse_table_percent(table: &str) -> (usize, f64, f64) {
-    let line = table.lines().nth(1).expect("表格沒有資料列");
-    let fields: Vec<&str> = line.split_whitespace().collect();
-    assert!(fields.len() >= 4, "表格欄位不足：{line}");
-    let n: usize = fields[1].parse().unwrap();
-    let top1: f64 = fields[2].trim_end_matches('%').parse().unwrap();
-    let top5: f64 = fields[3].trim_end_matches('%').parse().unwrap();
-    (n, top1, top5)
+    // 表格前面有「題庫：…」與欄位標題，資料列是第一個 n 可解析成整數的列。
+    for line in table.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 4 {
+            continue;
+        }
+        let Ok(n) = fields[1].parse::<usize>() else {
+            continue;
+        };
+        let top1: f64 = fields[2].trim_end_matches('%').parse().unwrap();
+        let top5: f64 = fields[3].trim_end_matches('%').parse().unwrap();
+        return (n, top1, top5);
+    }
+    panic!("表格沒有資料列：\n{table}");
 }
 
 /// 兩個入口對同一 pack、同一 5 題題庫的指標必須一致。
@@ -101,8 +108,8 @@ fn test_ja_eval_and_cli_eval_ja_agree_on_same_pack() {
 #[test]
 fn test_default_pack_comes_from_data_root() {
     let pack = jc_testdata::require_data!("packs/ja-lexicon-mozc-v2.pack");
-    let ja_dir = jc_testdata::require_data!("0c-testdata/ja");
-    let root = testdata_dir(&ja_dir);
+    let _ = jc_testdata::require_data!("0c-testdata/ja");
+    let root = jc_testdata::root().expect("測試資料根目錄");
     let resolved = jc_cli::data::resolve_ja_pack(&root, None).unwrap();
     assert_eq!(resolved, pack);
 }

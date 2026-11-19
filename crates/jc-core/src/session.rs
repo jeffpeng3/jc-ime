@@ -322,8 +322,8 @@ impl Session {
 
     /// 開啟符號選單；有最近使用的符號時從「最近」開，否則從第一個分類開。
     pub fn open_symbol_menu(&mut self) -> Snapshot {
-        let tab = usize::from(!self.symbol_recent.is_empty());
-        self.open_menu(MenuKind::Symbols, tab)
+        // 「最近」永遠是第一個分頁；沒有紀錄時第一個分頁就是「標點」。
+        self.open_menu(MenuKind::Symbols, 0)
     }
 
     /// 依名稱開啟符號分頁；名稱不存在時回到第一個分頁。
@@ -498,8 +498,7 @@ impl Session {
             Mode::Zh => {
                 if self.zh.pending().is_empty() {
                     if ch == '`' {
-                        let tab = usize::from(!self.symbol_recent.is_empty());
-                        self.open_menu(MenuKind::Symbols, tab);
+                        self.open_menu(MenuKind::Symbols, 0);
                         return;
                     }
                     if ch == '=' {
@@ -555,7 +554,7 @@ impl Session {
         let Some(candidate) = self.candidates.get(index).cloned() else {
             return false;
         };
-        self.remember_selection();
+        self.remember_text(&candidate.surface);
         let text = if self.menu.is_some() {
             self.compose_literal(&candidate.surface)
         } else {
@@ -755,7 +754,7 @@ impl Session {
                 self.highlighted = 0;
                 true
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace | KeyCode::Escape | KeyCode::Delete => {
                 // 只關選單，不刪除已組好的字。
                 self.menu = None;
                 self.candidate_window = false;
@@ -765,11 +764,8 @@ impl Session {
         }
     }
 
-    /// 記下從選單選取的字面；只有明確開啟選單時才算。
+    /// 記下目前高亮候選的字面；只有明確開啟選單時才算。
     fn remember_selection(&mut self) {
-        let Some(menu) = self.menu else {
-            return;
-        };
         let Some(text) = self
             .candidates
             .get(self.highlighted)
@@ -777,6 +773,15 @@ impl Session {
         else {
             return;
         };
+        self.remember_text(&text);
+    }
+
+    /// 記下指定字面的選取；數字鍵直接選取時要高亮以外的項目。
+    fn remember_text(&mut self, text: &str) {
+        let Some(menu) = self.menu else {
+            return;
+        };
+        let text = text.to_string();
         match menu.kind {
             MenuKind::Symbols => {
                 if symbols::contains(&text) {
@@ -1364,6 +1369,7 @@ mod tests {
             ("麻婆豆腐", "ㄇㄚˊ ㄆㄛˊ ㄉㄡˋ ㄈㄨˇ"),
             ("城市", "ㄔㄥˊ ㄕˋ"),
             ("程式", "ㄔㄥˊ ㄕˋ"),
+            ("你", "ㄋㄧˇ"),
             ("宗", "ㄗㄨㄥ"),
             ("中", "ㄓㄨㄥ"),
             ("麻", "ㄇㄚˊ"),
@@ -1414,7 +1420,8 @@ mod tests {
         let mut s = session();
         type_syllable(&mut s, "ㄨㄛˇ");
         type_syllable(&mut s, "ㄒㄧㄤˇ");
-        let snap = s.press(Key::char('t', false)); // ㄔ
+        type_syllable(&mut s, "ㄔ");
+        let snap = s.snapshot();
         assert_eq!(snap.preedit, "我想吃");
         assert_eq!(snap.cursor_utf16, 3);
         assert_eq!(snap.segments.len(), 3);
@@ -1534,8 +1541,13 @@ mod tests {
 
     #[test]
     fn test_toneless_readings_expand_to_cheapest_tones() {
+        // 讓「我」與「窩」成本不同，才有一條唯一的最便宜組合。
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
+        lex.push(LexEntry::new("窩", "ㄨㄛ", 10, 0));
+        lex.push(LexEntry::new("想", "ㄒㄧㄤˇ", 0, 0));
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(lex);
         config.toneless = true;
         let mut s = Session::new(config);
         for keys in ["ji", "vu;"] {
@@ -1579,7 +1591,11 @@ mod tests {
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄐㄧ");
         s.page(1);
-        assert_eq!(s.highlighted_text(), Some("子"));
+        assert_eq!(s.highlighted(), PAGE_SIZE, "翻頁把高亮移到頁首");
+        assert_eq!(
+            s.highlighted_text(),
+            s.candidates().get(PAGE_SIZE).map(|c| c.surface.as_str())
+        );
     }
 
     fn mixed_session() -> Session {
@@ -1590,7 +1606,12 @@ mod tests {
 
     fn type_keys(session: &mut Session, keys: &str) {
         for ch in keys.chars() {
-            session.press(Key::char(ch, false));
+            let key = if ch == ' ' {
+                Key::new(KeyCode::Space, None, false)
+            } else {
+                Key::char(ch, false)
+            };
+            session.press(key);
         }
     }
 
@@ -1649,7 +1670,7 @@ mod tests {
     fn test_cjk_latin_space_in_mixed_input() {
         for (keys, off, on) in [
             ("ji3hellot ", "我hello吃", "我 hello 吃"),
-            ("ji3hello su3", "我hello 我", "我 hello 我"),
+            ("ji3hello su3", "我hello 你", "我 hello 你"),
         ] {
             for space in [false, true] {
                 let mut config = SessionConfig::new(Mode::Mixed);
@@ -1743,7 +1764,7 @@ mod tests {
         s.press(Key::char('`', false));
         let snap = s.press(Key::new(KeyCode::Escape, None, false));
         assert_eq!(snap.preedit, "我");
-        assert!(snap.candidates.is_empty());
+        assert!(s.menu_tab().is_none(), "Esc 只關選單");
     }
 
     /// 前身 `symbolGroups` 會用到的鍵盤標點與多字元符號都要在選單目錄裡。

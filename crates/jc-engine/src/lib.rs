@@ -51,8 +51,11 @@ impl Engine {
     }
 
     /// 這一條連線是否該收掉（版本不符或收到 `Shutdown`）。
+    ///
+    /// `Shutdown` 會同時設定這個旗標；全行程的 shutdown 狀態另外由
+    /// [`Engine::is_shutdown`] 保存，`reset_session` 只清連線狀態。
     pub fn is_closing(&self) -> bool {
-        self.close_connection || self.shutdown
+        self.close_connection
     }
 
     /// 是否收到 `Shutdown`，整個行程要結束。
@@ -117,6 +120,7 @@ impl Engine {
             }
             Request::Shutdown => {
                 self.shutdown = true;
+                self.close_connection = true;
                 self.snapshot()
             }
             Request::Unknown => Response::error(ErrorCode::UnknownOp, "未知的操作"),

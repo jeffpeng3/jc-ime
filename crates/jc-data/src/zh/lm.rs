@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn unsorted_words_are_rejected() {
-        let bytes = encode_lm(&[("你", 0.5), ("我", 0.5)], &[]);
+        let bytes = encode_lm(&[("我", 0.5), ("你", 0.5)], &[]);
         let path = write_temp("unsorted", &bytes);
         assert!(Lm::open(&path).is_err());
         std::fs::remove_file(path).ok();

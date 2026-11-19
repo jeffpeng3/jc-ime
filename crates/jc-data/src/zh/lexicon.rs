@@ -544,7 +544,8 @@ mod tests {
             .iter()
             .map(|view| lexicon.reading(view.index))
             .collect();
-        assert_eq!(got, vec!["ㄨㄛˇ", "ㄜˇ"]);
+        // 同詞面的讀音依讀音排序，不由插入順序決定。
+        assert_eq!(got, vec!["ㄜˇ", "ㄨㄛˇ"]);
         assert!(!lexicon.has("我愛你"));
         std::fs::remove_file(path).ok();
     }

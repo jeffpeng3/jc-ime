@@ -1068,9 +1068,15 @@ mod tests {
             Some(KeyCode::Char('<'))
         );
         assert!(named_key("<").is_ok());
-        let ctrl_comma = named_key("Ctrl+,").unwrap().unwrap();
+        let ctrl_comma = named_key("Ctrl+,")
+            .unwrap()
+            .expect("Ctrl+, 是 golden 具名鍵");
         assert_eq!(ctrl_comma.code, KeyCode::Char(','));
         assert!(ctrl_comma.ctrl);
+        assert_eq!(
+            named_key("Ctrl+Shift+,").unwrap_err(),
+            "按鍵 \"Ctrl+Shift+,\""
+        );
     }
 
     #[test]

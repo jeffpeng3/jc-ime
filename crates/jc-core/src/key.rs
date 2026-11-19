@@ -38,7 +38,8 @@ pub struct Key {
     pub text: Option<char>,
     /// Shift 是否按著。
     pub shift: bool,
-    /// Ctrl 是否按著。
+    /// Ctrl 是否按著；`false` 時不寫進 JSON，維持舊協定形狀。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ctrl: bool,
 }
 
