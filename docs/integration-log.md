@@ -93,6 +93,7 @@
 | `jinen-gating` | `f71d5cc` | `e610808` | test 通過；clippy 2 個錯 | 2026-11-20 05:55 |
 | `session-core-split` | `63b81e7` | `22831f0` | test／fmt／兩個 eval 通過；clippy 剩 jinen-gate | 2026-11-20 05:59 |
 | `jinen-gating`（修 clippy） | `1c7ba21` | `64f49e8` | 通過（clippy＋全量 test） | 2026-11-20 06:05 |
+| `session-g3-symbols` | `c67c4e7` | `86d24e0` | 通過（fmt／clippy／test／兩個 eval） | 2026-11-20 06:08 |
 
 ## 衝突與修正
 
@@ -836,3 +837,17 @@
   `hash.is_multiple_of(2)`）。
   `cargo clippy --workspace --all-targets -- -D warnings` **exit 0**；
   `cargo test --workspace --no-fail-fast` **exit 0**（44 targets、958 passed、0 failed）。先前 2 個 clippy 錯已解除。
+
+- `session-g3-symbols`（合併 `86d24e0`，含 `c67c4e7`）：無衝突。新增 `crates/jc-core/src/session/symbols.rs`（250 行：`GROUPS`、`UNITS`、
+  `home`、`alternatives`、提示列），`session/mod.rs` 1 行接上分頁／最近分頁。
+
+  gate：`cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0、
+  `cargo test --workspace --no-fail-fast` **exit 0**（44 targets、964 passed、0 failed）。
+  實測：`eval zh-golden` **45/45**；`eval ja --corpus modern-500` top-1 **86.0%**、top-5 98.0%、p50 3.173 ms。
+
+  deferred 清單（等下游群組補齊，資料層已就位）：
+  - **`↓` 同組變體**：在字面符號上列出同組變體並替換，依賴 `core` 的字面區間游標與編輯（`selectLiteral`／`literalBounds`／`literalStep`）。
+  - **`↑` 符號定位**：組字中在符號上開選單並定位（`openSymbolMenuAt`），依賴 `core` 游標位置與替換區間、`segments` 候選呈現。
+  - **格子移動**：`↑↓←→` 依候選欄位移動、跨頁（`gridMove`、`candidateColumns`），依賴 `segments` 的 `CandidateColumns`／`displayColumns`。
+  - **片語分頁**：「我的片語」分頁、標籤截斷與換行（`phrases`、`phraseLabel`），依賴 `misc`／`personal` 的片語。
+  - **標點寬度**：所有符號鍵打半形（`all_symbols.go`、`halfwidthShift`），依賴 `input_style` 的標點寬度設定與 idle keys。
