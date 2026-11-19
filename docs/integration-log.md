@@ -37,6 +37,8 @@
 | `ci-clippy` | `34055f4` | `34ecac4` | 通過 | 2026-11-19 23:30 |
 | `zh-symbols` | `f6db514` | `b6de2a9` | 通過 | 2026-11-19 23:30 |
 | `english-pack` | `fd5d8cf` | `15055d2` | 通過（解衝突） | 2026-11-19 23:40 |
+| `fix-mixed-clippy` | `c57992c` | `77f2788` | 通過（fmt＋clippy） | 2026-11-19 23:47 |
+| `ci-lint` | `2732fb3` | `e08a59a` | 通過（fmt＋clippy） | 2026-11-19 23:47 |
 
 ## 衝突與修正
 
@@ -192,3 +194,11 @@
 
   資料：`words.bin` 已建置在 `/mnt/work/jc/jc-ime-data/english/`（82,015 詞、1,522,028 bytes，另有 `manifest.json`、`NOTICE.txt`）。
   branch 回報的 `strace` 顯示 `manifest.json` 與 `words.bin` 都被開啟，`query` 來源是 `english/words.bin`，可證實不是 `prototype()`。
+
+- `fix-mixed-clippy`（合併 `77f2788`，含 `f9ecb66`、`c57992c`）：無衝突。修掉兩個 `neg_cmp_op_on_partial_ord`：
+  `jc-core/src/mixed.rs` 的 `near_common`、`jc-englishpack/src/compile.rs` 的權重檢查，都改成先算 `valid_*` 布林再判斷。
+- `ci-lint`（合併 `e08a59a`）：無衝突。只改 `jc-core/src/emoji.rs` 的 `needless_range_loop`（`for i in 0..MAX_RECENT + 10` 改 iterator）
+  與 `docs/port/ci-lint.md`。
+
+  驗證結果：`cargo fmt --all -- --check` exit 0；`cargo clippy --workspace --all-targets -- -D warnings` **exit 0**；
+  `cargo check --workspace --all-targets` 也通過（0 warning）。
