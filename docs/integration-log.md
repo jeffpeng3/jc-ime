@@ -94,6 +94,7 @@
 | `session-core-split` | `63b81e7` | `22831f0` | test／fmt／兩個 eval 通過；clippy 剩 jinen-gate | 2026-11-20 05:59 |
 | `jinen-gating`（修 clippy） | `1c7ba21` | `64f49e8` | 通過（clippy＋全量 test） | 2026-11-20 06:05 |
 | `session-g3-symbols` | `c67c4e7` | `86d24e0` | 通過（fmt／clippy／test／兩個 eval） | 2026-11-20 06:08 |
+| `session-g2-segments` | `57e3a5d` | `1fd343d` | 通過（fmt／clippy／test／兩個 eval） | 2026-11-20 06:16 |
 
 ## 衝突與修正
 
@@ -851,3 +852,17 @@
   - **格子移動**：`↑↓←→` 依候選欄位移動、跨頁（`gridMove`、`candidateColumns`），依賴 `segments` 的 `CandidateColumns`／`displayColumns`。
   - **片語分頁**：「我的片語」分頁、標籤截斷與換行（`phrases`、`phraseLabel`），依賴 `misc`／`personal` 的片語。
   - **標點寬度**：所有符號鍵打半形（`all_symbols.go`、`halfwidthShift`），依賴 `input_style` 的標點寬度設定與 idle keys。
+
+- `session-g2-segments`（合併 `1fd343d`，含 `57e3a5d`）：`session/mod.rs` 衝突（`symbols` 與 `segments` 兩個 mod 宣告），
+  照兩邊都保留解：`mod segments;`、`pub mod symbols;`、`pub use segments::tone_mark_keys;`。
+  新增 `crates/jc-core/src/session/segments.rs`，`core.rs` 補鎖定與近音候選接線。
+
+  gate：fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（44 targets、976 passed、0 failed）。
+  實測：`eval zh-golden` **45/45**；`eval ja modern-500` **86.0%**、top-5 98.0%、p50 3.177 ms。
+
+  5 個 n/a 都是協定缺口（依任務書先回報、不改協定）：
+  - `KeyCode` 缺 `Down`／`Up`／`Home`／`End`／`PageUp`／`PageDown`，`Snapshot` 缺 `navigating`／候選範圍／頁碼 → `candidate_mode.go` 無法移植。
+  - `Snapshot` 缺 `suggestion` 欄位 → `phonetic_hint.go` 無法移植（直接改組字字面會讓 Enter 誤提交提示）。
+  - `Candidate`／`Snapshot` 缺 `label` 欄位 → `candidate_labels.go` 無法移植。
+  - `Snapshot` 沒有游標 rune（只有字元游標），`ZhInput` 也沒有組字中游標 → `segments.go` 的 `SetCursor` 標 n/a。
+  - `ZhInput::press_char` 收到聲調鍵就直接完成音節，沒有「擋下聲調、留在暫存」的 hook → `tone_check.go` 無法移植。
