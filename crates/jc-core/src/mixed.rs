@@ -1892,7 +1892,8 @@ impl<'a> Router<'a> {
                 None => Ok((literal.to_string(), 0)),
             },
             Mode::Ja => {
-                if !plan.kana_ok {
+                // すでにかな・漢字で書かれた字面與符號沒有羅馬字可解，照原樣輸出。
+                if !plan.kana_ok || plan.kana.is_empty() || plan.script == Script::Symbol {
                     return Ok((literal.to_string(), 0));
                 }
                 match self.ja {
@@ -2377,11 +2378,11 @@ fn group_words(atoms: &mut Vec<Atom>, input: &str) {
         }
         let mut words = vec![i];
         let mut j = i;
-        while j + 1 < atoms.len()
-            && is_single_space(atoms.get(j), input)
-            && is_plain_word(atoms, j + 1)
+        while j + 2 < atoms.len()
+            && is_single_space(atoms.get(j + 1), input)
+            && is_plain_word(atoms, j + 2)
         {
-            words.push(j + 1);
+            words.push(j + 2);
             j += 2;
         }
         if words.len() >= 2 {
@@ -3759,5 +3760,34 @@ mod tests {
         let result = r.convert("kubectl pCloud GitHub").expect("轉換");
         assert_eq!(result.surface, "kubectl pCloud GitHub");
         assert!(result.languages().iter().all(|&m| m == Mode::En));
+    }
+
+    #[test]
+    fn test_phrase_grouping_keeps_english_run() {
+        let e = english();
+        let r = Router::new().with_english(&e);
+        let segments = r.segments("desu is a good sentence");
+        let texts: Vec<&str> = segments
+            .iter()
+            .map(|segment| &"desu is a good sentence"[segment.start..segment.end])
+            .collect();
+        assert_eq!(texts, vec!["desu", " ", "is a good sentence"]);
+        assert_eq!(segments[0].mode, Mode::Ja);
+        assert_eq!(segments[2].mode, Mode::En);
+    }
+
+    #[test]
+    fn test_symbol_between_japanese_and_english_stays_literal() {
+        let ja = ja_decoder();
+        let e = english();
+        let r = Router::new().with_ja(&ja).with_english(&e);
+        let result = r.convert("です is a good sentence").expect("轉換");
+        let surfaces: Vec<&str> = result
+            .segments
+            .iter()
+            .map(|segment| segment.surface.as_str())
+            .collect();
+        assert_eq!(surfaces, vec!["です", " ", "is a good sentence"]);
+        assert_eq!(result.surface, "です is a good sentence");
     }
 }
