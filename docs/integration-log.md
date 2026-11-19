@@ -57,6 +57,8 @@
 | `ja-personal`（修排序） | `0a376e5` | `88c482d` | 通過 | 2026-11-20 01:18 |
 | `ja-live-rewrite`（修かな鎖定） | `7516c29` | `d83cf5b` | 通過（jc-core 全 crate test） | 2026-11-20 01:27 |
 | `personal-zh` | `8b43057` | `55f2067` | fmt／test／golden 通過；clippy 失敗 | 2026-11-20 01:29 |
+| `rerank-tokenizer` | `a9aebdc` | `bcb1515` | fmt／clippy 通過；4 個 test 失敗 | 2026-11-20 01:33 |
+| `personal-zh`（清 clippy） | `6faec7f` | `e5af3b8` | fmt／clippy／golden 通過；test 剩 4 個既有失敗 | 2026-11-20 01:35 |
 
 ## 衝突與修正
 
@@ -385,3 +387,26 @@
   - `mod.rs:622`、`mod.rs:627` `ptr_arg`：`&mut Vec<...>` 應改 `&mut [...]`
 
   依指示保留合併、沒有 reset；build 本身正常（只有 warning）。
+
+- `rerank-tokenizer`（合併 `bcb1515`）：`jc-cli/src/cli.rs` 與 `jc-model/src/tokenizer.rs` 有衝突，照兩邊意圖都保留解：
+  `TokenSpan`／`normalize_map`／`encode_with_map` 與 `Strategy`／`spm::Model` 並存，`encode` 先走 unigram，
+  其餘路徑仍用 span 版最長前綴匹配；usage 保留 `--punct`／`--user-data` 並加上 `tokenize ja`。
+  fmt 通過、clippy 通過；`cargo test --workspace` 4 個失敗（`spm`／`tokenizer` 的正規化測試）。
+  結論（作者量測）：換回真正的 SentencePiece unigram 只讓 rerank top-1 從 40.8% 升到 **41.0%**（+0.2 個百分點），
+  主要限制仍是候選粒度。
+
+- `personal-zh` 第二次合併（`e5af3b8`，含 `6faec7f`）：無衝突，清掉先前 12 個 clippy 錯並接上英文索引快取。
+  四個 gate 結果：
+  | gate | 結果 |
+  |---|---|
+  | `cargo fmt --all -- --check` | exit 0 |
+  | `cargo clippy --workspace --all-targets -- -D warnings` | **exit 0** |
+  | `cargo test --workspace --no-fail-fast` | exit 101：34 targets、783 passed、**4 failed** |
+  | `cargo run -p jc-cli --release -- eval zh-golden` | exit 0，**45/45**、top-1 100.0% |
+
+  4 個失敗與 personal-zh 無關，是 rerank-tokenizer 帶入的正規化問題，需回該 task：
+  - `spm::tests::normalize_matches_sentencepiece_identity_rule`（`jc-model/src/spm.rs:665`）：
+    `"▁▁東京▁都"` vs 期望 `"▁東京▁都"`，dummy prefix 重複加了一次。
+  - `spm::tests::unknown_runes_keep_unk_id_without_byte_pieces`（`spm.rs:653`）：`[4, 1, 1, 1]` vs `[1, 1, 1]`。
+  - `tokenizer::tests::test_normalize`（`tokenizer.rs:651`）：`normalize("  a  b ")` 得 `"▁▁a▁b"`，期望 `"▁a▁b"`。
+  - `tokenizer::tests::normalize_adds_dummy_prefix_and_collapses_spaces`（`tokenizer.rs:687`）：同樣多一個 `▁`。
