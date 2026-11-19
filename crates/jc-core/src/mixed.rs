@@ -2386,10 +2386,19 @@ fn group_words(atoms: &mut Vec<Atom>, input: &str) {
             j += 2;
         }
         if words.len() >= 2 {
+            // 片語一起判定：單一かな單位的短字不當羅馬字；而且一旦片語裡
+            // 出現明確的英文詞，後面的字都屬於同一個英文片語。這樣
+            // `desu is a good sentence` 的 `is a good sentence` 不會有個別
+            // 字（`sentence`）被還原成かな後送進日文解碼。
+            let mut english = false;
             for &w in &words {
-                if atoms[w].mode == Some(Mode::Ja) && kana_units(&atoms[w]) < 2 {
+                let mode = atoms[w].mode;
+                if mode == Some(Mode::En) {
+                    english = true;
+                } else if english || (mode == Some(Mode::Ja) && kana_units(&atoms[w]) < 2) {
                     atoms[w].mode = Some(Mode::En);
                     atoms[w].kana = None;
+                    english = true;
                 }
             }
         }
@@ -3588,7 +3597,8 @@ mod tests {
         assert_eq!(&input[segs[2].start..segs[2].end], "desu");
         assert_eq!(segs[2].mode, Mode::Ja);
 
-        // 位元組位移：注音接在 9 bytes 後面，聲調符號是 2 bytes。
+        // 位元組位移：注音聲母、介音、韻母是 3 bytes，聲調符號 `ˋ` 是 2 bytes，
+        // 所以「ㄉㄚˋㄐㄧ」共 14 bytes，接在 9 bytes 後面。
         assert_eq!(segs[1].start, 9);
         assert_eq!(segs[1].end, 9 + "ㄉㄚˋㄐㄧ".len());
         assert_eq!(segs[2].start, segs[1].end);
