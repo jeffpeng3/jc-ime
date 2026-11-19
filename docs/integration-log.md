@@ -92,6 +92,7 @@
 | `candle-punct` | `9705bb5` | `f9b2e69` | 通過（clippy＋全量 test） | 2026-11-20 05:46 |
 | `jinen-gating` | `f71d5cc` | `e610808` | test 通過；clippy 2 個錯 | 2026-11-20 05:55 |
 | `session-core-split` | `63b81e7` | `22831f0` | test／fmt／兩個 eval 通過；clippy 剩 jinen-gate | 2026-11-20 05:59 |
+| `jinen-gating`（修 clippy） | `1c7ba21` | `64f49e8` | 通過（clippy＋全量 test） | 2026-11-20 06:05 |
 
 ## 衝突與修正
 
@@ -830,3 +831,8 @@
 
   欄位分組預定表（Stage 1–5）記在 `docs/port/session-core-split.md`，列出每個 `Session` 欄位的主群組、其他讀取者與備註，
   後續拆檔照這張表走。
+
+- `jinen-gating` 第二次合併（`64f49e8`，含 `1c7ba21`）：無衝突，`jinen-gate.rs` 2 行（`overlap > span * 2`、
+  `hash.is_multiple_of(2)`）。
+  `cargo clippy --workspace --all-targets -- -D warnings` **exit 0**；
+  `cargo test --workspace --no-fail-fast` **exit 0**（44 targets、958 passed、0 failed）。先前 2 個 clippy 錯已解除。
