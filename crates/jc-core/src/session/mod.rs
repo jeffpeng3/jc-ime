@@ -383,30 +383,32 @@ impl Session {
         if key.ctrl {
             self.pending_tone = None;
             self.press_ctrl(key);
-        } else if !self.style_key(&key) && !self.menu_key(&key) && !self.segments_press(&key) {
-            match key.code {
-                KeyCode::Enter => self.finish_composition(),
-                KeyCode::Escape => self.clear_composition(),
-                KeyCode::Delete if key.shift && self.candidate_window => {
-                    self.forget_candidate();
-                }
-                KeyCode::Backspace if key.shift && self.candidate_window => {
-                    self.forget_candidate();
-                }
-                KeyCode::Delete => self.clear_composition(),
-                KeyCode::Backspace => self.backspace(),
-                KeyCode::Space => self.space(),
-                KeyCode::Tab => {
-                    let accepted = self.config.mode == Mode::Mixed
-                        && self.config.english_autocomplete
-                        && self.ascii.accept_suggestion();
-                    if !accepted && !self.accept_suggestion() {
-                        self.move_highlight(1);
+        } else if !self.style_key(&key) && !self.menu_key(&key) {
+            if !self.segments_press(&key) {
+                match key.code {
+                    KeyCode::Enter => self.finish_composition(),
+                    KeyCode::Escape => self.clear_composition(),
+                    KeyCode::Delete if key.shift && self.candidate_window => {
+                        self.forget_candidate();
                     }
+                    KeyCode::Backspace if key.shift && self.candidate_window => {
+                        self.forget_candidate();
+                    }
+                    KeyCode::Delete => self.clear_composition(),
+                    KeyCode::Backspace => self.backspace(),
+                    KeyCode::Space => self.space(),
+                    KeyCode::Tab => {
+                        let accepted = self.config.mode == Mode::Mixed
+                            && self.config.english_autocomplete
+                            && self.ascii.accept_suggestion();
+                        if !accepted && !self.accept_suggestion() {
+                            self.move_highlight(1);
+                        }
+                    }
+                    KeyCode::ArrowRight => self.navigate(1),
+                    KeyCode::ArrowLeft => self.navigate(-1),
+                    KeyCode::Char(ch) => self.press_char(ch),
                 }
-                KeyCode::ArrowRight => self.navigate(1),
-                KeyCode::ArrowLeft => self.navigate(-1),
-                KeyCode::Char(ch) => self.press_char(ch),
             }
         } else {
             self.pending_tone = None;
