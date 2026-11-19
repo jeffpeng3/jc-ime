@@ -85,6 +85,7 @@
 | `ja-cost-diag`（修 lifetimes） | `e5b720d` | `fbea06a` | clippy 通過；test 同上 | 2026-11-20 05:09 |
 | `rerank-gating`（left context 順序） | `b5d0e26` | `f681ed4` | clippy 通過；test 同上 | 2026-11-20 05:10 |
 | `jinen-eval` | `9bd13b1` | `e2d6cfb` | check 通過 | 2026-11-20 05:12 |
+| `mozkey-study` | `b8ad3ce` | `764ee82` | check 通過 | 2026-11-20 05:25 |
 
 ## 衝突與修正
 
@@ -726,3 +727,17 @@
   AJIMEE 200 題（accept 判定，全題無文脈）：Jinen v2 xsmall **68.5%**、small **77.5%**；本引擎（Mozc v2 pack）**46.0%**、
   Google 日本語入力 **54.0%**、AzooKey 統計轉換器 44.5%。延遲 p50：xsmall **28.68 ms**、small **212.49 ms**（p95 65.63／725.47 ms）。
   給 64 字文脈：xsmall **+10 個百分點**（59→69）、small **+5 個百分點**（72→77）。
+
+- `mozkey-study`（合併 `764ee82`）：無衝突，只新增 `docs/reports/mozkey-study-2026-11-20.md`（530 行），沒有程式改動。
+  `cargo check --workspace --all-targets` exit 0。
+
+  報告重點：
+  - prompt 是條件欄位格式：`U+EE02 左文脈 [U+EE07 右文脈] [U+EE03 profile] [U+EE04 topic] [U+EE05 style] [U+EE06 settings] U+EE00 片假名讀音 U+EE01`，
+    左文脈一定出現（可為空），其餘欄位非空才加。
+  - scorer 走 **native-endian packed struct**，不是 JSON。
+  - 推論確定性：`temperature=0.0`、`top_k=1`、`top_p=1.0`、`n_predict=64`、`cache_prompt=true`。
+  - 五條採用條件中，**讀音保持預設 OFF**，context echo、首尾截斷、絵文字抑制、自動封鎖預設 ON。
+  - zenz-v3.2-xsmall 用這份 prompt 跑 AJIMEE 前 20 題：exact **10/20**，暖機後 p50 **24 ms**（GB10、4 threads）。
+
+  備註：main 工作區出現未追蹤的 `.cargo/config.toml`（aarch64 加 `-C target-feature=+fullfp16`，解 gemm-f16 編譯），
+  不在本 branch 內，沒有 commit。
