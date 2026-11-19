@@ -18,6 +18,22 @@ use serde::Deserialize;
 
 use crate::error::{ModelError, Result};
 
+/// 一個 token 在正規化字串中的 rune 範圍，以及是否來自 byte fallback。
+///
+/// `start`／`end` 以正規化字串的 rune 索引計算；byte fallback token 的
+/// 範圍涵蓋它所屬的單一原字，插入標點時要跳過。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenSpan {
+    /// token id。
+    pub id: u32,
+    /// 起始 rune。
+    pub start: usize,
+    /// 結束 rune（不含）。
+    pub end: usize,
+    /// 是否為 byte fallback。
+    pub byte: bool,
+}
+
 /// 支援的 vocab 格式。
 pub const VOCAB_SCHEMA: &str = "0c.sentencepiece.vocab/1";
 
@@ -185,42 +201,72 @@ impl Tokenizer {
 
     /// 前處理：trim、合併空白、加 dummy prefix、把空白轉成 U+2581。
     pub fn normalize(&self, text: &str) -> String {
+        self.normalize_map(text).0
+    }
+
+    /// 前處理，並回傳每個正規化 rune 對應的原字串 rune 索引。
+    ///
+    /// `-1` 表示這個 rune 是前處理插入的（dummy prefix 或空白轉成的
+    /// `▁`）；其他值可以直接拿回原文定位。
+    pub fn normalize_map(&self, text: &str) -> (String, Vec<i32>) {
         if text.is_empty() {
-            return String::new();
+            return (String::new(), Vec::new());
         }
-        let trimmed = text.trim_start_matches(' ');
-        if trimmed.is_empty() {
-            return String::new();
+        let runes: Vec<char> = text.chars().collect();
+        let mut first = 0;
+        while first < runes.len() && runes[first] == ' ' {
+            first += 1;
         }
-        let mut out = String::with_capacity(trimmed.len() + 4);
+        if first == runes.len() {
+            return (String::new(), Vec::new());
+        }
+        let mut out = String::with_capacity(text.len() + 4);
+        let mut map = Vec::with_capacity(runes.len() + 1);
         out.push(SPACE);
+        map.push(-1);
         let mut prev_space = true;
-        for ch in trimmed.chars() {
-            if ch == ' ' {
+        for (index, ch) in runes.iter().enumerate().skip(first) {
+            if *ch == ' ' {
                 if prev_space {
                     continue;
                 }
                 out.push(SPACE);
+                map.push(-1);
                 prev_space = true;
             } else {
-                out.push(ch);
+                out.push(*ch);
+                map.push(index as i32);
                 prev_space = false;
             }
         }
         while out.ends_with(SPACE) {
             out.pop();
+            map.pop();
         }
-        out
+        (out, map)
     }
 
     /// 編碼成 token id。
     pub fn encode(&self, text: &str) -> Vec<u32> {
-        let norm = self.normalize(text);
+        self.encode_with_map(text)
+            .0
+            .into_iter()
+            .map(|span| span.id)
+            .collect()
+    }
+
+    /// 編碼成 token，並保留每個 token 在正規化字串中的 rune 範圍。
+    ///
+    /// 回傳 `(tokens, norm, map)`；`map` 的格式見 [`Tokenizer::normalize_map`]。
+    /// byte fallback 的 token 標成 `byte=true`，呼叫端不應據此插入標點。
+    pub fn encode_with_map(&self, text: &str) -> (Vec<TokenSpan>, String, Vec<i32>) {
+        let (norm, map) = self.normalize_map(text);
         let mut out = Vec::new();
         if norm.is_empty() {
-            return out;
+            return (out, norm, map);
         }
         let mut pos = 0;
+        let mut rune = 0;
         while pos < norm.len() {
             let mut best: Option<(usize, u32)> = None;
             for (off, _) in norm[pos..].char_indices().skip(1) {
@@ -239,7 +285,14 @@ impl Tokenizer {
                 }
             }
             if let Some((end, id)) = best {
-                out.push(id);
+                let len = norm[pos..end].chars().count();
+                out.push(TokenSpan {
+                    id,
+                    start: rune,
+                    end: rune + len,
+                    byte: false,
+                });
+                rune += len;
                 pos = end;
                 continue;
             }
@@ -248,11 +301,17 @@ impl Tokenizer {
             let next = pos + ch.len_utf8();
             let mut buf = [0u8; 4];
             for b in ch.encode_utf8(&mut buf).as_bytes() {
-                out.push(self.byte_ids[*b as usize].unwrap_or(self.unk_id));
+                out.push(TokenSpan {
+                    id: self.byte_ids[*b as usize].unwrap_or(self.unk_id),
+                    start: rune,
+                    end: rune + 1,
+                    byte: true,
+                });
             }
+            rune += 1;
             pos = next;
         }
-        out
+        (out, norm, map)
     }
 
     /// 編碼成 i64，供 ONNX 張量直接使用。
@@ -359,6 +418,35 @@ mod tests {
             t.encode("大阪"),
             vec![id_of(&t, "▁"), id_of(&t, "大"), id_of(&t, "阪")]
         );
+    }
+
+    #[test]
+    fn encode_with_map_reports_token_spans_and_original_runes() {
+        let t = tokenizer();
+        let (tokens, norm, map) = t.encode_with_map("東京都 大");
+        assert_eq!(norm, "▁東京都▁大");
+        assert_eq!(map, vec![-1, 0, 1, 2, -1, 4]);
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].start, 0);
+        assert_eq!(tokens[0].end, 4);
+        assert!(!tokens[0].byte);
+        assert_eq!(tokens[1].start, 4);
+        assert_eq!(tokens[1].end, 5);
+        assert_eq!(tokens[2].start, 5);
+        assert_eq!(tokens[2].end, 6);
+        // 與單純編碼的 id 完全一致。
+        let ids: Vec<u32> = tokens.iter().map(|token| token.id).collect();
+        assert_eq!(ids, t.encode("東京都 大"));
+    }
+
+    #[test]
+    fn encode_with_map_marks_byte_fallback() {
+        let t = tokenizer();
+        let (tokens, _norm, map) = t.encode_with_map("あ");
+        assert_eq!(map, vec![-1, 0]);
+        let bytes: Vec<_> = tokens.iter().filter(|token| token.byte).collect();
+        assert_eq!(bytes.len(), 3, "U+3042 是三個 UTF-8 位元組");
+        assert!(bytes.iter().all(|token| token.start == 1 && token.end == 2));
     }
 
     #[test]

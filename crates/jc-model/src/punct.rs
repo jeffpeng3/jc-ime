@@ -1,8 +1,8 @@
 //! 標點模型介面。
 //!
-//! 目前只有 identity stub：`punctuate` 原樣回傳輸入。真正的標點模型在
-//! `onnx` feature 下可以載入並跑推論（見 [`crate::PunctuationModel`]），
-//! 但把 logits 轉成插入位置尚未接上。
+//! [`Punctuator`] 是不需要模型的字串介面；[`PunctuationModel`] 與
+//! [`crate::ZhPunctuationModel`] 在 `onnx` feature 下載入真正的模型。
+//! 這裡保留 identity 實作，讓沒有模型的路徑維持原樣。
 
 /// 標點介面。實作只能插入標點，不得改動原字。
 pub trait Punctuator {
@@ -20,9 +20,10 @@ impl Punctuator for IdentityPunctuator {
     }
 }
 
-/// 便利函式：目前是 identity stub，直接回傳輸入。
+/// 便利函式：沒有模型可用時原樣回傳。
 ///
-/// 這是刻意的：標點模型接線完成前，呼叫端不應看到文字被改動。
+/// 真正的模型請用 [`crate::PunctuationModel`] 或
+/// [`crate::ZhPunctuationModel`]；這個函式保留給沒有載入模型的路徑。
 pub fn punctuate(text: &str) -> String {
     IdentityPunctuator.punctuate(text)
 }

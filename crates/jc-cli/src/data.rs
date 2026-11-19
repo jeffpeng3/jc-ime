@@ -472,6 +472,31 @@ pub fn models_root(testdata: Option<&Path>) -> PathBuf {
     }
 }
 
+/// 載入提交時補標點的模型。
+///
+/// 模型集合由 [`models_root`] 決定；只載入 `mode` 需要的語言。載入失敗時
+/// 回傳錯誤，呼叫端應警告並維持原文。
+#[cfg(feature = "onnx")]
+pub fn load_punctuator(
+    testdata: Option<&Path>,
+    mode: jc_core::Mode,
+) -> Result<jc_core::output::OnnxPunctuator, CliError> {
+    let root = models_root(testdata);
+    jc_core::output::OnnxPunctuator::load_from_models(&root, &[mode])
+        .map_err(|err| CliError::data(format!("{}：{err}", root.display())))
+}
+
+/// 沒有 `onnx` feature 時不能載入標點模型。
+#[cfg(not(feature = "onnx"))]
+pub fn load_punctuator(
+    _testdata: Option<&Path>,
+    _mode: jc_core::Mode,
+) -> Result<jc_core::output::OnnxPunctuator, CliError> {
+    Err(CliError::data(
+        "這個建置沒有啟用 onnx feature，不能使用 --punct on",
+    ))
+}
+
 /// 載入並安裝注音選字模型。
 ///
 /// 模型目錄由 [`models_root`] 的集合 manifest 決定。載入失敗時回傳錯誤，
