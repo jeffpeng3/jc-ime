@@ -1,0 +1,209 @@
+//! 重排模型的固定部署佈局。
+//!
+//! 與前身 `internal/neural/native/rerank_plan.go` 相同：
+//!
+//! ```text
+//! <bos> [left context（右對齊，最多 60 token）] <eos> candidate <eos> [pad...]
+//! ```
+//!
+//! 候選字固定在 `candidate_slot`，模型永遠讀同一個 pooling 位置。前身
+//! 的部署沒有右文（IME 沒有 lookahead），所以右文參數只保留在介面上、
+//! 不進張量。
+
+use crate::manifest::ModelSpec;
+use crate::tokenizer::Tokenizer;
+
+/// 一批候選字的張量內容。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackedBatch {
+    /// `input_ids`，列優先，每列 [`PackedBatch::seq`] 個元素。
+    pub ids: Vec<i64>,
+    /// `attention_mask`，與 [`PackedBatch::ids`] 同形。
+    pub mask: Vec<i64>,
+    /// 序列長度。
+    pub seq: usize,
+    /// 候選字數量。
+    pub rows: usize,
+}
+
+/// 驗證佈局參數。
+pub fn validate_layout(spec: &ModelSpec) -> Result<(), String> {
+    let seq = spec.seq_len();
+    let slot = spec.candidate_slot();
+    let context = spec.context_tokens();
+    if seq < 4 {
+        return Err(format!("seq_len 太小：{seq}"));
+    }
+    if slot == 0 || slot >= seq - 1 {
+        return Err(format!("candidate_slot {slot} 必須落在 1..{}", seq - 1));
+    }
+    if context == 0 || context > slot - 2 {
+        return Err(format!(
+            "context_tokens {context} 必須落在 1..={}",
+            slot - 2
+        ));
+    }
+    Ok(())
+}
+
+/// 把左文與候選字打包成模型輸入。
+///
+/// 左文超過 `context_tokens` 時保留前段，與前身 `capIDs` 一致；候選字
+/// 超過可用 slot 時直接截斷，剩下一格放 EOS。
+pub fn pack_batch(
+    tokenizer: &Tokenizer,
+    spec: &ModelSpec,
+    left: &str,
+    candidates: &[&str],
+) -> Result<PackedBatch, String> {
+    validate_layout(spec)?;
+    let seq = spec.seq_len();
+    let slot = spec.candidate_slot();
+    let context = spec.context_tokens();
+    let mut ids = vec![spec.padding_id(); candidates.len() * seq];
+    let mut mask = vec![0i64; candidates.len() * seq];
+    let mut left_ids = tokenizer.encode(left);
+    left_ids.truncate(context);
+    let left_ids: Vec<i64> = left_ids.into_iter().map(i64::from).collect();
+
+    for (row_idx, candidate) in candidates.iter().enumerate() {
+        let base = row_idx * seq;
+        let row = &mut ids[base..base + seq];
+        let row_mask = &mut mask[base..base + seq];
+        row[0] = spec.bos_id();
+        row_mask[0] = 1;
+        // 左文靠右，讓最後一個 token 緊鄰分隔符。
+        let start = 1 + context - left_ids.len();
+        for (i, &id) in left_ids.iter().enumerate() {
+            row[start + i] = id;
+            row_mask[start + i] = 1;
+        }
+        row[slot - 1] = spec.eos_id();
+        row_mask[slot - 1] = 1;
+        let cap = seq - slot - 1;
+        let mut cand_ids = tokenizer.encode(candidate);
+        cand_ids.truncate(cap);
+        let mut pos = slot;
+        for id in cand_ids {
+            row[pos] = i64::from(id);
+            row_mask[pos] = 1;
+            pos += 1;
+        }
+        if pos < seq {
+            row[pos] = spec.eos_id();
+            row_mask[pos] = 1;
+        }
+    }
+    Ok(PackedBatch {
+        ids,
+        mask,
+        seq,
+        rows: candidates.len(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::ModelSpec;
+    use crate::tokenizer::{Tokenizer, VOCAB_SCHEMA};
+
+    fn tokenizer() -> Tokenizer {
+        let mut pieces = vec![
+            "<pad>".to_string(),
+            "<unk>".to_string(),
+            "<s>".to_string(),
+            "</s>".to_string(),
+        ];
+        for b in 0..=255u16 {
+            pieces.push(format!("<0x{b:02X}>"));
+        }
+        for p in ["▁", "東", "京", "都", "▁東", "▁東京", "東京", "▁東京都"] {
+            pieces.push(p.to_string());
+        }
+        let json = serde_json::json!({
+            "format": VOCAB_SCHEMA,
+            "vocab_size": pieces.len(),
+            "special_tokens": {"pad": 0, "unk": 1, "bos": 2, "eos": 3},
+            "id_to_piece": pieces,
+        });
+        Tokenizer::from_json(&serde_json::to_vec(&json).unwrap()).unwrap()
+    }
+
+    fn id_of(t: &Tokenizer, piece: &str) -> i64 {
+        t.piece_id(piece).unwrap() as i64
+    }
+
+    #[test]
+    fn packs_bos_left_eos_candidate_eos() {
+        let t = tokenizer();
+        let spec = ModelSpec::default();
+        let batch = pack_batch(&t, &spec, "東京都", &["東京"]).unwrap();
+        assert_eq!(batch.seq, 124);
+        assert_eq!(batch.rows, 1);
+        assert_eq!(batch.ids.len(), 124);
+
+        let row = &batch.ids[..124];
+        assert_eq!(row[0], 2, "BOS");
+        // 左文 3 個 token，靠右放在 1..=60；最短切法是「▁東京都」一個 piece。
+        assert_eq!(row[0 + 1 + 60 - 1], id_of(&t, "▁東京都"));
+        assert_eq!(&row[1..60], &[0; 59]);
+        assert_eq!(row[61], 3, "slot 前的 EOS");
+        assert_eq!(row[62], id_of(&t, "▁東京"));
+        assert_eq!(row[63], 3, "候選字後的 EOS");
+        assert!(row[64..].iter().all(|&id| id == 0));
+
+        let mask = &batch.mask[..124];
+        assert_eq!(mask[0], 1);
+        assert_eq!(mask[60], 1);
+        assert_eq!(mask[61], 1);
+        assert_eq!(mask[62], 1);
+        assert_eq!(mask[63], 1);
+        assert_eq!(mask[64..].iter().sum::<i64>(), 0);
+    }
+
+    #[test]
+    fn candidate_longer_than_slot_is_truncated() {
+        let t = tokenizer();
+        let mut spec = ModelSpec::default();
+        spec.seq_len = Some(8);
+        spec.candidate_slot = Some(4);
+        spec.context_tokens_per_side = Some(2);
+        let long = "東京都東京都東京都";
+        let batch = pack_batch(&t, &spec, "東京", &[long]).unwrap();
+        assert_eq!(batch.ids.len(), 8);
+        // slot 4..6 給候選字（最多 3 個），最後一格 7 放 EOS。
+        assert_eq!(batch.ids[7], 3);
+        assert_eq!(batch.mask.iter().sum::<i64>(), 7);
+    }
+
+    #[test]
+    fn empty_context_still_has_separator() {
+        let t = tokenizer();
+        let batch = pack_batch(&t, &ModelSpec::default(), "", &["東京"]).unwrap();
+        assert_eq!(batch.ids[0], 2);
+        assert_eq!(batch.ids[61], 3);
+        assert_eq!(batch.ids[62], id_of(&t, "▁東京"));
+        assert_eq!(batch.mask[1..61], [0; 60]);
+    }
+
+    #[test]
+    fn invalid_layout_is_rejected() {
+        let mut spec = ModelSpec::default();
+        spec.candidate_slot = Some(123);
+        assert!(validate_layout(&spec).is_err());
+        spec.candidate_slot = Some(62);
+        spec.context_tokens_per_side = Some(61);
+        assert!(validate_layout(&spec).is_err());
+    }
+
+    #[test]
+    fn normalized_spaces_are_preserved_in_layout() {
+        let t = tokenizer();
+        let batch = pack_batch(&t, &ModelSpec::default(), "東京 都", &[]).unwrap();
+        assert_eq!(batch.rows, 0);
+        assert!(batch.ids.is_empty());
+        // 空白不影響 encode 的 dummy prefix 規則。
+        assert_eq!(t.normalize("東京 都"), "▁東京▁都");
+    }
+}
