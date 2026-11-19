@@ -8,11 +8,9 @@
 //! 用法：
 //!
 //! ```sh
-//! cargo run -p jc-cli --release --features onnx --bin zh-calibrate -- \
+//! cargo run -p jc-cli --release --bin zh-calibrate -- \
 //!   --dev /mnt/work/jc/jc-ime-data/0c-testdata/fuzzy/fuzzy-input.json
 //! ```
-
-#![cfg_attr(not(feature = "onnx"), allow(dead_code, unused_imports))]
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -87,14 +85,6 @@ fn main() -> ExitCode {
     }
 }
 
-#[cfg(not(feature = "onnx"))]
-fn run() -> Result<(), CliError> {
-    Err(CliError::eval(
-        "這個建置沒有啟用 onnx feature，不能讀取選字模型分數".to_string(),
-    ))
-}
-
-#[cfg(feature = "onnx")]
 fn run() -> Result<(), CliError> {
     use jc_core::zh::select::{resolve_model_dir, SelectModel};
 
@@ -146,7 +136,6 @@ fn run() -> Result<(), CliError> {
 }
 
 /// 命令列參數。
-#[cfg(feature = "onnx")]
 struct Options {
     dev: PathBuf,
     testdata: Option<PathBuf>,
@@ -161,7 +150,6 @@ struct Options {
     exact: bool,
 }
 
-#[cfg(feature = "onnx")]
 impl Options {
     fn parse(args: &[String]) -> Result<Self, CliError> {
         let mut options = Self {
@@ -255,7 +243,6 @@ impl Options {
 }
 
 /// 由 `--dev` 路徑回推 `0c-testdata`，找不到時用預設值。
-#[cfg(feature = "onnx")]
 fn resolve_testdata(explicit: Option<PathBuf>, dev: &Path) -> Result<PathBuf, CliError> {
     if let Some(dir) = explicit {
         return jc_cli::data::testdata_dir(Some(dir));
@@ -273,7 +260,6 @@ fn resolve_testdata(explicit: Option<PathBuf>, dev: &Path) -> Result<PathBuf, Cl
 /// 只用注音題、只取 >=2 音節；同一個（讀音、答案）只保留一次，避免同一組
 /// 因四種擾動被重複計分。候選來自 `select` 模糊音模式展開的讀音變體，和
 /// `eval fuzzy` 的注音候選同一條路徑；詞典同音組自然包含在 N-best 內。
-#[cfg(feature = "onnx")]
 fn build_dev(
     path: &Path,
     data_dir: &Path,
@@ -375,7 +361,6 @@ fn build_dev(
 }
 
 /// 對每組算模型分數；不合法候選保留中性 0。
-#[cfg(feature = "onnx")]
 fn score_groups(groups: Vec<DevGroup>, model: &jc_core::zh::select::SelectModel) -> Vec<DevGroup> {
     let vocab = model.vocab();
     groups
@@ -414,7 +399,6 @@ fn score_groups(groups: Vec<DevGroup>, model: &jc_core::zh::select::SelectModel)
 }
 
 /// 對固定網格跑 `choose`，統計救援與破壞。
-#[cfg(feature = "onnx")]
 fn scan(groups: &[DevGroup]) -> Vec<ScanRow> {
     use jc_core::zh::select::choose;
 
@@ -461,7 +445,6 @@ fn scan(groups: &[DevGroup]) -> Vec<ScanRow> {
 }
 
 /// 依「先不破壞、再最大化救援」排序，並印出表格與選點。
-#[cfg(feature = "onnx")]
 fn print_table(groups: &[DevGroup], rows: &[ScanRow]) -> Result<(), CliError> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -531,7 +514,6 @@ fn print_table(groups: &[DevGroup], rows: &[ScanRow]) -> Result<(), CliError> {
 ///
 /// 這個區塊不改任何產品行為，只用來分辨「模型本身排不出正確答案」與
 /// 「融合或 margin 讓模型無法發言」。
-#[cfg(feature = "onnx")]
 fn print_model_only(groups: &[DevGroup]) -> Result<(), CliError> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -582,7 +564,6 @@ fn print_model_only(groups: &[DevGroup]) -> Result<(), CliError> {
 /// `prepare()` 的陣列，沒有分數；它用的 17 字元詞表也不在真實模型內。
 /// 這裡取其中可評分的案例形狀（basic、shared_prefix、neutral），換成真實
 /// 詞表，加上模型 README 明確標示排序的實例，確認正確候選分數較高。
-#[cfg(feature = "onnx")]
 fn print_direction(model: &jc_core::zh::select::SelectModel) -> Result<(), CliError> {
     struct Case {
         name: &'static str,
@@ -687,7 +668,6 @@ fn print_direction(model: &jc_core::zh::select::SelectModel) -> Result<(), CliEr
 
 /// 每組輸出一行 JSON，保留 `(correct, stat_top1_correct, model_score)` 與
 /// 完整候選分數，方便回頭檢查選點。
-#[cfg(feature = "onnx")]
 fn write_groups(path: &Path, groups: &[DevGroup]) -> Result<(), CliError> {
     let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
     for group in groups {
