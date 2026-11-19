@@ -17,6 +17,10 @@ unicode-normalization = "0.1"
 # candle：推論後端試金石。CPU 後端，不啟用 cuda/metal/mkl。
 candle-core = { version = "0.11", default-features = false }
 candle-nn = { version = "0.11", default-features = false }
+# Jinen v2 是 Qwen3 架構的 GGUF；量化 forward 直接沿用 candle 的實作。
+candle-transformers = { version = "0.11", default-features = false }
+# Jinen 的 tokenizer.json 是 BPE（NFKC＋Digits、byte_fallback）。
+tokenizers = { version = "0.23", default-features = false }
 # reranker 的 forward 以 batch 內列為單位平行；只用在 candle 路徑。
 rayon = "1"
 # `load-dynamic`：建置時不連結也不下載 ONNX Runtime，執行期才載入動態庫。
