@@ -74,8 +74,9 @@ impl Reranker {
 
     /// 為單一候選字打分；逾時或失敗回 `None`。
     ///
+    /// `left` 為 `None` 或空字串代表沒有左文，模型端用 BOS 當標記。
     /// `right` 是介面預留的右文。前身部署沒有右文，實作不把它放進張量。
-    pub fn score(&self, left: &str, candidate: &str, right: &str) -> Option<f32> {
+    pub fn score(&self, left: Option<&str>, candidate: &str, right: &str) -> Option<f32> {
         let _ = right;
         self.score_batch(left, &[candidate]).and_then(
             |mut v| {
@@ -89,12 +90,12 @@ impl Reranker {
     }
 
     /// 為多個候選字打分；逾時或失敗回 `None`。
-    pub fn score_batch(&self, left: &str, candidates: &[&str]) -> Option<Vec<f32>> {
+    pub fn score_batch(&self, left: Option<&str>, candidates: &[&str]) -> Option<Vec<f32>> {
         self.try_score_batch(left, candidates).ok()
     }
 
     /// 為多個候選字打分，保留錯誤原因。
-    pub fn try_score_batch(&self, left: &str, candidates: &[&str]) -> Result<Vec<f32>> {
+    pub fn try_score_batch(&self, left: Option<&str>, candidates: &[&str]) -> Result<Vec<f32>> {
         if candidates.is_empty() {
             return Ok(Vec::new());
         }

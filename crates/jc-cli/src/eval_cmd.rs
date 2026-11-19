@@ -31,7 +31,7 @@ use jc_eval::{
     FuzzyReport, FuzzyRunConfig, GoldenAction, Report, Run, RunOptions,
 };
 
-use crate::cli::CliError;
+use crate::cli::{CliError, LeftMode};
 use crate::converter::JaConverter;
 use crate::data;
 
@@ -194,6 +194,7 @@ pub fn ja(
     corpus: &str,
     pack: Option<PathBuf>,
     rerank: bool,
+    left: LeftMode,
     json: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
@@ -238,7 +239,10 @@ pub fn ja(
         }
         None => decoder,
     };
-    let converter = JaConverter::new(decoder);
+    let mut converter = JaConverter::new(decoder);
+    if left == LeftMode::Rolling {
+        converter = converter.with_rolling_left();
+    }
     let options = RunOptions::from_rules(&rules);
     let run = run_ja(&converter, &rules, &selected, engine_info(&dir), &options);
     if json {

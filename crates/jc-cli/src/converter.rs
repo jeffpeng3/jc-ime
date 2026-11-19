@@ -113,20 +113,63 @@ impl Converter for ZhConverter {
 }
 
 /// 日文轉換器。
+///
+/// `rolling_left` 開啟時，每次轉換把上一次的輸出接到左文尾巴，模擬連續
+/// 輸入的 IME。前身的 `lang.Context.Left` 由外殼提供；評測沒有外殼，所以
+/// 這個模式只用來量測「有左文」與「沒有左文」的差異，預設關閉。
 #[derive(Debug, Clone)]
 pub struct JaConverter {
     decoder: JaDecoder,
+    rolling_left: bool,
+    left: std::cell::RefCell<String>,
 }
+
+/// 左文保留的字元上限，與 `jc_core::session` 相同（前身 `MaxLeftContextUnits`）。
+const MAX_LEFT_CONTEXT_UNITS: usize = 128;
 
 impl JaConverter {
     /// 用已載入的解碼器建立轉換器。
     pub fn new(decoder: JaDecoder) -> Self {
-        Self { decoder }
+        Self {
+            decoder,
+            rolling_left: false,
+            left: std::cell::RefCell::new(String::new()),
+        }
+    }
+
+    /// 開啟滾動左文：把每次的第一名接到下一次轉換的左文。
+    pub fn with_rolling_left(mut self) -> Self {
+        self.rolling_left = true;
+        self
+    }
+
+    /// 這次轉換要用的上下文。
+    fn context(&self) -> JaContext {
+        if !self.rolling_left {
+            return JaContext::default();
+        }
+        JaContext {
+            left: self.left.borrow().clone(),
+            right: String::new(),
+        }
+    }
+
+    /// 把已送出的輸出接到左文尾巴。
+    fn remember(&self, surface: &str) {
+        if !self.rolling_left || surface.is_empty() {
+            return;
+        }
+        let mut left = self.left.borrow_mut();
+        left.push_str(surface);
+        let len = left.chars().count();
+        if len > MAX_LEFT_CONTEXT_UNITS {
+            *left = left.chars().skip(len - MAX_LEFT_CONTEXT_UNITS).collect();
+        }
     }
 
     /// 前 `n` 條轉換結果。
     pub fn nbest(&self, reading: &str, n: usize) -> Vec<jc_core::decode::Conversion> {
-        self.decoder.nbest(reading, &JaContext::default(), n)
+        self.decoder.nbest(reading, &self.context(), n)
     }
 }
 
@@ -139,7 +182,8 @@ impl Converter for JaConverter {
     }
 
     fn convert_segmented(&self, reading: &str, top_n: usize) -> Vec<jc_eval::Conversion> {
-        self.nbest(reading, top_n)
+        let conversions: Vec<jc_eval::Conversion> = self
+            .nbest(reading, top_n)
             .into_iter()
             .map(|conversion| {
                 let mut boundaries = Vec::new();
@@ -152,7 +196,12 @@ impl Converter for JaConverter {
                 }
                 jc_eval::Conversion::new(conversion.surface, boundaries)
             })
-            .collect()
+            .collect();
+        // 統計第一名就是這一輪送出的文字，接到下一次的左文。
+        if let Some(first) = conversions.first() {
+            self.remember(&first.surface);
+        }
+        conversions
     }
 }
 
