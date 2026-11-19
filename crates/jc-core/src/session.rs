@@ -64,6 +64,8 @@ pub struct SessionConfig {
     pub zh_ctx: Option<ScoreContext>,
     /// 日文解碼器；`None` 時日文只做原樣輸出。
     pub ja: Option<Arc<JaDecoder>>,
+    /// 是否呼叫日文解碼器上的重排器；預設開啟，沒有重排器時無效果。
+    pub ja_rerank: bool,
     /// 聲調選填：沒有聲調的音節展開成五個聲調再解碼。
     pub toneless: bool,
     /// Ctrl 標點：`Ctrl+,` 輸出全形逗號。
@@ -104,6 +106,7 @@ impl Default for SessionConfig {
             zh_lexicon: None,
             zh_ctx: None,
             ja: None,
+            ja_rerank: true,
             toneless: false,
             ctrl_punct: false,
             fuzzy_pairs: Vec::new(),
@@ -200,7 +203,16 @@ impl Default for Session {
 
 impl Session {
     /// 依設定建立工作階段。
-    pub fn new(config: SessionConfig) -> Self {
+    pub fn new(mut config: SessionConfig) -> Self {
+        // 關閉重排時複製一份解碼器再停用；`JaDecoder` 內部都是 `Arc`，
+        // 複製成本與共享詞典相同。
+        if !config.ja_rerank {
+            if let Some(decoder) = &config.ja {
+                config.ja = Some(Arc::new(
+                    decoder.as_ref().clone().with_rerank_enabled(false),
+                ));
+            }
+        }
         let ctx = config.zh_ctx.clone().unwrap_or_default();
         let lexicon = config.zh_lexicon.clone().unwrap_or_default();
         Self {

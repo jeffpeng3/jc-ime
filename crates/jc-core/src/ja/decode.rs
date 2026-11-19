@@ -666,6 +666,7 @@ pub struct JaDecoder {
     learning: Option<Arc<dyn JaLearning>>,
     verifier: Option<Arc<dyn JaVerifier>>,
     reranker: Option<Arc<dyn JaReranker>>,
+    rerank_enabled: bool,
     prefer_hiragana: bool,
     lm: Option<Arc<LanguageModel>>,
     lm_weight: f64,
@@ -701,6 +702,7 @@ impl JaDecoder {
             learning: None,
             verifier: None,
             reranker: None,
+            rerank_enabled: true,
             prefer_hiragana: false,
             lm: None,
             lm_weight: 0.0,
@@ -784,6 +786,17 @@ impl JaDecoder {
         self
     }
 
+    /// 執行期開關；關閉時保留重排器但不呼叫，排序與統計結果相同。
+    pub fn with_rerank_enabled(mut self, enabled: bool) -> Self {
+        self.rerank_enabled = enabled;
+        self
+    }
+
+    /// 重排器目前是否會實際執行。
+    pub fn rerank_enabled(&self) -> bool {
+        self.rerank_enabled && self.reranker.is_some()
+    }
+
     /// 設定平假名讀音的詞面偏好。
     pub fn with_prefer_hiragana(mut self, prefer: bool) -> Self {
         self.prefer_hiragana = prefer;
@@ -820,7 +833,7 @@ impl JaDecoder {
         if units.is_empty() {
             return None;
         }
-        let k = if self.verifier.is_some() || self.reranker.is_some() {
+        let k = if self.verifier.is_some() || self.rerank_enabled() {
             self.desired_nbest()
         } else {
             1
@@ -867,11 +880,13 @@ impl JaDecoder {
                 .total_cmp(&a.score)
                 .then_with(|| a.surface().cmp(&b.surface()))
         });
-        if let Some(reranker) = &self.reranker {
-            if !out.is_empty() {
-                let reranked = reranker.rerank(reading, out.clone(), ctx);
-                if !reranked.is_empty() {
-                    out = reranked;
+        if self.rerank_enabled() {
+            if let Some(reranker) = &self.reranker {
+                if !out.is_empty() {
+                    let reranked = reranker.rerank(reading, out.clone(), ctx);
+                    if !reranked.is_empty() {
+                        out = reranked;
+                    }
                 }
             }
         }
@@ -917,9 +932,11 @@ impl JaDecoder {
         }
         cands.sort_by(|a, b| a.cost.cmp(&b.cost).then_with(|| a.surface.cmp(&b.surface)));
 
-        if let Some(reranker) = &self.reranker {
-            if !cands.is_empty() {
-                cands = self.rerank_candidates(sub, cands, ctx, reranker.as_ref());
+        if self.rerank_enabled() {
+            if let Some(reranker) = &self.reranker {
+                if !cands.is_empty() {
+                    cands = self.rerank_candidates(sub, cands, ctx, reranker.as_ref());
+                }
             }
         }
         cands.truncate(limit);
@@ -1600,6 +1617,45 @@ mod tests {
         dec.convert(reading, &JaContext::default())
             .unwrap_or_else(|| panic!("{reading} 沒有轉換結果"))
             .surface
+    }
+
+    #[test]
+    fn test_reranker_reorders_and_can_be_disabled() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Reverse {
+            calls: AtomicUsize,
+        }
+
+        impl JaReranker for Reverse {
+            fn rerank(
+                &self,
+                _reading: &[char],
+                mut drafts: Vec<JaResult>,
+                _ctx: &JaContext,
+            ) -> Vec<JaResult> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                drafts.reverse();
+                drafts
+            }
+        }
+
+        let reranker = Arc::new(Reverse {
+            calls: AtomicUsize::new(0),
+        });
+        let enabled = test_decoder().with_reranker(reranker.clone());
+        let before = enabled.results(&units("はし"), &JaContext::default(), 3);
+        let after = enabled.results(&units("はし"), &JaContext::default(), 3);
+        assert_eq!(before.len(), 3);
+        assert_eq!(before[0].surface(), "端");
+        assert_eq!(reranker.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(after[0].surface(), "端");
+
+        let disabled = enabled.with_rerank_enabled(false);
+        assert!(!disabled.rerank_enabled());
+        let stats = disabled.results(&units("はし"), &JaContext::default(), 3);
+        assert_eq!(stats[0].surface(), "橋");
+        assert_eq!(reranker.calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]

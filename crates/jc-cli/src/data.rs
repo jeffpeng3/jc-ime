@@ -340,6 +340,28 @@ pub fn load_ja_decoder(root: &Path) -> Result<JaDecoder, CliError> {
     load_ja_decoder_with_pack(root, None)
 }
 
+/// 模型集合根目錄：`JC_JA_MODELS`，否則資料根目錄下的 `models/`。
+pub fn ja_models_dir(root: &Path) -> PathBuf {
+    if let Some(value) = std::env::var_os("JC_JA_MODELS") {
+        if !value.is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+    root.join("models")
+}
+
+/// 載入日文 reranker（需要 `onnx` feature）。
+///
+/// 由模型集合的 `manifest.json` 找 `ja-rerank`；模型缺席回傳帶路徑的
+/// 錯誤，呼叫端決定要中止或退回統計排序。
+#[cfg(feature = "onnx")]
+pub fn load_ja_reranker(root: &Path) -> Result<Arc<jc_core::ja::rerank::NeuralReranker>, CliError> {
+    let models = ja_models_dir(root);
+    jc_core::ja::rerank::NeuralReranker::load_from_models(&models)
+        .map(Arc::new)
+        .map_err(|err| CliError::data(format!("{}：{err}", models.display())))
+}
+
 /// 載入日文解碼器，`pack` 覆寫預設 pack。
 ///
 /// v2 pack 會同時接上詞條的 left／right ID 與 context 連接矩陣；v1 pack

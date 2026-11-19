@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# 開啟後才把日文 reranker 接進 N-best 重排，並拉入 `jc-model/onnx`。
+onnx = ["dep:jc-model", "jc-model/onnx"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -14,6 +19,7 @@ log.workspace = true
 unicode-script = "0.5"
 unicode_categories = "0.1"
 jc-data = { path = "../jc-data" }
+jc-model = { path = "../jc-model", optional = true }
 
 [dev-dependencies]
 jc-testdata = { path = "../jc-testdata" }
