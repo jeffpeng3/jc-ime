@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::candidate::{Candidate, CandidateSource};
-use crate::decode::{Decoder, Locks};
+use crate::decode::{Decoder, Hypothesis, Locks};
 use crate::emoji::{self, Stat};
 use crate::ja::decode::{JaContext, JaDecoder};
 use crate::ja::input::RomajiInput;
@@ -26,6 +26,7 @@ use crate::lang::Mode;
 use crate::lattice::{InMemoryLexicon, Lattice};
 use crate::mixed::{space_text, AsciiInput, AsciiPiece, Spacing};
 use crate::output::{utf16_len, HansConverter, SharedPunctuator, Snapshot};
+use crate::personal::PersonalStore;
 use crate::punct::{self, Edit};
 use crate::reading::Unit;
 use crate::score::ScoreContext;
@@ -93,6 +94,8 @@ pub struct SessionConfig {
     pub simplified: Option<Arc<crate::zhconv::Converter>>,
     /// 送出時呼叫的標點模型；`None` 時完全不補標點。
     pub punct: Option<SharedPunctuator>,
+    /// 個人化學習資料；預設為空，不影響排序。
+    pub personal: PersonalStore,
 }
 
 /// 固定替身重排設定。
@@ -129,6 +132,7 @@ impl Default for SessionConfig {
             cjk_latin_space: false,
             simplified: None,
             punct: None,
+            personal: PersonalStore::new(),
         }
     }
 }
@@ -169,6 +173,10 @@ pub struct Session {
     zh: ZhInput,
     romaji: RomajiInput,
     lexicon: InMemoryLexicon,
+    /// 不含自訂詞的原始詞典；自訂詞變動時由它重建 [`Session::lexicon`]。
+    base_lexicon: InMemoryLexicon,
+    /// 個人化學習資料。
+    personal: PersonalStore,
     ctx: ScoreContext,
     zh_lm: Option<Arc<crate::score::ZhLm>>,
     /// 注音以外的字面按鍵（標點、英文、直接輸入的注音符號）。
@@ -196,6 +204,8 @@ pub struct Session {
     accepted_completion: Option<String>,
     /// 尾端補全建議。
     suggestion: Option<String>,
+    /// 待選路徑的快照；提交時用來依實際片段學習。
+    last_hypotheses: Vec<Hypothesis>,
     /// 混合模式的英數按鍵推斷。
     ascii: AsciiInput,
     /// 目前開啟的候選選單。
@@ -235,7 +245,9 @@ impl Session {
             }
         }
         let ctx = config.zh_ctx.clone().unwrap_or_default();
-        let lexicon = config.zh_lexicon.clone().unwrap_or_default();
+        let base_lexicon = config.zh_lexicon.clone().unwrap_or_default();
+        let personal = config.personal.clone();
+        let lexicon = personal.augment_lexicon(&base_lexicon);
         let zh_lm = config.zh_lm.clone();
         // 逐字変換控制器與日文解碼器共用同一份詞典；關閉時完全不建立。
         let live = if config.ja_live.enabled {
@@ -250,6 +262,8 @@ impl Session {
             zh: ZhInput::standard(),
             romaji: RomajiInput::new(),
             lexicon,
+            base_lexicon,
+            personal,
             ctx,
             zh_lm,
             literal: String::new(),
@@ -266,6 +280,7 @@ impl Session {
             pending_commit: None,
             accepted_completion: None,
             suggestion: None,
+            last_hypotheses: Vec::new(),
             ascii: AsciiInput::new(),
             menu: None,
             palette_tab: 0,
@@ -308,7 +323,14 @@ impl Session {
         } else if !self.menu_key(&key) {
             match key.code {
                 KeyCode::Enter => self.finish_composition(),
-                KeyCode::Escape | KeyCode::Delete => self.clear_composition(),
+                KeyCode::Escape => self.clear_composition(),
+                KeyCode::Delete if key.shift && self.candidate_window => {
+                    self.forget_candidate();
+                }
+                KeyCode::Backspace if key.shift && self.candidate_window => {
+                    self.forget_candidate();
+                }
+                KeyCode::Delete => self.clear_composition(),
                 KeyCode::Backspace => self.backspace(),
                 KeyCode::Space => self.space(),
                 KeyCode::Tab => {
@@ -319,8 +341,8 @@ impl Session {
                         self.move_highlight(1);
                     }
                 }
-                KeyCode::ArrowRight => self.move_highlight(1),
-                KeyCode::ArrowLeft => self.move_highlight(-1),
+                KeyCode::ArrowRight => self.navigate(1),
+                KeyCode::ArrowLeft => self.navigate(-1),
                 KeyCode::Char(ch) => self.press_char(ch),
             }
         }
@@ -697,6 +719,7 @@ impl Session {
             self.ascii.flush();
         }
         self.remember_selection();
+        self.learn_composition();
         let text = match self.config.mode {
             Mode::Mixed => self.mixed_surface(),
             _ => self.current_text(),
@@ -905,6 +928,101 @@ impl Session {
         }
     }
 
+    /// 方向鍵：候選窗還沒開時先開啟並停在目前候選，不立刻移動。
+    ///
+    /// 前身把「只是顯示」與「明確選取」分開；Down 第一次只進入選取模式，
+    /// 第二次才換下一項。這裡用同一個規則簡化兩顆方向鍵。
+    fn navigate(&mut self, delta: isize) {
+        if self.candidates.is_empty() {
+            return;
+        }
+        if !self.candidate_window {
+            self.candidate_window = true;
+            return;
+        }
+        self.move_highlight(delta);
+    }
+
+    /// 把這次送出的候選記進個人學習。
+    fn learn_composition(&mut self) {
+        if self.config.mode != Mode::Zh || self.menu.is_some() {
+            return;
+        }
+        let manual = self.candidate_window;
+        let Some(candidate) = self.candidates.get(self.highlighted).cloned() else {
+            return;
+        };
+        let units: Vec<&str> = candidate
+            .reading
+            .split_whitespace()
+            .filter(|unit| !unit.is_empty())
+            .collect();
+        if units.is_empty() {
+            return;
+        }
+        let hypothesis = self
+            .last_hypotheses
+            .iter()
+            .find(|hypothesis| hypothesis.text == candidate.surface);
+        if let Some(hypothesis) = hypothesis {
+            for segment in &hypothesis.segments {
+                if segment.partial
+                    || segment.start >= segment.end
+                    || segment.end > units.len()
+                    || !segment.word.chars().next().is_some_and(is_han)
+                {
+                    continue;
+                }
+                let reading = units[segment.start..segment.end].join(" ");
+                let syllables = segment.end - segment.start;
+                if manual {
+                    self.personal
+                        .note_manual(&segment.word, &reading, syllables);
+                } else {
+                    self.personal.note_passive(&segment.word, &reading);
+                }
+            }
+        } else if candidate.surface.chars().next().is_some_and(is_han) {
+            // 模糊音或自訂詞候選沒有對應路徑，整串當一個單位學習。
+            let syllables = units.len();
+            if manual {
+                self.personal
+                    .note_manual(&candidate.surface, &candidate.reading, syllables);
+            } else {
+                self.personal
+                    .note_passive(&candidate.surface, &candidate.reading);
+            }
+        }
+    }
+
+    /// 候選窗的反悔鍵：自訂詞刪除、學到的詞忘記。
+    fn forget_candidate(&mut self) {
+        let Some(candidate) = self.candidates.get(self.highlighted).cloned() else {
+            return;
+        };
+        if self.personal.is_vocab(&candidate.surface) {
+            self.personal.remove_vocab(&candidate.surface);
+            self.refresh_lexicon();
+        } else if self.personal.is_learned(&candidate.surface) {
+            self.personal.forget(&candidate.surface);
+        }
+        self.highlighted = 0;
+    }
+
+    /// 撤銷與某個詞有關的學習；供 `forget` 協定請求使用。
+    pub fn forget_word(&mut self, word: &str) -> bool {
+        let changed = self.personal.forget(word);
+        if changed {
+            self.highlighted = 0;
+        }
+        changed
+    }
+
+    /// 自訂詞變動後重建詞典。
+    fn refresh_lexicon(&mut self) {
+        self.lexicon = self.personal.augment_lexicon(&self.base_lexicon);
+    }
+
     fn move_highlight(&mut self, delta: isize) {
         let len = self.candidates.len();
         if len == 0 {
@@ -936,6 +1054,7 @@ impl Session {
         self.segments.clear();
         self.base.clear();
         self.pending.clear();
+        self.last_hypotheses.clear();
         self.accepted_completion = None;
         self.suggestion = None;
         self.menu = None;
@@ -1071,13 +1190,15 @@ impl Session {
         let literal = readings.join("");
         let (mut hypotheses, _) =
             decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
+        self.personal.rank_hypotheses(&mut hypotheses, &reading);
         if let Some(options) = &self.config.rerank {
             Self::apply_rerank(&mut hypotheses, options);
-            if let Some(best) = hypotheses.first() {
-                self.base = best.text.clone();
-                self.segments = Self::segments_of(&best.segments, Mode::Zh, Script::Bopomofo);
-            }
         }
+        if let Some(best) = hypotheses.first() {
+            self.base = best.text.clone();
+            self.segments = Self::segments_of(&best.segments, Mode::Zh, Script::Bopomofo);
+        }
+        self.last_hypotheses = hypotheses.clone();
         let mut candidates: Vec<Candidate> = hypotheses
             .into_iter()
             .map(|hypothesis| {
