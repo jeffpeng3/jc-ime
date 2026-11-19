@@ -45,6 +45,9 @@
 | `zh-bigram`（clippy 修正） | `3ecd2a7` | `807c41d` | 通過（fmt＋clippy） | 2026-11-20 00:23 |
 | `model-wire-zh` | `39d9bda` | `67d16e8` | 通過（fmt＋clippy） | 2026-11-20 00:39 |
 | `model-wire-ja` | `f8d9d48` | `b147c61` | 通過（fmt＋clippy） | 2026-11-20 00:40 |
+| `zh-bigram`（nbest 修正） | `0ec571b` | `8180133` | 通過 | 2026-11-20 00:44 |
+| `fix-tests` | `3bda5a0` | `f660e30` | 通過 | 2026-11-20 00:44 |
+| `mixed-e2e`（片語合併） | `6c72b5e` | `301c423` | 通過 | 2026-11-20 00:44 |
 
 ## 衝突與修正
 
@@ -278,3 +281,17 @@
   兩個疑點：左文全空（題庫一次轉換整句，`JaContext::left` 沒有前文，模型只看到候選）；
   candidate 位置 62 與訓練 checkpoint 的 122 不一致（匯出端限制，不在本 task owned paths）。
   因此 `--rerank` 保持 opt-in、預設 off。
+
+- 依控制中樞指定順序重跑：`zh-bigram`（`8180133`，含 `0ec571b` 修 nbest 測試的未知詞成本與連線方向）→
+  `fix-tests`（`f660e30`）→ `mixed-e2e`（`301c423`，含 `6c72b5e` 片語合併）。三條都無衝突到產品邏輯：
+  - `fix-tests` 與 zh-bigram 在 `jc-core/src/lattice/viterbi.rs` 衝突，採 zh-bigram 的連線方向修正
+    （`set(2, 1, 100)`，`fix-tests` 的 `set(1, 2, 100)` 已被方向修正取代）。
+  - `jc-cli/src/eval_cmd.rs` 的 `Ctrl+,` 斷言取兩邊聯集（保留 `<` 合法與 `Ctrl+Shift+,` 錯誤訊息）。
+  - `mixed-e2e` 與 fix-tests 在 `mixed.rs` 只衝突註解，取較完整的位移說明。
+
+  最終驗證：`cargo test --workspace --no-fail-fast` **exit 0**，33 個 target 全部 `0 failed`（含 `jc-core --lib`）；
+  `cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0。
+  原以為會剩 `decode::nbest::tests::nbest_uses_bigram_context_of_previous_word` 一個失敗，實際隨 zh-bigram 的修正一起轉綠。
+
+  `fix-tests` 的修復量：34 個失敗測試、9 個 target；4 個實作 bug（`InMemoryLexicon::prefix`、`Key.ctrl` 序列化、
+  `Engine` shutdown 狀態、`Tokenizer::encode` 字串結尾），11 個測試期望值修正，其餘是測試機制修正。
