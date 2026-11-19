@@ -20,12 +20,14 @@ use crate::decode::{Decoder, Locks};
 use crate::emoji::{self, Stat};
 use crate::ja::decode::{JaContext, JaDecoder};
 use crate::ja::input::RomajiInput;
+use crate::ja::live::{self, Controller as LiveController, Plan as LivePlan};
 use crate::key::{Key, KeyCode};
 use crate::lang::Mode;
 use crate::lattice::{InMemoryLexicon, Lattice};
 use crate::mixed::{space_text, AsciiInput, AsciiPiece, Spacing};
 use crate::output::{utf16_len, HansConverter, Snapshot};
 use crate::punct::{self, Edit};
+use crate::reading::Unit;
 use crate::score::ScoreContext;
 use crate::segment::{Script, Segment};
 use crate::symbols;
@@ -68,6 +70,8 @@ pub struct SessionConfig {
     pub ja: Option<Arc<JaDecoder>>,
     /// 是否呼叫日文解碼器上的重排器；預設開啟，沒有重排器時無效果。
     pub ja_rerank: bool,
+    /// 日文逐字変換設定；預設關閉，關閉時日文走一般変換流程。
+    pub ja_live: live::Config,
     /// 聲調選填：沒有聲調的音節展開成五個聲調再解碼。
     pub toneless: bool,
     /// Ctrl 標點：`Ctrl+,` 輸出全形逗號。
@@ -110,6 +114,7 @@ impl Default for SessionConfig {
             zh_lm: None,
             ja: None,
             ja_rerank: true,
+            ja_live: live::Config::default(),
             toneless: false,
             ctrl_punct: false,
             fuzzy_pairs: Vec::new(),
@@ -197,6 +202,10 @@ pub struct Session {
     emoji_recent: Vec<String>,
     /// 表情「最近」清單的常用分數。
     emoji_stats: HashMap<String, Stat>,
+    /// 日文逐字変換控制器；關閉時為 `None`，日文走一般変換。
+    live: Option<LiveController>,
+    /// 最近一次逐字変換的決定，供 debounce 到期後重畫。
+    live_plan: Option<LivePlan>,
 }
 
 impl Default for Session {
@@ -220,6 +229,14 @@ impl Session {
         let ctx = config.zh_ctx.clone().unwrap_or_default();
         let lexicon = config.zh_lexicon.clone().unwrap_or_default();
         let zh_lm = config.zh_lm.clone();
+        // 逐字変換控制器與日文解碼器共用同一份詞典；關閉時完全不建立。
+        let live = if config.ja_live.enabled {
+            config.ja.as_ref().map(|decoder| {
+                LiveController::new(decoder.as_ref().clone(), config.ja_live.clone())
+            })
+        } else {
+            None
+        };
         Self {
             config,
             zh: ZhInput::standard(),
@@ -247,6 +264,8 @@ impl Session {
             symbol_stats: HashMap::new(),
             emoji_recent: Vec::new(),
             emoji_stats: HashMap::new(),
+            live,
+            live_plan: None,
         }
     }
 
@@ -414,6 +433,40 @@ impl Session {
     pub fn reset(&mut self) {
         self.pending_commit = None;
         self.clear_composition();
+    }
+
+    /// 日文逐字変換是否開啟。
+    pub fn ja_live_enabled(&self) -> bool {
+        self.live.as_ref().is_some_and(LiveController::enabled)
+    }
+
+    /// debounce 是否還在等待；外殼據此安排計時器。
+    pub fn ja_live_pending(&self) -> bool {
+        self.live.as_ref().is_some_and(LiveController::pending)
+    }
+
+    /// debounce 到期時間；沒有待處理轉換時為 `None`。
+    pub fn ja_live_deadline(&self) -> Option<std::time::Instant> {
+        self.live_plan.as_ref().and_then(|plan| plan.deadline)
+    }
+
+    /// 檢查日文逐字変換的 debounce 期限；到期就轉換並更新組字狀態。
+    ///
+    /// 期限未到或功能關閉時回傳目前快照，不改變狀態。
+    pub fn tick_live(&mut self) -> Snapshot {
+        let plan = match &mut self.live {
+            Some(live) => {
+                let (plan, converted) = live.tick();
+                converted.then_some(plan)
+            }
+            None => None,
+        };
+        if let Some(plan) = plan {
+            let units = self.romaji.units().to_vec();
+            let reading: String = units.iter().map(Unit::as_str).collect();
+            self.apply_live_plan(&plan, &units, &reading);
+        }
+        self.snapshot()
     }
 
     /// 目前的完整快照。
@@ -843,6 +896,10 @@ impl Session {
         self.accepted_completion = None;
         self.suggestion = None;
         self.menu = None;
+        if let Some(live) = &mut self.live {
+            live.reset();
+        }
+        self.live_plan = None;
     }
 
     /// 目前要提交的文字：接受的補全優先，其次高亮候選，最後轉換結果。
@@ -1167,8 +1224,13 @@ impl Session {
 
     fn rebuild_ja(&mut self) {
         self.pending = self.romaji.pending().to_string();
-        let reading: String = self.romaji.units().iter().map(|u| u.as_str()).collect();
+        let units = self.romaji.units().to_vec();
+        let reading: String = units.iter().map(Unit::as_str).collect();
         if reading.is_empty() {
+            return;
+        }
+        if self.live.is_some() {
+            self.rebuild_ja_live(&units);
             return;
         }
         let Some(decoder) = &self.config.ja else {
@@ -1193,6 +1255,77 @@ impl Session {
                 )
             })
             .collect();
+    }
+
+    /// 逐字変換開啟時的日文重建：把讀音送進控制器，依決定畫出結果。
+    fn rebuild_ja_live(&mut self, units: &[Unit]) {
+        let plan = match &mut self.live {
+            Some(live) => live.input(units, &JaContext::default()),
+            None => return,
+        };
+        let reading: String = units.iter().map(Unit::as_str).collect();
+        self.apply_live_plan(&plan, units, &reading);
+    }
+
+    /// 套用逐字変換的決定。
+    ///
+    /// 有新結果時整段換成新轉換；只有 draft 時顯示前次結果再加上尚未轉換的
+    /// かな，讓畫面不會先退回かな。debounce 等待中的新かな因此仍可看見。
+    fn apply_live_plan(&mut self, plan: &LivePlan, units: &[Unit], reading: &str) {
+        self.live_plan = Some(plan.clone());
+        let mut base = String::new();
+        let mut segments = Vec::new();
+        let mut display = reading.to_string();
+        if let Some(result) = &plan.result {
+            base.push_str(&result.surface());
+            segments = result.conversion().segments;
+            let covered: usize = result
+                .clauses
+                .iter()
+                .map(|clause| clause.reading.chars().count())
+                .sum();
+            if covered < units.len() {
+                let tail: String = units[covered..].iter().map(Unit::as_str).collect();
+                let start = base.len();
+                base.push_str(&tail);
+                segments.push(Segment::new(start, base.len(), Mode::Ja, Script::Kana));
+            }
+            display = base.clone();
+        } else {
+            base = reading.to_string();
+        }
+        self.base = base;
+        self.segments = segments;
+
+        let mut candidates = Vec::new();
+        if plan.convert {
+            if let Some(decoder) = &self.config.ja {
+                candidates = decoder
+                    .nbest(reading, &JaContext::default(), self.max_candidates())
+                    .into_iter()
+                    .map(|result| {
+                        Candidate::new(
+                            result.surface,
+                            reading.to_string(),
+                            result.cost,
+                            CandidateSource::Lexicon,
+                        )
+                    })
+                    .collect();
+            }
+        }
+        // 畫面上顯示的是高亮候選；第一個候選必須與逐字変換的結果一致。
+        if candidates
+            .first()
+            .map(|candidate| candidate.surface.as_str())
+            != Some(display.as_str())
+        {
+            candidates.insert(
+                0,
+                Candidate::new(display, reading.to_string(), 0, CandidateSource::Lexicon),
+            );
+        }
+        self.candidates = candidates;
     }
 
     fn rebuild_en(&mut self) {
@@ -1843,5 +1976,102 @@ mod tests {
         assert_eq!(s.candidates()[1].surface, "１２３");
         s.press(Key::char('2', false));
         assert_eq!(s.commit(), "１２３");
+    }
+
+    /// 最小日文詞條來源，讓日文 session 不必載入 pack 也能轉換。
+    struct LiveTestSource(Vec<crate::ja::lexicon::JaEntry>);
+
+    impl crate::ja::decode::JaWordSource for LiveTestSource {
+        fn longest_reading_units(&self) -> usize {
+            self.0.iter().map(|entry| entry.units()).max().unwrap_or(0)
+        }
+
+        fn matches<'a>(
+            &'a self,
+            reading: &[char],
+            start: usize,
+            out: &mut dyn FnMut(crate::ja::decode::JaWordMatch<'a>),
+        ) {
+            for entry in &self.0 {
+                let units: Vec<char> = entry.reading.chars().collect();
+                let end = start + units.len();
+                if end > reading.len() || reading[start..end] != units[..] {
+                    continue;
+                }
+                out(crate::ja::decode::JaWordMatch {
+                    end,
+                    entry,
+                    left_id: None,
+                    right_id: None,
+                });
+            }
+        }
+
+        fn exact(&self, reading: &[char]) -> Vec<&crate::ja::lexicon::JaEntry> {
+            self.0
+                .iter()
+                .filter(|entry| entry.reading.chars().eq(reading.iter().copied()))
+                .collect()
+        }
+
+        fn prefixed(&self, reading: &[char]) -> Vec<&crate::ja::lexicon::JaEntry> {
+            self.0
+                .iter()
+                .filter(|entry| {
+                    let units: Vec<char> = entry.reading.chars().collect();
+                    units.len() >= reading.len() && units[..reading.len()] == *reading
+                })
+                .collect()
+        }
+    }
+
+    fn ja_live_session(config: live::Config) -> Session {
+        let entry = crate::ja::lexicon::JaEntry {
+            surface: "今日".into(),
+            reading: "きょう".into(),
+            pos: Arc::from("名詞,普通名詞,一般,*"),
+            conj_type: Arc::from("*"),
+            conj_form: Arc::from("*"),
+            cost: 0,
+            split: crate::ja::lexicon::Split::C,
+        };
+        let decoder = Arc::new(JaDecoder::new(Arc::new(LiveTestSource(vec![entry]))));
+        let mut session_config = SessionConfig::new(Mode::Ja);
+        session_config.ja = Some(decoder);
+        session_config.ja_live = config;
+        Session::new(session_config)
+    }
+
+    fn type_ja(session: &mut Session, keys: &str) {
+        for ch in keys.chars() {
+            session.press(Key::char(ch, false));
+        }
+    }
+
+    /// 沒有開啟逐字変換時，日文走原本的 nbest 流程，結果與先前相同。
+    #[test]
+    fn test_ja_live_disabled_by_default_keeps_plain_conversion() {
+        let mut s = ja_live_session(live::Config::default());
+        assert!(!s.ja_live_enabled());
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.snapshot().preedit, "今日");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "今日");
+    }
+
+    /// 開啟逐字変換後，輸入到詞邊界就顯示轉換結果，不必等 Enter。
+    #[test]
+    fn test_ja_live_enabled_converts_without_enter() {
+        let config = live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            ..live::Config::default()
+        };
+        let mut s = ja_live_session(config);
+        assert!(s.ja_live_enabled());
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.snapshot().preedit, "今日");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "今日");
     }
 }
