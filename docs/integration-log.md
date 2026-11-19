@@ -88,6 +88,7 @@
 | `mozkey-study` | `b8ad3ce` | `764ee82` | check 通過 | 2026-11-20 05:25 |
 | `ja-particle-rewrite`（golden＋engine） | `aa5797f` | `c04e85e` | 通過（clippy＋全量 test） | 2026-11-20 05:30 |
 | `jinen-integrate` | `34688d7` | `72985f6` | 通過（clippy＋全量 test） | 2026-11-20 05:38 |
+| `quant-study` | `cf0926e` | `8e27af0` | check 通過 | 2026-11-20 05:38 |
 
 ## 衝突與修正
 
@@ -766,3 +767,15 @@
   - 延遲 p50：ajimee **28.59 ms**、modern-500 **19.69 ms**、hard-cases **19.16 ms**（4 threads）。
 
   備註：main 另有 `254f4b4`（收錄 rerank-domain 報告），不是本輪合併帶入。
+
+- `quant-study`（合併 `8e27af0`）：無衝突。新增 `docs/reports/quant-study-2026-11-20.md`（180 行）與四份 JSON、
+  `scripts/quant/`（量測與量化腳本、`dump-inputs` 小 crate），`.gitignore` 加一行。沒有動既有 Rust 程式。
+  `cargo check --workspace --all-targets` exit 0。
+
+  建議（作者結論）：
+  - 日文 reranker 用 **int8**：排序與 fp32 一致率 100%、Spearman 0.991，延遲 107.4 → 31.9 ms。
+  - 日文標點用 **int8**：argmax 一致率 99.44%，端到端 93% 句子完全相同，38.5 → 12.1 ms。
+  - 注音選字**維持 fp32**：對量化最敏感，int8 的 logits 最大誤差 10.3、Spearman 0.859、候選 top-1 只剩 92.3%。
+  - 外部 **Jinen Q5_K_M 最划算**（28.3 MB，品質與延遲平衡）。
+  - **int4 在 ARM 上反而變慢**：reranker 由 int8 的 31.9 ms 升到 **70.8 ms**（模型 18.5 MB，但 kernel 走慢路徑）。
+  - 另記：reranker 目前讓端到端變差（modern-500 `--rerank off` 86.0%，開啟後更低），維持 opt-in。
