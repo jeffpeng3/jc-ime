@@ -66,6 +66,7 @@
 | `english-suggest` | `b93633a` | `359d425` | check 通過；clippy／test 失敗 | 2026-11-20 02:50 |
 | `zh-select-calibrate`（診斷） | `9f84483` | `eabae70` | check 通過 | 2026-11-20 03:04 |
 | `english-suggest`（混合修正） | `a9e8fb0` | `b9459ac` | test／clippy 剩他人失敗 | 2026-11-20 03:10 |
+| `legal-notices` | `d1be772` | `823eab9` | fmt 通過；clippy 剩 zh-calibrate | 2026-11-20 03:17 |
 
 ## 衝突與修正
 
@@ -511,3 +512,11 @@
   - clippy 13 個全是 `crates/jc-cli/src/bin/zh-calibrate.rs` 的 `unexpected cfg condition value: onnx`
     （行 15、90、97、149、164、258、276、378、417、464、534、585、690），屬 zh-select-calibrate。
   - 本 branch 的 `session::tests::test_mixed_english_suggestion_and_completion` 已轉綠。
+
+- `legal-notices`（合併 `823eab9`）：無衝突，22 個檔案、2967 行，全是法律與文件：
+  `legal/licenses/`（IPADIC、Mozc、UNIDIC、MIT、Funmula、注音資料 NOTICE 等 10 份）、`legal/README.md`、
+  `legal/THIRD-PARTY-NOTICES.md`、`NOTICE`、`docs/models.md`，README 授權段補上帳本與 NOTICE 連結。
+
+  `cargo fmt --all -- --check` exit 0。`cargo clippy --workspace --all-targets -- -D warnings` 仍 exit 101，
+  15 個錯誤全是 `crates/jc-cli/src/bin/zh-calibrate.rs` 的 `unexpected cfg condition value: onnx`，
+  屬 zh-select-calibrate 待修項，與本 branch 無關。
