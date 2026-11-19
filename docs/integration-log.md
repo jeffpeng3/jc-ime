@@ -102,6 +102,7 @@
 | `candle-quant`（修門檻） | `66347f4` | `77d8c1f` | 通過（fmt／clippy／全量 test） | 2026-11-20 06:52 |
 | `session-g4-mixed` | `6b9f1b5` | `8de9306` | 通過（fmt／clippy／test／三個 eval） | 2026-11-20 07:02 |
 | `session-g5-misc` | `12f161f` | `7379047` | 通過（fmt／clippy／test／三個 eval） | 2026-11-20 07:16 |
+| `session-g6-core` | `ffccac1` | `b7af358` | 通過（fmt／clippy／test／四個 eval） | 2026-11-20 07:37 |
 
 ## 衝突與修正
 
@@ -960,3 +961,19 @@
     `Candidate` 也沒有來源 ID，批次復原與重開候選無處可放。
   - **`Decoder` 個人化成本接線**：`local_evidence` 已能建出證據，但 `decode::bias` 的 `reading_lift` 與 `correction_penalty`
     仍是回 0 的掛鉤，`Decoder` 沒有依音節位置查證據的評分器；文件前文混分也缺 `Context`／`ContextID` 協定欄位。
+
+- `session-g6-core`（合併 `b7af358`，含 `ffccac1`）：無衝突。`core.rs` 加 406 行（候選選取模式、Esc 優先權、
+  快照補全標示），`mod.rs` 配合調整按鍵派送。
+
+  gate：fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（45 targets、1057 passed、0 failed）。
+  實測：`eval mixed` **6/6**、`eval zh-golden` **45/45**、`eval ja modern-500` **86.0%**（p50 3.080 ms）、
+  `eval fuzzy` 注音 **44.5%**（319 題，doubled-key 100%、missing-key 5.4%）。
+
+  deferred 清單：
+  - **組字游標**：←／→／Home／End 移動、任意位置插入與刪除、`eraseBeforeCursor`、`shiftLocks`；缺 `ZhInput`／`RomajiInput`
+    的游標 API 與 `Segment` 的 rune 範圍。
+  - **換詞長**：Tab／上下鍵的 `nextCandidateLength`／`candidateAnchor` 與跨詞長 `moveHighlight`；候選清單目前只有整段組字一份。
+  - **`j`／`k` 換字**：`stepCandidate`／`unitStart`／`unitEnd`，依賴組字游標與分詞範圍。
+  - **選字鎖定**：選字後鎖定片段並留在組字區；Rust 目前直接送進待提交區，改成鎖定會動到四組題庫的既有輸出。
+  - **`keepCandidates`**：候選窗跟著之後的組字留在畫面；會讓數字鍵在開窗後變成選字鍵，與現有題庫流程衝突。
+  - **`related` label**：需要已提交左文的最後一個完整詞與文件前文權重。
