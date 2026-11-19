@@ -400,7 +400,9 @@ impl CandleReranker {
         let ids = Tensor::from_vec(ids, (rows, width), device).map_err(inference)?;
         let positions = Tensor::from_vec(positions, (rows, width), device).map_err(inference)?;
         let mask = Tensor::from_vec(mask, (rows, 1, 1, width), device).map_err(inference)?;
-        let hidden = self.encoder.forward(&ids, &positions, Some(&mask), &self.config)?;
+        let hidden = self
+            .encoder
+            .forward(&ids, &positions, Some(&mask), &self.config)?;
         let mut pooled = Vec::with_capacity(rows);
         for (row, &pool) in pools.iter().enumerate() {
             pooled.push(
