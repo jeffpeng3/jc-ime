@@ -13,4 +13,5 @@ jc-data = { path = "../jc-data" }
 
 [dev-dependencies]
 jc-testdata = { path = "../jc-testdata" }
+serde_json.workspace = true
 sha2 = "0.10"

@@ -172,6 +172,7 @@ version = "0.1.0"
 dependencies = [
  "jc-data",
  "jc-testdata",
+ "serde_json",
  "sha2",
  "thiserror",
  "unicode-script",
