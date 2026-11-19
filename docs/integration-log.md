@@ -60,6 +60,7 @@
 | `rerank-tokenizer` | `a9aebdc` | `bcb1515` | fmt／clippy 通過；4 個 test 失敗 | 2026-11-20 01:33 |
 | `personal-zh`（清 clippy） | `6faec7f` | `e5af3b8` | fmt／clippy／golden 通過；test 剩 4 個既有失敗 | 2026-11-20 01:35 |
 | `rerank-tokenizer`（SP 對齊） | `0eb7496` | `b07d098` | 通過（fmt／clippy／test） | 2026-11-20 01:57 |
+| `settings-core` | `aceda9f` | `52cb1b9` | check／fmt／clippy 通過；jc-settings 4 個 test 失敗 | 2026-11-20 02:36 |
 
 ## 衝突與修正
 
@@ -429,3 +430,28 @@
   - 開啟：`𠮷`、`😀`、`東京𠮷`、`a😀b`、`𠮷😀①髙` 的 ids 與 pieces 全部與 SP 相同，OOV 走 `<0xNN>` 而非 `<unk>`。
   - 關閉（移除 BYTE piece）：`𠮷` → `7,1`、`東京𠮷` → `9759,1`、`𠮷𠮷` → `7,1`，連續 OOV 合并成單一 `<unk>`，與 SP 一致。
   - `byte_fallback=true` 但缺 byte piece 的模型，SP loader 會直接拒絕；Rust 保留防禦性 fallback 測試。
+
+- `settings-core`（合併 `52cb1b9`）：無衝突，新增 crate `crates/jc-settings`（`settings`、`profiles`、`profile_rules`、`paths`、
+  `modelset/{manifest,install,mod}`、`atomic_file`、`both_shift` 等，7581 行），workspace 加 member。
+
+  驗證：
+  | gate | 結果 |
+  |---|---|
+  | `cargo check --workspace --all-targets` | exit 0 |
+  | `cargo test -p jc-settings` | **exit 101：72 passed、4 failed** |
+  | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+  | `cargo fmt --all -- --check` | exit 0 |
+
+  4 個失敗（都在 `crates/jc-settings`，需回 settings-core）：
+  - `features_tests::test_left_shift_defaults_follow_platform_and_persists`（`features_tests.rs:257`）：
+    `save(&path, …)` 回 `Io(NotFound)`，存檔前沒有建立上層目錄。
+  - `tests::test_profile_layout_guard_cannot_be_bypassed_by_copy`（`tests.rs:755`）：選用 `microsoft` 後
+    `set("keyboard-layout", "hsu", "linux")` 應該被風格鎖擋下，實際成功。
+  - `tests::test_profiles_migration_and_complete_round_trip`（`tests.rs:687`）：來回一趟後 `read_only`／`profile_invalid`
+    由 `false` 變 `true`。
+  - `tests::test_profile_locks_all_managed_entry_points`（`tests.rs:826`）：`change(..., "output-simplified", ...)`
+    回 `ReadOnly`，舊鍵被風格鎖誤擋。
+
+  刻意排除的範圍（記在 `docs/port/settings-core.md`）：UI 契約（`DisabledBy`／`DisabledReason`、Items、停用原因）、
+  網路 fetch 與 pin（Hugging Face 下載、`valid_revision` 只保留驗證）、`internal/filelock`（跨 process 鎖，
+  由呼叫端負責）、placeholder 測試（需要 `OC_PLACEHOLDER_MODELS` 的模型檔）。
