@@ -1301,7 +1301,7 @@ mod tests {
         let mut out = Vec::new();
         mixed(Some(dir), None, false, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("mixed golden：通過 4/6"), "{text}");
+        assert!(text.contains("mixed golden：通過 6/6"), "{text}");
         assert!(
             text.contains("✓ long-word-cross-segment-zhuyin：\"麻婆豆腐\""),
             "{text}"
@@ -1315,10 +1315,13 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("✗ scenario-a-primary-ja：\"私羽大雞巴です is a good sentence\""),
+            text.contains("✓ scenario-a-primary-ja：\"私は大雞巴です is a good sentence\""),
             "{text}"
         );
-        assert!(text.contains("片段 0 文字：期望 \"私わ\""), "{text}");
+        assert!(
+            text.contains("✓ scenario-b-primary-zh：\"私は大雞巴です is a good sentence\""),
+            "{text}"
+        );
     }
 
     #[test]

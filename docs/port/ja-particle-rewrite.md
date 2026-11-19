@@ -57,8 +57,19 @@
 開關：
 
 - 核心 `JaDecoder::with_particle_rewrite(bool)` 預設關閉，既有統計行為不變。
-- `jc-cli` 的 `data::load_ja_decoder`／`load_ja_decoder_with_pack` 一律開啟，
-  因此 `convert` 與 `eval ja` 都使用同一條路徑。
+- `jc-engine` 的 `loader::load_ja_decoder`、`load_ja_decoder_with_pack` 與
+  `load_curated_decoder` 一律開啟；`jc-cli` 直接沿用 loader，因此 CLI、引擎與
+  測試使用同一條路徑。
+
+## Mixed golden 的期望值
+
+`golden/mixed` 的 `watashiwa` 讀音是 `わたしわ`。日文助詞 `は` 唸 `わ`，所以
+`わたしわ` 的正確表記是 `私は`；`私わ` 不是標準日文。助詞讀音交替把 `は` 的詞弧
+放進 lattice 後，`私 + は` 勝出，`scenario-a`／`scenario-b` 都輸出 `私は`。
+
+因此 fixture 的 `surface` 與 `output` 從 `私わ` 改成 `私は`。比較仍然逐片段比
+邊界、語言、書寫系統與表面文字，沒有放寬。改寫前的 Rust 統計首位是 `私羽`
+（9068），`私わ` 是 9312；兩者都不該是這句的期望值。
 
 ## 驗證
 
