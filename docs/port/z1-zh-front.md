@@ -23,10 +23,8 @@
 | `core/segment/segment_test.go` | `crates/jc-core/src/segment.rs` | 部分 ported：`test_script_names_and_strength`。`TestSpan` n/a：`Span` 併入 `Segment`，`len()`／越界行為已有 c0 測試；`TestScriptJSONRoundTrip` n/a：serde 由各 crate 自行決定，c0 說這輪不急；`TestSegmentValid` n/a：Rust `Segment` 沒有 reading／surface／language 欄位，驗證屬於 lattice；`TestSessionSegmentsKeepsPerSegmentLanguages` n/a：`SessionSegments` 屬 session task |
 | `core/segment/segmenter_test.go` | `crates/jc-core/src/segment.rs` | ported：`test_split_table`、`test_split_names_are_stable`、`test_detect`、`test_split_constructors_agree`、`test_split_does_not_keep_state`；`FuzzSplit` 改成固定種子案例 `split_always_covers_input`（Rust 端不引入 fuzz 工具鏈） |
 | `core/segment/session.go` | — | n/a：`SessionSegments` 是 session 的介面，不在本 task 的 owned paths |
-| `core/layout/layout.go` | `crates/jc-core/src/zh/keyboard.rs` | 部分 ported：標準（大千）與倚天 41 鍵的靜態表、標點、`Keys`、`ByName`；許氏依狀態解讀照任務書只預留 `LayoutKind::Hsu` |
-| `core/layout/layout_test.go` | `crates/jc-core/src/zh/keyboard.rs` | 部分 ported：`test_standard_round_trip`、`test_standard_punct`、`test_eten_table`、`test_eten_round_trip`、`test_eten_punct`、`test_by_name`。`ByName("hsu")` 改成斷言尚未實作的錯誤 |
-| `core/layout/hsu.go` | — | n/a：許氏是依組音狀態解讀同一鍵的動態排列，任務書指定這輪只做預設排列、其他用 enum 預留 |
-| `core/layout/hsu_test.go` | — | n/a：隨 `hsu.go` 保留，等動態排列實作時一起搬 |
+| `core/layout/layout.go` | `crates/jc-core/src/zh/keyboard.rs` | 部分 ported：標準（大千）的靜態表、標點、`Keys`、`ByName`；其他排列不移植 |
+| `core/layout/layout_test.go` | `crates/jc-core/src/zh/keyboard.rs` | 部分 ported：`test_standard_round_trip`、`test_standard_punct`、`test_by_name`；其他排列的案例不移植 |
 
 ## 相依套件
 

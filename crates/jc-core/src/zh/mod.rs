@@ -46,7 +46,4 @@ pub enum ZhError {
     /// 音節含有這個排列沒有對應按鍵的符號。
     #[error("鍵盤排列沒有 {0:?} 的按鍵")]
     UnmappedSymbol(char),
-    /// 鍵盤排列已規劃但尚未實作。
-    #[error("鍵盤排列 {0} 尚未實作")]
-    UnsupportedLayout(&'static str),
 }
