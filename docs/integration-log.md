@@ -81,6 +81,10 @@
 | `ja-cost-diag` | `fca198b` | `058f44b` | test 通過；clippy 1 個錯 | 2026-11-20 04:42 |
 | `rerank-gating` | `a0a6f32` | `5932532` | test 1 個失敗；clippy 待 ja-cost 修 | 2026-11-20 04:55 |
 | `ja-particle-rewrite` | `a5a5aab` | `af7ef2f` | test 2 個失敗；clippy 待 ja-cost 修 | 2026-11-20 05:05 |
+| `candle-spike-ja` | `7cc9d8a` | `688f1f6` | check 通過；test build 被 gemm-f16 擋住 | 2026-11-20 05:08 |
+| `ja-cost-diag`（修 lifetimes） | `e5b720d` | `fbea06a` | clippy 通過；test 同上 | 2026-11-20 05:09 |
+| `rerank-gating`（left context 順序） | `b5d0e26` | `f681ed4` | clippy 通過；test 同上 | 2026-11-20 05:10 |
+| `jinen-eval` | `9bd13b1` | `e2d6cfb` | check 通過 | 2026-11-20 05:12 |
 
 ## 衝突與修正
 
@@ -693,3 +697,32 @@
 
   engine 缺口（依指示回報、未自行改）：`crates/jc-engine/src/loader.rs` 沒有任何 `with_particle_rewrite` 呼叫，
   核心預設是 `false`，所以 **jc-engine 目前沒有開啟助詞改寫**；只有 `jc-cli` 開了。
+
+- `candle-spike-ja`（合併 `688f1f6`）：`cli.rs`、`eval_cmd.rs` 有衝突，照兩邊意圖都保留解：
+  `EvalJa`／`JaOptions` 同時有 `gate` 與 `backend`，`--backend ort|candle` 與 `--gate` 並存；
+  `ja()` 在載入 reranker 前呼叫 `jc_model::set_default_backend`，rerank 統計行同時印後端名稱與 `groups_total`／`skipped`。
+
+  量測（作者）：candle fp32 與 ORT fp32 的 logits max|Δ| **1.75e-5**，排序 **200/200** 一致；
+  端到端 candle **82.2%** vs ORT int8 **82.0%**、p50 **36.24** vs **33.62 ms**、timeout **0%** vs 0.2%；
+  單次推論 **17.95** vs **17.67 ms**（candle 慢 1.6%）。full 124-token batch 時 candle 比 ORT fp32 慢 **3.2 倍**，
+  靠跳過遮罩 token 才追平。
+
+  **建置阻塞（重要）**：合併後 `cargo test --workspace` 無法編譯，`gemm-f16 v0.19.0`（candle 依賴）在 aarch64 預設 target 下
+  報 `instruction requires: fullfp16`（11 個錯）。CPU 本身有 `fphp`／`asimdhp`，但 rustc 的 baseline 沒開 `fullfp16`。
+  實測 `RUSTFLAGS="-C target-feature=+fullfp16" cargo test --workspace --no-fail-fast` 可以建置並跑完：
+  **41 targets、943 passed、1 failed**（`eval_cmd::tests::mixed_golden_compares_surfaces_and_boundaries`，即 ja-particle-rewrite 的預期差異）。
+  `cargo clippy --workspace --all-targets -- -D warnings` 在未加 RUSTFLAGS 時仍 exit 0。
+  需決定：把 `+fullfp16` 寫進 `.cargo/config.toml`、改用 candle 的 f16 kernel 關閉選項，或把 candle 後端放到 feature 後面。
+
+- `ja-cost-diag` 第二次合併（`fbea06a`，含 `e5b720d`）：無衝突，`ja-cost.rs` 的 `enumerate` 去掉多餘 lifetime。
+  `cargo clippy --workspace --all-targets -- -D warnings` **exit 0**；test 建置仍被 gemm-f16 擋住（同上）。
+
+- `rerank-gating` 第二次合併（`f681ed4`，含 `b5d0e26`）：無衝突，`ja/decode.rs` 3 行，詞群入選後照文本順序送模型
+  （修 left context 的選取順序）。clippy exit 0；test 建置仍被 gemm-f16 擋住。
+
+- `jinen-eval`（合併 `e2d6cfb`）：無衝突，只新增 `docs/reports/jinen-ajimee-2026-11-20.md`（190 行）與
+  `scripts/eval_jinen_ajimee.py`（390 行），沒有 Rust 改動。`cargo check --workspace --all-targets` exit 0。
+
+  AJIMEE 200 題（accept 判定，全題無文脈）：Jinen v2 xsmall **68.5%**、small **77.5%**；本引擎（Mozc v2 pack）**46.0%**、
+  Google 日本語入力 **54.0%**、AzooKey 統計轉換器 44.5%。延遲 p50：xsmall **28.68 ms**、small **212.49 ms**（p95 65.63／725.47 ms）。
+  給 64 字文脈：xsmall **+10 個百分點**（59→69）、small **+5 個百分點**（72→77）。
