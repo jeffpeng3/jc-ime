@@ -73,6 +73,7 @@
 | `rerank-wordlevel`（修測試） | `2c25f3d` | `2e649f5` | 通過（fmt＋clippy＋test） | 2026-11-20 04:00 |
 | `defaults-policy` | `e116f5f` | `175f417` | 通過（fmt／clippy／test／兩個 eval） | 2026-11-20 04:08 |
 | `engine-data` | `24b876b` | `8aa5ab1` | clippy 通過；jc-engine 4 個 test 失敗 | 2026-11-20 04:13 |
+| `ja-ime-survey` | `4eac1ef` | `c9b8998` | check 通過 | 2026-11-20 04:16 |
 
 ## 衝突與修正
 
@@ -613,3 +614,6 @@
      但 **zh-select 沒有套用**：`SessionConfig` 沒有選字模型欄位，CLI 是靠全域 `zh::select::install` 安裝，
      `jc-engine/src/loader.rs` 雖然有 `install_select_model`／`disable_select_model` 兩個函式，`main.rs` 從未呼叫，
      所以引擎實際只走統計排序。這是實作缺口，依指示回報，沒有自行修改。
+
+- `ja-ime-survey`（合併 `c9b8998`）：無衝突，只新增 `docs/reports/ja-ime-survey-2026-11-20.md`（898 行），沒有程式改動。
+  `cargo check --workspace --all-targets` exit 0（全部 cached）。
