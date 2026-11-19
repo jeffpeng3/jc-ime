@@ -80,16 +80,43 @@ pub enum ZhInputEvent {
     Ignored,
 }
 
+/// 聲調閘門：決定剛按下的聲調要不要收。
+///
+/// 參數是按下前的暫存注音與加上聲調後的音節；回傳 `true` 表示擋下，注音
+/// 留在暫存不動。預設是 [`allow_all_tones`]，行為與沒有閘門時相同。
+pub type ToneGate = fn(pending: &str, syllable: &Syllable) -> bool;
+
+/// 預設的聲調閘門：全部放行。
+pub fn allow_all_tones(_pending: &str, _syllable: &Syllable) -> bool {
+    false
+}
+
 /// 注音輸入的累積狀態機。
 ///
 /// 吃的是語義按鍵（[`Key`]），不是平台鍵碼。注音鍵由 [`Keyboard`] 對照，
 /// 標點與其他鍵原樣交回呼叫端。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ZhInput {
     keyboard: Keyboard,
     composer: Composer,
     syllables: Vec<Syllable>,
+    cursor: usize,
+    tone_blocked: bool,
+    tone_gate: ToneGate,
 }
+
+/// 只比較組字狀態；聲調閘門是策略，不參與相等判斷。
+impl PartialEq for ZhInput {
+    fn eq(&self, other: &Self) -> bool {
+        self.keyboard == other.keyboard
+            && self.composer == other.composer
+            && self.syllables == other.syllables
+            && self.cursor == other.cursor
+            && self.tone_blocked == other.tone_blocked
+    }
+}
+
+impl Eq for ZhInput {}
 
 impl Default for ZhInput {
     fn default() -> Self {
@@ -104,6 +131,9 @@ impl ZhInput {
             keyboard,
             composer: Composer::new(),
             syllables: Vec::new(),
+            cursor: 0,
+            tone_blocked: false,
+            tone_gate: allow_all_tones,
         }
     }
 
@@ -142,22 +172,64 @@ impl ZhInput {
         crate::zh::syllable::key(&self.syllables)
     }
 
+    /// 組字區的格子數：每個完成音節一格，未完成的暫存注音算最後一格。
+    pub fn cells(&self) -> usize {
+        self.syllables.len() + usize::from(!self.composer.empty())
+    }
+
+    /// 組字游標的位置（格）。
+    ///
+    /// `0` 是最前面，最大值是 [`ZhInput::cells`]。這一輪只是給外殼與後續
+    /// 移植用的位置，不影響組字結果。
+    pub fn cursor(&self) -> usize {
+        self.cursor.min(self.cells())
+    }
+
+    /// 把組字游標移動 `delta` 格，超出範圍時夾在邊界。
+    ///
+    /// 回傳游標是否真的移動。任何會改變組字的按鍵都會把游標放回結尾。
+    pub fn cursor_move(&mut self, delta: isize) -> bool {
+        let before = self.cursor();
+        let target = (before as isize).saturating_add(delta);
+        self.cursor = target.clamp(0, self.cells() as isize) as usize;
+        self.cursor != before
+    }
+
+    /// 最近一次按鍵是否擋下聲調。
+    ///
+    /// 擋下時聲調沒有收進暫存，注音停在原處；下一個按鍵會清掉這個旗標。
+    pub fn tone_blocked(&self) -> bool {
+        self.tone_blocked
+    }
+
+    /// 安裝聲調閘門；傳 [`allow_all_tones`] 可以恢復全部放行。
+    pub fn set_tone_gate(&mut self, gate: ToneGate) {
+        self.tone_gate = gate;
+    }
+
     /// 清空狀態。
     pub fn reset(&mut self) {
         self.composer.reset();
         self.syllables.clear();
+        self.cursor = 0;
+        self.tone_blocked = false;
     }
 
     /// 處理一個按鍵。
     pub fn press(&mut self, key: Key) -> ZhInputEvent {
-        match key.code {
+        self.tone_blocked = false;
+        let event = match key.code {
             KeyCode::Enter => self.press_enter(),
             KeyCode::Escape => self.press_escape(),
             KeyCode::Backspace => self.press_backspace(),
             KeyCode::Space => self.press_space(),
             KeyCode::Char(ch) => self.press_char(key.text.unwrap_or(ch)),
             _ => ZhInputEvent::Ignored,
+        };
+        if event != ZhInputEvent::Ignored {
+            self.cursor = self.cells();
         }
+        event
     }
 
     fn press_char(&mut self, ch: char) -> ZhInputEvent {
@@ -165,8 +237,15 @@ impl ZhInput {
             return ZhInputEvent::Ignored;
         };
         if class_of(sym) == Class::Tone {
-            return match self.composer.add(sym) {
+            // 先在副本上完成音節，讓閘門看得到結果；擋下時暫存完全不動。
+            let mut next = self.composer.clone();
+            return match next.add(sym) {
                 Some(syl) => {
+                    if (self.tone_gate)(&self.composer.string(), &syl) {
+                        self.tone_blocked = true;
+                        return ZhInputEvent::Consumed;
+                    }
+                    self.composer = next;
                     self.syllables.push(syl.clone());
                     ZhInputEvent::SyllableComplete(syl)
                 }
@@ -441,5 +520,92 @@ mod tests {
             ZhInputEvent::Ignored,
             "空組音器不接受聲調"
         );
+    }
+
+    #[test]
+    fn cursor_move_starts_at_end_and_clamps() {
+        let mut input = ZhInput::standard();
+        assert_eq!(input.cells(), 0);
+        assert_eq!(input.cursor(), 0);
+        assert!(!input.cursor_move(-1), "空格數沒有可移動的游標");
+
+        press_all(&mut input, "5j");
+        assert_eq!(input.cells(), 1, "未完成的 ㄓㄨ 算一格");
+        assert_eq!(input.cursor(), 1);
+        assert!(input.cursor_move(-1));
+        assert_eq!(input.cursor(), 0);
+        assert!(!input.cursor_move(-1), "已在最前面");
+        assert!(input.cursor_move(3));
+        assert_eq!(input.cursor(), 1, "往後夾在結尾");
+
+        assert_eq!(
+            input.press(Key::char('3', false)),
+            ZhInputEvent::SyllableComplete(Syllable::from_raw("ㄓㄨˇ"))
+        );
+        assert_eq!(input.cells(), 1);
+        assert_eq!(input.cursor(), 1, "按鍵後游標回到結尾");
+    }
+
+    #[test]
+    fn cursor_counts_completed_syllables_and_pending() {
+        let mut input = ZhInput::standard();
+        press_all(&mut input, "5j3u");
+        assert_eq!(input.cells(), 2, "一個完成音節加一個暫存音節");
+        assert_eq!(input.cursor(), 2);
+        input.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(input.cells(), 0);
+        assert_eq!(input.cursor(), 0);
+    }
+
+    fn block_third_tone(pending: &str, syl: &Syllable) -> bool {
+        pending == "ㄓㄨ" && syl.as_str() == "ㄓㄨˇ"
+    }
+
+    #[test]
+    fn tone_gate_can_block_a_tone() {
+        let mut input = ZhInput::standard();
+        input.set_tone_gate(block_third_tone);
+        press_all(&mut input, "5j");
+        assert!(!input.tone_blocked());
+
+        assert_eq!(input.press(Key::char('3', false)), ZhInputEvent::Consumed);
+        assert!(input.tone_blocked(), "聲調被擋下");
+        assert_eq!(input.pending(), "ㄓㄨ", "擋下後注音留在暫存");
+        assert_eq!(input.reading(), "");
+        assert_eq!(input.preedit(), "ㄓㄨ");
+
+        assert_eq!(input.press(Key::char('u', false)), ZhInputEvent::Consumed);
+        assert!(!input.tone_blocked(), "下一個按鍵清掉旗標");
+    }
+
+    #[test]
+    fn tone_gate_lets_other_tones_through() {
+        let mut input = ZhInput::standard();
+        input.set_tone_gate(block_third_tone);
+        press_all(&mut input, "5j");
+        assert_eq!(
+            input.press(Key::char('4', false)),
+            ZhInputEvent::SyllableComplete(Syllable::from_raw("ㄓㄨˋ"))
+        );
+        assert!(!input.tone_blocked());
+    }
+
+    #[test]
+    fn default_tone_gate_allows_everything() {
+        let mut input = ZhInput::standard();
+        assert_eq!(
+            input.press(Key::char('3', false)),
+            ZhInputEvent::Ignored,
+            "沒有暫存注音時，預設閘門不放行也不會標記"
+        );
+        assert!(!input.tone_blocked());
+
+        input.set_tone_gate(allow_all_tones);
+        press_all(&mut input, "5j");
+        assert_eq!(
+            input.press(Key::char('3', false)),
+            ZhInputEvent::SyllableComplete(Syllable::from_raw("ㄓㄨˇ"))
+        );
+        assert!(!input.tone_blocked());
     }
 }

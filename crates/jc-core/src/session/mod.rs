@@ -29,7 +29,7 @@ use crate::key::{Key, KeyCode};
 use crate::lang::Mode;
 use crate::lattice::{InMemoryLexicon, Lattice};
 use crate::mixed::{space_text, AsciiInput, AsciiPiece, Spacing};
-use crate::output::{utf16_len, HansConverter, SharedPunctuator, Snapshot};
+use crate::output::{rune_len, utf16_len, HansConverter, SharedPunctuator, Snapshot};
 use crate::personal::PersonalStore;
 use crate::punct::{self, Edit};
 use crate::reading::Unit;
@@ -374,6 +374,9 @@ impl Session {
                 KeyCode::ArrowRight => self.navigate(1),
                 KeyCode::ArrowLeft => self.navigate(-1),
                 KeyCode::Char(ch) => self.press_char(ch),
+                // 上下鍵、Home／End、翻頁與 Shift+Tab 這一輪只擴充協定，
+                // session 行為不變；由後續候選選取任務接上。
+                _ => {}
             }
         }
         self.rebuild();
@@ -545,9 +548,13 @@ impl Session {
         Snapshot {
             preedit: self.base_with_highlight(),
             cursor_utf16: self.cursor_utf16(),
+            cursor_rune: rune_len(&self.preedit_string()),
             segments: self.segments.clone(),
             candidates: self.candidates.clone(),
             highlighted: self.highlighted,
+            // suggestion／label／navigating 這一輪只擴充欄位，
+            // 由候選標示與補全任務填入。
+            ..Snapshot::default()
         }
     }
 

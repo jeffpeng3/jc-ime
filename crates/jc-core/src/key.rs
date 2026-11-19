@@ -20,8 +20,22 @@ pub enum KeyCode {
     ArrowLeft,
     /// 向右。
     ArrowRight,
+    /// 向上。
+    Up,
+    /// 向下。
+    Down,
+    /// 移到最前面。
+    Home,
+    /// 移到最後面。
+    End,
+    /// 上一頁。
+    PageUp,
+    /// 下一頁。
+    PageDown,
     /// Tab（補全或換段）。
     Tab,
+    /// Shift+Tab（往回換段）。
+    ShiftTab,
     /// 刪除。
     Delete,
 }
@@ -84,5 +98,31 @@ mod tests {
         assert_eq!(k.code, KeyCode::Backspace);
         assert_eq!(k.text, None);
         assert!(!k.shift);
+    }
+
+    #[test]
+    fn navigation_keys_use_snake_case_names() {
+        let cases = [
+            (KeyCode::Up, "up"),
+            (KeyCode::Down, "down"),
+            (KeyCode::Home, "home"),
+            (KeyCode::End, "end"),
+            (KeyCode::PageUp, "page_up"),
+            (KeyCode::PageDown, "page_down"),
+            (KeyCode::ShiftTab, "shift_tab"),
+        ];
+        for (code, name) in cases {
+            let json = serde_json::to_string(&code).unwrap();
+            assert_eq!(json, format!(r#"{{"kind":"{name}"}}"#), "{code:?}");
+            assert_eq!(serde_json::from_str::<KeyCode>(&json).unwrap(), code);
+        }
+    }
+
+    #[test]
+    fn shift_tab_is_distinct_from_tab() {
+        let tab = Key::new(KeyCode::Tab, None, false);
+        let shift_tab = Key::new(KeyCode::ShiftTab, None, true);
+        assert_ne!(tab.code, shift_tab.code);
+        assert_ne!(tab, shift_tab);
     }
 }

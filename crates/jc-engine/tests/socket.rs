@@ -75,12 +75,8 @@ impl Client {
     }
 }
 
-fn state(preedit: &str, cursor: usize) -> Response {
-    Response::State {
-        preedit: preedit.into(),
-        cursor,
-        candidates: Vec::new(),
-    }
+fn state(preedit: &str) -> Response {
+    Response::state(jc_core::Snapshot::from_preedit(preedit))
 }
 
 fn temp_socket(name: &str) -> PathBuf {
@@ -124,7 +120,7 @@ fn socket_serves_connections_sequentially_and_shutdown_cleans_up() {
             first.call(&Request::Key {
                 key: Key::char('ㄅ', false)
             }),
-            state("ㄅ", 1)
+            state("ㄅ")
         );
         // 不送 Shutdown 直接關閉，下一條連線應該拿到乾淨的 session。
     }
@@ -136,7 +132,7 @@ fn socket_serves_connections_sequentially_and_shutdown_cleans_up() {
     });
     assert_eq!(
         second.call(&Request::Snapshot),
-        state("", 0),
+        state(""),
         "新連線不該看到上一條連線的組字"
     );
     second.call(&Request::Shutdown);

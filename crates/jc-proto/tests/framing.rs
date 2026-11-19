@@ -33,11 +33,19 @@ fn frame_round_trip_keeps_empty_and_non_ascii_text() {
             preedit: String::new(),
             cursor: 0,
             candidates: Vec::new(),
+            cursor_rune: 0,
+            suggestion: None,
+            label: None,
+            navigating: false,
         },
         Response::State {
             preedit: "ㄇㄚˊ ㄆㄛˊ".into(),
             cursor: 5,
             candidates: vec!["麻婆".into(), "痲婆".into()],
+            cursor_rune: 5,
+            suggestion: Some("婆".into()),
+            label: Some("common".into()),
+            navigating: true,
         },
     ] {
         write_message(&mut buf, &message, DEFAULT_MAX_FRAME).unwrap();
@@ -117,6 +125,10 @@ fn message_over_custom_limit_is_rejected() {
         preedit: "x".repeat(64),
         cursor: 64,
         candidates: Vec::new(),
+        cursor_rune: 64,
+        suggestion: None,
+        label: None,
+        navigating: false,
     };
     let err = write_message(&mut Vec::new(), &message, 32).expect_err("超過 32 bytes 應被拒絕");
     assert!(matches!(err, ProtoError::FrameTooLarge { max: 32, .. }));
