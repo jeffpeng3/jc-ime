@@ -434,6 +434,53 @@ pub fn load_zhconv(root: &Path) -> Result<jc_core::zhconv::Converter, CliError> 
         .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", dir.display())))
 }
 
+/// 模型集合根目錄。
+///
+/// 依序使用 `JC_MODELS`、`--testdata` 的上層 `models/`，最後退回預設
+/// `0c-testdata` 的上層。目錄不存在時仍回傳路徑，由載入端報錯。
+pub fn models_root(testdata: Option<&Path>) -> PathBuf {
+    if let Some(value) = std::env::var_os("JC_MODELS") {
+        if !value.is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+    match testdata {
+        Some(dir) => data_root(dir).join("models"),
+        None => data_root(Path::new(DEFAULT_TESTDATA)).join("models"),
+    }
+}
+
+/// 載入並安裝注音選字模型。
+///
+/// 模型目錄由 [`models_root`] 的集合 manifest 決定。載入失敗時回傳錯誤，
+/// 呼叫端不應默默退回統計排序。
+#[cfg(feature = "onnx")]
+pub fn install_select_model(testdata: Option<&Path>) -> Result<(), CliError> {
+    let root = models_root(testdata);
+    let dir = jc_core::zh::select::resolve_model_dir(&root)
+        .map_err(|err| CliError::data(format!("找不到 zh-select 模型：{err}")))?;
+    let model = jc_core::zh::select::SelectModel::load(&dir, None)
+        .map_err(|err| CliError::data(format!("載入 zh-select 模型失敗：{err}")))?;
+    jc_core::zh::select::install(model);
+    eprintln!(
+        "警告：zh-select 尚未完成本引擎的權重與 margin 校準，\
+         zh-golden 沒有任何改善；正式使用請保持 --select-model off。"
+    );
+    Ok(())
+}
+
+/// 關閉注音選字模型。
+#[cfg(feature = "onnx")]
+pub fn disable_select_model() {
+    jc_core::zh::select::clear();
+}
+
+/// 選字模型的推論延遲統計。
+#[cfg(feature = "onnx")]
+pub fn select_model_stats() -> Option<jc_core::zh::select::LatencyStats> {
+    jc_core::zh::select::latency_stats()
+}
+
 /// 由注音資源建立 session 設定。
 pub fn zh_session_config(
     mode: jc_core::Mode,

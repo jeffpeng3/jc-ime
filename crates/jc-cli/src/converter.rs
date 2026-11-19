@@ -234,6 +234,8 @@ pub struct ConvertOptions {
     pub n: usize,
     /// 輸出 JSON。
     pub json: bool,
+    /// 啟用注音選字模型重排。
+    pub select_model: bool,
 }
 
 /// `convert` 子命令：單句轉換並列出 N-best。
@@ -254,7 +256,20 @@ pub fn convert(
         stats,
         n,
         json,
+        select_model,
     } = options;
+    #[cfg(feature = "onnx")]
+    if select_model {
+        data::install_select_model(testdata.as_deref())?;
+    } else {
+        data::disable_select_model();
+    }
+    #[cfg(not(feature = "onnx"))]
+    if select_model {
+        return Err(CliError::eval(
+            "這個建置沒有啟用 onnx feature，不能使用 --select-model on".to_string(),
+        ));
+    }
     let (candidates, lm_stats) = if is_zhuyin(reading) {
         let mut resources = match &data_dir {
             Some(dir) => data::load_zh_bin_resources_with_lm(dir, lm.as_deref())?,
@@ -342,6 +357,29 @@ pub fn convert(
             lm_stats.queries, lm_stats.hits
         )?;
     }
+    if select_model {
+        write_select_stats(out)?;
+    }
+    Ok(())
+}
+
+/// 印出選字模型的推論延遲。
+#[cfg(feature = "onnx")]
+fn write_select_stats(out: &mut dyn Write) -> Result<(), CliError> {
+    let Some(stats) = data::select_model_stats() else {
+        writeln!(out, "select-model：沒有推論")?;
+        return Ok(());
+    };
+    writeln!(
+        out,
+        "select-model：推論 {} 次，p50 {:.2} ms，p95 {:.2} ms",
+        stats.calls, stats.p50_ms, stats.p95_ms
+    )?;
+    Ok(())
+}
+
+#[cfg(not(feature = "onnx"))]
+fn write_select_stats(_out: &mut dyn Write) -> Result<(), CliError> {
     Ok(())
 }
 

@@ -186,6 +186,9 @@ impl Decoder<'_> {
                 stats.retained_prefixes += paths.len();
             }
         }
+        // 選字模型只重排首選；沒有安裝模型或不符合模型契約時保持統計順序。
+        #[cfg(feature = "onnx")]
+        crate::zh::select::rerank_nbest(&mut result, lat.readings());
         (result, stats)
     }
 

@@ -195,8 +195,10 @@ name = "jc-core"
 version = "0.1.0"
 dependencies = [
  "jc-data",
+ "jc-model",
  "jc-testdata",
  "log",
+ "ort",
  "serde",
  "serde_json",
  "sha2",

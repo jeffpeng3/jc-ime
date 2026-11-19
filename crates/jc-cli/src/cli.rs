@@ -52,6 +52,8 @@ pub enum Command {
         stats: bool,
         /// 輸出 JSON 而非表格。
         json: bool,
+        /// 啟用注音選字模型重排。
+        select_model: bool,
     },
     /// 跑一個日文題庫。
     EvalJa {
@@ -98,6 +100,8 @@ pub enum Command {
         n: usize,
         /// 輸出 JSON。
         json: bool,
+        /// 啟用注音選字模型重排。
+        select_model: bool,
     },
     /// 對檔案中的每行讀音做轉換並計時。
     Bench {
@@ -148,6 +152,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut mu = None;
     let mut stats = false;
     let mut json = false;
+    let mut select_model = false;
     let mut index = 0;
     while index < rest.len() {
         match rest[index].as_str() {
@@ -162,6 +167,10 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
             "--pack" => {
                 index += 1;
                 pack = Some(PathBuf::from(value(rest, index, "--pack")?));
+            }
+            "--select-model" => {
+                index += 1;
+                select_model = switch(value(rest, index, "--select-model")?, "--select-model")?;
             }
             "--data" => {
                 index += 1;
@@ -189,6 +198,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
             mu,
             stats,
             json,
+            select_model,
         }),
         "ja" => {
             reject_zh_flags(data, lm, mu, stats, "eval ja")?;
@@ -248,6 +258,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     let mut stats = false;
     let mut n = 5usize;
     let mut json = false;
+    let mut select_model = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -258,6 +269,10 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
             "--data" => {
                 index += 1;
                 data = Some(PathBuf::from(value(args, index, "--data")?));
+            }
+            "--select-model" => {
+                index += 1;
+                select_model = switch(value(args, index, "--select-model")?, "--select-model")?;
             }
             "--lm" => {
                 index += 1;
@@ -300,7 +315,19 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
         stats,
         n,
         json,
+        select_model,
     })
+}
+
+/// 解析 `on`／`off` 開關。
+fn switch(value: &str, flag: &str) -> Result<bool, CliError> {
+    match value {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        other => Err(CliError::Usage(format!(
+            "{flag} 只接受 on 或 off，收到 {other:?}"
+        ))),
+    }
 }
 
 fn parse_bench(args: &[String]) -> Result<Command, CliError> {
@@ -382,13 +409,17 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             mu,
             stats,
             json,
+            select_model,
         } => crate::eval_cmd::zh_golden(
-            testdata.clone(),
-            data.clone(),
-            lm.clone(),
-            *mu,
-            *stats,
-            *json,
+            crate::eval_cmd::GoldenOptions {
+                testdata: testdata.clone(),
+                data: data.clone(),
+                lm: lm.clone(),
+                mu: *mu,
+                stats: *stats,
+                json: *json,
+                select_model: *select_model,
+            },
             out,
         ),
         Command::EvalJa {
@@ -414,6 +445,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             stats,
             n,
             json,
+            select_model,
         } => crate::converter::convert(
             crate::converter::ConvertOptions {
                 testdata: testdata.clone(),
@@ -423,6 +455,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 stats: *stats,
                 n: *n,
                 json: *json,
+                select_model: *select_model,
             },
             reading,
             out,
@@ -442,16 +475,17 @@ pub fn usage() -> String {
     format!(
         "jc-cli {}（開發工具）\n\n\
          用法：\n  \
-         jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--json]\n  \
+         jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--select-model on|off] [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] [--json]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
-         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--json]\n  \
+         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
          --data 指向注音二進位資料包（lexicon.bin、lm.bin、manifest.json）；\n\
          指定時注音走真實詞庫並自動載入同目錄的 lm.bin。\n\
-         --lm 覆寫 bigram 語言模型；--mu 是 bigram 與 unigram 的內插權重（預設 0.7）。\n",
+         --lm 覆寫 bigram 語言模型；--mu 是 bigram 與 unigram 的內插權重（預設 0.7）。\n\
+         --select-model on 需要 --features onnx；預設 off。\n",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -482,6 +516,7 @@ mod tests {
                 mu: None,
                 stats: false,
                 json: true,
+                select_model: false,
             }
         );
     }
@@ -533,8 +568,40 @@ mod tests {
                 stats: false,
                 n: 3,
                 json: false,
+                select_model: false,
             }
         );
+    }
+
+    #[test]
+    fn parses_select_model_switch() {
+        assert_eq!(
+            parse(&args(&["convert", "ㄨㄛˇ", "--select-model", "on"])).unwrap(),
+            Command::Convert {
+                reading: "ㄨㄛˇ".to_string(),
+                testdata: None,
+                data: None,
+                lm: None,
+                mu: None,
+                stats: false,
+                n: 5,
+                json: false,
+                select_model: true,
+            }
+        );
+        assert_eq!(
+            parse(&args(&["eval", "zh-golden", "--select-model", "off"])).unwrap(),
+            Command::EvalZhGolden {
+                testdata: None,
+                data: None,
+                lm: None,
+                mu: None,
+                stats: false,
+                json: false,
+                select_model: false,
+            }
+        );
+        assert!(parse(&args(&["convert", "ㄨㄛˇ", "--select-model", "auto"])).is_err());
     }
 
     #[test]
@@ -561,6 +628,7 @@ mod tests {
                 stats: false,
                 n: 5,
                 json: false,
+                select_model: false,
             }
         );
         assert!(parse(&args(&["convert", "ㄚ", "--mu", "1.5"])).is_err());

@@ -6,6 +6,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# 轉發注音選字模型的 ONNX 推論；預設建置不拉入 ORT。
+onnx = ["jc-core/onnx"]
+
 [dependencies]
 jc-core = { path = "../jc-core" }
 jc-data = { path = "../jc-data" }
