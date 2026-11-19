@@ -80,6 +80,8 @@ pub enum Command {
         rerank: bool,
         /// 詞群門檻：`off`、成本差上限 `N`，或 `cand:N`（候選數下限）。
         gate: WordGate,
+        /// 重排的推論後端：`ort` 或 `candle`。
+        backend: jc_model::Backend,
         /// 左文來源：`off` 不給左文，`rolling` 用前一題的輸出當左文。
         left: LeftMode,
         /// 輸出 JSON。
@@ -196,6 +198,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut stats = false;
     let mut rerank = None;
     let mut gate = None;
+    let mut backend = None;
     let mut left = LeftMode::Off;
     let mut json = false;
     let mut items = false;
@@ -251,6 +254,14 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 index += 1;
                 gate = Some(parse_gate(value(rest, index, "--gate")?)?);
             }
+            "--backend" => {
+                index += 1;
+                backend = Some(
+                    value(rest, index, "--backend")?
+                        .parse::<jc_model::Backend>()
+                        .map_err(CliError::Usage)?,
+                );
+            }
             "--left" => {
                 index += 1;
                 left = match value(rest, index, "--left")? {
@@ -272,6 +283,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     match kind {
         "zh-golden" => {
             reject_ja_flags(rerank, gate, left, "eval zh-golden")?;
+            reject_backend(backend, "eval zh-golden")?;
             reject_items(items, "eval zh-golden")?;
             Ok(Command::EvalZhGolden {
                 testdata,
@@ -291,6 +303,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 pack,
                 rerank: rerank.unwrap_or(false),
                 gate: gate.unwrap_or(DEFAULT_WORD_RERANK_GATE),
+                backend: backend.unwrap_or(jc_model::Backend::Ort),
                 left,
                 json,
                 items,
@@ -299,11 +312,13 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
         "fuzzy" => {
             reject_zh_flags(data, lm, mu, stats, "eval fuzzy")?;
             reject_ja_flags(rerank, gate, left, "eval fuzzy")?;
+            reject_backend(backend, "eval fuzzy")?;
             reject_items(items, "eval fuzzy")?;
             Ok(Command::EvalFuzzy { testdata, json })
         }
         "mixed" => {
             reject_ja_flags(rerank, gate, left, "eval mixed")?;
+            reject_backend(backend, "eval mixed")?;
             reject_items(items, "eval mixed")?;
             Ok(Command::EvalMixed {
                 testdata,
@@ -327,6 +342,14 @@ fn reject_zh_flags(
         return Err(CliError::Usage(format!(
             "{command} 不接受 --data、--lm、--mu 或 --stats"
         )));
+    }
+    Ok(())
+}
+
+/// 只有日文題庫接受 `--backend`。
+fn reject_backend(backend: Option<jc_model::Backend>, command: &str) -> Result<(), CliError> {
+    if backend.is_some() {
+        return Err(CliError::Usage(format!("{command} 不接受 --backend")));
     }
     Ok(())
 }
@@ -655,6 +678,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             pack,
             rerank,
             gate,
+            backend,
             left,
             json,
             items,
@@ -665,6 +689,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 pack: pack.clone(),
                 rerank: *rerank,
                 gate: rerank.then_some(*gate),
+                backend: *backend,
                 left: *left,
                 json: *json,
                 items: *items,
@@ -744,12 +769,14 @@ pub fn usage() -> String {
          用法：\n  \
          jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--select-model on|off] [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] \
-         [--rerank on|off] [--gate off|<成本差>|cand:<N>] [--left off|rolling] [--json] [--items]\n  \
+         [--rerank on|off] [--gate off|<成本差>|cand:<N>] [--backend ort|candle] \
+         [--left off|rolling] [--json] [--items]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
          jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--punct on|off] [--user-data <dir>] [--pick <n>] [--json]\n  \
          jc-cli tokenize ja [--testdata <dir>] [--vocab <model>] [--text <字串>]... [--diff] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
+         --backend 選擇日文 reranker 的推論後端；預設 ort，candle 讀 model.safetensors。\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
          --corpus 是 ja/ 目錄裡的題庫名稱；目錄下每份題庫 json 都會被掃到。\n\
          --data 指向注音二進位資料包（lexicon.bin、lm.bin、manifest.json）；\n\
@@ -803,6 +830,7 @@ mod tests {
                 pack: None,
                 rerank: false,
                 gate: DEFAULT_WORD_RERANK_GATE,
+                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 json: false,
                 items: false,
@@ -828,6 +856,7 @@ mod tests {
                 pack: Some(PathBuf::from("/tmp/ja.pack")),
                 rerank: false,
                 gate: DEFAULT_WORD_RERANK_GATE,
+                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 json: false,
                 items: false,
@@ -845,6 +874,7 @@ mod tests {
                 pack: None,
                 rerank: true,
                 gate: DEFAULT_WORD_RERANK_GATE,
+                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 json: false,
                 items: false,
@@ -852,6 +882,34 @@ mod tests {
         );
         assert!(parse(&args(&["eval", "ja", "--rerank", "maybe"])).is_err());
         assert!(parse(&args(&["eval", "fuzzy", "--rerank", "on"])).is_err());
+    }
+
+    #[test]
+    fn parses_ja_backend_switch() {
+        assert_eq!(
+            parse(&args(&[
+                "eval",
+                "ja",
+                "--rerank",
+                "on",
+                "--backend",
+                "candle"
+            ]))
+            .unwrap(),
+            Command::EvalJa {
+                testdata: None,
+                corpus: "modern-500".to_string(),
+                pack: None,
+                rerank: true,
+                gate: DEFAULT_WORD_RERANK_GATE,
+                backend: jc_model::Backend::Candle,
+                left: LeftMode::Off,
+                json: false,
+                items: false,
+            }
+        );
+        assert!(parse(&args(&["eval", "ja", "--backend", "tensorrt"])).is_err());
+        assert!(parse(&args(&["eval", "fuzzy", "--backend", "ort"])).is_err());
     }
 
     #[test]
@@ -864,6 +922,7 @@ mod tests {
                 pack: None,
                 rerank: false,
                 gate: DEFAULT_WORD_RERANK_GATE,
+                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 json: false,
                 items: true,
@@ -883,6 +942,7 @@ mod tests {
                 pack: None,
                 rerank: true,
                 gate: WordGate::Gap(200),
+                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 json: false,
                 items: false,
@@ -896,6 +956,7 @@ mod tests {
                 pack: None,
                 rerank: false,
                 gate: WordGate::Candidates(3),
+                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 json: false,
                 items: false,
@@ -909,6 +970,7 @@ mod tests {
                 pack: None,
                 rerank: false,
                 gate: WordGate::Off,
+                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 json: false,
                 items: false,

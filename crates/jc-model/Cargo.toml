@@ -14,6 +14,11 @@ thiserror = { workspace = true }
 log = { workspace = true }
 # `nmt_nfkc` 系列規則的字元折疊。
 unicode-normalization = "0.1"
+# candle：推論後端試金石。CPU 後端，不啟用 cuda/metal/mkl。
+candle-core = { version = "0.11", default-features = false }
+candle-nn = { version = "0.11", default-features = false }
+# reranker 的 forward 以 batch 內列為單位平行；只用在 candle 路徑。
+rayon = "1"
 # `load-dynamic`：建置時不連結也不下載 ONNX Runtime，執行期才載入動態庫。
 ort = { version = "=2.0.0-rc.15", default-features = false, features = [
     "std",

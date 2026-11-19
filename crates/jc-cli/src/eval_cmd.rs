@@ -245,6 +245,8 @@ pub struct JaOptions {
     pub rerank: bool,
     /// 詞群門檻；`None` 表示不重排。
     pub gate: Option<WordGate>,
+    /// 重排的推論後端。
+    pub backend: jc_model::Backend,
     /// 左文來源。
     pub left: LeftMode,
     /// 輸出聚合報告 JSON。
@@ -263,8 +265,9 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
         testdata,
         corpus,
         pack,
-        rerank: _,
+        rerank,
         gate,
+        backend,
         left,
         json,
         items,
@@ -273,7 +276,9 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
     let (rules, selected) = select_ja_corpora(&dir, &corpus)?;
     let root = data::data_root(&dir);
     let decoder = data::load_ja_decoder_with_pack(&root, pack.as_deref())?;
-    let reranker = if gate.is_some() {
+    let reranker = if rerank {
+        // 後端是行程層級設定，必須在載入模型前指定。
+        jc_model::set_default_backend(backend);
         match data::load_ja_reranker(&root) {
             Ok(reranker) => Some(reranker),
             Err(err) => {
@@ -317,8 +322,9 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
     if let Some(reranker) = &reranker {
         let stats = reranker.stats();
         let line = format!(
-            "rerank：calls {}，groups_total {}，groups {}，skipped {}，scored {}，\
+            "rerank [{}]：calls {}，groups_total {}，groups {}，skipped {}，scored {}，\
              changed {}，timeout {}，error {}，inference p50 {:.2} ms／p95 {:.2} ms\n",
+            backend.as_str(),
             stats.calls,
             stats.groups_total,
             stats.groups,

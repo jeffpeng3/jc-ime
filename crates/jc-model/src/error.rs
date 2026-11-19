@@ -21,6 +21,9 @@ pub enum ModelError {
     /// ONNX 推論失敗。
     #[error("ONNX 推論失敗：{0}")]
     Inference(String),
+    /// candle 推論失敗。
+    #[error("candle 推論失敗：{0}")]
+    Candle(String),
 }
 
 impl ModelError {
