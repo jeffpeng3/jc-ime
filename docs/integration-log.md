@@ -32,6 +32,7 @@
 | `jc-model` | `63d6049` | `8d4015c` | 通過 | 2026-11-19 23:18 |
 | `eval-fuzzy` | `9ba1fe8` | `35c769f` | 通過（解衝突） | 2026-11-19 23:21 |
 | `zh-data` | `333abac` | `b2f6d80` | 通過 | 2026-11-19 23:23 |
+| `zh-models` | `f188bf7` | `5d85e54` | 通過 | 2026-11-19 23:27 |
 
 ## 衝突與修正
 
@@ -165,3 +166,8 @@
   bigram：`build-zh-bigram` 的 `lm.bin` 有 **7,028,326** 筆 bigram（成本 238021 詞、31.4 MB）；
   `jc-core` 的注音解碼器用詞性連接成本，**解碼未使用 bigram**，兩包 5-best 相同，
   需要時由呼叫端直接呼叫 `jc_data::zh::Lm::bi`。
+
+- `zh-models`（合併 `5d85e54`）：無衝突，只新增 `docs/port/zh-models.md` 與 `scripts/fetch_zh_models.sh`，沒有 Rust 改動。
+  兩個注音模型已取得（`zh-select`：`Funmula/0c-sequence-d512`、`zh-punct`：`Funmula/0c-punct-d512`，皆 MIT，revision 已固定）。
+  `vocab.json` 是 **zuin-phonetic-v1**（27,857 字、416 注音 base），不是 sentencepiece，
+  `jc-model` 的 tokenizer 目前不支援，實際注音推論接線待後續 task。
