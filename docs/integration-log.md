@@ -28,6 +28,7 @@
 | `jc-platform` | `92f57b2` | `7f19601` | 通過 | 2026-11-19 23:10 |
 | `bigram-data` | `3d96d6a` | `27ca97e` | 通過 | 2026-11-19 23:12 |
 | `eval-ja-ambiguous` | `f8fb416` | `ea85686` | 通過 | 2026-11-19 23:12 |
+| `zh-golden-rest` | `59b67ce` | `09abcd6` | 通過 | 2026-11-19 23:16 |
 
 ## 衝突與修正
 
@@ -127,3 +128,12 @@
   量測（`ja-lexicon-ambiguous`，1200 題）：v2 Mozc pack holdout top-1 **30.2%**（121/400）、top-5 58.5%；
   public-core pack holdout top-1 **52.2%**、top-5 93.8%。差異來自題庫原始建構用的是 public-core pack
   （候選成本取自 public-core，reference 是它的最低成本詞面），不是 decoder 問題，所以 `jc-core` 未改。
+
+- `zh-golden-rest`（合併 `09abcd6`）：無衝突。新增 `crates/jc-core/src/zhconv.rs`，`mixed.rs`、`session.rs`、
+  `output/mod.rs` 接上 mixed ASCII 推斷與簡體轉換，`jc-cli` 的 `data.rs`／`eval_cmd.rs` 接字典載入。
+  沒有編譯錯誤要修，未改任何實作。
+
+  golden 實測（`jc-cli eval zh-golden`）：**通過 41/45**（對照上一輪 35/45）。
+  剩 4 例全是學習依賴：`learning-select-preference`、`learning-forget-request`、
+  `undo-learned-word`、`undo-custom-word`，期望值未動。
+  zhconv 字典在 `/mnt/work/jc/jc-ime-data/opencc/`（OpenCC 1.4.2，Apache-2.0），git 外。
