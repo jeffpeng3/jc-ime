@@ -234,8 +234,13 @@ mod tests {
     fn candidate_piece_prefers_the_bare_piece() {
         let t = tokenizer();
         assert_eq!(candidate_piece(&t, "東京"), Some(id_of(&t, "東京") as u32));
-        // 詞表只有「▁東」時用行首變體。
-        assert_eq!(candidate_piece(&t, "東"), Some(id_of(&t, "▁東") as u32));
+        // 裸「東」存在時優先用它，不換成行首變體「▁東」。
+        assert_eq!(candidate_piece(&t, "東"), Some(id_of(&t, "東") as u32));
+        // 沒有裸 piece 才退回行首變體。
+        assert_eq!(
+            candidate_piece(&t, "東京都"),
+            Some(id_of(&t, "▁東京都") as u32)
+        );
         // 多 piece 詞面回 None，呼叫端不該塞進 slot。
         assert_eq!(candidate_piece(&t, "京都"), None);
         assert_eq!(candidate_piece(&t, ""), None);
@@ -255,7 +260,8 @@ mod tests {
         assert_eq!(batch.ids.len(), 8);
         // slot 4..5 給候選字（最多 2 個），slot 6 放 EOS，slot 7 留給右文。
         assert_eq!(batch.ids[6], 3);
-        assert_eq!(batch.mask.iter().sum::<i64>(), 7);
+        // 有內容的格子：BOS、1 個左文 token、分隔 EOS、2 個候選、候選後 EOS。
+        assert_eq!(batch.mask.iter().sum::<i64>(), 6);
     }
 
     #[test]
@@ -294,7 +300,8 @@ mod tests {
             assert_eq!(batch.ids[0], 2, "序列開頭的 BOS");
             assert_eq!(batch.ids[60], 2, "左文 slot 的 BOS 標記");
             assert_eq!(batch.ids[61], 3);
-            assert_eq!(batch.ids[62], id_of(&t, "▁東京"));
+            // candidate slot 放裸 piece「東京」，沒有才退回「▁東京」。
+            assert_eq!(batch.ids[62], id_of(&t, "東京"));
             // 1..60 只有最後一格是 BOS，其餘是 PAD 且被遮罩。
             assert_eq!(&batch.ids[1..60], &[0; 59]);
             assert_eq!(&batch.mask[1..60], &[0; 59]);
@@ -350,16 +357,22 @@ mod tests {
         let left = "東京都".repeat(80);
         let all = t.encode(&left);
         assert!(all.len() > 60, "左文必須超過上限，實際 {} token", all.len());
+        // `context_ids` 會剝掉獨立詞首「▁」；這個模型把「▁」併進後面的
+        // piece，所以先依同樣規則算出真正的左文再比對。
+        let skip = usize::from(all[0] == t.piece_id("▁").unwrap());
+        let expected = &all[skip..];
+        assert_eq!(context_ids(&t, &left), expected);
 
         let batch = pack_batch(&t, &spec, Some(&left), None, &["東京"]).unwrap();
         let row = &batch.ids[..batch.seq];
-        let want: Vec<i64> = all[..60].iter().map(|&id| i64::from(id)).collect();
+        let want: Vec<i64> = expected[..60].iter().map(|&id| i64::from(id)).collect();
         // 左文區 1..=60 全部填滿，而且是真的 token 不是 PAD。
         assert_eq!(batch.mask[1..=60].iter().sum::<i64>(), 60);
         assert!(row[1..=60].iter().all(|&id| id != spec.padding_id()));
         // 靠右對齊：最後一個左文 token 緊鄰分隔符，內容是前 60 個 token。
         assert_eq!(&row[1..=60], &want[..]);
         assert_eq!(row[61], spec.eos_id());
-        assert_eq!(row[62] as u32, t.encode("東京")[0]);
+        // candidate slot 用裸 piece「東京」；encode 會給「▁東京」，兩者不同。
+        assert_eq!(row[62] as u32, candidate_piece(&t, "東京").unwrap());
     }
 }

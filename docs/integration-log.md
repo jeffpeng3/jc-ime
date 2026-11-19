@@ -553,3 +553,19 @@
   - `layout::tests::empty_context_uses_bos_marker`（`layout.rs:297`）：piece id 266 vs 265。
   - `layout::tests::real_tokenizer_fills_the_60_token_left_window`（`layout.rs:363`）：`context_ids` 會剝掉開頭 `▁`，
     測試仍拿 `t.encode(left)[..60]` 直接比對（1324 vs 10015）。
+
+- `rerank-wordlevel` 退回修正：5 個失敗都是測試期望與現行契約不符，未改產品行為。
+  `ja/rerank.rs` 的右文 fixture 改期望 `東京都`，因為 `▁東京都` 是單一 token，取前 1 個 token 就是整個詞。
+  `layout.rs` 的候選 slot 改比裸 piece（`東京`、`東`），補上只有行首變體時才退回 `▁東京都` 的案例；
+  截斷測試的 mask 總和改 6；空文 BOS 測試改比裸 `東京`。
+  真實 tokenizer 測試先依 `context_ids` 規則剝獨立詞首 `▁` 再算左文，候選 slot 改用
+  `candidate_piece`。原本第 5 個失敗其實出在 `row[62]` 與 `t.encode("東京")[0]` 的差異
+  （裸 `東京` 對 `▁東京`）；這份模型把 `▁` 併進後面的 piece，`context_ids` 沒有東西可剝，
+  測試把兩種切法混用了。
+
+  `docs/port/rerank-wordlevel.md` 補上 `eval timeout` 29% 的來源：那是整次轉換超過 100 ms
+  的比例，包含兩次 Viterbi、最多 3 組詞群準備與實際推論；重排統計只記整批放棄，兩者用不同計時器。
+
+  gate：`cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0、
+  `cargo test --workspace --no-fail-fast` **exit 0**（38 targets、895 passed、1 ignored）。
+  重跑 `modern-500 --rerank on`：timeout 23.2%，與原紀錄 29.0% 同屬延遲尾端，差異來自機器負載。

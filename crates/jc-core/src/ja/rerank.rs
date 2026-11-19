@@ -377,7 +377,8 @@ mod tests {
     fn right_context_keeps_the_prefix_nearest_the_cursor() {
         let tokenizer = tokenizer();
         assert_eq!(right_context(&tokenizer, "東京都", 2), "東京都");
-        assert_eq!(right_context(&tokenizer, "東京都東京", 1), "東京");
+        // 「▁東京都」是一個 token，右文取前 1 個 token 就是整個「東京都」。
+        assert_eq!(right_context(&tokenizer, "東京都東京", 1), "東京都");
         assert_eq!(right_context(&tokenizer, "", 60), "");
     }
 
