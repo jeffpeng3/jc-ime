@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use jc_core::key::{Key, KeyCode};
 use jc_core::lang::Mode;
-use jc_core::session::Session;
+use jc_core::session::{RerankOptions, Session, SessionConfig};
 use jc_core::zh::keyboard::Keyboard;
 use jc_core::zh::syllable::class_of;
 use jc_eval::{
@@ -50,7 +50,16 @@ pub fn zh_golden(
         } else {
             Mode::Zh
         };
-        let config = data::zh_session_config(mode, &resources);
+        let mut config = data::zh_session_config(mode, &resources);
+        let paging = case.actions.iter().any(|action| {
+            action
+                .request
+                .as_ref()
+                .and_then(|request| request.get("type"))
+                .and_then(|kind| kind.as_str())
+                == Some("page")
+        });
+        apply_options(&mut config, &case.options, paging);
         let mut session = Session::new(config);
         let started = Instant::now();
         let outcome = drive_case(&mut session, &case.actions);
@@ -199,6 +208,47 @@ pub fn fuzzy(testdata: Option<PathBuf>, json: bool, out: &mut dyn Write) -> Resu
     Ok(())
 }
 
+/// 把 golden 案例的引擎選項套進 session 設定。
+///
+/// 只涵蓋 `jc-core` 已實作的選項；尚未接線的（簡繁轉換、混合輸入、
+/// 英文補完、補全門檻）留在分類表說明。
+fn apply_options(config: &mut SessionConfig, options: &jc_eval::GoldenOptions, paging: bool) {
+    config.toneless = options.toneless;
+    config.ctrl_punct = options.ctrl_punct;
+    // 翻頁案例需要第二頁的候選；其餘維持預設 5 個，避免長句 k-best 變慢。
+    if paging {
+        config.max_candidates = 13;
+    }
+    config.rerank = options.rerank.as_ref().map(|rerank| RerankOptions {
+        weight: rerank.weight,
+        prefer: rerank.prefer.clone(),
+        prefer_score: rerank.prefer_score,
+    });
+    config.punct_mark = options
+        .punct
+        .as_ref()
+        .and_then(|punct| punct.mark.chars().next());
+    config.fuzzy_pairs = options
+        .fuzzy
+        .iter()
+        .filter_map(|(id, mode)| fuzzy_pair(id, mode))
+        .collect();
+}
+
+/// 模糊音配對 id 對應到兩個注音符號；只接受 `select` 模式。
+fn fuzzy_pair(id: &str, mode: &str) -> Option<(char, char)> {
+    if mode != "select" {
+        return None;
+    }
+    match id {
+        "z-zh" => Some(('ㄗ', 'ㄓ')),
+        "c-ch" => Some(('ㄘ', 'ㄔ')),
+        "s-sh" => Some(('ㄙ', 'ㄕ')),
+        "en-eng" => Some(('ㄣ', 'ㄥ')),
+        _ => None,
+    }
+}
+
 /// 跑一個 golden 案例，回傳依序的 commit 字串。
 fn drive_case(session: &mut Session, actions: &[GoldenAction]) -> Result<Vec<String>, String> {
     let mut commits = Vec::new();
@@ -296,6 +346,11 @@ fn named_key(name: &str) -> Result<Option<Key>, String> {
         "Space" => KeyCode::Space,
         "Left" | "Up" => KeyCode::ArrowLeft,
         "Right" | "Down" => KeyCode::ArrowRight,
+        "Ctrl+," => {
+            return Ok(Some(
+                Key::new(KeyCode::Char(','), Some(','), false).with_ctrl(),
+            ));
+        }
         other => {
             let mut chars = other.chars();
             if let (Some(ch), None) = (chars.next(), chars.next()) {
@@ -321,7 +376,19 @@ fn apply_request(session: &mut Session, request: &serde_json::Value) -> Result<(
             session.select(index);
             Ok(())
         }
-        "page" | "forget" => Ok(()),
+        "page" => {
+            let index = request
+                .get("index")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0) as usize;
+            session.page(index);
+            Ok(())
+        }
+        "toggle" => {
+            session.toggle_english();
+            Ok(())
+        }
+        "forget" => Ok(()),
         other => Err(format!("請求 {other:?}")),
     }
 }

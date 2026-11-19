@@ -333,7 +333,7 @@ pub fn zh_session_config(
         max_candidates: 5,
         zh_lexicon: Some(resources.lexicon.clone()),
         zh_ctx: Some(resources.ctx.clone()),
-        ja: None,
+        ..jc_core::session::SessionConfig::default()
     }
 }
 

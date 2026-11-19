@@ -24,13 +24,24 @@ use crate::mixed::Router;
 use crate::output::{utf16_len, Snapshot};
 use crate::score::ScoreContext;
 use crate::segment::{Script, Segment};
+use crate::zh::han::is_han;
 use crate::zh::input::ZhInput;
+use crate::zh::syllable::Syllable;
 
 /// 這個 crate 的語意版本，供協定握手與診斷使用。
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 預設候選數。
 pub const DEFAULT_MAX_CANDIDATES: usize = 5;
+
+/// 候選視窗一頁幾項。
+pub const PAGE_SIZE: usize = 10;
+
+/// 聲調選填最多展開幾種組合；超過就維持原讀音。
+const TONELESS_COMBINATIONS: usize = 256;
+
+/// 模糊音最多展開幾種讀音組合。
+const FUZZY_COMBINATIONS: usize = 16;
 
 /// 建立 [`Session`] 所需的設定。
 ///
@@ -48,6 +59,30 @@ pub struct SessionConfig {
     pub zh_ctx: Option<ScoreContext>,
     /// 日文解碼器；`None` 時日文只做原樣輸出。
     pub ja: Option<Arc<JaDecoder>>,
+    /// 聲調選填：沒有聲調的音節展開成五個聲調再解碼。
+    pub toneless: bool,
+    /// Ctrl 標點：`Ctrl+,` 輸出全形逗號。
+    pub ctrl_punct: bool,
+    /// 模糊音配對；每一項是兩個可互換的注音符號。
+    pub fuzzy_pairs: Vec<(char, char)>,
+    /// 神經重排的固定替身設定。
+    pub rerank: Option<RerankOptions>,
+    /// 提交前補標點：在最後一個漢字前插入這個字元。
+    pub punct_mark: Option<char>,
+}
+
+/// 固定替身重排設定。
+///
+/// 只啟用重排路徑，不是模型本身：候選字包含 [`RerankOptions::prefer`] 任一項
+/// 時，成本扣掉 `weight * prefer_score` 換算後的毫成本。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RerankOptions {
+    /// 重排權重。
+    pub weight: f64,
+    /// 偏好的候選字串。
+    pub prefer: Vec<String>,
+    /// 偏好候選的原始分數；0 代表 10。
+    pub prefer_score: f64,
 }
 
 impl Default for SessionConfig {
@@ -58,6 +93,11 @@ impl Default for SessionConfig {
             zh_lexicon: None,
             zh_ctx: None,
             ja: None,
+            toneless: false,
+            ctrl_punct: false,
+            fuzzy_pairs: Vec::new(),
+            rerank: None,
+            punct_mark: None,
         }
     }
 }
@@ -100,6 +140,10 @@ pub struct Session {
     pending: String,
     /// `Enter` 先放進這裡，下一次 [`Session::commit`] 取走。
     pending_commit: Option<String>,
+    /// Tab 接受的補全結果；有值時取代組字結果。
+    accepted_completion: Option<String>,
+    /// 尾端補全建議。
+    suggestion: Option<String>,
 }
 
 impl Default for Session {
@@ -130,6 +174,8 @@ impl Session {
             base: String::new(),
             pending: String::new(),
             pending_commit: None,
+            accepted_completion: None,
+            suggestion: None,
         }
     }
 
@@ -158,17 +204,66 @@ impl Session {
     /// `Enter` 會把組字結果放進待提交區，下一次 [`Session::commit`] 取走；
     /// `Escape` 清空組字；左右方向鍵與 Tab 在候選間移動。
     pub fn press(&mut self, key: Key) -> Snapshot {
-        match key.code {
-            KeyCode::Enter => self.finish_composition(),
-            KeyCode::Escape | KeyCode::Delete => self.clear_composition(),
-            KeyCode::Backspace => self.backspace(),
-            KeyCode::Space => self.space(),
-            KeyCode::ArrowRight | KeyCode::Tab => self.move_highlight(1),
-            KeyCode::ArrowLeft => self.move_highlight(-1),
-            KeyCode::Char(ch) => self.press_char(ch),
+        if key.ctrl {
+            self.press_ctrl(key);
+        } else {
+            match key.code {
+                KeyCode::Enter => self.finish_composition(),
+                KeyCode::Escape | KeyCode::Delete => self.clear_composition(),
+                KeyCode::Backspace => self.backspace(),
+                KeyCode::Space => self.space(),
+                KeyCode::Tab => {
+                    if !self.accept_suggestion() {
+                        self.move_highlight(1);
+                    }
+                }
+                KeyCode::ArrowRight => self.move_highlight(1),
+                KeyCode::ArrowLeft => self.move_highlight(-1),
+                KeyCode::Char(ch) => self.press_char(ch),
+            }
         }
         self.rebuild();
         self.snapshot()
+    }
+
+    /// 切換到指定模式；清空目前組字。
+    ///
+    /// 英文模式切換（`request: {"type":"toggle"}`）由此進入。
+    pub fn set_mode(&mut self, mode: Mode) -> Snapshot {
+        self.clear_composition();
+        self.config.mode = mode;
+        self.rebuild();
+        self.snapshot()
+    }
+
+    /// 在中文與英文模式之間切換。
+    pub fn toggle_english(&mut self) -> Snapshot {
+        let mode = if self.config.mode == Mode::En {
+            Mode::Zh
+        } else {
+            Mode::En
+        };
+        self.set_mode(mode)
+    }
+
+    /// 翻到候選的第 `page` 頁；頁面大小固定 10。
+    ///
+    /// 目前候選清單保留全部候選，翻頁只是把高亮移到該頁第一項。
+    pub fn page(&mut self, page: usize) -> Snapshot {
+        let index = page.saturating_mul(PAGE_SIZE);
+        if index < self.candidates.len() {
+            self.highlighted = index;
+            self.candidate_window = true;
+        }
+        self.rebuild();
+        self.snapshot()
+    }
+
+    /// 目前高亮的候選字串；沒有候選時回傳 `None`。
+    pub fn highlighted_text(&self) -> Option<&str> {
+        self.candidates
+            .get(self.highlighted)
+            .map(|candidate| candidate.surface.as_str())
     }
 
     /// 直接指定高亮的候選；超出範圍時回到 0。
@@ -192,7 +287,7 @@ impl Session {
             self.clear_composition();
             return text;
         }
-        let text = self.current_text();
+        let text = self.puncted(self.current_text());
         self.clear_composition();
         text
     }
@@ -223,7 +318,37 @@ impl Session {
         self.config.max_candidates.max(1)
     }
 
+    /// Ctrl 組合鍵：目前只處理啟用後的 `Ctrl+,`。
+    fn press_ctrl(&mut self, key: Key) {
+        if !self.config.ctrl_punct {
+            return;
+        }
+        if key.code == KeyCode::Char(',') {
+            self.push_literal("，");
+        }
+    }
+
+    /// 把字面文字插進組字結果；記錄插入位置。
+    fn push_literal(&mut self, text: &str) {
+        if self.literal.is_empty() {
+            self.literal_anchor = self.zh.syllables().len();
+        }
+        self.literal.push_str(text);
+    }
+
+    /// 接受目前的補全建議；沒有建議時回傳 `false`。
+    fn accept_suggestion(&mut self) -> bool {
+        let Some(text) = self.suggestion.take() else {
+            return false;
+        };
+        self.accepted_completion = Some(text);
+        self.candidate_window = false;
+        true
+    }
+
     fn press_char(&mut self, ch: char) {
+        self.accepted_completion = None;
+        self.suggestion = None;
         let window = self.candidate_window;
         if window && self.select_by_digit(ch) {
             self.candidate_window = false;
@@ -246,14 +371,9 @@ impl Session {
                 }
                 crate::zh::input::ZhInputEvent::Cancel => self.zh.reset(),
                 crate::zh::input::ZhInputEvent::Ignored => {
-                    if self.literal.is_empty() {
-                        self.literal_anchor = self.zh.syllables().len();
-                    }
                     let punct = self.zh.keyboard().punct(ch);
-                    match punct {
-                        Some(text) => self.literal.push_str(text),
-                        None => self.literal.push(ch),
-                    }
+                    let text = punct.map(str::to_string).unwrap_or_else(|| ch.to_string());
+                    self.push_literal(&text);
                 }
             },
             Mode::Ja => {
@@ -322,11 +442,29 @@ impl Session {
     }
 
     fn finish_composition(&mut self) {
-        let text = self.current_text();
+        let text = self.puncted(self.current_text());
         if !text.is_empty() {
             self.pending_commit = Some(text);
         }
         self.clear_composition();
+    }
+
+    /// 依設定在最後一個漢字前插入標點。
+    fn puncted(&self, text: String) -> String {
+        let Some(mark) = self.config.punct_mark else {
+            return text;
+        };
+        let Some((index, _)) = text.char_indices().rev().find(|(_, ch)| is_han(*ch)) else {
+            return text;
+        };
+        if index == 0 {
+            return text;
+        }
+        let mut out = String::with_capacity(text.len() + mark.len_utf8());
+        out.push_str(&text[..index]);
+        out.push(mark);
+        out.push_str(&text[index..]);
+        out
     }
 
     fn move_highlight(&mut self, delta: isize) {
@@ -359,10 +497,15 @@ impl Session {
         self.segments.clear();
         self.base.clear();
         self.pending.clear();
+        self.accepted_completion = None;
+        self.suggestion = None;
     }
 
-    /// 目前要提交的文字：高亮候選優先，其次轉換結果。
+    /// 目前要提交的文字：接受的補全優先，其次高亮候選，最後轉換結果。
     fn current_text(&self) -> String {
+        if let Some(text) = &self.accepted_completion {
+            return format!("{}{}", self.insert_literal(text), self.pending);
+        }
         if let Some(candidate) = self.candidates.get(self.highlighted) {
             return format!(
                 "{}{}",
@@ -380,9 +523,13 @@ impl Session {
 
     /// 顯示用字串：高亮候選反映在組字區。
     fn base_with_highlight(&self) -> String {
-        let base = match self.candidates.get(self.highlighted) {
-            Some(candidate) => candidate.surface.as_str(),
-            None => self.base.as_str(),
+        let base = match (
+            &self.accepted_completion,
+            self.candidates.get(self.highlighted),
+        ) {
+            (Some(text), _) => text.as_str(),
+            (None, Some(candidate)) => candidate.surface.as_str(),
+            (None, None) => self.base.as_str(),
         };
         format!("{}{}", self.insert_literal(base), self.pending)
     }
@@ -426,9 +573,10 @@ impl Session {
         if syllables.is_empty() {
             return;
         }
-        let readings: Vec<&str> = syllables.iter().map(|s| s.as_str()).collect();
-        let Ok(lattice) = Lattice::build(&readings, &self.lexicon, &self.ctx) else {
-            self.base = readings.join("");
+        let readings = self.zh_readings(&syllables);
+        let units: Vec<&str> = readings.iter().map(String::as_str).collect();
+        let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) else {
+            self.base = units.join("");
             return;
         };
         let decoder = Decoder::new(&self.lexicon, &self.ctx);
@@ -445,11 +593,20 @@ impl Session {
                 .unwrap_or(self.base.len())
         };
         let reading = readings.join(" ");
-        let (hypotheses, _) = decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
-        self.candidates = hypotheses
+        let literal = readings.join("");
+        let (mut hypotheses, _) =
+            decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
+        if let Some(options) = &self.config.rerank {
+            Self::apply_rerank(&mut hypotheses, options);
+            if let Some(best) = hypotheses.first() {
+                self.base = best.text.clone();
+                self.segments = Self::segments_of(&best.segments, Mode::Zh, Script::Bopomofo);
+            }
+        }
+        let mut candidates: Vec<Candidate> = hypotheses
             .into_iter()
             .map(|hypothesis| {
-                let source = if hypothesis.text == readings.join("") {
+                let source = if hypothesis.text == literal {
                     CandidateSource::Literal
                 } else {
                     CandidateSource::Lexicon
@@ -457,6 +614,181 @@ impl Session {
                 Candidate::new(hypothesis.text, reading.clone(), hypothesis.cost, source)
             })
             .collect();
+        let near = self.fuzzy_candidates(&readings);
+        if !near.is_empty() {
+            let at = candidates
+                .iter()
+                .position(|candidate| candidate.surface == literal)
+                .unwrap_or(candidates.len());
+            for (offset, candidate) in near.into_iter().enumerate() {
+                let index = (at + offset).min(candidates.len());
+                candidates.insert(index, candidate);
+            }
+            let mut seen = Vec::new();
+            candidates.retain(|candidate| {
+                if seen.contains(&candidate.surface) {
+                    false
+                } else {
+                    seen.push(candidate.surface.clone());
+                    true
+                }
+            });
+        }
+        candidates.truncate(self.max_candidates());
+        self.candidates = candidates;
+        let (completion, _) = decoder.complete(&lattice, &segs);
+        self.suggestion = if completion.found() {
+            Some(completion.entry.surface)
+        } else {
+            None
+        };
+    }
+
+    /// 目前音節要交給詞格的讀音。
+    ///
+    /// 聲調選填開啟時，沒有聲調的音節展開成五個聲調，從組合中挑成本最低的
+    /// 一條；組合數超過上限（長句）時維持原樣，避免指數爆炸。
+    fn zh_readings(&self, syllables: &[Syllable]) -> Vec<String> {
+        let exact: Vec<String> = syllables
+            .iter()
+            .map(|syllable| syllable.as_str().to_string())
+            .collect();
+        if !self.config.toneless {
+            return exact;
+        }
+        let rows: Vec<Vec<String>> = syllables
+            .iter()
+            .map(|syllable| {
+                if syllable.tone() != 1 {
+                    return vec![syllable.as_str().to_string()];
+                }
+                (1..=5)
+                    .map(|tone| syllable.with_tone(tone).as_str().to_string())
+                    .collect()
+            })
+            .collect();
+        let combinations: usize = rows.iter().map(Vec::len).product();
+        if combinations == 0 || combinations > TONELESS_COMBINATIONS {
+            return exact;
+        }
+        let mut best: Option<(i32, Vec<String>)> = None;
+        let mut index = vec![0usize; rows.len()];
+        loop {
+            let readings: Vec<String> = rows
+                .iter()
+                .zip(index.iter())
+                .map(|(row, &i)| row[i].clone())
+                .collect();
+            let units: Vec<&str> = readings.iter().map(String::as_str).collect();
+            if let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) {
+                let decoder = Decoder::new(&self.lexicon, &self.ctx);
+                let (_, cost) = decoder.best(&lattice, &Locks::new(), false);
+                if best
+                    .as_ref()
+                    .map_or(true, |(best_cost, _)| cost < *best_cost)
+                {
+                    best = Some((cost, readings));
+                }
+            }
+            let mut at = index.len();
+            loop {
+                if at == 0 {
+                    return best.map(|(_, readings)| readings).unwrap_or(exact);
+                }
+                at -= 1;
+                index[at] += 1;
+                if index[at] < rows[at].len() {
+                    break;
+                }
+                index[at] = 0;
+            }
+        }
+    }
+
+    /// 依固定替身設定重排：偏好字串命中時扣掉換算後的成本。
+    fn apply_rerank(hypotheses: &mut [crate::decode::Hypothesis], options: &RerankOptions) {
+        let score = if options.prefer_score > 0.0 {
+            options.prefer_score
+        } else {
+            10.0
+        };
+        let bonus = (options.weight * score * 1000.0).round() as i32;
+        hypotheses.sort_by_key(|hypothesis| {
+            let preferred = options
+                .prefer
+                .iter()
+                .any(|text| hypothesis.text.contains(text));
+            if preferred {
+                hypothesis.cost.saturating_sub(bonus)
+            } else {
+                hypothesis.cost
+            }
+        });
+    }
+
+    /// 模糊音候選：把已完成的音節換成近音讀音，取候選補進清單。
+    fn fuzzy_candidates(&self, readings: &[String]) -> Vec<Candidate> {
+        if self.config.fuzzy_pairs.is_empty() {
+            return Vec::new();
+        }
+        let mut variants: Vec<Vec<String>> = vec![Vec::new()];
+        for reading in readings {
+            let mut alternatives = vec![reading.clone()];
+            for &(left, right) in &self.config.fuzzy_pairs {
+                for (from, to) in [(left, right), (right, left)] {
+                    if reading.contains(from) {
+                        let swapped: String = reading
+                            .chars()
+                            .map(|ch| if ch == from { to } else { ch })
+                            .collect();
+                        if !alternatives.contains(&swapped) {
+                            alternatives.push(swapped);
+                        }
+                    }
+                }
+            }
+            let mut next = Vec::new();
+            for prefix in &variants {
+                for alternative in &alternatives {
+                    let mut variant = prefix.clone();
+                    variant.push(alternative.clone());
+                    next.push(variant);
+                }
+            }
+            variants = next;
+            if variants.len() > FUZZY_COMBINATIONS {
+                variants.truncate(FUZZY_COMBINATIONS);
+            }
+        }
+        let original = readings.join(" ");
+        let mut out: Vec<Candidate> = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+        for variant in variants {
+            if variant.as_slice() == readings {
+                continue;
+            }
+            let units: Vec<&str> = variant.iter().map(String::as_str).collect();
+            let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) else {
+                continue;
+            };
+            let decoder = Decoder::new(&self.lexicon, &self.ctx);
+            let (hypotheses, _) =
+                decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
+            for hypothesis in hypotheses {
+                if hypothesis.text == variant.join("") || seen.contains(&hypothesis.text) {
+                    continue;
+                }
+                seen.push(hypothesis.text.clone());
+                out.push(Candidate::new(
+                    hypothesis.text,
+                    original.clone(),
+                    hypothesis.cost,
+                    CandidateSource::Lexicon,
+                ));
+            }
+        }
+        out.sort_by_key(|candidate| candidate.cost);
+        out
     }
 
     fn rebuild_ja(&mut self) {
@@ -579,6 +911,10 @@ mod tests {
             ("景", "ㄐㄧㄥˇ"),
             ("風景", "ㄈㄥ ㄐㄧㄥˇ"),
             ("麻婆豆腐", "ㄇㄚˊ ㄆㄛˊ ㄉㄡˋ ㄈㄨˇ"),
+            ("城市", "ㄔㄥˊ ㄕˋ"),
+            ("程式", "ㄔㄥˊ ㄕˋ"),
+            ("宗", "ㄗㄨㄥ"),
+            ("中", "ㄓㄨㄥ"),
         ] {
             lex.push(LexEntry::new(surface, reading, 0, 0));
         }
@@ -694,6 +1030,98 @@ mod tests {
         }
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "ㄇㄚ");
+    }
+
+    #[test]
+    fn test_ctrl_comma_inserts_fullwidth_comma() {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.ctrl_punct = true;
+        let mut s = Session::new(config);
+        type_syllable(&mut s, "ㄨㄛˇ");
+        s.press(Key::new(KeyCode::Char(','), Some(','), false).with_ctrl());
+        type_syllable(&mut s, "ㄒㄧㄤˇ");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "我，想");
+    }
+
+    #[test]
+    fn test_punctuator_inserts_mark_before_last_han() {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.punct_mark = Some('，');
+        let mut s = Session::new(config);
+        type_syllable(&mut s, "ㄈㄥ");
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "風，景");
+    }
+
+    #[test]
+    fn test_rerank_prefers_configured_candidate() {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.rerank = Some(RerankOptions {
+            weight: 1.0,
+            prefer: vec!["城市".to_string()],
+            prefer_score: 10.0,
+        });
+        let mut s = Session::new(config);
+        type_syllable(&mut s, "ㄔㄥˊ");
+        type_syllable(&mut s, "ㄕˋ");
+        assert_eq!(s.candidates()[0].surface, "城市");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "城市");
+    }
+
+    #[test]
+    fn test_toneless_readings_expand_to_cheapest_tones() {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.toneless = true;
+        let mut s = Session::new(config);
+        for keys in ["ji", "vu;"] {
+            for ch in keys.chars() {
+                s.press(Key::char(ch, false));
+            }
+            s.press(Key::new(KeyCode::Space, None, false));
+        }
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "我想");
+    }
+
+    #[test]
+    fn test_fuzzy_candidates_appear_before_literal() {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.fuzzy_pairs = vec![('ㄗ', 'ㄓ')];
+        let mut s = Session::new(config);
+        type_syllable(&mut s, "ㄗㄨㄥ");
+        let surfaces: Vec<&str> = s
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        assert_eq!(surfaces, ["宗", "中", "ㄗㄨㄥ"]);
+    }
+
+    #[test]
+    fn test_page_moves_highlight_to_page_start() {
+        let mut lexicon = InMemoryLexicon::new();
+        for (index, surface) in ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
+            .iter()
+            .chain(["子", "丑"].iter())
+            .enumerate()
+        {
+            lexicon.push(LexEntry::new(*surface, "ㄐㄧ", index as i32, 0));
+        }
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon);
+        config.max_candidates = 20;
+        let mut s = Session::new(config);
+        type_syllable(&mut s, "ㄐㄧ");
+        s.page(1);
+        assert_eq!(s.highlighted_text(), Some("子"));
     }
 
     #[test]

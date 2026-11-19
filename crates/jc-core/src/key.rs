@@ -38,17 +38,30 @@ pub struct Key {
     pub text: Option<char>,
     /// Shift 是否按著。
     pub shift: bool,
+    /// Ctrl 是否按著。
+    pub ctrl: bool,
 }
 
 impl Key {
     /// 建立按鍵事件。
     pub fn new(code: KeyCode, text: Option<char>, shift: bool) -> Self {
-        Self { code, text, shift }
+        Self {
+            code,
+            text,
+            shift,
+            ctrl: false,
+        }
     }
 
     /// 建立可列印字元的按鍵。
     pub fn char(ch: char, shift: bool) -> Self {
         Self::new(KeyCode::Char(ch), Some(ch), shift)
+    }
+
+    /// 加上 Ctrl 修飾鍵。
+    pub fn with_ctrl(mut self) -> Self {
+        self.ctrl = true;
+        self
     }
 }
 
