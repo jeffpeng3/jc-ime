@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::zh::syllable::Syllable;
 
-use super::{pair, reading_key, Model, Seg, Store, UsageEvidence, CONFIRM_UNIT, DAY_SECONDS};
+use super::{pair, reading_key, Model, Seg, Store, CONFIRM_UNIT};
 
 /// 單字不算習慣。
 pub const HABIT_MIN_SYLLABLES: usize = 2;
@@ -192,6 +192,7 @@ mod tests {
     use super::*;
     use crate::lattice::{InMemoryLexicon, LexEntry};
     use crate::personal::{Model, NoLm};
+    use crate::personal::{UsageEvidence, DAY_SECONDS};
 
     #[test]
     fn single_pick_is_not_a_habit() {

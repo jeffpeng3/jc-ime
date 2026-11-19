@@ -1,6 +1,6 @@
 //! 英文詞的個人化證據（對照 `core/personal/english.go`）。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
@@ -111,8 +111,8 @@ pub struct EnglishIndex {
     pub(crate) gen: u64,
     /// 建索引時的 store 位址。
     pub(crate) store: Option<usize>,
-    /// 建索引時的詞典是否相同。
-    pub(crate) base: bool,
+    /// 建索引時的詞典位址。
+    pub(crate) base: usize,
     /// 索引詞。
     pub(crate) index: Vec<String>,
 }
@@ -150,7 +150,7 @@ impl Store {
     pub(crate) fn clean_english(&mut self) {
         let tombstones = self.tombstones.clone();
         self.english.retain(|key, value| {
-            let valid = english_token(&value.text)
+            english_token(&value.text)
                 && value.text.to_lowercase() == *key
                 && (0..=2).contains(&value.day_confirmed)
                 && (0.0..=32.0).contains(&value.confirmed)
@@ -161,8 +161,7 @@ impl Store {
                 && value.confirmed.is_finite()
                 && value.days.is_finite()
                 && value.usage.is_finite()
-                && !tombstones.contains(key);
-            valid
+                && !tombstones.contains(key)
         });
         self.bound_english();
     }
@@ -296,7 +295,7 @@ impl Model {
 
     /// 個人化的英文拼字更正。
     pub fn english_corrections(
-        &self,
+        &mut self,
         base: &dyn super::EnglishLexicon,
         text: &str,
         limit: usize,
@@ -308,14 +307,35 @@ impl Model {
         if base.has(text) {
             return out;
         }
-        for (key, evidence) in &self.store.english {
-            let evidence = evidence.at(self.store.time);
-            if !evidence.eligible()
-                || self.store.tombstones.contains(key)
-                || base.has(key) && !base.suggestible(key)
-            {
+        let store_id = &self.store as *const _ as usize;
+        let base_id = std::ptr::from_ref(base).cast::<()>() as usize;
+        if self.english_index.store != Some(store_id)
+            || self.english_index.base != base_id
+            || self.english_index.gen != self.gen
+        {
+            let index = self
+                .store
+                .english
+                .iter()
+                .filter(|(key, evidence)| {
+                    evidence.at(self.store.time).eligible()
+                        && !self.store.tombstones.contains(*key)
+                        && !(base.has(key) && !base.suggestible(key))
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            self.english_index = EnglishIndex {
+                gen: self.gen,
+                store: Some(store_id),
+                base: base_id,
+                index,
+            };
+        }
+        for key in &self.english_index.index {
+            let Some(evidence) = self.store.english.get(key) else {
                 continue;
-            }
+            };
+            let evidence = evidence.at(self.store.time);
             let distance = edit_distance(&text.to_lowercase(), key);
             if distance <= 2 {
                 out.push(EnglishCandidate {

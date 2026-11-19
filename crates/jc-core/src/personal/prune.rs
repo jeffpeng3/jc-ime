@@ -2,8 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::evidence::decay;
-use super::{cut_pair, pair, Model, UsageEvidence, DAY_SECONDS};
+use super::{cut_pair, Model, UsageEvidence, DAY_SECONDS};
 
 /// 清理門檻。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -319,16 +318,6 @@ fn prune_evidence(
         }
     }
     removed
-}
-
-/// 保留給 prune 的介面：時間差衰減。
-pub(crate) fn decay_since(now: i64, updated: i64) -> f64 {
-    decay(1.0, now - updated, 30 * DAY_SECONDS)
-}
-
-/// 保留給 prune 的介面：排序鍵。
-pub(crate) fn pair_key(a: &str, b: &str) -> String {
-    pair(a, b)
 }
 
 #[cfg(test)]

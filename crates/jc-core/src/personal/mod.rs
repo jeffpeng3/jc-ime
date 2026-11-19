@@ -34,7 +34,6 @@ pub mod zhuyin_keys;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -619,12 +618,12 @@ impl Store {
     }
 
     /// 依個人權重重排 N-best 路徑。
-    pub fn rank_hypotheses(&self, hypotheses: &mut Vec<crate::decode::Hypothesis>, reading: &str) {
+    pub fn rank_hypotheses(&self, hypotheses: &mut [crate::decode::Hypothesis], reading: &str) {
         hypotheses.sort_by_key(|item| self.rank_key(&item.text, reading, item.cost));
     }
 
     /// 依個人權重重排候選。
-    pub fn rank_candidates(&self, candidates: &mut Vec<crate::Candidate>, reading: &str) {
+    pub fn rank_candidates(&self, candidates: &mut [crate::Candidate], reading: &str) {
         candidates.sort_by_key(|item| self.rank_key(&item.surface, reading, item.cost));
     }
 
@@ -636,14 +635,6 @@ impl Store {
         self.total += weight;
         *self.uses.entry(word.to_string()).or_default() += weight;
     }
-}
-
-/// 時間戳。
-pub(crate) fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 /// 兩個字串組成 map 鍵。
@@ -792,8 +783,6 @@ pub struct Model {
     pub now_source: Option<Box<dyn Fn() -> i64>>,
     /// 英文詞典。
     pub english_base: Option<Box<dyn EnglishLexicon>>,
-    /// 進行中的反悔紀錄。
-    pub(crate) undo: Option<Undo>,
     /// 個人資料的識別碼；重置後遞增，避免把反悔套到另一份資料。
     pub(crate) store_id: u64,
     /// 這個行程最後一次清理的 UTC 日。
@@ -821,7 +810,6 @@ impl Model {
             gen: 0,
             now_source: None,
             english_base: None,
-            undo: None,
             store_id: 1,
             pruned_day: 0,
             diversity: diversity::DiversityIndex::default(),
