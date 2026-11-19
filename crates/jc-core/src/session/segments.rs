@@ -1,0 +1,840 @@
+//! 分段、片段鎖定與候選呈現。
+//!
+//! 對照上游 `core/session` 的 `segments.go`、`untoned.go`、`tone_mark.go` 與
+//! `phonetic_candidates.go`。上游的 `Segment` 帶讀音、語言標籤與 rune 範圍；
+//! `jc-core::Segment` 只帶 UTF-8 位元組範圍、模式與書寫系統，因此這一層以
+//! 現有型別能表達的部分為準：
+//!
+//! - 片段本身由 [`Session`] 的轉換結果推導，呼叫端拿到副本。
+//! - `ReplaceSegment`／`InsertSegment`／`RemoveSegment` 建立可編輯副本，下一次
+//!   按鍵後失效，與上游的 `segmentManual`／`segmentRev` 相同。
+//! - 片段鎖定直接寫進解碼器的 [`crate::decode::Locks`]，因此會影響後續轉換。
+//!
+//! 游標只有「組字結尾」一種位置：`ZhInput` 與 `RomajiInput` 目前沒有組字中
+//! 游標，這一層不假造可移動的游標。
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use super::*;
+use crate::lattice::Lexicon;
+use crate::zh::syllable::{class_of, Class, Syllable, TONE1};
+
+/// 剛按下、還沒決定要當數字或聲調符號的聲調鍵。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingTone {
+    /// 按鍵在 `literal` 中的位元組位置。
+    at: usize,
+    /// 原本的按鍵字元。
+    key: char,
+}
+
+/// 沒在組字時，聲調鍵是否先由輸入法留在組字區等空白。
+///
+/// 對照上游 `ToneMarkKeys`：開了中英混打且使用標準排列時，聲調鍵交給混打
+/// 判斷；其他情況先留在組字區，緊接的空白才換成聲調符號。
+pub fn tone_mark_keys(mixed_input: bool, standard_layout: bool) -> bool {
+    !(mixed_input && standard_layout)
+}
+
+impl Session {
+    /// 目前片段的副本。
+    ///
+    /// 呼叫端修改回傳值不影響 session。手動編輯過的片段會原樣回傳，直到下一次
+    /// 按鍵讓組字狀態重新推導為止。
+    pub fn segments(&self) -> Vec<Segment> {
+        self.segment_manual
+            .clone()
+            .unwrap_or_else(|| self.segments.clone())
+    }
+
+    /// 游標在目前組字字串中的 rune 位置。
+    ///
+    /// 目前只支援組字結尾，所以等於組字字串的 rune 數。
+    pub fn cursor(&self) -> usize {
+        self.base_with_highlight().chars().count()
+    }
+
+    /// 游標所在片段的索引；沒有片段時回傳 `None`。
+    ///
+    /// 游標在片段結尾時屬於下一個片段（半開區間）；在整段輸入結尾時仍算最後
+    /// 一個片段，因為那裡是使用者正在編輯的位置。
+    pub fn active_segment(&self) -> Option<usize> {
+        let segments = self.segments();
+        let text = self.base_with_highlight();
+        let byte = byte_at_rune(&text, self.cursor());
+        for (index, segment) in segments.iter().enumerate() {
+            if segment.start <= byte && byte < segment.end {
+                return Some(index);
+            }
+        }
+        let end = segments.iter().map(|segment| segment.end).max()?;
+        (byte >= end).then(|| segments.len() - 1)
+    }
+
+    /// 回傳包含 rune 位置 `pos` 的片段索引。
+    ///
+    /// 位置超出組字字串時回傳 `None`；片段結尾屬於下一個片段。
+    pub fn segment_at(&self, pos: usize) -> Option<usize> {
+        let text = self.base_with_highlight();
+        let byte = byte_at_rune(&text, pos);
+        self.segments()
+            .iter()
+            .position(|segment| segment.start <= byte && byte < segment.end)
+    }
+
+    /// 替換索引 `index` 的片段，保留其他片段。
+    ///
+    /// 空片段與越界索引回傳 `false`。替換只影響 [`Session::segments`] 的視圖，
+    /// 下一次按鍵後由組字狀態重新推導。
+    pub fn replace_segment(&mut self, index: usize, segment: Segment) -> bool {
+        if segment.is_empty() {
+            return false;
+        }
+        let Some(editable) = self.editable_segments() else {
+            return false;
+        };
+        let Some(slot) = editable.get_mut(index) else {
+            return false;
+        };
+        *slot = segment;
+        true
+    }
+
+    /// 在索引 `index` 前插入片段；`index` 等於片段數時附加在尾端。
+    ///
+    /// 空片段與越界索引回傳 `false`。
+    pub fn insert_segment(&mut self, index: usize, segment: Segment) -> bool {
+        if segment.is_empty() {
+            return false;
+        }
+        let Some(editable) = self.editable_segments() else {
+            return false;
+        };
+        if index > editable.len() {
+            return false;
+        }
+        editable.insert(index, segment);
+        true
+    }
+
+    /// 移除索引 `index` 的片段；不合併相鄰片段。
+    ///
+    /// 越界索引回傳 `false`。
+    pub fn remove_segment(&mut self, index: usize) -> bool {
+        let Some(editable) = self.editable_segments() else {
+            return false;
+        };
+        if index >= editable.len() {
+            return false;
+        }
+        editable.remove(index);
+        true
+    }
+
+    /// 回報第 `index` 個片段是否被片段鎖定覆蓋。
+    pub fn segment_locked(&self, index: usize) -> bool {
+        let Some((start, end)) = self.segment_syllables(index) else {
+            return false;
+        };
+        self.locks
+            .iter()
+            .any(|(&at, lock)| at < end && start < at.saturating_add(lock.len))
+    }
+
+    /// 鎖定第 `index` 個片段，詞面就是目前片段顯示的文字。
+    ///
+    /// 一般選字不走這條路；這是給沒有候選視窗的呼叫端（例如滑鼠選取）用的。
+    /// 鎖定會立即重建轉換結果，之後打的新音節不會改掉這一段。越界或空片段
+    /// 回傳 `false`。
+    pub fn lock_segment(&mut self, index: usize) -> bool {
+        let Some((start, end)) = self.segment_syllables(index) else {
+            return false;
+        };
+        if start >= end {
+            return false;
+        }
+        let segments = self.segments();
+        let Some(segment) = segments.get(index) else {
+            return false;
+        };
+        let Some(word) = self.base.get(segment.start..segment.end) else {
+            return false;
+        };
+        let word = word.to_string();
+        self.locks
+            .retain(|&at, lock| !(at < end && start < at.saturating_add(lock.len)));
+        self.locks.insert(
+            start,
+            crate::decode::Lock {
+                word,
+                len: end - start,
+                ..crate::decode::Lock::default()
+            },
+        );
+        self.segment_manual = None;
+        self.rebuild();
+        true
+    }
+
+    /// 解除第 `index` 個片段上的片段鎖定。
+    ///
+    /// 沒有可解除的鎖定時回傳 `false`。
+    pub fn unlock_segment(&mut self, index: usize) -> bool {
+        let Some((start, end)) = self.segment_syllables(index) else {
+            return false;
+        };
+        let before = self.locks.len();
+        self.locks
+            .retain(|&at, lock| !(at < end && start < at.saturating_add(lock.len)));
+        let changed = self.locks.len() != before;
+        if changed {
+            self.segment_manual = None;
+            self.rebuild();
+        }
+        changed
+    }
+
+    /// 下一次按鍵前讓手動片段副本失效。
+    pub(super) fn expire_segment_view(&mut self) {
+        self.segment_manual = None;
+    }
+
+    /// 聲調鍵、聲調選填與孤立字面空白的前置處理。
+    ///
+    /// 回傳 `true` 表示這一鍵已經處理完；`false` 表示仍要交給一般按鍵路徑。
+    pub(super) fn segments_press(&mut self, key: &Key) -> bool {
+        if self.config.mode != Mode::Zh {
+            self.pending_tone = None;
+            return false;
+        }
+        match key.code {
+            KeyCode::Char(ch) => {
+                if ch == '\'' && !self.zh.pending().is_empty() && self.config.toneless {
+                    // 對照 `untonedSeparator`：組字中按 ' 只切音節，不送出頓號。
+                    self.zh.press(Key::new(KeyCode::Space, None, false));
+                    self.pending_tone = None;
+                    return true;
+                }
+                self.untoned_break(ch);
+                if self.tone_key(*key) {
+                    return true;
+                }
+                self.pending_tone = None;
+                false
+            }
+            KeyCode::Space => {
+                if self.finish_tone_key() {
+                    return true;
+                }
+                self.pending_tone = None;
+                self.literal_space()
+            }
+            KeyCode::Enter | KeyCode::Tab | KeyCode::ArrowLeft | KeyCode::ArrowRight => {
+                if self.finish_untoned() {
+                    // 先讓新完成的音節進轉換結果，Enter／Tab 才看得到它。
+                    self.rebuild();
+                }
+                self.pending_tone = None;
+                false
+            }
+            _ => {
+                self.pending_tone = None;
+                false
+            }
+        }
+    }
+
+    /// 沒在組字時按下聲調鍵：先照字面留下數字，等下一鍵決定。
+    fn tone_key(&mut self, key: Key) -> bool {
+        if !self.zh.pending().is_empty() || self.candidate_window || self.menu.is_some() {
+            return false;
+        }
+        let KeyCode::Char(ch) = key.code else {
+            return false;
+        };
+        let Some(symbol) = self.zh.keyboard().symbol(ch) else {
+            return false;
+        };
+        if class_of(symbol) != Class::Tone || symbol == TONE1 {
+            return false;
+        }
+        // 前面緊接著數字時是數字的一部分，不當成孤立聲調鍵。
+        let lone = !self
+            .literal
+            .chars()
+            .last()
+            .is_some_and(|last| last.is_ascii_digit());
+        self.push_literal(&ch.to_string());
+        if lone {
+            self.pending_tone = Some(PendingTone {
+                at: self.literal.len().saturating_sub(1),
+                key: ch,
+            });
+        } else {
+            self.pending_tone = None;
+        }
+        true
+    }
+
+    /// 把緊接在空白前的孤立聲調鍵換成聲調符號。
+    fn finish_tone_key(&mut self) -> bool {
+        let Some(pending) = self.pending_tone else {
+            return false;
+        };
+        self.pending_tone = None;
+        if !self.zh.pending().is_empty()
+            || self.literal.len() != pending.at.saturating_add(1)
+            || !self.literal.ends_with(pending.key)
+        {
+            return false;
+        }
+        let Some(symbol) = self.zh.keyboard().symbol(pending.key) else {
+            return false;
+        };
+        if class_of(symbol) != Class::Tone || symbol == TONE1 {
+            return false;
+        }
+        self.literal.pop();
+        self.literal.push(symbol);
+        true
+    }
+
+    /// 沒有注音組字、只有字面內容時，空白照字面留下。
+    fn literal_space(&mut self) -> bool {
+        if !self.zh.pending().is_empty()
+            || !self.zh.syllables().is_empty()
+            || self.literal.is_empty()
+            || self.candidate_window
+            || self.menu.is_some()
+        {
+            return false;
+        }
+        self.push_literal(" ");
+        true
+    }
+
+    /// 對照 `untonedBreak`：聲調選填時，接不上的注音先完成目前的音節。
+    ///
+    /// 回傳 `true` 表示已把目前的音節收進組字，後續按鍵從新音節開始。現有
+    /// 模型把一聲音節當成可展開聲調的音節，因此這裡用一聲完成，效果與上游的
+    /// `UntonedMark` 相同。
+    fn untoned_break(&mut self, ch: char) -> bool {
+        if !self.config.toneless || self.zh.pending().is_empty() {
+            return false;
+        }
+        let Some(symbol) = self.zh.keyboard().symbol(ch) else {
+            return false;
+        };
+        let class = class_of(symbol);
+        if !matches!(class, Class::Initial | Class::Medial | Class::Final) {
+            return false;
+        }
+        let pending = self.zh.pending();
+        let current = Syllable::from_raw(pending.clone());
+        if !current.legal() {
+            return false;
+        }
+        let has_class = pending.chars().any(|existing| class_of(existing) == class);
+        let last_class = pending.chars().map(class_of).max().unwrap_or(Class::None);
+        let extended = Syllable::from_raw(format!("{pending}{symbol}"));
+        if !has_class && last_class < class && crate::zh::pinyin::legal_prefix(&extended) {
+            return false;
+        }
+        self.zh.press(Key::new(KeyCode::Space, None, false));
+        true
+    }
+
+    /// 聲調選填時，在會用到整段組字的按鍵前完成未打完的音節。
+    fn finish_untoned(&mut self) -> bool {
+        if !self.config.toneless || self.zh.pending().is_empty() {
+            return false;
+        }
+        if !Syllable::from_raw(self.zh.pending()).legal() {
+            return false;
+        }
+        self.zh.press(Key::new(KeyCode::Space, None, false));
+        true
+    }
+
+    /// 尾端差一個注音符號的完整詞候選。
+    ///
+    /// 對照上游 `phoneticWindow`：從每個路徑片段的起點看到整段尾巴，長度 4 到
+    /// 8 個音節，只換一個聲母／介音／韻母，聲調與音節邊界固定。這是明確列出
+    /// 的候選，不會自己改字。
+    pub(super) fn phonetic_candidates(&self, path: &[crate::decode::Seg]) -> Vec<Candidate> {
+        let syllables = self.zh.syllables();
+        if syllables.len() < 4 {
+            return Vec::new();
+        }
+        let mut out: Vec<Candidate> = Vec::new();
+        for segment in path {
+            let start = segment.start;
+            if start >= syllables.len() {
+                continue;
+            }
+            let length = syllables.len() - start;
+            if !(4..=crate::decode::MAX_WORD_LEN).contains(&length) {
+                continue;
+            }
+            let typed = &syllables[start..];
+            if typed.iter().any(|syllable| !syllable.legal()) {
+                continue;
+            }
+            let replace: String = path
+                .iter()
+                .filter(|seg| seg.start >= start)
+                .map(|seg| seg.word.as_str())
+                .collect();
+            let typed_key = typed
+                .iter()
+                .map(Syllable::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+            if self
+                .lexicon
+                .lookup(&typed_key)
+                .iter()
+                .any(|entry| entry.surface == replace)
+            {
+                continue;
+            }
+            for (at, syllable) in typed.iter().enumerate() {
+                for neighbour in phonetic_neighbours(syllable) {
+                    let mut reading: Vec<String> =
+                        typed.iter().map(|item| item.as_str().to_string()).collect();
+                    reading[at] = neighbour.with_tone(syllable.tone()).as_str().to_string();
+                    let key = reading.join(" ");
+                    for entry in self.lexicon.lookup(&key) {
+                        if entry.surface.chars().count() != length
+                            || entry.surface == replace
+                            || out
+                                .iter()
+                                .any(|candidate| candidate.surface == entry.surface)
+                        {
+                            continue;
+                        }
+                        out.push(Candidate::new(
+                            entry.surface.clone(),
+                            key.clone(),
+                            entry.cost,
+                            CandidateSource::Lexicon,
+                        ));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn editable_segments(&mut self) -> Option<&mut Vec<Segment>> {
+        if self.segment_manual.is_none() {
+            self.segment_manual = Some(self.segments.clone());
+        }
+        self.segment_manual.as_mut()
+    }
+
+    /// 找片段對應的音節範圍，供片段鎖定使用。
+    fn segment_syllables(&self, index: usize) -> Option<(usize, usize)> {
+        let segments = self.segments();
+        let target = segments.get(index)?;
+        if let Some(path) = self.last_hypotheses.first() {
+            let mut at: usize = 0;
+            let mut start = None;
+            let mut end = None;
+            for segment in &path.segments {
+                let length = segment.word.len();
+                if target.start < at.saturating_add(length) && at < target.end {
+                    start.get_or_insert(segment.start);
+                    end = Some(segment.end);
+                }
+                at = at.saturating_add(length);
+            }
+            if let (Some(start), Some(end)) = (start, end) {
+                if end > start {
+                    return Some((start, end));
+                }
+            }
+        }
+        // 沒有路徑時用每個音節的顯示長度佔一段，與上游的保底映射相同。
+        let mut at: usize = 0;
+        let mut start = None;
+        let mut end = None;
+        for (position, syllable) in self.zh.syllables().iter().enumerate() {
+            let length = syllable.text().len();
+            if target.start < at.saturating_add(length) && at < target.end {
+                start.get_or_insert(position);
+                end = Some(position + 1);
+            }
+            at = at.saturating_add(length);
+        }
+        match (start, end) {
+            (Some(start), Some(end)) if end > start => Some((start, end)),
+            _ => None,
+        }
+    }
+}
+
+/// 把 rune 位置換成 UTF-8 位元組位置；超出長度時回傳字串長度。
+fn byte_at_rune(text: &str, pos: usize) -> usize {
+    text.char_indices()
+        .nth(pos)
+        .map(|(byte, _)| byte)
+        .unwrap_or(text.len())
+}
+
+/// 只比注音符號：聲調與音節邊界固定，相同讀音不算。
+///
+/// 對照上游 `oneSymbolApart`。
+fn one_symbol_apart(a: &Syllable, b: &Syllable) -> bool {
+    if a.tone() != b.tone() || a == b {
+        return false;
+    }
+    let mut x: Vec<char> = a.base().as_str().chars().collect();
+    let mut y: Vec<char> = b.base().as_str().chars().collect();
+    if x.len() > y.len() {
+        std::mem::swap(&mut x, &mut y);
+    }
+    if y.len() - x.len() > 1 {
+        return false;
+    }
+    let (mut i, mut j, mut edits) = (0, 0, 0);
+    while i < x.len() && j < y.len() {
+        if x[i] == y[j] {
+            i += 1;
+            j += 1;
+            continue;
+        }
+        edits += 1;
+        if edits > 1 {
+            return false;
+        }
+        if x.len() == y.len() {
+            i += 1;
+        }
+        j += 1;
+    }
+    edits + y.len() - j == 1
+}
+
+/// 與指定音節只差一個注音符號的音節表；第一次使用時由音節表建立。
+fn phonetic_neighbours(syllable: &Syllable) -> Vec<Syllable> {
+    static TABLE: OnceLock<HashMap<String, Vec<Syllable>>> = OnceLock::new();
+    let base = syllable.base();
+    TABLE
+        .get_or_init(|| {
+            let inventory = crate::zh::pinyin::inventory();
+            let mut table: HashMap<String, Vec<Syllable>> = HashMap::new();
+            for left in &inventory {
+                for right in &inventory {
+                    if one_symbol_apart(left, right) {
+                        table
+                            .entry(left.as_str().to_string())
+                            .or_default()
+                            .push(right.clone());
+                    }
+                }
+            }
+            table
+        })
+        .get(base.as_str())
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lattice::LexEntry;
+
+    fn lexicon() -> InMemoryLexicon {
+        let mut lexicon = InMemoryLexicon::new();
+        for (surface, reading) in [
+            ("我", "ㄨㄛˇ"),
+            ("想", "ㄒㄧㄤˇ"),
+            ("吃", "ㄔ"),
+            ("風", "ㄈㄥ"),
+            ("景", "ㄐㄧㄥˇ"),
+            ("風景", "ㄈㄥ ㄐㄧㄥˇ"),
+            ("個", "ㄍㄜˋ"),
+            ("你", "ㄋㄧˇ"),
+            ("好", "ㄏㄠˇ"),
+            ("你好", "ㄋㄧˇ ㄏㄠˇ"),
+            ("西", "ㄒㄧ"),
+            ("安", "ㄢ"),
+            ("西安", "ㄒㄧ ㄢ"),
+            ("仙", "ㄒㄧㄢ"),
+            ("麻婆豆腐", "ㄇㄚˊ ㄆㄛˊ ㄉㄡˋ ㄈㄨˇ"),
+        ] {
+            lexicon.push(LexEntry::new(surface, reading, 0, 0));
+        }
+        lexicon
+    }
+
+    fn session() -> Session {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        Session::new(config)
+    }
+
+    fn toneless_session() -> Session {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.toneless = true;
+        Session::new(config)
+    }
+
+    fn type_syllable(session: &mut Session, reading: &str) {
+        let keyboard = crate::zh::keyboard::Keyboard::standard();
+        for syllable in crate::zh::syllable::parse_reading(reading) {
+            let keys = keyboard.keys(&syllable).expect("音節應該有對應按鍵");
+            for ch in keys.chars() {
+                session.press(Key::char(ch, false));
+            }
+        }
+    }
+
+    fn type_keys(session: &mut Session, keys: &str) {
+        for ch in keys.chars() {
+            let key = if ch == ' ' {
+                Key::new(KeyCode::Space, None, false)
+            } else {
+                Key::char(ch, false)
+            };
+            session.press(key);
+        }
+    }
+
+    /// 對照 `TestSessionSegmentsFollowZhuyinPathAndCursor`。
+    #[test]
+    fn test_session_segments_follow_zhuyin_path_and_cursor() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        type_syllable(&mut s, "ㄒㄧㄤˇ");
+        type_syllable(&mut s, "ㄔ");
+        let segments = s.segments();
+        assert_eq!(segments.len(), 3);
+        assert_eq!(s.cursor(), 3);
+        assert_eq!(s.active_segment(), Some(2));
+        for (index, (segment, want)) in segments.iter().zip(["我", "想", "吃"]).enumerate() {
+            assert_eq!(&s.base[segment.start..segment.end], want);
+            assert_eq!(segment.mode, Mode::Zh);
+            assert_eq!(segment.script, Script::Bopomofo);
+            assert_eq!(s.segment_at(index), Some(index));
+        }
+        assert_eq!(s.segment_at(3), None, "片段結尾屬於下一個片段");
+    }
+
+    /// 對照 `TestSessionSegmentsKeepLongWordMerged`。
+    #[test]
+    fn test_session_segments_keep_long_word_merged() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄈㄥ");
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        let segments = s.segments();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(&s.base[segments[0].start..segments[0].end], "風景");
+        assert_eq!(segments[0].len(), "風景".len());
+    }
+
+    /// 對照 `TestSessionSegmentsReturnCopiesAndEditLanguages` 的形狀。
+    #[test]
+    fn test_session_segments_return_copies_and_edit() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        type_syllable(&mut s, "ㄒㄧㄤˇ");
+
+        let mut copy = s.segments();
+        copy[0].script = Script::Kana;
+        assert_eq!(
+            s.segments()[0].script,
+            Script::Bopomofo,
+            "副本不影響 session"
+        );
+
+        assert!(s.replace_segment(0, Segment::new(0, 3, Mode::Ja, Script::Kana)));
+        assert_eq!(s.segments()[0].mode, Mode::Ja);
+        assert!(s.insert_segment(2, Segment::new(6, 9, Mode::Zh, Script::Han)));
+        assert_eq!(s.segments().len(), 3);
+        assert_eq!(s.segments()[1].mode, Mode::Zh, "插入不影響其他片段");
+        assert!(s.remove_segment(2));
+        assert_eq!(s.segments().len(), 2);
+        assert!(s.remove_segment(0));
+        assert_eq!(s.segments()[0].mode, Mode::Zh);
+
+        assert!(!s.remove_segment(9));
+        assert!(!s.replace_segment(9, Segment::new(0, 1, Mode::Zh, Script::Han)));
+        assert!(!s.insert_segment(9, Segment::new(0, 1, Mode::Zh, Script::Han)));
+        assert!(!s.replace_segment(0, Segment::new(1, 1, Mode::Zh, Script::Han)));
+    }
+
+    /// 手動片段只存活到下一次按鍵。
+    #[test]
+    fn test_manual_segments_expire_on_next_key() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        assert!(s.replace_segment(0, Segment::new(0, 3, Mode::Ja, Script::Kana)));
+        assert_eq!(s.segments()[0].mode, Mode::Ja);
+        s.press(Key::char('x', false));
+        assert_eq!(s.segments().len(), 1);
+        assert_eq!(s.segments()[0].mode, Mode::Zh, "下一次按鍵重新推導");
+    }
+
+    /// 對照 `TestSessionSegmentSelectionLocksOnlyThatSegment` 的狀態行為。
+    #[test]
+    fn test_session_segment_locks_only_that_segment() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄈㄥ");
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        assert_eq!(s.segments().len(), 1);
+        assert!(s.lock_segment(0));
+        assert!(s.segment_locked(0));
+        type_syllable(&mut s, "ㄨㄛˇ");
+        assert_eq!(s.snapshot().preedit, "風景我");
+        assert_eq!(s.segments().len(), 2);
+        assert!(s.segment_locked(0));
+        assert!(!s.segment_locked(1));
+        assert!(s.unlock_segment(0));
+        assert!(!s.segment_locked(0));
+        assert!(!s.lock_segment(9));
+        assert!(!s.unlock_segment(9));
+    }
+
+    /// 對照 `TestLoneToneKeyPlusSpaceTypesToneMark`。
+    #[test]
+    fn test_lone_tone_key_plus_space_types_tone_mark() {
+        for (key, want) in [('3', 'ˇ'), ('4', 'ˋ'), ('6', 'ˊ'), ('7', '˙')] {
+            let mut s = session();
+            let snap = s.press(Key::char(key, false));
+            assert_eq!(snap.preedit, key.to_string());
+            assert!(snap.candidates.is_empty());
+            let snap = s.press(Key::new(KeyCode::Space, None, false));
+            assert_eq!(snap.preedit, want.to_string());
+            assert_eq!(snap.cursor_utf16, 1);
+            assert!(snap.candidates.is_empty());
+            s.press(Key::new(KeyCode::Enter, None, false));
+            assert_eq!(s.commit(), want.to_string());
+        }
+
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        type_keys(&mut s, "3 ");
+        assert_eq!(s.snapshot().preedit, "我ˇ");
+        type_keys(&mut s, "4 ");
+        assert_eq!(s.snapshot().preedit, "我ˇˋ");
+        type_syllable(&mut s, "ㄍㄜˋ");
+        assert_eq!(s.snapshot().preedit, "我ˇˋ個");
+    }
+
+    /// 對照 `TestToneKeyStaysDigitUnlessSpaceFollows` 與
+    /// `TestToneKeyRunStaysNumber`。
+    #[test]
+    fn test_tone_key_stays_digit_unless_space_follows() {
+        let mut s = session();
+        type_keys(&mut s, "3");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "3");
+
+        let mut s = session();
+        type_keys(&mut s, "3");
+        type_syllable(&mut s, "ㄍㄜˋ");
+        assert_eq!(s.snapshot().preedit, "3個");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "3個");
+
+        let mut s = session();
+        type_keys(&mut s, "3");
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(s.snapshot().preedit, "");
+
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        type_keys(&mut s, "3");
+        s.press(Key::char('\\', false));
+        let snap = s.press(Key::new(KeyCode::Space, None, false));
+        assert!(
+            !snap.preedit.contains('ˇ'),
+            "中間隔了別的操作，空白不換聲調符號：{}",
+            snap.preedit
+        );
+
+        for run in ["34", "67", "3467", "33"] {
+            let mut s = session();
+            type_keys(&mut s, run);
+            let snap = s.press(Key::new(KeyCode::Space, None, false));
+            assert_eq!(snap.preedit, format!("{run} "));
+            s.press(Key::new(KeyCode::Enter, None, false));
+            assert_eq!(s.commit(), format!("{run} "));
+        }
+    }
+
+    #[test]
+    fn test_tone_mark_keys() {
+        assert!(!tone_mark_keys(true, true));
+        assert!(tone_mark_keys(true, false));
+        assert!(tone_mark_keys(false, true));
+        assert!(tone_mark_keys(false, false));
+    }
+
+    /// 對照 `untonedSeparator`：組字中按 ' 只切音節。
+    #[test]
+    fn test_toneless_separator_splits_syllables() {
+        let mut s = toneless_session();
+        type_keys(&mut s, "vu");
+        s.press(Key::char('\'', false));
+        type_keys(&mut s, "0");
+        s.press(Key::new(KeyCode::Space, None, false));
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "西安");
+
+        let mut s = toneless_session();
+        type_keys(&mut s, "vu0");
+        s.press(Key::new(KeyCode::Space, None, false));
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "仙", "沒有分隔鍵時 ㄒㄧ＋ㄢ 是一個音節");
+    }
+
+    /// 對照 `untonedBreak`：接不上的注音先完成目前的音節。
+    #[test]
+    fn test_toneless_break_starts_new_syllable() {
+        let mut s = toneless_session();
+        type_keys(&mut s, "su");
+        type_keys(&mut s, "cl");
+        assert_eq!(s.snapshot().preedit, "你ㄏㄠ");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "你好");
+    }
+
+    /// 對照 `phoneticWindow` 的明確候選：尾端差一個符號的完整詞。
+    #[test]
+    fn test_phonetic_candidates_find_one_symbol_apart_word() {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.max_candidates = 10;
+        let mut s = Session::new(config);
+        type_syllable(&mut s, "ㄇㄚˊ");
+        type_syllable(&mut s, "ㄆㄛˊ");
+        type_syllable(&mut s, "ㄉㄡˋ");
+        type_syllable(&mut s, "ㄅㄨˇ");
+        let surfaces: Vec<&str> = s
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        assert!(
+            surfaces.contains(&"麻婆豆腐"),
+            "差一個聲母的完整詞應列為候選：{surfaces:?}"
+        );
+    }
+
+    #[test]
+    fn test_one_symbol_apart() {
+        let syl = Syllable::from_raw;
+        assert!(one_symbol_apart(&syl("ㄓ"), &syl("ㄗ")));
+        assert!(one_symbol_apart(&syl("ㄓㄨ"), &syl("ㄗㄨ")));
+        assert!(one_symbol_apart(&syl("ㄗ"), &syl("ㄗㄨ")));
+        assert!(!one_symbol_apart(&syl("ㄓ"), &syl("ㄓ")));
+        assert!(!one_symbol_apart(&syl("ㄓ"), &syl("ㄗˇ")));
+        assert!(!one_symbol_apart(&syl("ㄓ"), &syl("ㄗㄨㄚ")));
+    }
+}

@@ -16,6 +16,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 mod core;
+mod segments;
+
+pub use segments::tone_mark_keys;
 
 use crate::candidate::{Candidate, CandidateSource};
 use crate::decode::{Decoder, Hypothesis, Locks};
@@ -208,6 +211,14 @@ pub struct Session {
     /// 候選視窗是否由 Tab／方向鍵開啟；數字鍵只在開啟時選字。
     pub(super) candidate_window: bool,
     pub(super) segments: Vec<Segment>,
+    /// 使用者指定的片段鎖定：音節起點 → 鎖定的詞。
+    ///
+    /// 只有 [`Session::lock_segment`] 會寫入；一般選字不走這條路。
+    pub(super) locks: Locks,
+    /// 手動編輯過的片段副本；下一次按鍵後由組字狀態重新推導。
+    pub(super) segment_manual: Option<Vec<Segment>>,
+    /// 剛按下的孤立聲調鍵；緊接的空白會把它換成聲調符號。
+    pub(super) pending_tone: Option<segments::PendingTone>,
     /// 已轉換的部分。
     pub(super) base: String,
     /// 已送出的文字尾巴；下一次轉換當左文用（前身 `lang.Context.Left`）。
@@ -294,6 +305,9 @@ impl Session {
             highlighted: 0,
             candidate_window: false,
             segments: Vec::new(),
+            locks: Locks::new(),
+            segment_manual: None,
+            pending_tone: None,
             base: String::new(),
             committed: String::new(),
             pending: String::new(),
@@ -348,33 +362,39 @@ impl Session {
     /// `Enter` 會把組字結果放進待提交區，下一次 [`Session::commit`] 取走；
     /// `Escape` 清空組字；左右方向鍵與 Tab 在候選間移動。
     pub fn press(&mut self, key: Key) -> Snapshot {
+        self.expire_segment_view();
         if key.ctrl {
+            self.pending_tone = None;
             self.press_ctrl(key);
         } else if !self.menu_key(&key) {
-            match key.code {
-                KeyCode::Enter => self.finish_composition(),
-                KeyCode::Escape => self.clear_composition(),
-                KeyCode::Delete if key.shift && self.candidate_window => {
-                    self.forget_candidate();
-                }
-                KeyCode::Backspace if key.shift && self.candidate_window => {
-                    self.forget_candidate();
-                }
-                KeyCode::Delete => self.clear_composition(),
-                KeyCode::Backspace => self.backspace(),
-                KeyCode::Space => self.space(),
-                KeyCode::Tab => {
-                    let accepted = self.config.mode == Mode::Mixed
-                        && self.config.english_autocomplete
-                        && self.ascii.accept_suggestion();
-                    if !accepted && !self.accept_suggestion() {
-                        self.move_highlight(1);
+            if !self.segments_press(&key) {
+                match key.code {
+                    KeyCode::Enter => self.finish_composition(),
+                    KeyCode::Escape => self.clear_composition(),
+                    KeyCode::Delete if key.shift && self.candidate_window => {
+                        self.forget_candidate();
                     }
+                    KeyCode::Backspace if key.shift && self.candidate_window => {
+                        self.forget_candidate();
+                    }
+                    KeyCode::Delete => self.clear_composition(),
+                    KeyCode::Backspace => self.backspace(),
+                    KeyCode::Space => self.space(),
+                    KeyCode::Tab => {
+                        let accepted = self.config.mode == Mode::Mixed
+                            && self.config.english_autocomplete
+                            && self.ascii.accept_suggestion();
+                        if !accepted && !self.accept_suggestion() {
+                            self.move_highlight(1);
+                        }
+                    }
+                    KeyCode::ArrowRight => self.navigate(1),
+                    KeyCode::ArrowLeft => self.navigate(-1),
+                    KeyCode::Char(ch) => self.press_char(ch),
                 }
-                KeyCode::ArrowRight => self.navigate(1),
-                KeyCode::ArrowLeft => self.navigate(-1),
-                KeyCode::Char(ch) => self.press_char(ch),
             }
+        } else {
+            self.pending_tone = None;
         }
         self.rebuild();
         self.snapshot()
@@ -545,7 +565,7 @@ impl Session {
         Snapshot {
             preedit: self.base_with_highlight(),
             cursor_utf16: self.cursor_utf16(),
-            segments: self.segments.clone(),
+            segments: self.segments(),
             candidates: self.candidates.clone(),
             highlighted: self.highlighted,
         }
