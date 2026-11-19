@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 jc-core = { path = "../jc-core" }
 jc-data = { path = "../jc-data" }
+jc-engine = { path = "../jc-engine" }
 jc-eval = { path = "../jc-eval" }
 # tokenizer 對照用；tokenizer 本身不需要 ONNX Runtime。
 jc-model = { path = "../jc-model" }
