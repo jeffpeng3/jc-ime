@@ -293,6 +293,7 @@ name = "jc-model"
 version = "0.1.0"
 dependencies = [
  "jc-testdata",
+ "log",
  "ort",
  "prost",
  "serde",

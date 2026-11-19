@@ -4,8 +4,6 @@
 //! 在 [`crate::punctuation_model`] 與 [`crate::punct_zh`]。規則照前身
 //! `internal/neural/native/punct_plan.go`。
 
-#![cfg_attr(not(feature = "onnx"), allow(dead_code))]
-
 /// 可插入的標點。
 pub(crate) const MARKS: &str = "，。？！、；";
 

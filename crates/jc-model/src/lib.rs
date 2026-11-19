@@ -1,10 +1,10 @@
 //! ONNX Runtime 接線（`ort` crate）。模型維持 ONNX，不進 git。
 //!
-//! 預設不啟用 `onnx` feature：建置時不拉入 `ort`、不下載也不連結
-//! ONNX Runtime，公開 API 也不會出現任何 `ort` 型別。引擎在模型缺席時
-//! 一律退回統計路徑。
+//! `ort` 是一般依賴，使用 `load-dynamic`：建置時不下載、不連結 ONNX
+//! Runtime。執行期由 [`ModelRuntime::probe`] 偵測；沒有動態庫時模型集合
+//! 全部 [`Availability::Unavailable`]，引擎退回統計路徑，不 panic。
 //!
-//! 啟用 `onnx` 後提供：
+//! 提供：
 //!
 //! - [`Reranker`]：日文候選重排，`score(left, candidate, right) -> Option<f32>`。
 //! - [`PunctuationModel`]：日文標點推論，載入模型後 `punctuate(text)` 直接
@@ -20,18 +20,13 @@ pub mod layout;
 pub mod manifest;
 pub mod punct;
 mod punct_plan;
+pub mod punct_zh;
+pub mod punctuation_model;
+pub mod rerank;
 pub mod role;
+pub mod runtime;
 pub mod spm;
 pub mod tokenizer;
-
-#[cfg(feature = "onnx")]
-pub mod punct_zh;
-#[cfg(feature = "onnx")]
-pub mod punctuation_model;
-#[cfg(feature = "onnx")]
-pub mod rerank;
-#[cfg(feature = "onnx")]
-pub mod runtime;
 
 pub use error::{ModelError, Result};
 pub use manifest::{
@@ -40,17 +35,12 @@ pub use manifest::{
     DEFAULT_TIMEOUT_MS, DEFAULT_VOCAB_FILE, SET_SCHEMA,
 };
 pub use punct::{punctuate, IdentityPunctuator, Punctuator};
-pub use role::Role;
-pub use tokenizer::{Strategy, Tokenizer};
-
-#[cfg(feature = "onnx")]
 pub use punct_zh::ZhPunctuationModel;
-#[cfg(feature = "onnx")]
 pub use punctuation_model::PunctuationModel;
-#[cfg(feature = "onnx")]
 pub use rerank::Reranker;
-#[cfg(feature = "onnx")]
-pub use runtime::init_runtime;
+pub use role::Role;
+pub use runtime::{init_runtime, ModelRuntime, RuntimeStatus};
+pub use tokenizer::{Strategy, Tokenizer};
 
 #[cfg(test)]
 mod tests {
@@ -74,15 +64,22 @@ mod tests {
         assert_eq!(Role::JaPunct.as_str(), "ja-punct");
     }
 
-    /// 預設 feature 下公開 API 只由本地型別組成；`Reranker` 等 ort 接線
-    /// 必須完全不存在。這個測試在開啟 `onnx` 時改驗證型別可用。
     #[test]
-    fn public_types_stay_feature_gated() {
+    fn public_types_are_send() {
         fn assert_send<T: Send>() {}
         assert_send::<ModelSet>();
         assert_send::<Tokenizer>();
         assert_send::<Availability>();
-        #[cfg(feature = "onnx")]
-        assert_send::<Reranker>();
+        assert_send::<ModelRuntime>();
+    }
+
+    /// 沒有 ONNX Runtime 的環境也要能探測，只回報原因而不 panic。
+    #[test]
+    fn probe_never_panics_and_explains_failure() {
+        let runtime = ModelRuntime::probe();
+        match runtime.status() {
+            RuntimeStatus::Available => assert!(runtime.reason().is_none()),
+            RuntimeStatus::Unavailable { reason } => assert!(!reason.is_empty()),
+        }
     }
 }

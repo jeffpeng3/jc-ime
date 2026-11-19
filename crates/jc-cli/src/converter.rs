@@ -325,17 +325,12 @@ pub fn convert(
         user_data,
     } = options;
     let punct_testdata = testdata.clone();
-    #[cfg(feature = "onnx")]
     if select_model {
-        data::install_select_model(testdata.as_deref())?;
+        if let Err(err) = data::install_select_model(testdata.as_deref()) {
+            eprintln!("警告：--select-model on 無法載入選字模型，維持統計排序：{err}");
+        }
     } else {
         data::disable_select_model();
-    }
-    #[cfg(not(feature = "onnx"))]
-    if select_model {
-        return Err(CliError::eval(
-            "這個建置沒有啟用 onnx feature，不能使用 --select-model on".to_string(),
-        ));
     }
     let (candidates, lm_stats) = if is_zhuyin(reading) {
         let mut resources = match &data_dir {
@@ -472,7 +467,6 @@ pub fn convert(
 }
 
 /// 印出選字模型的推論延遲。
-#[cfg(feature = "onnx")]
 fn write_select_stats(out: &mut dyn Write) -> Result<(), CliError> {
     let Some(stats) = data::select_model_stats() else {
         writeln!(out, "select-model：沒有推論")?;
@@ -483,11 +477,6 @@ fn write_select_stats(out: &mut dyn Write) -> Result<(), CliError> {
         "select-model：推論 {} 次，p50 {:.2} ms，p95 {:.2} ms",
         stats.calls, stats.p50_ms, stats.p95_ms
     )?;
-    Ok(())
-}
-
-#[cfg(not(feature = "onnx"))]
-fn write_select_stats(_out: &mut dyn Write) -> Result<(), CliError> {
     Ok(())
 }
 

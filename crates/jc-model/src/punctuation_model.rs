@@ -1,4 +1,4 @@
-//! 日文標點模型（需要 `onnx` feature）。
+//! 日文標點模型。
 //!
 //! 模型輸入是 `input_ids`／`attention_mask`，輸出每個 token 4 個標籤的
 //! `logits`：`none`、`comma`、`period`、`question`。推論以 sliding window

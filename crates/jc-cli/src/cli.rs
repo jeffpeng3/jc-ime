@@ -651,8 +651,8 @@ pub fn usage() -> String {
          --data 指向注音二進位資料包（lexicon.bin、lm.bin、manifest.json）；\n\
          指定時注音走真實詞庫並自動載入同目錄的 lm.bin。\n\
          --lm 覆寫 bigram 語言模型；--mu 是 bigram 與 unigram 的內插權重（預設 0.7）。\n\
-         --select-model on 需要 --features onnx；預設 off。\n\
-         --punct on 需要 --features onnx；預設 off，未開啟時輸出與原本逐字相同。\n",
+         --select-model on 需要 zh-select 模型與 ONNX Runtime；預設 off。\n\
+         --punct on 需要標點模型與 ONNX Runtime；預設 off，沒有模型時輸出與原本逐字相同。\n",
         env!("CARGO_PKG_VERSION")
     )
 }

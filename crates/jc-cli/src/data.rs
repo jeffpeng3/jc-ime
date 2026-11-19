@@ -410,11 +410,10 @@ pub fn ja_models_dir(root: &Path) -> PathBuf {
     root.join("models")
 }
 
-/// 載入日文 reranker（需要 `onnx` feature）。
+/// 載入日文 reranker。
 ///
-/// 由模型集合的 `manifest.json` 找 `ja-rerank`；模型缺席回傳帶路徑的
-/// 錯誤，呼叫端決定要中止或退回統計排序。
-#[cfg(feature = "onnx")]
+/// 由模型集合的 `manifest.json` 找 `ja-rerank`；模型缺席或 ONNX Runtime
+/// 不可用時回傳帶路徑的錯誤，呼叫端應警告並退回統計排序。
 pub fn load_ja_reranker(root: &Path) -> Result<Arc<jc_core::ja::rerank::NeuralReranker>, CliError> {
     let models = ja_models_dir(root);
     jc_core::ja::rerank::NeuralReranker::load_from_models(&models)
@@ -499,7 +498,6 @@ pub fn models_root(testdata: Option<&Path>) -> PathBuf {
 ///
 /// 模型集合由 [`models_root`] 決定；只載入 `mode` 需要的語言。載入失敗時
 /// 回傳錯誤，呼叫端應警告並維持原文。
-#[cfg(feature = "onnx")]
 pub fn load_punctuator(
     testdata: Option<&Path>,
     mode: jc_core::Mode,
@@ -509,22 +507,10 @@ pub fn load_punctuator(
         .map_err(|err| CliError::data(format!("{}：{err}", root.display())))
 }
 
-/// 沒有 `onnx` feature 時不能載入標點模型。
-#[cfg(not(feature = "onnx"))]
-pub fn load_punctuator(
-    _testdata: Option<&Path>,
-    _mode: jc_core::Mode,
-) -> Result<jc_core::output::OnnxPunctuator, CliError> {
-    Err(CliError::data(
-        "這個建置沒有啟用 onnx feature，不能使用 --punct on",
-    ))
-}
-
 /// 載入並安裝注音選字模型。
 ///
 /// 模型目錄由 [`models_root`] 的集合 manifest 決定。載入失敗時回傳錯誤，
-/// 呼叫端不應默默退回統計排序。
-#[cfg(feature = "onnx")]
+/// 呼叫端應警告並維持統計排序。
 pub fn install_select_model(testdata: Option<&Path>) -> Result<(), CliError> {
     let root = models_root(testdata);
     let dir = jc_core::zh::select::resolve_model_dir(&root)
@@ -540,13 +526,11 @@ pub fn install_select_model(testdata: Option<&Path>) -> Result<(), CliError> {
 }
 
 /// 關閉注音選字模型。
-#[cfg(feature = "onnx")]
 pub fn disable_select_model() {
     jc_core::zh::select::clear();
 }
 
 /// 選字模型的推論延遲統計。
-#[cfg(feature = "onnx")]
 pub fn select_model_stats() -> Option<jc_core::zh::select::LatencyStats> {
     jc_core::zh::select::latency_stats()
 }

@@ -8,6 +8,5 @@ pub mod lexicon;
 pub mod live;
 pub mod lm;
 pub mod personal;
-#[cfg(feature = "onnx")]
 pub mod rerank;
 pub mod rewrite;
