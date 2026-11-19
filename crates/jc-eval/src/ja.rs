@@ -672,20 +672,27 @@ mod tests {
             path: PathBuf::from("fixture.json"),
         }];
         let converter = ByReading;
-        let first = run_ja(
+        let mut first = run_ja(
             &converter,
             &rules,
             &entries,
             EngineInfo::default(),
             &RunOptions::from_rules(&rules),
         );
-        let second = run_ja(
+        let mut second = run_ja(
             &converter,
             &rules,
             &entries,
             EngineInfo::default(),
             &RunOptions::from_rules(&rules),
         );
+        // latency 是牆鐘時間，不能拿來比；其餘指標必須完全一致。
+        for report in [&mut first.report, &mut second.report] {
+            for metrics in report.corpora.values_mut() {
+                metrics.latency_p50_ms = 0.0;
+                metrics.latency_p95_ms = 0.0;
+            }
+        }
         assert_eq!(first.report.corpora, second.report.corpora);
         assert_eq!(first.report.corpora["fixture"].top1_rate, 1.0);
         assert_eq!(first.report.corpora["fixture"].top5_rate, 1.0);

@@ -232,8 +232,8 @@ impl Tokenizer {
                     best = Some((end, id));
                 }
             }
-            // 最后一個字元也要試（上面的 skip(1) 不含字串結尾）。
-            if best.is_none() {
+            // 上面的迴圈只走到最後一個字元前，字串結尾要另外試。
+            if norm.len() - pos <= self.max_piece_bytes {
                 if let Some(&id) = self.ids.get(&norm[pos..]) {
                     best = Some((norm.len(), id));
                 }
@@ -373,15 +373,23 @@ mod tests {
     #[test]
     fn unknown_runes_use_byte_fallback() {
         let t = tokenizer();
-        // 「あ」不在詞表，U+3042 = E3 81 82。
-        assert_eq!(t.encode("あ"), vec![0xE3, 0x81, 0x82]);
+        // 「あ」不在詞表，U+3042 = E3 81 82；前面仍會有正規化的 ▁。
+        assert_eq!(
+            t.encode("あ"),
+            vec![
+                id_of(&t, "▁"),
+                id_of(&t, "<0xE3>"),
+                id_of(&t, "<0x81>"),
+                id_of(&t, "<0x82>"),
+            ]
+        );
     }
 
     #[test]
     fn decode_roundtrips_pieces_and_byte_fallback() {
         let t = tokenizer();
-        assert_eq!(t.decode(&t.encode("東京都")), "▁東京都");
-        assert_eq!(t.decode(&t.encode("あ")), "あ");
+        assert_eq!(t.decode(&t.encode("東京都")), " 東京都");
+        assert_eq!(t.decode(&t.encode("あ")), " あ");
         assert_eq!(t.decode(&[t.pad_id()]), "");
     }
 

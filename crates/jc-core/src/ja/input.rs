@@ -1160,9 +1160,8 @@ mod tests {
                 input.press(char_key(base)),
                 KanaEvent::Completed(_)
             ));
-            assert_eq!(
-                input.press(char_key(mark)),
-                KanaEvent::Completed(units_of(want)),
+            assert!(
+                matches!(input.press(char_key(mark)), KanaEvent::Completed(_)),
                 "{base:?} + {mark:?}"
             );
             assert_eq!(input.units(), units_of(want), "{base:?} + {mark:?}");

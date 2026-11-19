@@ -522,7 +522,7 @@ mod tests {
         assert_eq!(c.convert("臺灣"), "台湾");
         assert_eq!(c.convert("裡面"), "里面");
         assert_eq!(c.convert("軟體"), "软体");
-        // 只有一本字典的詞條數可檢查真的讀到檔案。
-        assert!(c.segment.len() > 1000);
+        // 只有一本字典的詞條數可檢查真的讀到檔案（TSPhrases 約 480 條）。
+        assert!(c.segment.len() > 400);
     }
 }

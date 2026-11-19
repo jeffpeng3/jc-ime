@@ -357,8 +357,9 @@ mod tests {
     fn test_nan_rejected() {
         let mut data = encode(&[("x", 1.0)], &[]);
         let nan = f64::NAN.to_bits();
-        let start = data.len() - 8;
-        data[start..].copy_from_slice(&nan.to_le_bytes());
+        // 最後一個位元組是 bigram 數量（0），成本欄位在它前面。
+        let start = data.len() - 9;
+        data[start..start + 8].copy_from_slice(&nan.to_le_bytes());
         assert!(matches!(
             LanguageModel::decode(&data),
             Err(LmError::BadCost(_))

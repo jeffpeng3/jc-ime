@@ -31,8 +31,10 @@ fn real_lexicon_answers_exact_and_prefix() {
     assert!(!lexicon.has_prefix("ㄅㄨˋ ㄨㄛˇ"));
 
     let wo = lexicon.lookup("我");
-    assert_eq!(wo.len(), 1);
-    assert_eq!(lexicon.reading(wo[0].index), "ㄨㄛˇ");
+    assert_eq!(wo.len(), 2, "我 有 ㄨㄛˇ 與 ㄜˇ 兩個讀音");
+    assert!(wo
+        .iter()
+        .any(|entry| lexicon.reading(entry.index) == "ㄨㄛˇ"));
 }
 
 #[test]

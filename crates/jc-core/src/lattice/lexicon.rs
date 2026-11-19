@@ -98,7 +98,8 @@ fn is_unit_prefix(prefix: &str, full: &str) -> bool {
         return true;
     }
     match full.strip_prefix(prefix) {
-        Some(rest) => rest.starts_with(' '),
+        // 完全相等也是合法前綴。
+        Some(rest) => rest.is_empty() || rest.starts_with(' '),
         None => false,
     }
 }

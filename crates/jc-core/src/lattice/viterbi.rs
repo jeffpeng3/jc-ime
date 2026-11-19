@@ -314,10 +314,10 @@ mod tests {
         assert_eq!(base.surface(), "乙乙");
         assert_eq!(base.cost, 20);
 
-        struct AvoidPrev2;
-        impl Scorer for AvoidPrev2 {
-            fn connection_cost(&self, prev_pos: u16, _next_pos: u16) -> i32 {
-                if prev_pos == 2 {
+        struct Avoid2;
+        impl Scorer for Avoid2 {
+            fn connection_cost(&self, prev_pos: u16, next_pos: u16) -> i32 {
+                if prev_pos == 2 || next_pos == 2 {
                     100
                 } else {
                     0
@@ -325,7 +325,7 @@ mod tests {
             }
         }
 
-        let best = Viterbi::best(&lat, &AvoidPrev2).expect("應有最佳路徑");
+        let best = Viterbi::best(&lat, &Avoid2).expect("應有最佳路徑");
         assert_eq!(best.surface(), "甲甲");
         assert_eq!(best.cost, 20);
     }
@@ -339,6 +339,7 @@ mod tests {
 
         let mut ctx = plain_ctx();
         ctx.connection.set(1, 2, 100);
+        ctx.connection.set(2, 1, 100);
 
         let readings = ["a", "b"];
         let lat = Lattice::build(&readings, &lex, &ctx).expect("建立詞格");

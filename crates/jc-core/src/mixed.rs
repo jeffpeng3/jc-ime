@@ -3587,9 +3587,9 @@ mod tests {
         assert_eq!(&input[segs[2].start..segs[2].end], "desu");
         assert_eq!(segs[2].mode, Mode::Ja);
 
-        // 位元組位移：注音每個符號 3 bytes，接在 9 bytes 後面。
+        // 位元組位移：注音接在 9 bytes 後面，聲調符號是 2 bytes。
         assert_eq!(segs[1].start, 9);
-        assert_eq!(segs[1].end, 9 + 6 * 3);
+        assert_eq!(segs[1].end, 9 + "ㄉㄚˋㄐㄧ".len());
         assert_eq!(segs[2].start, segs[1].end);
     }
 
@@ -3720,7 +3720,17 @@ mod tests {
         let doc: serde_json::Value = serde_json::from_str(&text).expect("解析 golden");
         let cases = doc["cases"].as_array().expect("cases");
         assert!(!cases.is_empty());
-        let router = Router::new();
+        // golden 的英文句子來自完整詞表；測試只需要能認得這些詞。
+        let dict = Dictionary::new(
+            ["is", "a", "good", "sentence", "kubectl", "pcloud", "github"]
+                .iter()
+                .map(|word| Word::new(*word, 1.0e9)),
+        );
+        let english = English::new(Some(dict));
+        let router = Router::new().with_english(&english).with_config(Config {
+            min_english_len: 1,
+            ..Config::default()
+        });
         for case in cases {
             let name = case["name"].as_str().unwrap_or("?");
             let input = case["input"].as_str().unwrap_or("");
