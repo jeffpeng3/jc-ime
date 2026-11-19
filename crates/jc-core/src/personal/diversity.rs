@@ -23,7 +23,7 @@ const SCALE: f64 = 1e9;
 
 impl Model {
     fn diversity_units(&self, value: f64) -> i64 {
-        if !(value > 0.0) {
+        if value <= 0.0 || value.is_nan() {
             return 0;
         }
         (self.params.w_passive.min(value) * SCALE).round() as i64
@@ -82,18 +82,6 @@ impl Model {
         self.diversity.bi = self.store.bi.len();
         self.diversity.total = self.store.total;
     }
-
-    /// 重新建立多樣性索引。
-    pub(super) fn refresh_diversity(&mut self) {
-        let by_left = self.rebuild_diversity();
-        self.diversity = DiversityIndex {
-            store: Some(&self.store as *const Store),
-            bi: self.store.bi.len(),
-            total: self.store.total,
-            unit: self.params.w_passive,
-            by_left: Some(by_left),
-        };
-    }
 }
 
 #[cfg(test)]
@@ -118,7 +106,6 @@ mod tests {
     #[test]
     fn diversity_increments_with_observations() {
         let mut m = model();
-        m.refresh_diversity();
         m.observe("前", "甲", 0.25);
         m.change_bi("前", 0.0, 0.25);
         assert!((m.diversity("前") - 0.25).abs() < 1e-9);

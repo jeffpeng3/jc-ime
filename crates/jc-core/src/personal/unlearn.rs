@@ -448,7 +448,6 @@ impl PairOwned for (&str, &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::personal::{Model, NoLexicon, NoLm};
 
     #[test]

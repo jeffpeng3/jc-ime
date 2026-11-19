@@ -106,3 +106,12 @@ cargo run -p jc-cli --release -- eval zh-golden
 | `learning-forget-request` | `forget` 請求呼叫 `Session::forget_word`，撤銷 `picked` 與證據，排序回到「景」 |
 | `undo-learned-word` | 候選窗 `Shift+Delete` 走 `forget_candidate`，忘記學到的詞並留 tombstone |
 | `undo-custom-word` | golden seed 的自訂詞加入 `Store::vocab`，`Shift+Backspace` 走 `VocabRemove` |
+
+## Clippy 清理（第二輪）
+
+- `personal/mod.rs`：刪掉未使用的自由函式 `now()`；`Model::now()` 已由 `now_source` 走實際路徑。刪掉 `Model::undo` 欄位，本版 `Undoable` 以整份 `Store` 快照實作，不需要上游的 `recording()` 錄製欄位。
+- `personal/diversity.rs`：刪掉自建的 `refresh_diversity()`；索引重建仍由 `diversity()` 的失效檢查走實際路徑。`diversity_units` 的比較改成 `value <= 0.0 || value.is_nan()`。
+- `personal/english.rs`：`EnglishIndex` 的 `gen`／`store`／`base`／`index` 接進 `english_corrections`，用版本與詞典位址判斷快取失效；`clean_english` 去掉多餘的 `let`。
+- `personal/prune.rs`：刪掉本版自行加入、上游沒有的 `decay_since`、`pair_key`。
+- `rank_hypotheses`／`rank_candidates` 改成 `&mut [_]`。
+- 上游 `personal.go` 的 `Model.undo` 有呼叫端（`recording()`），但本版改用快照式 `Undoable`，因此不再需要；原因是實作策略不同，不是漏接。

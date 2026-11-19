@@ -270,7 +270,7 @@ fn test_english_independent_confirmations_daily_cap_and_decay() {
         suspicious: false,
     };
     for _ in 0..4 {
-        m.learn_english(&[event.clone()]);
+        m.learn_english(std::slice::from_ref(&event));
     }
     assert!(!m.english_known("OpenCode"));
     m.store.time += jc_core::personal::DAY_SECONDS;
@@ -288,7 +288,7 @@ fn test_english_likely_typo_needs_more_independent_days() {
         suspicious: true,
     };
     for _ in 0..8 {
-        m.learn_english(&[event.clone()]);
+        m.learn_english(std::slice::from_ref(&event));
         m.store.time += jc_core::personal::DAY_SECONDS;
     }
     assert!(m.english_known("OpenCode"));
@@ -312,7 +312,7 @@ fn test_english_assistance_forget_and_identifier_protection() {
 #[test]
 fn test_english_no_suggest_cannot_be_bypassed_by_personalization() {
     let base = NoEnglish;
-    let m = model();
+    let mut m = model();
     assert!(m.english_corrections(&base, "OpenCod", 5).is_empty());
 }
 
@@ -867,7 +867,7 @@ fn test_correction_override_shadows_stored_even_when_tombstoned() {
     m.learn(&commit("ㄕˋ ㄐㄧㄝˊ", vec![seg("世傑", 0, 2, true)]));
     m.store.tombstones.insert("世傑".to_string());
     let penalty = m.correction_penalty(&syls("ㄕˋ ㄐㄧㄝˊ"), &[]);
-    assert!(penalty.map_or(true, |p| p(0, 2, "是結") == 0.0));
+    assert!(penalty.is_none_or(|p| p(0, 2, "是結") == 0.0));
 }
 
 #[test]
