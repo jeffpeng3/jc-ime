@@ -4,6 +4,7 @@
 //! 實際格式在 M1／M2 依注音詞典與 Mozc 詞典的需求定義。
 
 pub mod ja;
+pub mod zh;
 
 /// 資料集種類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

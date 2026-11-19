@@ -69,6 +69,8 @@ pub enum Command {
         reading: String,
         /// `0c-testdata` 目錄。
         testdata: Option<PathBuf>,
+        /// 注音二進位資料包目錄（`lexicon.bin`、`lm.bin`、`manifest.json`）。
+        data: Option<PathBuf>,
         /// 取幾個候選。
         n: usize,
         /// 輸出 JSON。
@@ -80,6 +82,8 @@ pub enum Command {
         file: PathBuf,
         /// `0c-testdata` 目錄。
         testdata: Option<PathBuf>,
+        /// 注音二進位資料包目錄；指定時只跑注音資料包。
+        data: Option<PathBuf>,
         /// 每行重複次數。
         repeat: usize,
         /// 輸出 JSON。
@@ -153,6 +157,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
 fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     let mut reading = None;
     let mut testdata = None;
+    let mut data = None;
     let mut n = 5usize;
     let mut json = false;
     let mut index = 0;
@@ -161,6 +166,10 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
             "--testdata" => {
                 index += 1;
                 testdata = Some(PathBuf::from(value(args, index, "--testdata")?));
+            }
+            "--data" => {
+                index += 1;
+                data = Some(PathBuf::from(value(args, index, "--data")?));
             }
             "--n" => {
                 index += 1;
@@ -188,6 +197,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     Ok(Command::Convert {
         reading,
         testdata,
+        data,
         n,
         json,
     })
@@ -196,6 +206,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
 fn parse_bench(args: &[String]) -> Result<Command, CliError> {
     let mut file = None;
     let mut testdata = None;
+    let mut data = None;
     let mut repeat = 20usize;
     let mut json = false;
     let mut index = 0;
@@ -204,6 +215,10 @@ fn parse_bench(args: &[String]) -> Result<Command, CliError> {
             "--testdata" => {
                 index += 1;
                 testdata = Some(PathBuf::from(value(args, index, "--testdata")?));
+            }
+            "--data" => {
+                index += 1;
+                data = Some(PathBuf::from(value(args, index, "--data")?));
             }
             "--repeat" => {
                 index += 1;
@@ -231,6 +246,7 @@ fn parse_bench(args: &[String]) -> Result<Command, CliError> {
     Ok(Command::Bench {
         file,
         testdata,
+        data,
         repeat,
         json,
     })
@@ -274,15 +290,17 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
         Command::Convert {
             reading,
             testdata,
+            data,
             n,
             json,
-        } => crate::converter::convert(testdata.clone(), reading, *n, *json, out),
+        } => crate::converter::convert(testdata.clone(), data.clone(), reading, *n, *json, out),
         Command::Bench {
             file,
             testdata,
+            data,
             repeat,
             json,
-        } => crate::bench::run(testdata.clone(), file, *repeat, *json, out),
+        } => crate::bench::run(testdata.clone(), data.clone(), file, *repeat, *json, out),
     }
 }
 
@@ -294,9 +312,11 @@ pub fn usage() -> String {
          jc-cli eval zh-golden --testdata <dir> [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] [--json]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
-         jc-cli convert <reading> [--testdata <dir>] [--n 5] [--json]\n  \
-         jc-cli bench <file> [--testdata <dir>] [--repeat 20] [--json]\n\n\
-         --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n",
+         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--n 5] [--json]\n  \
+         jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
+         --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
+         --data 指向注音二進位資料包（lexicon.bin、lm.bin、manifest.json）；\n\
+         指定時注音走真實詞庫，golden 評測不受影響。\n",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -368,6 +388,7 @@ mod tests {
             Command::Convert {
                 reading: "ㄨㄛˇ".to_string(),
                 testdata: None,
+                data: None,
                 n: 3,
                 json: false,
             }

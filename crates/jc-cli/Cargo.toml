@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 jc-core = { path = "../jc-core" }
+jc-data = { path = "../jc-data" }
 jc-eval = { path = "../jc-eval" }
 jc-testdata = { path = "../jc-testdata" }
 serde.workspace = true
