@@ -22,7 +22,7 @@
 | `m1-mixed` | `c669d5b` | `918088e` | 通過 | 2026-11-19 21:56 |
 | `ja-import` | `e404fa1` | `ff13578` | 通過 | 2026-11-19 22:00 |
 | `ja-context` | `4bc5df8` | `83c2974` | 通過 | 2026-11-19 22:11 |
-| `m2-cli-session` | `26de34b` | `0a4e6c5` | 通過 | 2026-11-19 22:27 |
+| `m2-cli-session` | `26de34b` | `8b44bc1` | 通過 | 2026-11-19 22:27 |
 
 ## 衝突與修正
 
@@ -88,6 +88,6 @@
   boundary exact 差 2.8 個百分點（71.4% vs 68.6%，本版較好），boundary F1 為 0.8600 對 0.863。
   負向對照：同支 bin 換 v1 pack，modern-500 top-1 為 0.0%，證明矩陣路徑確實生效。
 
-- `m2-cli-session`（合併 `0a4e6c5`）：無衝突。`jc-cli` 新增 `cli`、`converter`、`data`、`eval_cmd`、`bench`；
+- `m2-cli-session`（合併 `8b44bc1`）：無衝突。`jc-cli` 新增 `cli`、`converter`、`data`、`eval_cmd`、`bench`；
   `jc-core` 的 `session.rs`、`key.rs` 補工作階段 API；`jc-engine`、`jc-proto` 同步調整並更新測試檔；
   `Cargo.lock` 自動合併。沒有編譯錯誤要修，未改任何實作。
