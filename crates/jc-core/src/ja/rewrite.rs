@@ -16,6 +16,23 @@ use std::path::Path;
 
 use crate::candidate::{Candidate, CandidateSource};
 
+/// 助詞讀音的交替假設。
+///
+/// 日文的助詞「は」「へ」「を」在かな輸入時常被寫成同音的「わ」「え」「お」。
+/// 轉換器不改寫詞面，而是在建立 lattice 時對這些位置額外嘗試另一種讀音，
+/// 讓詞典與 Viterbi 決定要不要採用。
+///
+/// 回傳 `None` 表示這個字元沒有助詞交替。反過來說，`すなわち`、`いわば`
+/// 這類本來就以「わ」表記的詞，詞典會用原本的讀音取勝，不會被改寫。
+pub fn particle_reading_alternative(unit: char) -> Option<char> {
+    match unit {
+        'わ' => Some('は'),
+        'え' => Some('へ'),
+        'お' => Some('を'),
+        _ => None,
+    }
+}
+
 /// 把かな字串轉成平假名。
 ///
 /// 片假名、半角カナ與濁點／半濁點都會一併正規化；非かな字元原樣保留。
@@ -968,6 +985,16 @@ pub fn load_symbols_dir(dir: impl AsRef<Path>) -> Result<Symbols, SymbolsError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_particle_reading_alternative_table() {
+        for (unit, want) in [('わ', Some('は')), ('え', Some('へ')), ('お', Some('を'))] {
+            assert_eq!(particle_reading_alternative(unit), want, "{unit}");
+        }
+        for unit in ['あ', 'は', 'へ', 'を', 'ん', 'ー'] {
+            assert_eq!(particle_reading_alternative(unit), None, "{unit}");
+        }
+    }
 
     #[test]
     fn test_to_hiragana_table() {
