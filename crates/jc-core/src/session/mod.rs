@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 mod core;
 mod input_style;
+pub mod misc;
 mod segments;
 pub mod symbols;
 
@@ -118,6 +119,11 @@ pub struct SessionConfig {
     pub personal: PersonalStore,
     /// 個人化學習是否啟用；預設啟用，關閉時只讀不寫。
     pub learning: bool,
+    /// 文件層文脈是否可用；預設開啟。
+    ///
+    /// 目前只影響 [`Session::document_left`] 與 [`Session::committed_tail`]
+    /// 的查詢；解碼評分尚未混入文件前文。
+    pub document_context: bool,
     /// 輸入風格與鍵位；預設零規則，沿用既有鍵位。
     pub style: InputStyle,
 }
@@ -158,6 +164,7 @@ impl Default for SessionConfig {
             punct: None,
             personal: PersonalStore::new(),
             learning: true,
+            document_context: true,
             style: InputStyle::default(),
         }
     }
