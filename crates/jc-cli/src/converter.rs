@@ -300,6 +300,8 @@ pub struct ConvertOptions {
     pub punct: bool,
     /// 個人化學習資料目錄；未指定時不載入。
     pub user_data: Option<PathBuf>,
+    /// 指定轉換模式；目前只有 `en` 會走英文候選。
+    pub mode: Option<jc_core::Mode>,
 }
 
 /// `convert` 子命令：單句轉換並列出 N-best。
@@ -323,6 +325,7 @@ pub fn convert(
         select_model,
         punct,
         user_data,
+        mode,
     } = options;
     let punct_testdata = testdata.clone();
     if select_model {
@@ -332,7 +335,28 @@ pub fn convert(
     } else {
         data::disable_select_model();
     }
-    let (candidates, lm_stats) = if is_zhuyin(reading) {
+    let english = mode == Some(jc_core::Mode::En);
+    let (candidates, lm_stats) = if english {
+        // `convert --mode en` 只列原字與拼字建議；前綴補完屬互動路徑，
+        // 由 session 的候選清單負責。
+        let mut out = vec![Candidate::new(
+            reading.to_string(),
+            reading.to_string(),
+            0,
+            jc_core::candidate::CandidateSource::Literal,
+        )];
+        let mut seen = vec![reading.to_lowercase()];
+        for candidate in jc_core::mixed::default_english().spelling_candidates(reading, n - 1) {
+            let key = candidate.surface.to_lowercase();
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            out.push(candidate);
+        }
+        out.truncate(n);
+        (out, LmQueryStats::default())
+    } else if is_zhuyin(reading) {
         let mut resources = match &data_dir {
             Some(dir) => data::load_zh_bin_resources_with_lm(dir, lm.as_deref())?,
             None => {
@@ -372,12 +396,14 @@ pub fn convert(
             .collect();
         (candidates, LmQueryStats::default())
     };
-    let mode = if is_zhuyin(reading) {
+    let mode = if english {
+        jc_core::Mode::En
+    } else if is_zhuyin(reading) {
         jc_core::Mode::Zh
     } else {
         jc_core::Mode::Ja
     };
-    let punctuator = if punct {
+    let punctuator = if punct && !english {
         match data::load_punctuator(punct_testdata.as_deref(), mode) {
             Ok(model) => Some(model),
             Err(err) => {

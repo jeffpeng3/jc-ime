@@ -1415,6 +1415,50 @@ impl English {
         words.into_iter().map(|w| w.text).collect()
     }
 
+    /// 只回傳前綴補完，不含拼字建議；成本與 [`English::candidates`] 相同。
+    pub fn completion_candidates(&self, prefix: &str, limit: usize) -> Vec<Candidate> {
+        self.suggestions(prefix, limit)
+            .into_iter()
+            .map(|suggestion| {
+                let source = if suggestion.learned {
+                    CandidateSource::Personal
+                } else {
+                    CandidateSource::Lexicon
+                };
+                Candidate::new(
+                    suggestion.text.clone(),
+                    suggestion.text,
+                    cost_of_weight(suggestion.weight),
+                    source,
+                )
+            })
+            .collect()
+    }
+
+    /// 只回傳拼字建議，不含前綴補完。
+    ///
+    /// 打對的完整單字、不可推薦的詞與非英文字母都不會有建議；大小寫照查詢
+    /// 時的寫法。成本與 [`English::candidates`] 相同，多一層編輯距離懲罰。
+    pub fn spelling_candidates(&self, typed: &str, limit: usize) -> Vec<Candidate> {
+        if limit == 0 || self.dict.has(typed) {
+            return Vec::new();
+        }
+        self.dict
+            .corrections(typed, limit)
+            .into_iter()
+            .map(|correction| {
+                let cost = cost_of_weight(correction.weight)
+                    .saturating_add(CORRECTION_PENALTY.saturating_mul(correction.distance as i32));
+                Candidate::new(
+                    correction.text.clone(),
+                    correction.text,
+                    cost,
+                    CandidateSource::Lexicon,
+                )
+            })
+            .collect()
+    }
+
     /// 回傳以 `prefix` 開頭的英文詞，學習詞優先。
     pub fn suggestions(&self, prefix: &str, limit: usize) -> Vec<Suggestion> {
         if prefix.is_empty() || limit == 0 {
@@ -2776,6 +2820,18 @@ impl AsciiInput {
             }
         }
         dict.corrections(raw, 1).into_iter().next().map(|c| c.text)
+    }
+
+    /// 用候選字面取代待定按鍵；只接受英文詞。
+    ///
+    /// 混合模式選了前綴補完或拼字建議後，待定按鍵就是那個詞，送出與繼續
+    /// 輸入都照一般英文片段處理。
+    pub fn accept(&mut self, text: &str) -> bool {
+        if text.is_empty() || !ascii_letters(text) {
+            return false;
+        }
+        self.pending = text.to_string();
+        true
     }
 
     /// 接受英文補字建議。

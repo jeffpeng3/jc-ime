@@ -6,6 +6,8 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+use jc_core::Mode;
+
 /// 日文評測的左文來源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LeftMode {
@@ -120,6 +122,8 @@ pub enum Command {
         punct: bool,
         /// 個人化學習資料目錄；未指定時不載入。
         user_data: Option<PathBuf>,
+        /// 指定轉換模式；目前只有 `en` 會走英文候選。
+        mode: Option<Mode>,
     },
     /// 印出 SentencePiece unigram 與最長前綴匹配的切法對照。
     TokenizeJa {
@@ -339,6 +343,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     let mut select_model = false;
     let mut punct = false;
     let mut user_data = None;
+    let mut mode = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -377,6 +382,10 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
             }
             "--stats" => stats = true,
             "--json" => json = true,
+            "--mode" => {
+                index += 1;
+                mode = Some(parse_convert_mode(value(args, index, "--mode")?)?);
+            }
             "--user-data" => {
                 index += 1;
                 user_data = Some(PathBuf::from(value(args, index, "--user-data")?));
@@ -406,7 +415,18 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
         select_model,
         punct,
         user_data,
+        mode,
     })
+}
+
+/// 解析 `convert --mode`；目前只支援英文候選。
+fn parse_convert_mode(value: &str) -> Result<Mode, CliError> {
+    match value {
+        "en" => Ok(Mode::En),
+        other => Err(CliError::Usage(format!(
+            "convert --mode 只接受 en，收到 {other:?}"
+        ))),
+    }
 }
 
 /// 解析 `on`／`off` 開關。
@@ -592,6 +612,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             select_model,
             punct,
             user_data,
+            mode,
         } => crate::converter::convert(
             crate::converter::ConvertOptions {
                 testdata: testdata.clone(),
@@ -604,6 +625,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 select_model: *select_model,
                 punct: *punct,
                 user_data: user_data.clone(),
+                mode: *mode,
             },
             reading,
             out,
@@ -644,7 +666,7 @@ pub fn usage() -> String {
          [--rerank on|off] [--left off|rolling] [--json]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
-         jc-cli convert <reading> [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--punct on|off] [--user-data <dir>] [--json]\n  \
+         jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--punct on|off] [--user-data <dir>] [--json]\n  \
          jc-cli tokenize ja [--testdata <dir>] [--vocab <model>] [--text <字串>]... [--diff] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
@@ -759,6 +781,7 @@ mod tests {
                 select_model: false,
                 punct: false,
                 user_data: None,
+                mode: None,
             }
         );
     }
@@ -779,6 +802,7 @@ mod tests {
                 select_model: true,
                 punct: false,
                 user_data: None,
+                mode: None,
             }
         );
         assert_eq!(
@@ -823,6 +847,7 @@ mod tests {
                 select_model: false,
                 punct: false,
                 user_data: None,
+                mode: None,
             }
         );
         assert!(parse(&args(&["convert", "ㄚ", "--mu", "1.5"])).is_err());
