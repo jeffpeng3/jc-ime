@@ -460,6 +460,34 @@ impl Store {
         Ok(())
     }
 
+    /// 時間前進；排序計數每小時至多整批衰減一次。
+    ///
+    /// 回傳是否真的做了衰減；第一次設定時間與未滿一小時都回傳 `false`。
+    pub fn advance_time(&mut self, now: i64) -> bool {
+        let now = now / 3600 * 3600;
+        if !self.time_set {
+            self.time = now;
+            self.time_set = true;
+            return false;
+        }
+        if now - self.time < 3600 {
+            return false;
+        }
+        let factor = evidence::decay(1.0, now - self.time, 30 * DAY_SECONDS);
+        for value in self.bi.values_mut() {
+            *value *= factor;
+        }
+        for value in self.ctx.values_mut() {
+            *value *= factor;
+        }
+        for value in self.uni.values_mut() {
+            *value *= factor;
+        }
+        self.total *= factor;
+        self.time = now;
+        true
+    }
+
     /// 清理不合法欄位並補齊舊格式缺少的索引。
     pub fn cleaned(mut self) -> Self {
         self.emoji_recent = crate::emoji::clean_recent(&self.emoji_recent);
@@ -1169,27 +1197,8 @@ impl Model {
 
     /// 時間前進；排序計數每小時至多整批衰減一次。
     pub fn advance_time(&mut self, now: i64) {
-        let now = now / 3600 * 3600;
-        if !self.store.time_set {
-            self.store.time = now;
-            self.store.time_set = true;
-            return;
+        if self.store.advance_time(now) {
+            self.gen += 1;
         }
-        if now - self.store.time < 3600 {
-            return;
-        }
-        let factor = evidence::decay(1.0, now - self.store.time, 30 * DAY_SECONDS);
-        for value in self.store.bi.values_mut() {
-            *value *= factor;
-        }
-        for value in self.store.ctx.values_mut() {
-            *value *= factor;
-        }
-        for value in self.store.uni.values_mut() {
-            *value *= factor;
-        }
-        self.store.total *= factor;
-        self.store.time = now;
-        self.gen += 1;
     }
 }

@@ -626,11 +626,14 @@ fn apply_options(
         .punct
         .as_ref()
         .and_then(|punct| punct.mark.chars().next());
-    config.fuzzy_pairs = options
-        .fuzzy
-        .iter()
-        .filter_map(|(id, mode)| fuzzy_pair(id, mode))
-        .collect();
+    // 題庫沒有指定模糊音時沿用產品預設（四組全開）；有指定才整組覆寫。
+    if !options.fuzzy.is_empty() {
+        config.fuzzy_pairs = options
+            .fuzzy
+            .iter()
+            .filter_map(|(id, mode)| fuzzy_pair(id, mode))
+            .collect();
+    }
 }
 
 /// 把題庫的個人化種子套進 session 設定。

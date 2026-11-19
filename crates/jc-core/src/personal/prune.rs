@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{cut_pair, Model, UsageEvidence, DAY_SECONDS};
+use super::{cut_pair, Model, NoLexicon, NoLm, Store, UsageEvidence, DAY_SECONDS};
 
 /// 清理門檻。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -69,6 +69,20 @@ impl PruneStats {
             + self.confirmed
             + self.zhuyin_keys
             + self.phrase_seen
+    }
+}
+
+impl Store {
+    /// 只靠個人資料本身清理容量，不需要系統詞庫與語言模型。
+    ///
+    /// 內部以空系統模型跑 [`Model::prune_with`]：容量上限與證據老化照常
+    /// 生效；沒有 LM 先驗時 `share × prior` 幾乎是 0，不會主動淘汰低頻詞。
+    pub fn prune_capacity(&mut self, policy: PrunePolicy) -> PruneStats {
+        let mut model = Model::new(Box::new(NoLexicon), Box::new(NoLm));
+        model.store = std::mem::take(self);
+        let stats = model.prune_with(policy);
+        *self = std::mem::take(&mut model.store);
+        stats
     }
 }
 

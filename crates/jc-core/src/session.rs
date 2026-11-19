@@ -51,6 +51,21 @@ const TONELESS_COMBINATIONS: usize = 256;
 /// 模糊音最多展開幾種讀音組合。
 const FUZZY_COMBINATIONS: usize = 16;
 
+/// 預設開啟的模糊音配對：ㄗ／ㄓ、ㄘ／ㄔ、ㄙ／ㄕ、ㄣ／ㄥ。
+pub const DEFAULT_FUZZY_PAIRS: [(char, char); 4] =
+    [('ㄗ', 'ㄓ'), ('ㄘ', 'ㄔ'), ('ㄙ', 'ㄕ'), ('ㄣ', 'ㄥ')];
+
+/// 累積幾次學習事件後清理一次個人資料。
+const LEARN_PRUNE_INTERVAL: usize = 64;
+
+/// 目前 Unix 秒數；時鐘早於 epoch 時回傳 0。
+fn now_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// 左文保留的字元上限，對齊前身 `MaxLeftContextUnits`。
 const MAX_LEFT_CONTEXT_UNITS: usize = 128;
 
@@ -72,7 +87,8 @@ pub struct SessionConfig {
     pub zh_lm: Option<Arc<crate::score::ZhLm>>,
     /// 日文解碼器；`None` 時日文只做原樣輸出。
     pub ja: Option<Arc<JaDecoder>>,
-    /// 是否呼叫日文解碼器上的重排器；預設開啟，沒有重排器時無效果。
+    /// 是否呼叫日文解碼器上的重排器；預設關閉，實測 modern-500 由 86.0%
+    /// 退到 82.0%，因此不再預設啟用。
     pub ja_rerank: bool,
     /// 日文逐字変換設定；預設關閉，關閉時日文走一般変換流程。
     pub ja_live: live::Config,
@@ -80,7 +96,7 @@ pub struct SessionConfig {
     pub toneless: bool,
     /// Ctrl 標點：`Ctrl+,` 輸出全形逗號。
     pub ctrl_punct: bool,
-    /// 模糊音配對；每一項是兩個可互換的注音符號。
+    /// 模糊音配對；每一項是兩個可互換的注音符號。預設四組全開。
     pub fuzzy_pairs: Vec<(char, char)>,
     /// 神經重排的固定替身設定。
     pub rerank: Option<RerankOptions>,
@@ -94,8 +110,10 @@ pub struct SessionConfig {
     pub simplified: Option<Arc<crate::zhconv::Converter>>,
     /// 送出時呼叫的標點模型；`None` 時完全不補標點。
     pub punct: Option<SharedPunctuator>,
-    /// 個人化學習資料；預設為空，不影響排序。
+    /// 個人化學習資料；預設為空。搭配 [`SessionConfig::learning`] 生效。
     pub personal: PersonalStore,
+    /// 個人化學習是否啟用；預設啟用，關閉時只讀不寫。
+    pub learning: bool,
 }
 
 /// 固定替身重排設定。
@@ -121,11 +139,11 @@ impl Default for SessionConfig {
             zh_ctx: None,
             zh_lm: None,
             ja: None,
-            ja_rerank: true,
+            ja_rerank: false,
             ja_live: live::Config::default(),
             toneless: false,
             ctrl_punct: false,
-            fuzzy_pairs: Vec::new(),
+            fuzzy_pairs: DEFAULT_FUZZY_PAIRS.to_vec(),
             rerank: None,
             punct_mark: None,
             english_autocomplete: false,
@@ -133,6 +151,7 @@ impl Default for SessionConfig {
             simplified: None,
             punct: None,
             personal: PersonalStore::new(),
+            learning: true,
         }
     }
 }
@@ -224,6 +243,8 @@ pub struct Session {
     live: Option<LiveController>,
     /// 最近一次逐字変換的決定，供 debounce 到期後重畫。
     live_plan: Option<LivePlan>,
+    /// 上次清理個人資料後累積的學習事件數。
+    learn_events: usize,
 }
 
 impl Default for Session {
@@ -290,6 +311,7 @@ impl Session {
             emoji_stats: HashMap::new(),
             live,
             live_plan: None,
+            learn_events: 0,
         }
     }
 
@@ -668,6 +690,7 @@ impl Session {
             return true;
         }
         self.remember_text(&candidate.surface);
+        self.learn_candidate(index);
         let text = if self.menu.is_some() {
             self.compose_literal(&candidate.surface)
         } else {
@@ -685,6 +708,7 @@ impl Session {
             }
             _ if self.candidate_window && !self.candidates.is_empty() => {
                 self.remember_selection();
+                self.learn_composition();
                 let text = self.finalize(self.current_text());
                 self.pending_commit = Some(text);
                 self.clear_composition();
@@ -951,11 +975,23 @@ impl Session {
 
     /// 把這次送出的候選記進個人學習。
     fn learn_composition(&mut self) {
-        if self.config.mode != Mode::Zh || self.menu.is_some() {
+        let index = self.highlighted;
+        self.learn_candidate(index);
+    }
+
+    /// 把指定候選記進個人學習；數字鍵直接選取時用得到。
+    fn learn_candidate(&mut self, index: usize) {
+        if !self.config.learning || self.config.mode != Mode::Zh || self.menu.is_some() {
             return;
         }
+        self.learn_events += 1;
+        self.personal.advance_time(now_seconds());
+        if self.learn_events.is_multiple_of(LEARN_PRUNE_INTERVAL) {
+            self.personal
+                .prune_capacity(crate::personal::PrunePolicy::default());
+        }
         let manual = self.candidate_window;
-        let Some(candidate) = self.candidates.get(self.highlighted).cloned() else {
+        let Some(candidate) = self.candidates.get(index).cloned() else {
             return;
         };
         let units: Vec<&str> = candidate
@@ -1199,7 +1235,9 @@ impl Session {
         let literal = readings.join("");
         let (mut hypotheses, _) =
             decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
-        self.personal.rank_hypotheses(&mut hypotheses, &reading);
+        if self.config.learning {
+            self.personal.rank_hypotheses(&mut hypotheses, &reading);
+        }
         if let Some(options) = &self.config.rerank {
             Self::apply_rerank(&mut hypotheses, options);
         }
@@ -2045,6 +2083,55 @@ mod tests {
             .map(|candidate| candidate.surface.as_str())
             .collect();
         assert_eq!(surfaces, ["宗", "中", "ㄗㄨㄥ"]);
+    }
+
+    #[test]
+    fn test_learning_enabled_by_default_changes_first_candidate() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
+        lex.push(LexEntry::new("窩", "ㄨㄛˇ", 5, 0));
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lex);
+        let mut s = Session::new(config);
+        assert!(s.config.learning, "學習預設必須開啟");
+        type_syllable(&mut s, "ㄨㄛˇ");
+        assert_eq!(s.candidates()[0].surface, "我");
+        // 開候選窗，移到第二候選，用 Enter 送出手選。
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(s.highlighted_text(), Some("窩"));
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "窩");
+        // 同一讀音再打一次：手選過的字排第一。
+        type_syllable(&mut s, "ㄨㄛˇ");
+        assert_eq!(s.candidates()[0].surface, "窩");
+    }
+
+    #[test]
+    fn test_learning_disabled_keeps_statistical_order() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
+        lex.push(LexEntry::new("窩", "ㄨㄛˇ", 5, 0));
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lex);
+        config.learning = false;
+        let mut s = Session::new(config);
+        type_syllable(&mut s, "ㄨㄛˇ");
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "窩");
+        type_syllable(&mut s, "ㄨㄛˇ");
+        assert_eq!(s.candidates()[0].surface, "我");
+    }
+
+    #[test]
+    fn test_default_fuzzy_pairs_cover_four_groups() {
+        assert_eq!(SessionConfig::default().fuzzy_pairs, DEFAULT_FUZZY_PAIRS);
+        assert!(
+            !SessionConfig::default().ja_rerank,
+            "日文 reranker 預設關閉"
+        );
     }
 
     #[test]
