@@ -187,8 +187,8 @@ TSF DLL (Rust) ──named pipe──> 0c-server (Go) ──ONNX──> 模型
 | 主機 | `dgx`（`jeffDGX`），20 核、123 GB RAM |
 | Rust | 1.99.1 |
 | 網路 | GitHub、Hugging Face 可通 |
-| 專案路徑 | `~/jc-ime` |
-| 資料建議路徑 | `~/jc-ime-data/`（不進 git） |
+| 專案路徑 | `/mnt/work/jc/jc-ime` |
+| 資料建議路徑 | `/mnt/work/jc/jc-ime-data/`（不進 git） |
 
 ### 本機（Windows 測試）
 
@@ -200,7 +200,7 @@ TSF DLL (Rust) ──named pipe──> 0c-server (Go) ──ONNX──> 模型
 ## 11. 下一步（新 session 可直接接手）
 
 1. 在 DGX 執行 `cargo test --workspace` 確認骨架
-2. 下載 Mozc 詞典與模型到 `~/jc-ime-data/`，寫下雜湊
+2. 下載 Mozc 詞典與模型到 `/mnt/work/jc/jc-ime-data/`，寫下雜湊
 3. 從 `0c-ime` 複製題庫到 `crates/jc-eval/testdata/`（保留授權標頭）
 4. 實作 `jc-data` 的注音詞典讀取與 `jc-core` 的音節解析
 5. 讓注音 golden 的 45 個案例逐步通過
@@ -213,7 +213,7 @@ TSF DLL (Rust) ──named pipe──> 0c-server (Go) ──ONNX──> 模型
 | 項目 | 位置 |
 |---|---|
 | 前身 repo（本機） | `/home/fedora/0c-ime`（`github.com/jeffpeng3/0c-ime`，main `8f443af`） |
-| 前身 repo（DGX，參考實作） | `~/ref/0c-ime`，已 clone 到 `8f443af`，`CGO_ENABLED=0 go build ./...` 通過（Go 1.27.4 arm64） |
+| 前身 repo（DGX，參考實作） | `/mnt/work/jc/ref/0c-ime`，已 clone 到 `8f443af`，`CGO_ENABLED=0 go build ./...` 通過（Go 1.27.4 arm64） |
 | 訓練 repo（DGX） | `/mnt/work/0c`（`main` `9fde9ef`，與本專案不同） |
 | 計畫與紀錄 | `/home/fedora/.opencode/plan/0c-ja/phase2/` |
 | 前身安裝包（可用但無 Mozc） | `/mnt/e/freerun/0c-0.2.13-preview.1-windows-amd64-preview-setup.exe` |
