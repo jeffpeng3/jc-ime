@@ -301,6 +301,8 @@ pub struct ConvertOptions {
     pub select_model: bool,
     /// 送出時用標點模型補標點。
     pub punct: bool,
+    /// 標點推論後端；`None` 時照 `JC_PUNCT_BACKEND` 與預設 `ort`。
+    pub backend: Option<jc_model::Backend>,
     /// 個人化學習資料目錄；未指定時不載入。
     pub user_data: Option<PathBuf>,
     /// 指定轉換模式；目前只有 `en` 會走英文候選。
@@ -329,11 +331,17 @@ pub fn convert(
         json,
         select_model,
         punct,
+        backend,
         user_data,
         mode,
         pick,
     } = options;
     let punct_testdata = testdata.clone();
+    // 後端在載入任何模型前設定；沒有指定時讓 jc-model 讀
+    // `JC_PUNCT_BACKEND`，預設仍是 ort。
+    if let Some(backend) = backend {
+        jc_model::set_default_backend(backend);
+    }
     if select_model {
         if let Err(err) = data::install_select_model(testdata.as_deref()) {
             eprintln!("警告：--select-model on 無法載入選字模型，維持統計排序：{err}");

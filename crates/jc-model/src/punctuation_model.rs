@@ -4,6 +4,10 @@
 //! `logits`：`none`、`comma`、`period`、`question`。推論以 sliding window
 //! 前進，逐 token 取 argmax，再把 token 結尾映射回原字串的 rune 位移。
 //! 套用沿用 [`crate::punct::apply_japanese`]，只插入、不改寫原字。
+//!
+//! forward 有兩個後端：預設的 ONNX Runtime（`ort`）與 candle。後端由
+//! [`crate::candle::Backend`] 選定，`--backend` 在載入前設定；兩個後端吃
+//! 完全相同的 token id 與 attention mask。
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -11,6 +15,8 @@ use std::sync::Mutex;
 
 use ort::session::Session;
 
+use crate::candle::punct::CandlePunctuation;
+use crate::candle::{default_backend, weights_path, Backend, DEFAULT_WEIGHTS_FILE, WEIGHTS_ENV};
 use crate::error::{ModelError, Result};
 use crate::manifest::ModelSpec;
 use crate::punct_plan::{apply, argmax, is_punct, merge_window_rows, window_starts, Edit};
@@ -29,9 +35,17 @@ pub const MARKS: [&str; 4] = ["", "、", "。", "？"];
 
 /// 標點模型。
 pub struct PunctuationModel {
-    session: Mutex<Session>,
+    engine: Engine,
     tokenizer: Tokenizer,
     spec: ModelSpec,
+}
+
+/// 實際執行 forward 的後端。
+enum Engine {
+    /// ONNX Runtime session；`Session::run` 需要 `&mut`。
+    Ort(Mutex<Session>),
+    /// candle；forward 沒有內部可變狀態。
+    Candle(Mutex<CandlePunctuation>),
 }
 
 impl PunctuationModel {
@@ -41,23 +55,62 @@ impl PunctuationModel {
     }
 
     /// 以指定設定與 ORT 動態庫路徑載入。
+    ///
+    /// 使用 [`crate::candle::default_backend`] 選定的後端；預設是 ORT。
+    /// `ort_lib` 為 `None` 時使用 `ORT_DYLIB_PATH`。
     pub fn load_with_spec(
         dir: impl AsRef<Path>,
         spec: &ModelSpec,
         ort_lib: Option<&Path>,
     ) -> Result<Self> {
+        Self::load_with_backend(dir, spec, ort_lib, default_backend())
+    }
+
+    /// 以指定設定、後端與 ORT 動態庫路徑載入。
+    ///
+    /// candle 後端會依 [`crate::candle::weights_path`] 找 safetensors，不會
+    /// 初始化 ONNX Runtime。
+    pub fn load_with_backend(
+        dir: impl AsRef<Path>,
+        spec: &ModelSpec,
+        ort_lib: Option<&Path>,
+        backend: Backend,
+    ) -> Result<Self> {
         if spec.timeout().is_zero() {
             return Err(ModelError::Manifest("timeout 必須大於 0".into()));
         }
-        crate::runtime::init_runtime(ort_lib)?;
         let dir = dir.as_ref();
         let tokenizer = Tokenizer::load(dir.join(spec.vocab_file()))?;
-        let session = build_session(&dir.join(spec.model_file()), spec.threads())?;
+        let engine = match backend {
+            Backend::Ort => {
+                crate::runtime::init_runtime(ort_lib)?;
+                let session = build_session(&dir.join(spec.model_file()), spec.threads())?;
+                Engine::Ort(Mutex::new(session))
+            }
+            Backend::Candle => {
+                let weights = weights_path(dir, spec).ok_or_else(|| {
+                    ModelError::Inference(format!(
+                        "candle：找不到權重，預期 {} 或 ${} 指定的檔案",
+                        dir.join(DEFAULT_WEIGHTS_FILE).display(),
+                        WEIGHTS_ENV
+                    ))
+                })?;
+                Engine::Candle(Mutex::new(CandlePunctuation::load(&weights)?))
+            }
+        };
         Ok(Self {
-            session: Mutex::new(session),
+            engine,
             tokenizer,
             spec: spec.clone(),
         })
+    }
+
+    /// 實際使用的後端。
+    pub fn backend(&self) -> Backend {
+        match self.engine {
+            Engine::Ort(_) => Backend::Ort,
+            Engine::Candle(_) => Backend::Candle,
+        }
     }
 
     /// 模型角色。
@@ -87,15 +140,17 @@ impl PunctuationModel {
             return Some(text.to_string());
         }
         let starts = window_starts(tokens.len(), WINDOW, STRIDE);
-        let mut rows = Vec::with_capacity(starts.len());
+        let mut windows = Vec::with_capacity(starts.len());
         for &start in &starts {
             let end = (start + WINDOW).min(tokens.len());
-            let ids: Vec<i64> = tokens[start..end]
-                .iter()
-                .map(|span| i64::from(span.id))
-                .collect();
-            rows.push(self.run_window(ids)?);
+            windows.push(
+                tokens[start..end]
+                    .iter()
+                    .map(|span| i64::from(span.id))
+                    .collect::<Vec<i64>>(),
+            );
         }
+        let rows = self.run_windows(&windows)?;
         let merged = merge_window_rows(tokens.len(), WINDOW, &starts, &rows);
         let decisions: Vec<usize> = merged
             .iter()
@@ -109,36 +164,39 @@ impl PunctuationModel {
         Some(if ok { out } else { text.to_string() })
     }
 
-    /// 跑一個 token 視窗，回傳 `[token][class]` 的 logits。
-    fn run_window(&self, ids: Vec<i64>) -> Option<Vec<Vec<f32>>> {
-        let seq = ids.len();
-        if seq == 0 {
+    /// 跑一批 token 視窗，回傳每個視窗 `[token][class]` 的 logits。
+    ///
+    /// ORT 逐窗呼叫 `Run`；candle 的所有視窗合成一次 batch forward。candle
+    /// 的 forward 無法中途停止，逾時只在整批跑完後檢查，超過預算就整批
+    /// 視為失敗，呼叫端輸出原文。
+    fn run_windows(&self, windows: &[Vec<i64>]) -> Option<Vec<Vec<Vec<f32>>>> {
+        if windows.iter().all(Vec::is_empty) {
             return Some(Vec::new());
         }
-        let mask = vec![1i64; seq];
-        let mut session = self.session.lock().ok()?;
-        let data = run_timed(
-            &mut session,
-            ids,
-            mask,
-            1,
-            seq,
-            self.spec.timeout(),
-            "logits",
-        )
-        .ok()?;
-        if data.len() % seq != 0 {
-            return None;
+        match &self.engine {
+            Engine::Ort(session) => {
+                let mut session = session.lock().ok()?;
+                windows
+                    .iter()
+                    .map(|ids| run_ort_window(&mut session, ids, self.spec.timeout()))
+                    .collect()
+            }
+            Engine::Candle(model) => {
+                let started = std::time::Instant::now();
+                let model = model.lock().ok()?;
+                let rows = model.logits(windows).ok()?;
+                // ORT 每個視窗各有一次 timeout；candle 只能整批跑完再檢查，
+                // 因此預算取「視窗數 × 單窗預算」。
+                (started.elapsed() <= self.spec.timeout() * windows.len() as u32).then_some(rows)
+            }
         }
-        let classes = data.len() / seq;
-        if classes == 0 {
-            return None;
-        }
-        let mut rows = Vec::with_capacity(seq);
-        for i in 0..seq {
-            rows.push(data[i * classes..(i + 1) * classes].to_vec());
-        }
-        Some(rows)
+    }
+
+    /// 跑單一 token 序列，回傳 `[token][class]` 的 logits。
+    ///
+    /// 對照工具用：兩個後端吃相同的 id，才能逐值比對。
+    pub fn logits_for_ids(&self, ids: &[i64]) -> Option<Vec<Vec<f32>>> {
+        self.run_windows(std::slice::from_ref(&ids.to_vec()))?.pop()
     }
 
     /// 跑一次模型，回傳 `[seq][classes]` 的 logits；逾時或失敗回 `None`。
@@ -150,8 +208,34 @@ impl PunctuationModel {
             return Some(Vec::new());
         }
         ids.truncate(WINDOW);
-        self.run_window(ids)
+        self.logits_for_ids(&ids)
     }
+}
+
+/// 跑一個 ORT token 視窗，回傳 `[token][class]` 的 logits。
+fn run_ort_window(
+    session: &mut Session,
+    ids: &[i64],
+    timeout: std::time::Duration,
+) -> Option<Vec<Vec<f32>>> {
+    let seq = ids.len();
+    if seq == 0 {
+        return Some(Vec::new());
+    }
+    let mask = vec![1i64; seq];
+    let data = run_timed(session, ids.to_vec(), mask, 1, seq, timeout, "logits").ok()?;
+    if data.len() % seq != 0 {
+        return None;
+    }
+    let classes = data.len() / seq;
+    if classes == 0 {
+        return None;
+    }
+    let mut rows = Vec::with_capacity(seq);
+    for i in 0..seq {
+        rows.push(data[i * classes..(i + 1) * classes].to_vec());
+    }
+    Some(rows)
 }
 
 /// 把逐 token 的標籤決策映射回原文 rune 位移。

@@ -127,6 +127,9 @@ pub enum Command {
         select_model: bool,
         /// 送出時用標點模型補標點；預設關閉。
         punct: bool,
+        /// 標點推論後端：`ort` 或 `candle`；未指定時用 `JC_PUNCT_BACKEND`，
+        /// 預設 `ort`。
+        backend: Option<jc_model::Backend>,
         /// 個人化學習資料目錄；未指定時不載入。
         user_data: Option<PathBuf>,
         /// 指定轉換模式；目前只有 `en` 會走英文候選。
@@ -426,6 +429,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     let mut json = false;
     let mut select_model = true;
     let mut punct = false;
+    let mut backend = None;
     let mut user_data = None;
     let mut mode = None;
     let mut pick = None;
@@ -447,6 +451,11 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
             "--punct" => {
                 index += 1;
                 punct = switch(value(args, index, "--punct")?, "--punct")?;
+            }
+            "--backend" => {
+                index += 1;
+                let raw = value(args, index, "--backend")?;
+                backend = Some(raw.parse().map_err(CliError::Usage)?);
             }
             "--lm" => {
                 index += 1;
@@ -509,6 +518,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
         json,
         select_model,
         punct,
+        backend,
         user_data,
         mode,
         pick,
@@ -715,6 +725,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             json,
             select_model,
             punct,
+            backend,
             user_data,
             mode,
             pick,
@@ -729,6 +740,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 json: *json,
                 select_model: *select_model,
                 punct: *punct,
+                backend: *backend,
                 user_data: user_data.clone(),
                 mode: *mode,
                 pick: *pick,
@@ -773,7 +785,7 @@ pub fn usage() -> String {
          [--left off|rolling] [--json] [--items]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
-         jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--punct on|off] [--user-data <dir>] [--pick <n>] [--json]\n  \
+         jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--punct on|off] [--backend ort|candle] [--user-data <dir>] [--pick <n>] [--json]\n  \
          jc-cli tokenize ja [--testdata <dir>] [--vocab <model>] [--text <字串>]... [--diff] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
          --backend 選擇日文 reranker 的推論後端；預設 ort，candle 讀 model.safetensors。\n\
@@ -784,6 +796,7 @@ pub fn usage() -> String {
          --lm 覆寫 bigram 語言模型；--mu 是 bigram 與 unigram 的內插權重（預設 0.7）。\n\
          --select-model on 需要 zh-select 模型與 ONNX Runtime；預設 on，可用 off 關閉。\n\
          --punct on 需要標點模型與 ONNX Runtime；預設 off，沒有模型時輸出與原本逐字相同。\n\
+         --backend 選標點推論後端：ort（預設）或 candle（讀 model.safetensors，不需要 ONNX Runtime）。\n\
          --user-data 指定個人資料目錄；日文學習寫進同一個 personal.json，--pick 記下第幾個候選。\n",
         env!("CARGO_PKG_VERSION")
     )
@@ -996,6 +1009,7 @@ mod tests {
                 json: false,
                 select_model: true,
                 punct: false,
+                backend: None,
                 user_data: None,
                 mode: None,
                 pick: None,
@@ -1027,6 +1041,7 @@ mod tests {
                 json: false,
                 select_model: true,
                 punct: false,
+                backend: None,
                 user_data: Some(PathBuf::from("/tmp/opencode/ja-user")),
                 mode: None,
                 pick: Some(2),
@@ -1051,6 +1066,7 @@ mod tests {
                 json: false,
                 select_model: true,
                 punct: false,
+                backend: None,
                 user_data: None,
                 mode: None,
                 pick: None,
@@ -1069,6 +1085,19 @@ mod tests {
             }
         );
         assert!(parse(&args(&["convert", "ㄨㄛˇ", "--select-model", "auto"])).is_err());
+    }
+
+    #[test]
+    fn parses_convert_backend() {
+        let parsed = parse(&args(&["convert", "わたし", "--backend", "candle"])).unwrap();
+        match parsed {
+            Command::Convert { backend, punct, .. } => {
+                assert_eq!(backend, Some(jc_model::Backend::Candle));
+                assert!(!punct);
+            }
+            other => panic!("應解析成 convert，實際為 {other:?}"),
+        }
+        assert!(parse(&args(&["convert", "わたし", "--backend", "tensorrt"])).is_err());
     }
 
     #[test]
@@ -1097,6 +1126,7 @@ mod tests {
                 json: false,
                 select_model: true,
                 punct: false,
+                backend: None,
                 user_data: None,
                 mode: None,
                 pick: None,

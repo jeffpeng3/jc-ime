@@ -78,11 +78,16 @@ impl Reranker {
                 Engine::Ort(Mutex::new(session))
             }
             Backend::Candle => {
-                let weights = crate::candle::weights_path(dir, spec).ok_or_else(|| {
+                let weights = crate::candle::weights_path_with_env(
+                    dir,
+                    spec,
+                    crate::candle::RERANK_WEIGHTS_ENV,
+                )
+                .ok_or_else(|| {
                     ModelError::Candle(format!(
                         "找不到 candle 權重，預期 {} 或 ${} 指定的檔案",
                         dir.join(crate::candle::DEFAULT_WEIGHTS_FILE).display(),
-                        crate::candle::WEIGHTS_ENV
+                        crate::candle::RERANK_WEIGHTS_ENV
                     ))
                 })?;
                 Engine::Candle(Mutex::new(CandleReranker::load(&weights, spec)?))
