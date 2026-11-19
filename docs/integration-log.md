@@ -90,6 +90,7 @@
 | `jinen-integrate` | `34688d7` | `72985f6` | 通過（clippy＋全量 test） | 2026-11-20 05:38 |
 | `quant-study` | `cf0926e` | `8e27af0` | check 通過 | 2026-11-20 05:38 |
 | `candle-punct` | `9705bb5` | `f9b2e69` | 通過（clippy＋全量 test） | 2026-11-20 05:46 |
+| `jinen-gating` | `f71d5cc` | `e610808` | test 通過；clippy 2 個錯 | 2026-11-20 05:55 |
 
 ## 衝突與修正
 
@@ -797,3 +798,22 @@
   - 256 token（視窗上限）：candle 61.25 ms vs ORT fp32 17.51 ms，約 **3.5 倍**。
   - 13 token（IME 短句）：candle 7.3–10.2 倍慢（1.29–1.43 ms 對比 11.8–13.2 ms 的整段流程）。
   結論：candle 只適合 reranker 這類長序列，短序列標點不划算，**保留 `ort` 為預設**。
+
+- `jinen-gating`（合併 `e610808`，含 `f71d5cc`）：無衝突，新增 `crates/jc-cli/src/bin/jinen-gate.rs`（1332 行）與
+  `docs/port/jinen-gating.md`。
+
+  gate：`cargo test --workspace --no-fail-fast` **exit 0**（44 targets、958 passed、0 failed）；
+  `cargo clippy --workspace --all-targets -- -D warnings` **exit 101**，2 個錯都在 `jinen-gate.rs`，需回 jinen-gating：
+  - `jinen-gate.rs:413` `clippy::int_plus_one`：`overlap >= span * 2 + 1` 應改 `overlap > span * 2`。
+  - `jinen-gate.rs:672` `clippy::manual_is_multiple_of`：`hash % 2 == 0` 應改 `hash.is_multiple_of(2)`。
+
+  三組結果（統計 → Jinen → 混合，括號為 Jinen 呼叫率與混合 p50）：
+
+  | 題庫 | 統計 | Jinen | 混合 | Jinen 呼叫率 | 混合 p50 |
+  |---|---:|---:|---:|---:|---:|
+  | modern-500 | 86.0% | 81.4% | **90.4%** | 20.0% | 4.33 ms |
+  | hard-cases | 54.3% | 77.1% | **71.4%** | 34.3% | 3.04 ms |
+  | ajimee-200 | 46.0% | 68.0% | **64.0%** | 56.0% | 20.66 ms |
+
+  方法：門檻只用輸入側訊號，並只在每組題庫的 dev 半邊（題號 FNV-1a 雜湊 50/50 切分）挑選，holdout 半邊只回報、
+  不參與選擇；dev 上要求「驗收 + 4pp」安全邊際，取 Jinen 呼叫率最低的組合。
