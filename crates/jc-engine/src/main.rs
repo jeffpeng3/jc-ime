@@ -7,6 +7,9 @@
 //! jc-engine --data <dir> [--mode <zh|ja|mixed|en>] [--socket <path>] [--max-frame <bytes>]
 //! ```
 //!
+//! `--allow-empty-data` 跳過資料載入，只用空 session，供協定測試與除錯；
+//! 正式啟動仍要求 `--data` 或 `JC_DATA`。
+//!
 //! stdio 模式在所有平台都能跑；`--socket` 目前只有 unix 實作，其他平台
 //! 會回報 `named pipe 尚未實作`。
 
@@ -34,6 +37,8 @@ struct Options {
     max_frame: usize,
     data: Option<PathBuf>,
     input: Mode,
+    /// 跳過資料載入，只用空 session；僅供測試與協定除錯。
+    allow_empty_data: bool,
 }
 
 /// 命令列解析結果。
@@ -76,20 +81,25 @@ fn main() {
 
 fn run(options: Options) -> anyhow::Result<()> {
     log::debug!("啟動 {}（協定 {}）", engine_label(), PROTOCOL_VERSION);
-    let dir = resolve_data_dir(options.data)?;
-    log::debug!("資料根目錄：{}", dir.display());
-    let data =
-        load_engine_data(&dir).with_context(|| format!("載入資料失敗：{}", dir.display()))?;
-    log::info!(
-        "載入 {} 個注音詞條{}，日文解碼器就緒",
-        data.zh.lexicon.len(),
-        if data.zh.lm.as_ref().is_some_and(|lm| lm.bigrams() > 0) {
-            "（含 bigram）"
-        } else {
-            ""
-        }
-    );
-    let mut engine = Engine::with_data(&data, options.input);
+    let mut engine = if options.allow_empty_data {
+        log::info!("--allow-empty-data：不載入資料，使用空 session（僅測試用）");
+        Engine::new()
+    } else {
+        let dir = resolve_data_dir(options.data)?;
+        log::debug!("資料根目錄：{}", dir.display());
+        let data =
+            load_engine_data(&dir).with_context(|| format!("載入資料失敗：{}", dir.display()))?;
+        log::info!(
+            "載入 {} 個注音詞條{}，日文解碼器就緒",
+            data.zh.lexicon.len(),
+            if data.zh.lm.as_ref().is_some_and(|lm| lm.bigrams() > 0) {
+                "（含 bigram）"
+            } else {
+                ""
+            }
+        );
+        Engine::with_data(&data, options.input)
+    };
     match options.mode {
         Transport::Stdio => {
             let stdin = io::stdin();
@@ -169,6 +179,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut max_frame = DEFAULT_MAX_FRAME;
     let mut data: Option<PathBuf> = None;
     let mut input = Mode::Zh;
+    let mut allow_empty_data = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -184,6 +195,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 let value = value_of(args, &mut index, "--data")?;
                 data = Some(PathBuf::from(value));
             }
+            "--allow-empty-data" => allow_empty_data = true,
             "--mode" => {
                 let value = value_of(args, &mut index, "--mode")?;
                 input = parse_mode(&value)?;
@@ -211,6 +223,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         max_frame,
         data,
         input,
+        allow_empty_data,
     }))
 }
 
@@ -258,6 +271,7 @@ fn print_usage() {
          用法：\n  jc-engine --data <dir> [--mode <zh|ja|mixed|en>] [--socket <path>] [--max-frame <bytes>]\n\n\
          選項：\n\
          \x20 --data <dir>        資料根目錄；未指定時讀 JC_DATA\n\
+         \x20 --allow-empty-data  不載入資料，只用空 session（測試／除錯用）\n\
          \x20 --mode <mode>       輸入模式：zh（預設）、ja、mixed、en\n\
         {SOCKET_HELP}\
          \x20 --max-frame <bytes> 單一訊框上限，預設 {DEFAULT_MAX_FRAME}\n\
@@ -292,6 +306,15 @@ mod tests {
         assert_eq!(options.max_frame, 1 << 20);
         assert!(options.data.is_none(), "資料目錄由 JC_DATA 或 --data 決定");
         assert_eq!(options.input, Mode::Zh);
+        assert!(!options.allow_empty_data, "預設不可跳過資料載入");
+    }
+
+    #[test]
+    fn allow_empty_data_is_parsed() {
+        let Ok(Parsed::Run(options)) = parse(&["--allow-empty-data"]) else {
+            panic!("應該解析成功");
+        };
+        assert!(options.allow_empty_data);
     }
 
     #[test]

@@ -22,6 +22,7 @@ struct SocketEngine {
 impl SocketEngine {
     fn spawn(path: PathBuf) -> Self {
         let child = Command::new(env!("CARGO_BIN_EXE_jc-engine"))
+            .arg("--allow-empty-data")
             .arg("--socket")
             .arg(&path)
             .stdin(Stdio::null())

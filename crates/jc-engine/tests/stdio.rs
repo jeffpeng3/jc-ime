@@ -17,6 +17,7 @@ struct EngineProcess {
 impl EngineProcess {
     fn spawn() -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_jc-engine"))
+            .arg("--allow-empty-data")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

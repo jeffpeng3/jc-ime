@@ -33,10 +33,14 @@ Go 參考實作沒有獨立的「資料載入」套件；載入散在 server 啟
 5. 日文重排器：只記住 `<root>/models`（或 `JC_JA_MODELS`），第一次日文
    轉換才載入 ONNX。
 6. 日文 tokenizer：`<root>/models/ja-tokenizer/public_core_ja.model`。
-7. zh-select 與標點模型：只由 `jc-cli` 的明確旗標（`--select-model`、
-   `--punct`）觸發；引擎目前不自動啟用，避免未校準的模型改變排序。
+7. zh-select：模型集合有這個角色就立刻安裝，與 defaults-policy 的預設一致；
+   缺檔或 ONNX 不可用只警告一次，維持統計排序。
+8. 標點模型：只由 `jc-cli` 的明確旗標（`--punct`）觸發；引擎目前不自動
+   啟用，避免未校準的模型改變提交文字。
 
 `--data` 未指定時讀 `JC_DATA`；兩者都沒有就啟動失敗並印出用法。
+`--allow-empty-data` 跳過資料載入，只用空 session，供協定測試與除錯；
+生產啟動沒有這個旗標。
 
 ## 錯誤分級
 
@@ -47,7 +51,8 @@ Go 參考實作沒有獨立的「資料載入」套件；載入散在 server 啟
 | 日文 pack | 啟動失敗，訊息列出兩個候選路徑 | 沒有詞典就完全無法轉日文 |
 | `models/ja-tokenizer/*.model` | 警告一次，`EngineData::ja_tokenizer` 為 `None` | 引擎轉換不依賴它 |
 | reranker ONNX | 第一次使用時警告一次，退回統計排序 | 模型是加分項，不是必要資料 |
-| zh-select／punct ONNX | 不自動載入；由 CLI 旗標決定 | 預設行為要與統計排序一致 |
+| zh-select ONNX | 啟動時警告一次，維持統計排序 | 有模型就安裝；載入失敗不該擋住轉換 |
+| punct ONNX | 不自動載入；由 CLI 旗標決定 | 預設行為要與統計排序一致 |
 
 ## 共用載入的位置
 
