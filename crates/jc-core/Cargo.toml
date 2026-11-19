@@ -17,6 +17,7 @@ serde_json.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
 log.workspace = true
+crc32fast = "1"
 unicode-script = "0.5"
 unicode_categories = "0.1"
 jc-data = { path = "../jc-data" }

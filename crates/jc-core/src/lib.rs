@@ -9,10 +9,12 @@
 pub mod candidate;
 pub mod decode;
 pub mod emoji;
+pub mod inputstyle;
 pub mod ja;
 pub mod key;
 pub mod lang;
 pub mod lattice;
+pub mod lm;
 pub mod mixed;
 pub mod output;
 pub mod punct;
@@ -20,7 +22,9 @@ pub mod reading;
 pub mod score;
 pub mod segment;
 pub mod session;
+pub mod suggest;
 pub mod symbols;
+pub mod vocab;
 pub mod zh;
 pub mod zhconv;
 
