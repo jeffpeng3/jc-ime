@@ -10,6 +10,7 @@ members = [
     "crates/jc-eval",
     "crates/jc-engine",
     "crates/jc-cli",
+    "crates/jc-jadic",
 ]
 
 [workspace.package]
