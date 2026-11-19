@@ -9,3 +9,6 @@ rust-version.workspace = true
 thiserror.workspace = true
 unicode-script = "0.5"
 unicode_categories = "0.1"
+
+[dev-dependencies]
+jc-testdata = { path = "../jc-testdata" }
