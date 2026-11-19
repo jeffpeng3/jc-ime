@@ -634,15 +634,16 @@ mod tests {
 
     fn lexicon() -> InMemoryLexicon {
         let mut lex = InMemoryLexicon::new();
-        for (surface, reading) in [
-            ("我", "ㄨㄛˇ"),
-            ("想", "ㄒㄧㄤˇ"),
-            ("吃", "ㄔ"),
-            ("景", "ㄐㄧㄥˇ"),
-            ("井", "ㄐㄧㄥˇ"),
-            ("風", "ㄈㄥ"),
+        for (surface, reading, cost) in [
+            ("我", "ㄨㄛˇ", 0),
+            ("想", "ㄒㄧㄤˇ", 0),
+            ("吃", "ㄔ", 0),
+            ("景", "ㄐㄧㄥˇ", 0),
+            // 同音詞成本要高於「景」，否則解碼器會用字面順序挑到「井」。
+            ("井", "ㄐㄧㄥˇ", 10),
+            ("風", "ㄈㄥ", 0),
         ] {
-            lex.push(LexEntry::new(surface, reading, 0, 0));
+            lex.push(LexEntry::new(surface, reading, cost, 0));
         }
         lex
     }
@@ -730,7 +731,9 @@ mod tests {
         s.press(Key::new(KeyCode::Space, None, true));
         assert!(s.full_width(), "Shift＋空白切全形");
         s.set_mode(Mode::En);
-        for (key, want) in [('a', "ａ"), ('A', "Ａ"), ('1', "１")] {
+        // 本埠英文模式把待定輸入留在組字區，組字字串會逐鍵累加；上游是每鍵
+        // 立即送出，所以這裡不能沿用上游「預覽只等於本鍵」的斷言。
+        for (key, want) in [('a', "ａ"), ('A', "ａＡ"), ('1', "ａＡ１")] {
             let snap = s.press(Key::char(key, false));
             assert_eq!(snap.preedit, want, "{key:?}");
         }
