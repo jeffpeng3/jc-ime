@@ -56,6 +56,7 @@
 | `punct-wire`（修測試） | `d1ae090` | `d53703f` | 通過 | 2026-11-20 01:17 |
 | `ja-personal`（修排序） | `0a376e5` | `88c482d` | 通過 | 2026-11-20 01:18 |
 | `ja-live-rewrite`（修かな鎖定） | `7516c29` | `d83cf5b` | 通過（jc-core 全 crate test） | 2026-11-20 01:27 |
+| `personal-zh` | `8b43057` | `55f2067` | fmt／test／golden 通過；clippy 失敗 | 2026-11-20 01:29 |
 
 ## 衝突與修正
 
@@ -356,3 +357,31 @@
   かな文節（16 增、2 刪），解掉「きょ」只轉出かな、跨詞組不出「今日」的問題。
   `cargo test -p jc-core --lib` **418 passed、0 failed**（含上一輪失敗的 `test_ja_live_enabled_converts_without_enter`）；
   `cargo check --workspace --all-targets` exit 0。全量 gate 的三項至此都應為綠。
+
+- `personal-zh`（合併 `55f2067`）：`jc-cli/src/cli.rs`、`converter.rs`、`jc-core/src/session.rs` 有衝突，照兩邊意圖都保留解：
+  `Convert`／`ConvertOptions` 同時有 `punct` 與 `user_data`，`SessionConfig` 同時有 `punct` 與 `personal`，
+  usage 的 convert 行合併兩個旗標。新增 `crates/jc-core/src/personal/`（13 個模組）與 `tests/personal_port.rs`。
+
+  四個 gate：
+  | gate | 結果 |
+  |---|---|
+  | `cargo fmt --all -- --check` | exit 0（pass） |
+  | `cargo clippy --workspace --all-targets -- -D warnings` | **exit 101（fail）**，jc-core 12 個錯誤 |
+  | `cargo test --workspace --no-fail-fast` | exit 0（34 targets、766 passed、0 failed） |
+  | `cargo run -p jc-cli --release -- eval zh-golden` | exit 0，**通過 45/45**（top-1 100.0%） |
+
+  clippy 失敗清單（全部在 `crates/jc-core/src/personal/`，需回 personal-zh 修）：
+  - `english.rs:3` `unused_imports`：`BTreeMap`
+  - `preference.rs:7` `unused_imports`：`DAY_SECONDS`、`UsageEvidence`
+  - `unlearn.rs:451` `unused_imports`：`super::*`
+  - `mod.rs:642` `dead_code`：`now`
+  - `mod.rs:796` `dead_code`：欄位 `undo`
+  - `diversity.rs:87` `dead_code`：`refresh_diversity`
+  - `english.rs:111` `dead_code`：欄位 `gen`、`store`、`base`、`index`
+  - `prune.rs:325` `dead_code`：`decay_since`
+  - `prune.rs:330` `dead_code`：`pair_key`
+  - `diversity.rs:26` `neg_cmp_op_on_partial_ord`：`if !(value > 0.0)`
+  - `english.rs:165` `let_and_return`
+  - `mod.rs:622`、`mod.rs:627` `ptr_arg`：`&mut Vec<...>` 應改 `&mut [...]`
+
+  依指示保留合併、沒有 reset；build 本身正常（只有 warning）。
