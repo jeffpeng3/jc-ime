@@ -54,6 +54,7 @@
 | `punct-wire` | `b79183c` | `117e2b9` | check／fmt／clippy 通過；3 個 test 失敗 | 2026-11-20 01:15 |
 | `ja-live-rewrite` | `d1a3dca` | `7b7047a` | 通過（check／fmt／clippy＋針對性 test） | 2026-11-20 01:16 |
 | `punct-wire`（修測試） | `d1ae090` | `d53703f` | 通過 | 2026-11-20 01:17 |
+| `ja-personal`（修排序） | `0a376e5` | `88c482d` | 通過 | 2026-11-20 01:18 |
 
 ## 衝突與修正
 
@@ -345,3 +346,7 @@
   與 `window_starts` 的 stride 邊界。`cargo test -p jc-model --lib punct_plan` 4 passed、0 failed；
   `cargo check --workspace --all-targets` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0。
   先前 punct_plan 的兩個失敗已解除；ja-personal 的 `test_candidates_put_learned_first` 仍待修。
+
+- `ja-personal` 第二次合併（`88c482d`，含 `0a376e5`）：無衝突，`ja/personal.rs` 把候選重排分數換回浮點尺度（1 行）。
+  `cargo test -p jc-core --lib ja::personal` **34 passed、0 failed**（先前的 `test_candidates_put_learned_first` 已修）；
+  `cargo check --workspace --all-targets` exit 0。三個已知 test 失敗至此全部解除。
