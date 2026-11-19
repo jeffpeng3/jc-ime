@@ -78,6 +78,7 @@
 | `ja-personal-wire` | `ea161f8` | `b32beb2` | 通過（fmt／clippy／test） | 2026-11-20 04:28 |
 | `ajimee-eval` | `8663bea` | `7885302` | 通過（fmt／clippy／全量 test） | 2026-11-20 04:31 |
 | `ja-models-fetch` | `0f76eec` | `44e8a5f` | check 通過 | 2026-11-20 04:31 |
+| `ja-cost-diag` | `fca198b` | `058f44b` | test 通過；clippy 1 個錯 | 2026-11-20 04:42 |
 
 ## 衝突與修正
 
@@ -644,3 +645,17 @@
 - `ja-models-fetch`（合併 `44e8a5f`）：無衝突，只新增 `docs/port/ja-models-fetch.md`（169 行）與 `legal/README.md` 條目（27 行），
   沒有程式碼。內容是下載外部日文模型（Jinen v2 xsmall）並跑 AJIMEE smoke test 的紀錄。
   `cargo check --workspace --all-targets` exit 0（全部 cached）。
+
+- `ja-cost-diag`（合併 `058f44b`）：無衝突。新增 `crates/jc-cli/src/bin/ja-cost.rs`（416 行）與 `docs/port/ja-cost-diag.md`，
+  `jc-core/src/ja/decode.rs` 加 14 行診斷用介面。
+
+  gate：`cargo test --workspace --no-fail-fast` **exit 0**（40 targets、932 passed、0 failed）、fmt exit 0；
+  `cargo clippy --workspace --all-targets -- -D warnings` **exit 101**，1 個錯：
+  `crates/jc-cli/src/bin/ja-cost.rs:272` `clippy::needless_lifetimes`（`fn enumerate<'a>(lat: &'a Lattice, …)` 可省略），
+  需回 ja-cost-diag 修。
+
+  診斷結論（`わたしわ` → `私羽` 的 9068）：
+  - 9068 = 詞成本 **4612** + 連接成本 **4456**。
+  - `私+羽` 的連接成本 **966**（`matrix(1902, 1949)`），`私+わ` 的連接成本 **5556**（`matrix(1902, 431)`），差 **4590**。
+  - `私わ` 的詞成本便宜 **4346**，仍被連接成本差 4590 蓋過，淨差 244，所以輸出 `私羽` 而非 Go 參考的 `私わ`。
+    這是 Mozc context 矩陣的既有權重，不是解碼錯誤。
