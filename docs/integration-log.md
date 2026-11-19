@@ -77,6 +77,7 @@
 | `engine-data`（zh-select） | `8dc6235` | `d2aba42` | 通過（fmt／clippy／test） | 2026-11-20 04:28 |
 | `ja-personal-wire` | `ea161f8` | `b32beb2` | 通過（fmt／clippy／test） | 2026-11-20 04:28 |
 | `ajimee-eval` | `8663bea` | `7885302` | 通過（fmt／clippy／全量 test） | 2026-11-20 04:31 |
+| `ja-models-fetch` | `0f76eec` | `44e8a5f` | check 通過 | 2026-11-20 04:31 |
 
 ## 衝突與修正
 
@@ -639,3 +640,7 @@
 - `ajimee-eval`（合併 `7885302`）：`jc-cli/src/cli.rs` 自動合併，無衝突。`jc-eval/src/ja.rs` 加 306 行（目錄掃描題庫），
   `eval_cmd.rs` 接上 `ajimee-200`，文件 `docs/port/ajimee-eval.md`。
   gate：fmt exit 0、clippy exit 0、**定期全量 `cargo test --workspace --no-fail-fast` exit 0**（39 targets、931 passed、0 failed）。
+
+- `ja-models-fetch`（合併 `44e8a5f`）：無衝突，只新增 `docs/port/ja-models-fetch.md`（169 行）與 `legal/README.md` 條目（27 行），
+  沒有程式碼。內容是下載外部日文模型（Jinen v2 xsmall）並跑 AJIMEE smoke test 的紀錄。
+  `cargo check --workspace --all-targets` exit 0（全部 cached）。
