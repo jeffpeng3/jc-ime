@@ -661,6 +661,12 @@ impl Session {
         let Some(candidate) = self.candidates.get(index).cloned() else {
             return false;
         };
+        // 混合模式的候選是英文補完或拼字建議，選了就取代待定按鍵。
+        if self.config.mode == Mode::Mixed && self.ascii.accept(&candidate.surface) {
+            self.candidate_window = false;
+            self.highlighted = 0;
+            return true;
+        }
         self.remember_text(&candidate.surface);
         let text = if self.menu.is_some() {
             self.compose_literal(&candidate.surface)
@@ -1498,24 +1504,42 @@ impl Session {
 
     fn rebuild_en(&mut self) {
         self.base = self.raw.clone();
-        if !self.raw.is_empty() {
-            self.candidates.push(Candidate::new(
-                self.raw.clone(),
-                self.raw.clone(),
-                0,
-                CandidateSource::Literal,
-            ));
-            if let Some(full) = symbols::width_variant(&self.raw) {
-                if full != self.raw {
-                    self.candidates.push(Candidate::new(
-                        full,
-                        self.raw.clone(),
-                        1,
-                        CandidateSource::Literal,
-                    ));
-                }
+        if self.raw.is_empty() {
+            return;
+        }
+        let limit = self.max_candidates();
+        self.candidates.push(Candidate::new(
+            self.raw.clone(),
+            self.raw.clone(),
+            0,
+            CandidateSource::Literal,
+        ));
+        if let Some(full) = symbols::width_variant(&self.raw) {
+            if full != self.raw {
+                self.candidates.push(Candidate::new(
+                    full,
+                    self.raw.clone(),
+                    1,
+                    CandidateSource::Literal,
+                ));
             }
         }
+        // 前綴補完先排，拼字建議接在後面；打對的詞不會有建議。
+        let extra = english_candidates(&self.raw, limit);
+        let mut seen: Vec<String> = self
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.to_lowercase())
+            .collect();
+        for candidate in extra {
+            let key = candidate.surface.to_lowercase();
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            self.candidates.push(candidate);
+        }
+        self.candidates.truncate(limit);
     }
 
     fn rebuild_mixed(&mut self) {
@@ -1547,6 +1571,28 @@ impl Session {
             self.segments
                 .push(Segment::new(start, at, Mode::Zh, Script::Bopomofo));
         }
+        // 待定按鍵是英文詞時，候選先放原按鍵，再放前綴補完與拼字建議。
+        let raw = self.ascii.pending().to_string();
+        if raw.is_empty() {
+            return;
+        }
+        let limit = self.max_candidates();
+        self.candidates.push(Candidate::new(
+            raw.clone(),
+            raw.clone(),
+            0,
+            CandidateSource::Literal,
+        ));
+        let mut seen = vec![raw.to_lowercase()];
+        for candidate in english_candidates(&raw, limit) {
+            let key = candidate.surface.to_lowercase();
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            self.candidates.push(candidate);
+        }
+        self.candidates.truncate(limit);
     }
 
     /// 已完成的注音音節轉成字面。
@@ -1625,6 +1671,50 @@ impl Session {
         let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
         Some(decoder.conversion(&lattice, &segs, Mode::Zh).surface)
     }
+}
+
+/// 英文片段的候選：前綴補完先排，拼字建議接在後面。
+///
+/// 對照前身 `core/session/english_autocomplete.go` 的
+/// `refreshEnglishCandidates` 與 `core/session/mixed.go` 的
+/// `openMixedCandidates`：最多保留 3 個拼字建議，剩下的名額才給前綴補完，
+/// 這樣補完不會把拼字建議擠掉。拼字建議直接用已收進來的
+/// [`crate::mixed::Dictionary::corrections`]，沒有另寫演算法；打對的完整單字
+/// 不會有建議，建議保留查詢時的大小寫。
+fn english_candidates(raw: &str, limit: usize) -> Vec<Candidate> {
+    if limit == 0 || raw.chars().count() < 2 || !raw.chars().all(|c| c.is_ascii_alphabetic()) {
+        return Vec::new();
+    }
+    let english = crate::mixed::default_english();
+    let mut seen = vec![raw.to_lowercase()];
+    let mut corrections: Vec<Candidate> = Vec::new();
+    for candidate in english.spelling_candidates(raw, limit.saturating_add(3)) {
+        let key = candidate.surface.to_lowercase();
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        corrections.push(candidate);
+        if corrections.len() == 3 {
+            break;
+        }
+    }
+    let prefix_limit = limit.saturating_sub(corrections.len());
+    let mut out: Vec<Candidate> = Vec::new();
+    for candidate in english.completion_candidates(raw, limit.saturating_add(corrections.len())) {
+        if out.len() == prefix_limit {
+            break;
+        }
+        let key = candidate.surface.to_lowercase();
+        if seen.contains(&key) || candidate.surface.chars().count() <= raw.chars().count() {
+            continue;
+        }
+        seen.push(key);
+        out.push(candidate);
+    }
+    out.extend(corrections);
+    out.truncate(limit);
+    out
 }
 
 /// 有 bigram 時建立內插評分器；`lm.bin` 沒有 bigram 時回傳 `None`，
@@ -2222,6 +2312,67 @@ mod tests {
         assert_eq!(s.candidates()[1].surface, "１２３");
         s.press(Key::char('2', false));
         assert_eq!(s.commit(), "１２３");
+    }
+
+    /// 英文拼錯時，候選在原字後面補上拼字建議；打對的字沒有拼字建議。
+    #[test]
+    fn test_english_candidates_include_spelling_suggestions() {
+        let mut s = Session::new(SessionConfig::new(Mode::En));
+        for ch in "recieve".chars() {
+            s.press(Key::char(ch, false));
+        }
+        let surfaces: Vec<&str> = s
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        assert_eq!(surfaces.first().copied(), Some("recieve"));
+        let at = surfaces
+            .iter()
+            .position(|text| *text == "receive")
+            .expect("要有 receive 的拼字建議");
+        assert!(at > 0, "拼字建議要排在原字後面：{surfaces:?}");
+
+        let mut correct = Session::new(SessionConfig::new(Mode::En));
+        for ch in "hello".chars() {
+            correct.press(Key::char(ch, false));
+        }
+        let alternatives: Vec<&str> = correct
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .filter(|text| text.len() == 5 && !text.eq_ignore_ascii_case("hello"))
+            .collect();
+        assert!(
+            alternatives.is_empty(),
+            "打對的字不該有建議：{alternatives:?}"
+        );
+    }
+
+    /// 混合模式的待定英文詞也能看到拼字建議，選了就取代原按鍵。
+    #[test]
+    fn test_mixed_candidates_include_spelling_suggestions() {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(lexicon());
+        let mut s = Session::new(config);
+        type_keys(&mut s, "recieve");
+        let surfaces: Vec<String> = s
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.surface.clone())
+            .collect();
+        assert_eq!(surfaces.first().map(String::as_str), Some("recieve"));
+        let at = surfaces
+            .iter()
+            .position(|text| text == "receive")
+            .expect("要有 receive 的拼字建議");
+        assert!(at > 0, "拼字建議要排在原字後面：{surfaces:?}");
+
+        s.press(Key::new(KeyCode::Tab, None, false));
+        s.press(Key::char('2', false));
+        assert_eq!(s.snapshot().preedit, "receive");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "receive");
     }
 
     /// 最小日文詞條來源，讓日文 session 不必載入 pack 也能轉換。
