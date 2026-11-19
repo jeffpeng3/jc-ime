@@ -138,9 +138,7 @@ struct Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if let Some(parent) = self.root.parent() {
-            let _ = fs::remove_dir_all(parent);
-        }
+        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
