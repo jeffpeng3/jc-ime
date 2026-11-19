@@ -17,16 +17,18 @@ use jc_core::ja::input::{RomajiEvent, RomajiInput};
 use jc_core::key::{Key, KeyCode};
 use jc_core::lang::Mode;
 use jc_core::lattice::Lattice;
+use jc_core::mixed::Router;
+use jc_core::segment::Script;
 use jc_core::session::{RerankOptions, Session, SessionConfig};
 use jc_core::zh::fuzzy as zh_fuzzy;
 use jc_core::zh::fuzzy::{Config as FuzzyConfig, Mode as FuzzyMode};
 use jc_core::zh::keyboard::Keyboard;
 use jc_core::zh::syllable::class_of;
 use jc_eval::{
-    fuzzy_corpus_problems, load_fuzzy_input, load_fuzzy_manifest, load_golden_zh, load_ja_corpus,
-    load_ja_corpus_set, load_rules, percentile, rank_of, run_ja, CaseResult, CorpusMetrics,
-    CorpusRun, EngineInfo, FuzzyCaseResult, FuzzyEngineInfo, FuzzyReport, FuzzyRunConfig,
-    GoldenAction, Report, Run, RunOptions,
+    fuzzy_corpus_problems, load_fuzzy_input, load_fuzzy_manifest, load_golden_mixed,
+    load_golden_zh, load_ja_corpus, load_ja_corpus_set, load_rules, percentile, rank_of, run_ja,
+    CaseResult, CorpusMetrics, CorpusRun, EngineInfo, FuzzyCaseResult, FuzzyEngineInfo,
+    FuzzyReport, FuzzyRunConfig, GoldenAction, Report, Run, RunOptions,
 };
 
 use crate::cli::CliError;
@@ -37,8 +39,15 @@ use crate::data;
 ///
 /// 直接從 `cases.json` 載入，逐題跑按鍵序列，最後比對 `expected/*.jsonl`
 /// 的所有 commit 串接結果。任何一題失敗都不影響其他題。
+///
+/// 預設用 golden 自帶的 TSV 詞庫（沒有 bigram），因此基準分數不變；
+/// `data` 改用二進位資料包，`lm` 單獨接上 bigram 語言模型，`mu` 調整內插。
 pub fn zh_golden(
     testdata: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
+    lm: Option<PathBuf>,
+    mu: Option<f64>,
+    stats: bool,
     json: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
@@ -46,7 +55,14 @@ pub fn zh_golden(
     let golden_dir = dir.join("golden/zh");
     let suite = load_golden_zh(&golden_dir)
         .map_err(|err| CliError::eval(format!("讀取注音 golden 失敗：{err}")))?;
-    let resources = data::load_zh_resources(&golden_dir.join("data"))?;
+    let mut resources = match (&data_dir, &lm) {
+        (Some(pack), _) => data::load_zh_bin_resources_with_lm(pack, lm.as_deref())?,
+        (None, Some(path)) => data::load_zh_resources_with_lm(&golden_dir.join("data"), path)?,
+        (None, None) => data::load_zh_resources(&golden_dir.join("data"))?,
+    };
+    if let Some(mu) = mu {
+        resources.ctx.bigram_mu = mu;
+    }
     let converter = if suite.cases().iter().any(|case| case.options.simplified) {
         Some(Arc::new(data::load_zhconv(&data::data_root(&dir))?))
     } else {
@@ -154,6 +170,14 @@ pub fn zh_golden(
     }
     write!(out, "{}", run.to_table())?;
     writeln!(out, "通過 {passed}/{n}")?;
+    if stats {
+        let (queries, hits) = resources
+            .lm
+            .as_ref()
+            .map(|lm| (lm.bi_queries(), lm.bi_hits()))
+            .unwrap_or((0, 0));
+        writeln!(out, "bigram queries={queries} hits={hits}")?;
+    }
     for (name, expected, actual) in &failures {
         writeln!(out, "  ✗ {name}: 期望 {expected:?}，得到 {actual:?}")?;
     }
@@ -336,6 +360,190 @@ pub fn fuzzy(testdata: Option<PathBuf>, json: bool, out: &mut dyn Write) -> Resu
         write!(out, "{}", report.to_table())?;
     }
     Ok(())
+}
+
+/// 跑混合輸入題庫。
+///
+/// 每個案例都走 [`jc_core::mixed::Router`] 的完整轉換：注音片段用注音詞典、
+/// 日文片段用日文解碼器、英文照原樣。比對同時看片段邊界、語言、書寫系統與
+/// 表面文字，最後再比整句輸出。`--data` 未指定時，先找 `<資料根>/build-zh`
+/// 的二進位資料包，找不到才退回 `golden/zh/data` 的固定詞庫。
+pub fn mixed(
+    testdata: Option<PathBuf>,
+    data: Option<PathBuf>,
+    json: bool,
+    out: &mut dyn Write,
+) -> Result<(), CliError> {
+    let dir = data::testdata_dir(testdata)?;
+    let suite = load_golden_mixed(&dir.join("golden/mixed"))
+        .map_err(|err| CliError::eval(format!("讀取混合 golden 失敗：{err}")))?;
+    let root = data::data_root(&dir);
+    let resources = match data {
+        Some(path) => data::load_zh_bin_resources(&path)?,
+        None => {
+            let bin = root.join("build-zh");
+            if bin.join("manifest.json").is_file() {
+                data::load_zh_bin_resources(&bin)?
+            } else {
+                data::load_zh_resources(&dir.join("golden/zh/data"))?
+            }
+        }
+    };
+    let ja = data::load_ja_decoder(&root)
+        .ok()
+        .map(|decoder| decoder.with_prefer_hiragana(true));
+    let english = jc_core::mixed::English::load_default();
+    let mut router = Router::new()
+        .with_zh(&resources.lexicon, &resources.ctx)
+        .with_english(&english);
+    if let Some(decoder) = &ja {
+        router = router.with_ja(decoder);
+    }
+
+    let mut passed = 0usize;
+    let mut items = Vec::with_capacity(suite.cases().len());
+    for case in suite.cases() {
+        let mut mismatches = Vec::new();
+        let result = router
+            .convert(&case.input)
+            .map_err(|err| CliError::eval(format!("{}：轉換失敗：{err}", case.name)))?;
+        if result.surface != case.output {
+            mismatches.push(format!(
+                "整句：期望 {:?}，得到 {:?}",
+                case.output, result.surface
+            ));
+        }
+        if result.segments.len() != case.segments.len() {
+            mismatches.push(format!(
+                "片段數：期望 {}，得到 {}",
+                case.segments.len(),
+                result.segments.len()
+            ));
+        }
+        for (i, (got, want)) in result.segments.iter().zip(&case.segments).enumerate() {
+            let start = byte_of_rune(&case.input, want.span.start);
+            let end = byte_of_rune(&case.input, want.span.end);
+            if (got.input_start, got.input_end) != (start, end) {
+                mismatches.push(format!(
+                    "片段 {i} 邊界：期望 {start}..{end}，得到 {}..{}",
+                    got.input_start, got.input_end
+                ));
+            }
+            let mode = mode_of(&want.language.language);
+            if got.mode != mode {
+                mismatches.push(format!("片段 {i} 語言：期望 {mode:?}，得到 {:?}", got.mode));
+            }
+            let script = script_of(&want.script);
+            if got.script != script {
+                mismatches.push(format!(
+                    "片段 {i} 書寫系統：期望 {script:?}，得到 {:?}",
+                    got.script
+                ));
+            }
+            if got.surface != want.surface {
+                mismatches.push(format!(
+                    "片段 {i} 文字：期望 {:?}，得到 {:?}",
+                    want.surface, got.surface
+                ));
+            }
+        }
+        let ok = mismatches.is_empty();
+        if ok {
+            passed += 1;
+        }
+        items.push((case, result, mismatches));
+    }
+
+    let total = items.len();
+    if json {
+        let cases: Vec<serde_json::Value> = items
+            .iter()
+            .map(|(case, result, mismatches)| {
+                let segments: Vec<serde_json::Value> = result
+                    .segments
+                    .iter()
+                    .map(|segment| {
+                        serde_json::json!({
+                            "input_start": segment.input_start,
+                            "input_end": segment.input_end,
+                            "mode": mode_name(segment.mode),
+                            "script": segment.script.as_str(),
+                            "surface": segment.surface,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "name": case.name,
+                    "input": case.input,
+                    "expected": case.output,
+                    "actual": result.surface,
+                    "passed": mismatches.is_empty(),
+                    "mismatches": mismatches,
+                    "segments": segments,
+                })
+            })
+            .collect();
+        let report = serde_json::json!({
+            "suite": "mixed",
+            "passed": passed,
+            "total": total,
+            "cases": cases,
+        });
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .map_err(|err| CliError::eval(format!("輸出 JSON 失敗：{err}")))?
+        )?;
+        return Ok(());
+    }
+
+    writeln!(out, "mixed golden：通過 {passed}/{total}")?;
+    for (case, result, mismatches) in &items {
+        if mismatches.is_empty() {
+            writeln!(out, "  ✓ {}：{:?}", case.name, result.surface)?;
+        } else {
+            writeln!(out, "  ✗ {}：{:?}", case.name, result.surface)?;
+            for mismatch in mismatches {
+                writeln!(out, "      {mismatch}")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 案例的 `language` 欄位轉成路由用的 [`Mode`]。
+fn mode_of(language: &str) -> Mode {
+    match language {
+        "zh" | "zh-Hant" | "zh-Hans" => Mode::Zh,
+        "ja" => Mode::Ja,
+        _ => Mode::En,
+    }
+}
+
+/// [`Mode`] 轉成 JSON 用的語言代號。
+fn mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Zh => "zh",
+        Mode::Ja => "ja",
+        Mode::En => "en",
+        Mode::Mixed => "mixed",
+    }
+}
+
+/// golden 的 `script` 欄位轉成 [`Script`]；注音 fixture 用 `zhuyin`。
+fn script_of(name: &str) -> Script {
+    match name {
+        "zhuyin" | "bopomofo" => Script::Bopomofo,
+        other => Script::from_name(other).unwrap_or(Script::Other),
+    }
+}
+
+/// rune 位移換成 UTF-8 位元組位移。
+fn byte_of_rune(text: &str, n: usize) -> usize {
+    text.char_indices()
+        .nth(n)
+        .map_or(text.len(), |(index, _)| index)
 }
 
 /// 把 golden 案例的引擎選項套進 session 設定。
@@ -811,7 +1019,7 @@ mod tests {
             return;
         };
         let mut out = Vec::new();
-        zh_golden(Some(dir), false, &mut out).unwrap();
+        zh_golden(Some(dir), None, None, None, false, false, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("zh-golden"), "{text}");
         assert!(text.contains("通過"), "{text}");
@@ -887,6 +1095,36 @@ mod tests {
         let err = fuzzy(Some(work.clone()), false, &mut out).unwrap_err();
         assert!(err.to_string().contains("manifest"), "{err}");
         std::fs::remove_dir_all(&work).unwrap();
+    }
+
+    #[test]
+    fn mixed_golden_compares_surfaces_and_boundaries() {
+        let dir = jc_testdata::require_data!("0c-testdata");
+        if !dir.join("../build-zh/manifest.json").is_file() {
+            eprintln!("缺少注音二進位資料包，跳過");
+            return;
+        }
+        let mut out = Vec::new();
+        mixed(Some(dir), None, false, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("mixed golden：通過 4/6"), "{text}");
+        assert!(
+            text.contains("✓ long-word-cross-segment-zhuyin：\"麻婆豆腐\""),
+            "{text}"
+        );
+        assert!(
+            text.contains("✓ long-word-cross-segment-kana：\"東京大学\""),
+            "{text}"
+        );
+        assert!(
+            text.contains("✓ long-word-cross-segment-zhuyin-three-pieces：\"中華民國\""),
+            "{text}"
+        );
+        assert!(
+            text.contains("✗ scenario-a-primary-ja：\"私羽大雞巴です is a good sentence\""),
+            "{text}"
+        );
+        assert!(text.contains("片段 0 文字：期望 \"私わ\""), "{text}");
     }
 
     #[test]

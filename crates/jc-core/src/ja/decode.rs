@@ -180,7 +180,7 @@ pub struct JaCandidate {
 ///
 /// 正式實作是 [`JaDictionary`]；測試或小型情境可以直接提供自己的實作。
 /// `matches` 必須走訪 `reading[start..]` 的所有前綴，讓可変長讀音被展開。
-pub trait JaWordSource {
+pub trait JaWordSource: Send + Sync {
     /// 最長詞條的讀音單位數。
     fn longest_reading_units(&self) -> usize;
 
@@ -393,7 +393,7 @@ impl Lattice {
 /// 個人學習的鉤子。
 ///
 /// 回傳指定詞條在該位置的額外成本；0 表示不調整，負值可以提高優先度。
-pub trait JaLearning {
+pub trait JaLearning: Send + Sync {
     /// 額外成本。
     fn cost(&self, reading: &[char], start: usize, entry: &JaEntry, ctx: &JaContext) -> i32;
 }
@@ -411,7 +411,7 @@ impl JaLearning for NoLearning {
 /// 驗證器的鉤子。
 ///
 /// `score` 回傳整句結果的額外加分，越高越好；不得改變讀音對應。
-pub trait JaVerifier {
+pub trait JaVerifier: Send + Sync {
     /// 額外加分。
     fn score(&self, reading: &[char], result: &JaResult, ctx: &JaContext) -> f64;
 }
@@ -429,7 +429,7 @@ impl JaVerifier for NoVerifier {
 /// 重排鉤子。
 ///
 /// 收到已按統計成本排序的候選，回傳完整排序；實作在任何錯誤時應原樣回傳。
-pub trait JaReranker {
+pub trait JaReranker: Send + Sync {
     /// 重排候選。
     fn rerank(&self, reading: &[char], drafts: Vec<JaResult>, ctx: &JaContext) -> Vec<JaResult>;
 }
@@ -627,7 +627,7 @@ fn clause_cost(nodes: &[&JaNode], conn: &dyn ConnectionCost) -> i32 {
 ///
 /// 只有詞弧帶 left／right ID 且解碼器設定了這個矩陣時才會使用；否則一律
 /// 退回 [`ConnectionCost`] 的詞性表。
-pub trait JaContextCost {
+pub trait JaContextCost: Send + Sync {
     /// 回傳 `left` 接 `right` 的連接成本；ID 0 是 BOS／EOS。
     fn cost(&self, left: u16, right: u16) -> i32;
 }
@@ -1617,6 +1617,13 @@ mod tests {
         dec.convert(reading, &JaContext::default())
             .unwrap_or_else(|| panic!("{reading} 沒有轉換結果"))
             .surface
+    }
+
+    #[test]
+    fn test_decoder_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<JaDecoder>();
+        assert_send_sync::<Arc<JaDecoder>>();
     }
 
     #[test]

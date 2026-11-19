@@ -6,8 +6,12 @@
 //! ```text
 //! jc-engine [--socket <path>] [--max-frame <bytes>]
 //! ```
+//!
+//! stdio 模式在所有平台都能跑；`--socket` 目前只有 unix 實作，其他平台
+//! 會回報 `named pipe 尚未實作`。
 
 use std::io::{self, BufReader, BufWriter};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
@@ -19,7 +23,7 @@ use jc_proto::{DEFAULT_MAX_FRAME, PROTOCOL_VERSION};
 enum Mode {
     /// 標準輸入／輸出，開發期與整合測試用。
     Stdio,
-    /// unix domain socket，一次服務一個連線。
+    /// unix domain socket，一次服務一個連線。非 unix 平台尚未支援。
     Socket(PathBuf),
 }
 
@@ -85,6 +89,7 @@ fn run(options: Options) -> anyhow::Result<()> {
 }
 
 /// 在 `path` 上監聽並序列處理連線，收到 `Shutdown` 才回傳。
+#[cfg(unix)]
 fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
     prepare_socket_path(path)?;
     let listener = UnixListener::bind(path)
@@ -121,7 +126,14 @@ fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::R
     Ok(())
 }
 
+/// 非 unix 平台沒有 unix socket，明確回報錯誤而不是 panic。
+#[cfg(not(unix))]
+fn serve_socket(_engine: &mut Engine, _path: &Path, _max_frame: usize) -> anyhow::Result<()> {
+    bail!("named pipe 尚未實作，這個平台目前只能使用 stdio 模式")
+}
+
 /// 清掉上次留下的 socket 檔；有引擎正在監聽時拒絕啟動。
+#[cfg(unix)]
 fn prepare_socket_path(path: &Path) -> anyhow::Result<()> {
     if !path.exists() {
         return Ok(());
@@ -177,12 +189,19 @@ fn value_of(args: &[String], index: &mut usize, flag: &str) -> Result<String, St
         .ok_or_else(|| format!("{flag} 需要一個值"))
 }
 
+/// `--socket` 的說明文字依平台而不同。
+#[cfg(unix)]
+const SOCKET_HELP: &str = "  --socket <path>     改用 unix domain socket，一次服務一個連線\n";
+/// 非 unix 平台沒有 unix socket 實作。
+#[cfg(not(unix))]
+const SOCKET_HELP: &str = "  --socket <path>     named pipe 尚未實作，目前只支援 stdio\n";
+
 fn print_usage() {
     println!(
         "jc-engine {}（協定 {}）\n\n\
          用法：\n  jc-engine [--socket <path>] [--max-frame <bytes>]\n\n\
          選項：\n\
-         \x20 --socket <path>     改用 unix domain socket，一次服務一個連線\n\
+        {SOCKET_HELP}\
          \x20 --max-frame <bytes> 單一訊框上限，預設 {DEFAULT_MAX_FRAME}\n\
          \x20 -h, --help          顯示說明\n\
          \x20 -V, --version       顯示版本",
@@ -232,5 +251,18 @@ mod tests {
         assert!(parse(&["--max-frame"]).is_err());
         assert!(parse(&["--nope"]).is_err());
         assert!(parse(&["--socket"]).is_err());
+    }
+
+    /// 非 unix 平台的 `--socket` 必須回傳明確錯誤，不能 panic。
+    #[cfg(not(unix))]
+    #[test]
+    fn socket_mode_reports_named_pipe_unimplemented() {
+        let mut engine = Engine::new();
+        let err = serve_socket(&mut engine, Path::new("engine.sock"), DEFAULT_MAX_FRAME)
+            .expect_err("非 unix 平台不該啟動 socket");
+        assert!(
+            err.to_string().contains("named pipe 尚未實作"),
+            "錯誤訊息應說明 named pipe 尚未實作：{err}"
+        );
     }
 }

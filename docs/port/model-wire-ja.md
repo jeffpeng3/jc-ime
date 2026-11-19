@@ -28,6 +28,10 @@ optional feature `onnx`，預設關閉；feature off 時 `jc-core`、`jc-cli` �
   `ja-rerank`（`JC_JA_MODELS` 或資料根目錄的 `models/`），載入失敗就中止，
   不會靜默退回。
 - 執行時需要 `ORT_DYLIB_PATH` 指向 ONNX Runtime 動態庫。
+- `JaDecoder` 的 hook trait（`JaWordSource`、`ConnectionCost`、`JaContextCost`、
+  `JaLearning`、`JaVerifier`、`JaReranker`）都要求 `Send + Sync`，因此
+  `Arc<JaDecoder>` 可以跨執行緒共用，clippy 的 `arc_with_non_send_sync`
+  不再觸發。
 
 ## 切法
 

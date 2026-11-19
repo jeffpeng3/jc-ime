@@ -47,9 +47,14 @@ impl Decoder<'_> {
                 };
             }
         }
-        // 目前路徑在這段的權重：各片段的邊成本與連接成本。
+        // 目前路徑在這段的權重：各片段的弧成本（含連接與 bigram）。
         let mut current = 0.0;
         let mut prev = super::BOS;
+        let mut left: Option<&str> = if from > 0 {
+            Some(path[from - 1].word.as_str())
+        } else {
+            None
+        };
         let mut conn_total: i32 = 0;
         for seg in &path[from..] {
             let edge = lat
@@ -58,9 +63,10 @@ impl Decoder<'_> {
                 .find(|e| e.end == seg.end && e.surface == seg.word);
             match edge {
                 Some(e) => {
-                    conn_total = conn_total.saturating_add(self.step_cost(prev, e));
+                    conn_total = conn_total.saturating_add(self.scorer.edge_cost(left, prev, e));
                     current += weight(conn_total);
                     prev = e.pos;
+                    left = Some(e.surface.as_str());
                 }
                 None => {
                     current += weight(conn_total.saturating_add(1));

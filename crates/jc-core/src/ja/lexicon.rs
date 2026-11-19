@@ -433,7 +433,7 @@ impl JaConnectionCost {
 ///
 /// 成本越小越優先，單位與 pack 的詞成本相同（Mozc 原始整數）。
 /// 之後的 context ID 矩陣也會實作這個 trait，呼叫端不需要改。
-pub trait ConnectionCost {
+pub trait ConnectionCost: Send + Sync {
     /// 回傳 `left` 接 `right` 的連接成本。
     fn cost(&self, left: JaPosClass, right: JaPosClass) -> i32;
 }

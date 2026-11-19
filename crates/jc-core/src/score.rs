@@ -8,8 +8,18 @@
 //! 的 `DefaultConnectionCost`，未知詞成本取自 `core/ja/decode` 的
 //! `DefaultUnknownCost`，單詞長度上限取自 `core/decode.MaxWordLen`。
 //! 長度折扣對應前身 Viterbi 在成本相同時偏好邊數較少的路徑。
+//!
+//! 有 bigram 語言模型時，[`LmScorer`] 把詞成本裡的 unigram 部分換成前身
+//! `personal.Model.Prob` 的內插：`μ·P_bi(w|prev) + (1−μ)·P_uni(w)`。
+//! μ 的預設值 [`DEFAULT_BIGRAM_MU`] 與調整方式都照前身 `personal.DefaultParams`。
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
+use crate::candidate::CandidateSource;
+use crate::lattice::Edge;
 
 /// 詞性對沒有指定連接成本時的保底值。
 ///
@@ -29,6 +39,33 @@ pub const MAX_WORD_UNITS: usize = 8;
 
 /// 每多一個音節折抵的單詞成本，用來實現長詞優先。
 pub const DEFAULT_LENGTH_BONUS: i32 = 1;
+
+/// 系統 bigram 與 unigram 的內插權重。
+///
+/// 對應前身 `core/personal.DefaultParams().Mu`：0.7 表示 bigram 佔七成。
+/// 前身只透過 `Params.Mu` 調整（`0c-eval --mu`），沒有其他預設值。
+pub const DEFAULT_BIGRAM_MU: f64 = 0.7;
+
+/// 句首的虛擬前詞；只當前詞查 bigram，不會出現在輸出。
+///
+/// 對應前身 `core/lm.BOS`。
+pub const BOS_WORD: &str = "<s>";
+
+/// 路徑起點（BOS）的詞性狀態鍵，不會與任何詞性衝突。
+pub const BOS_POS: u16 = u16::MAX;
+
+/// 未登錄詞的 unigram 機率；對應前身 `core/lm.Unseen`。
+pub const UNSEEN_UNIGRAM: f64 = 1e-8;
+
+/// 機率轉成整數毫成本 `-ln(p)·1000`；0 與極小值給很大的成本。
+///
+/// 詞典與語言模型都用這個換算，讓機率可以直接相加比較。
+pub fn probability_cost(probability: f64) -> i32 {
+    if probability <= 0.0 || !probability.is_finite() {
+        return 100_000;
+    }
+    (-probability.ln() * 1000.0).round().min(100_000.0) as i32
+}
 
 /// 詞性對的連接成本表。
 ///
@@ -93,7 +130,7 @@ impl Default for ConnectionMatrix {
 ///
 /// 這個型別同時是 [`crate::lattice::Lattice::build`] 的 `ctx` 與 Viterbi 的
 /// 評分器，讓建邊與解碼使用同一組數字。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ScoreContext {
     /// 詞性對的連接成本表。
     pub connection: ConnectionMatrix,
@@ -103,6 +140,8 @@ pub struct ScoreContext {
     pub length_bonus: i32,
     /// 建詞格時單詞的最大音節數；0 表示不限制。
     pub max_word_units: usize,
+    /// bigram 與 unigram 的內插權重；[`LmScorer`] 使用。
+    pub bigram_mu: f64,
 }
 
 impl Default for ScoreContext {
@@ -112,6 +151,7 @@ impl Default for ScoreContext {
             unknown_cost: DEFAULT_UNKNOWN_COST,
             length_bonus: DEFAULT_LENGTH_BONUS,
             max_word_units: MAX_WORD_UNITS,
+            bigram_mu: DEFAULT_BIGRAM_MU,
         }
     }
 }
@@ -144,18 +184,260 @@ impl ScoreContext {
 
 /// Viterbi 需要的評分介面。
 ///
-/// 單詞成本在建邊時就算進 [`crate::lattice::Edge::cost`]，這裡只負責
-/// 邊與邊之間的連接成本。
+/// 單詞成本在建邊時就算進 [`crate::lattice::Edge::cost`]，這裡負責邊與邊之間
+/// 的連接成本，以及（可選的）前一個詞造成的語言模型成本。
 pub trait Scorer {
     /// 前一條邊的詞性接到下一條邊的連接成本，越小越優先。
     ///
     /// 路徑起點（BOS）不會呼叫這個方法。
     fn connection_cost(&self, prev_pos: u16, next_pos: u16) -> i32;
+
+    /// 單詞本身加上語言模型的成本；`left` 是前一個詞面，`None` 表示句首。
+    ///
+    /// 預設直接用建邊時算好的 `word_cost`，等於沒有 bigram 的行為。
+    /// 有 bigram 的實作（例如 [`LmScorer`]）在這裡替換 unigram 部分。
+    fn word_cost(
+        &self,
+        left: Option<&str>,
+        surface: &str,
+        word_cost: i32,
+        source: CandidateSource,
+    ) -> i32 {
+        let _ = (left, surface, source);
+        word_cost
+    }
+
+    /// 一條弧接在前一個詞後面的總成本（單詞＋語言模型＋連接）。
+    fn arc_cost(
+        &self,
+        left: Option<&str>,
+        prev_pos: u16,
+        word_cost: i32,
+        pos: u16,
+        surface: &str,
+        source: CandidateSource,
+    ) -> i32 {
+        let connection = if prev_pos == BOS_POS {
+            0
+        } else {
+            self.connection_cost(prev_pos, pos)
+        };
+        self.word_cost(left, surface, word_cost, source)
+            .saturating_add(connection)
+    }
+
+    /// 一條邊接在前一個詞後面的總成本。
+    fn edge_cost(&self, left: Option<&str>, prev_pos: u16, edge: &Edge) -> i32 {
+        self.arc_cost(
+            left,
+            prev_pos,
+            edge.cost,
+            edge.pos,
+            &edge.surface,
+            edge.source,
+        )
+    }
 }
 
 impl Scorer for ScoreContext {
     fn connection_cost(&self, prev_pos: u16, next_pos: u16) -> i32 {
         self.connection.cost(prev_pos, next_pos)
+    }
+}
+
+/// bigram 語言模型的唯讀查詢介面。
+///
+/// 對應前身 `core/lm.System` 的 `Uni` 與 `Bi`；實作由 [`ZhLm`] 包住
+/// `jc-data` 的 `lm.bin`。
+pub trait BigramLm {
+    /// P(w)；未登錄回傳 [`UNSEEN_UNIGRAM`]。
+    fn uni(&self, word: &str) -> f64;
+
+    /// P(w | left)；沒有這筆 bigram 回傳 0。
+    fn bi(&self, left: &str, word: &str) -> f64;
+
+    /// bigram 筆數；0 表示這份模型沒有 bigram。
+    fn bigram_count(&self) -> usize;
+}
+
+/// `jc-data` 讀進來的注音語言模型（`lm.bin`）。
+///
+/// `jc-core` 只透過 [`BigramLm`] 查詢，不依賴檔案的記憶體布局。
+#[derive(Clone)]
+pub struct ZhLm {
+    inner: Arc<jc_data::zh::Lm>,
+    bi_queries: Arc<std::sync::atomic::AtomicU64>,
+    bi_hits: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl ZhLm {
+    /// 開啟並驗證 `lm.bin`（不檢查 manifest）。
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, jc_data::zh::ZhDataError> {
+        Ok(Self {
+            inner: Arc::new(jc_data::zh::Lm::open(path)?),
+            bi_queries: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            bi_hits: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        })
+    }
+
+    /// 包住已開啟的語言模型。
+    pub fn from_lm(lm: jc_data::zh::Lm) -> Self {
+        Self {
+            inner: Arc::new(lm),
+            bi_queries: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            bi_hits: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+
+    /// bigram 筆數。
+    pub fn bigrams(&self) -> usize {
+        self.inner.bigrams()
+    }
+
+    /// 詞數。
+    pub fn words(&self) -> usize {
+        self.inner.words()
+    }
+
+    /// 已查詢的 bigram 次數（所有 [`BigramLm::bi`] 呼叫）。
+    pub fn bi_queries(&self) -> u64 {
+        self.bi_queries.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 查到的 bigram 次數（`P_bi > 0`）。
+    pub fn bi_hits(&self) -> u64 {
+        self.bi_hits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl std::fmt::Debug for ZhLm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZhLm")
+            .field("words", &self.inner.words())
+            .field("bigrams", &self.inner.bigrams())
+            .finish()
+    }
+}
+
+impl BigramLm for ZhLm {
+    fn uni(&self, word: &str) -> f64 {
+        self.inner.uni(word)
+    }
+
+    fn bi(&self, left: &str, word: &str) -> f64 {
+        let p = self.inner.bi(left, word);
+        self.bi_queries
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if p > 0.0 {
+            self.bi_hits
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        p
+    }
+
+    fn bigram_count(&self) -> usize {
+        self.inner.bigrams()
+    }
+}
+
+impl BigramLm for jc_data::zh::Lm {
+    fn uni(&self, word: &str) -> f64 {
+        jc_data::zh::Lm::uni(self, word)
+    }
+
+    fn bi(&self, left: &str, word: &str) -> f64 {
+        jc_data::zh::Lm::bi(self, left, word)
+    }
+
+    fn bigram_count(&self) -> usize {
+        self.bigrams()
+    }
+}
+
+/// 把 bigram 內插接進路徑評分的評分器。
+///
+/// 成本公式照前身 `personal.Model.Prob`（沒有個人資料時）：
+/// `P(w|left) = μ·P_bi(w|left) + (1−μ)·P_uni(w)`。詞典邊的成本已含
+/// `-ln P_uni(w)`，這裡只加上「內插後 − unigram」的差額，因此單詞成本、
+/// `P(r|w)` 與長度折扣都保持原樣。
+///
+/// `ctx.bigram_mu` 為 μ；模型沒有 bigram 時 [`LmScorer::word_cost`] 直接回傳
+/// 原本的 `word_cost`，與沒有評分器完全相同。
+pub struct LmScorer<'a> {
+    ctx: &'a ScoreContext,
+    lm: &'a dyn BigramLm,
+    /// 查過幾次 bigram（不含模型沒有 bigram 的提早返回）。
+    queries: Cell<u64>,
+    /// 其中真的有這筆 bigram 的次數。
+    hits: Cell<u64>,
+}
+
+impl<'a> LmScorer<'a> {
+    /// 用成本設定的 μ 與指定的語言模型建立評分器。
+    pub fn new(ctx: &'a ScoreContext, lm: &'a dyn BigramLm) -> Self {
+        Self {
+            ctx,
+            lm,
+            queries: Cell::new(0),
+            hits: Cell::new(0),
+        }
+    }
+
+    /// 已查詢的 bigram 次數。
+    pub fn queries(&self) -> u64 {
+        self.queries.get()
+    }
+
+    /// 查到的 bigram 次數（`P_bi > 0`）。
+    pub fn hits(&self) -> u64 {
+        self.hits.get()
+    }
+
+    /// 內插後的機率 `μ·P_bi(w|left) + (1−μ)·P_uni(w)`。
+    pub fn probability(&self, left: &str, word: &str) -> f64 {
+        let mu = self.ctx.bigram_mu;
+        let p_uni = self.lm.uni(word);
+        mu * self.lm.bi(left, word) + (1.0 - mu) * p_uni
+    }
+
+    /// 內插後相對 unigram 的成本差（毫成本）。
+    ///
+    /// 每次呼叫都計入 [`LmScorer::queries`]；`P_bi > 0` 時也計入
+    /// [`LmScorer::hits`]，供 CLI 證明 bigram 真的被查。
+    pub fn delta(&self, left: &str, word: &str) -> i32 {
+        if self.lm.bigram_count() == 0 {
+            return 0;
+        }
+        self.queries.set(self.queries.get() + 1);
+        let p_bi = self.lm.bi(left, word);
+        if p_bi > 0.0 {
+            self.hits.set(self.hits.get() + 1);
+        }
+        let p_uni = self.lm.uni(word);
+        let mu = self.ctx.bigram_mu;
+        let interpolated = mu * p_bi + (1.0 - mu) * p_uni;
+        probability_cost(interpolated).saturating_sub(probability_cost(p_uni))
+    }
+}
+
+impl Scorer for LmScorer<'_> {
+    fn connection_cost(&self, prev_pos: u16, next_pos: u16) -> i32 {
+        self.ctx.connection.cost(prev_pos, next_pos)
+    }
+
+    fn word_cost(
+        &self,
+        left: Option<&str>,
+        surface: &str,
+        word_cost: i32,
+        source: CandidateSource,
+    ) -> i32 {
+        // 未知詞邊沒有語言模型成分，不能套內插差額。
+        if source != CandidateSource::Lexicon || self.lm.bigram_count() == 0 {
+            return word_cost;
+        }
+        let left = left.unwrap_or(BOS_WORD);
+        word_cost.saturating_add(self.delta(left, surface))
     }
 }
 
@@ -174,11 +456,138 @@ mod tests {
         assert_eq!(ctx.unknown_cost, 8);
         assert_eq!(ctx.length_bonus, 1);
         assert_eq!(ctx.max_word_units, 8);
+        assert_eq!(ctx.bigram_mu, 0.7);
         assert_eq!(ctx.connection.fallback(), 1);
         assert_eq!(DEFAULT_CONNECTION_COST, 1);
         assert_eq!(DEFAULT_UNKNOWN_COST, 8);
         assert_eq!(MAX_WORD_UNITS, 8);
+        assert_eq!(DEFAULT_BIGRAM_MU, 0.7);
+        assert_eq!(BOS_WORD, "<s>");
         assert!(ctx.connection.is_empty());
+    }
+
+    /// 測試用的 bigram 模型：固定 unigram 與少量 bigram。
+    struct FakeLm {
+        uni: f64,
+        bigrams: usize,
+        pairs: Vec<((&'static str, &'static str), f64)>,
+    }
+
+    impl FakeLm {
+        fn new(pairs: &[((&'static str, &'static str), f64)]) -> Self {
+            Self {
+                uni: 0.001,
+                bigrams: pairs.len(),
+                pairs: pairs.to_vec(),
+            }
+        }
+    }
+
+    impl BigramLm for FakeLm {
+        fn uni(&self, _word: &str) -> f64 {
+            self.uni
+        }
+
+        fn bi(&self, left: &str, word: &str) -> f64 {
+            self.pairs
+                .iter()
+                .find(|((l, w), _)| *l == left && *w == word)
+                .map(|(_, p)| *p)
+                .unwrap_or(0.0)
+        }
+
+        fn bigram_count(&self) -> usize {
+            self.bigrams
+        }
+    }
+
+    #[test]
+    fn lm_scorer_interpolates_like_predecessor() {
+        let ctx = ScoreContext::default();
+        let lm = FakeLm::new(&[(("<s>", "在"), 0.6), (("在", "見"), 0.8)]);
+        let scorer = LmScorer::new(&ctx, &lm);
+        // μ·P_bi + (1−μ)·P_uni，μ = 0.7。
+        assert!((scorer.probability("<s>", "在") - (0.7 * 0.6 + 0.3 * 0.001)).abs() < 1e-12);
+        assert!((scorer.probability("在", "見") - (0.7 * 0.8 + 0.3 * 0.001)).abs() < 1e-12);
+        // 沒有 bigram 時只剩 (1−μ)·P_uni。
+        assert!((scorer.probability("我", "在") - 0.3 * 0.001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn lm_scorer_delta_is_interpolated_minus_unigram() {
+        let ctx = ScoreContext::default();
+        let lm = FakeLm::new(&[(("我", "愛"), 0.0044)]);
+        let scorer = LmScorer::new(&ctx, &lm);
+        let p = 0.7 * 0.0044 + 0.3 * 0.001;
+        let expected = probability_cost(p) - probability_cost(0.001);
+        assert_eq!(scorer.delta("我", "愛"), expected);
+        assert!(scorer.delta("我", "愛") < 0, "常用組合要比 unigram 便宜");
+        // 沒有這筆 bigram 時，內插只剩 unigram 的部分。
+        let none = probability_cost(0.3 * 0.001) - probability_cost(0.001);
+        assert_eq!(scorer.delta("你", "愛"), none);
+    }
+
+    #[test]
+    fn lm_scorer_without_bigrams_keeps_word_cost() {
+        let ctx = ScoreContext::default();
+        let lm = FakeLm {
+            uni: 0.001,
+            bigrams: 0,
+            pairs: Vec::new(),
+        };
+        let scorer = LmScorer::new(&ctx, &lm);
+        assert_eq!(scorer.delta("<s>", "我"), 0);
+        assert_eq!(
+            scorer.word_cost(None, "我", 1234, CandidateSource::Lexicon),
+            1234
+        );
+    }
+
+    #[test]
+    fn lm_scorer_skips_unknown_edges() {
+        let ctx = ScoreContext::default();
+        let lm = FakeLm::new(&[(("我", "ㄞˋ"), 0.9)]);
+        let scorer = LmScorer::new(&ctx, &lm);
+        // 未知詞邊的詞面是讀音，沒有語言模型成分。
+        assert_eq!(
+            scorer.word_cost(Some("我"), "ㄞˋ", 30000, CandidateSource::Literal),
+            30000
+        );
+    }
+
+    #[test]
+    fn lm_scorer_counts_queries_and_hits() {
+        let ctx = ScoreContext::default();
+        let lm = FakeLm::new(&[(("我", "愛"), 0.0044)]);
+        let scorer = LmScorer::new(&ctx, &lm);
+        assert_eq!((scorer.queries(), scorer.hits()), (0, 0));
+        scorer.delta("我", "愛");
+        scorer.delta("我", "艾");
+        assert_eq!(scorer.queries(), 2);
+        assert_eq!(scorer.hits(), 1);
+    }
+
+    #[test]
+    fn mu_zero_reproduces_unigram_costs() {
+        let ctx = ScoreContext {
+            bigram_mu: 0.0,
+            ..Default::default()
+        };
+        let lm = FakeLm::new(&[(("我", "愛"), 0.9)]);
+        let scorer = LmScorer::new(&ctx, &lm);
+        assert_eq!(scorer.delta("我", "愛"), 0);
+        assert_eq!(
+            scorer.word_cost(Some("我"), "愛", 5000, CandidateSource::Lexicon),
+            5000
+        );
+    }
+
+    #[test]
+    fn probability_cost_matches_log_scale() {
+        assert_eq!(probability_cost(1.0), 0);
+        assert_eq!(probability_cost(std::f64::consts::E.recip()), 1000);
+        assert_eq!(probability_cost(0.0), 100_000);
+        assert_eq!(probability_cost(f64::NAN), 100_000);
     }
 
     #[test]

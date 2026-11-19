@@ -4,20 +4,23 @@
 //! 只有 `i32` 成本。個人化（Evidence、CorrectionPenalty）屬 M4，這裡留下
 //! 成本組合與兩個回傳 0 的掛鉤。
 
-use super::{repeat::REPEAT_COST, BOS};
+use super::repeat::REPEAT_COST;
 use crate::lattice::Edge;
 use crate::score::Scorer;
 
-/// 一條邊接在前一條邊後面的成本，含連接成本。
+/// 一條邊接在前一條邊後面的成本，含連接成本與 bigram。
 ///
-/// BOS 不加連接成本，與 [`crate::lattice::Viterbi`] 相同。
-pub fn step_cost(scorer: &dyn Scorer, prev_pos: u16, edge: &Edge) -> i32 {
-    let conn = if prev_pos == BOS {
-        0
-    } else {
-        scorer.connection_cost(prev_pos, edge.pos)
-    };
-    conn.saturating_add(edge.cost)
+/// `left` 是前一個詞面（句首為 `None`）；BOS 不加連接成本，與
+/// [`crate::lattice::Viterbi`] 相同。
+pub fn step_cost(scorer: &dyn Scorer, left: Option<&str>, prev_pos: u16, edge: &Edge) -> i32 {
+    scorer.arc_cost(
+        left,
+        prev_pos,
+        edge.cost,
+        edge.pos,
+        &edge.surface,
+        edge.source,
+    )
 }
 
 /// 修正讀音的懲罰；成本模型還沒有修正來源。
@@ -39,6 +42,7 @@ pub fn non_word_repeat_cost() -> i32 {
 mod tests {
     use super::*;
     use crate::candidate::CandidateSource;
+    use crate::decode::BOS;
     use crate::score::{ConnectionMatrix, ScoreContext};
 
     fn edge(pos: u16, cost: i32) -> Edge {
@@ -56,7 +60,7 @@ mod tests {
     #[test]
     fn bos_has_no_connection_cost() {
         let ctx = ScoreContext::default();
-        assert_eq!(step_cost(&ctx, BOS, &edge(1, 5)), 5);
+        assert_eq!(step_cost(&ctx, None, BOS, &edge(1, 5)), 5);
     }
 
     #[test]
@@ -65,7 +69,7 @@ mod tests {
             connection: ConnectionMatrix::with_fallback(3),
             ..Default::default()
         };
-        assert_eq!(step_cost(&ctx, 1, &edge(2, 5)), 8);
+        assert_eq!(step_cost(&ctx, Some("前"), 1, &edge(2, 5)), 8);
     }
 
     #[test]
