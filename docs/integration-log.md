@@ -64,6 +64,7 @@
 | `onnx-default` | `6942b66` | `79724ee` | check／fmt 通過 | 2026-11-20 02:44 |
 | `zh-select-calibrate` | `b677022` | `9a04a60` | check 通過；clippy 出現 `onnx` cfg 警告 | 2026-11-20 02:46 |
 | `english-suggest` | `b93633a` | `359d425` | check 通過；clippy／test 失敗 | 2026-11-20 02:50 |
+| `zh-select-calibrate`（診斷） | `9f84483` | `eabae70` | check 通過 | 2026-11-20 03:04 |
 
 ## 衝突與修正
 
@@ -483,3 +484,16 @@
     （後兩者都是存檔前沒建目錄的 `Io(NotFound)`）。
   - `jc-core`（english-suggest 新帶入）：`session::tests::test_mixed_english_suggestion_and_completion`
     （`session.rs:2130`，`left: "hellp"`、`right: "我hellp"`）。
+
+- `zh-select-calibrate` 第二次合併（`eabae70`，含 `9f84483`）：無衝突，`zh-calibrate` 加 model-only 與分數方向診斷
+  （+160 行），文件 +43 行。`cargo check --workspace --all-targets` exit 0；13 個 `unexpected cfg condition value: onnx`
+  警告仍在（屬上一輪已回報的 clippy 待修項）。
+
+  診斷結論：
+  - 主 dev（46 組）：模型單獨排序 **46/46**、統計首選錯 **0**、模型只靠分數救回 **0**；瓶頸是沒有可救回的樣本，
+    不是融合公式壓住模型。
+  - 壓力 dev（161 組、127 組可評分）：模型單獨排序 48/161，統計首選錯 52 組，其中只有 1 組答案仍在候選內，
+    模型也沒選到；其餘 51 組答案不在候選內，屬讀音本身錯誤，模型無能為力。
+  - 分數方向核對 7/7 正確（正確候選分數高於錯誤候選），沒有反向或正負號錯置。
+  - 破壞最少的掃描點是 `weight = 0.5`、`margin = 3.0`，壓力 dev 仍破壞 2/161（1.24%）超過 1% 上限，
+    因此 `--select-model` **預設維持 off**。
