@@ -226,6 +226,11 @@ pub struct Session {
     pub(super) highlighted: usize,
     /// 候選視窗是否由 Tab／方向鍵開啟；數字鍵只在開啟時選字。
     pub(super) candidate_window: bool,
+    /// 使用者是否已進入明確的候選選取模式。
+    ///
+    /// 對照上游 `navigating`：候選窗顯示中不代表要選字；方向鍵、翻頁鍵或
+    /// 上下鍵進入後才為 `true`。打字、選字、關窗與送出都會離開這個模式。
+    pub(super) navigating: bool,
     pub(super) segments: Vec<Segment>,
     /// 使用者指定的片段鎖定：音節起點 → 鎖定的詞。
     ///
@@ -334,6 +339,7 @@ impl Session {
             candidates: Vec::new(),
             highlighted: 0,
             candidate_window: false,
+            navigating: false,
             segments: Vec::new(),
             locks: Locks::new(),
             segment_manual: None,
@@ -395,7 +401,8 @@ impl Session {
     /// 處理一個按鍵並回傳完整快照。
     ///
     /// `Enter` 會把組字結果放進待提交區，下一次 [`Session::commit`] 取走；
-    /// `Escape` 清空組字；左右方向鍵與 Tab 在候選間移動。
+    /// `Escape` 先關候選窗、再清未完成的注音，最後才清整段組字。上下鍵、
+    /// 翻頁鍵、Home／End 在候選清單中移動，左右方向鍵與 Tab 也在候選間移動。
     pub fn press(&mut self, key: Key) -> Snapshot {
         self.expire_segment_view();
         if key.ctrl {
@@ -405,29 +412,40 @@ impl Session {
             if !self.segments_press(&key) {
                 match key.code {
                     KeyCode::Enter => self.finish_composition(),
-                    KeyCode::Escape => self.clear_composition(),
+                    KeyCode::Escape => self.escape(),
                     KeyCode::Delete if key.shift && self.candidate_window => {
                         self.forget_candidate();
                     }
                     KeyCode::Backspace if key.shift && self.candidate_window => {
                         self.forget_candidate();
                     }
-                    KeyCode::Delete => self.clear_composition(),
+                    KeyCode::Delete => self.delete_forward(),
                     KeyCode::Backspace => self.backspace(),
                     KeyCode::Space => self.space(),
+                    KeyCode::Down => self.down(),
+                    KeyCode::Up => self.up(),
+                    KeyCode::PageDown => self.page_step(1),
+                    KeyCode::PageUp => self.page_step(-1),
+                    KeyCode::Home => self.candidate_edge(false),
+                    KeyCode::End => self.candidate_edge(true),
                     KeyCode::Tab => {
-                        let accepted = self.config.mode == Mode::Mixed
-                            && self.config.english_autocomplete
-                            && self.ascii.accept_suggestion();
-                        if !accepted && !self.accept_suggestion() {
+                        if self.navigating && !self.candidates.is_empty() {
+                            // 選取模式中的 Tab 換下一個候選；候選選取優先於補全。
                             self.move_highlight(1);
+                        } else {
+                            let accepted = self.config.mode == Mode::Mixed
+                                && self.config.english_autocomplete
+                                && self.ascii.accept_suggestion();
+                            if !accepted && !self.accept_suggestion() {
+                                self.move_highlight(1);
+                            }
                         }
                     }
                     KeyCode::ArrowRight => self.navigate(1),
                     KeyCode::ArrowLeft => self.navigate(-1),
                     KeyCode::Char(ch) => self.press_char(ch),
-                    // 上下鍵、Home／End、翻頁與 Shift+Tab 這一輪只擴充協定，
-                    // session 行為不變；由後續候選選取任務接上。
+                    // 具名鍵與 Shift+Tab 沒有對應的組字動作時由組字區吃掉，
+                    // 不讓應用程式在組字中移動焦點。
                     _ => {}
                 }
             }
@@ -607,9 +625,9 @@ impl Session {
             segments: self.segments(),
             candidates: self.candidates.clone(),
             highlighted: self.highlighted,
-            // suggestion／label／navigating 這一輪只擴充欄位，
-            // 由候選標示與補全任務填入。
-            ..Snapshot::default()
+            suggestion: self.snapshot_suggestion(),
+            label: self.highlighted_label().map(str::to_string),
+            navigating: self.navigating,
         }
     }
 

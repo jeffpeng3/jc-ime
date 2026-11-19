@@ -3,6 +3,10 @@
 //! 型別、設定與公開 API 在上層模組；這裡只放實作細節。
 
 use super::*;
+use crate::score::BigramLm;
+
+/// 「常用」候選標示的系統詞頻門檻，對照上游 `commonLabelProbability`。
+pub(super) const COMMON_LABEL_PROBABILITY: f64 = 1e-4;
 
 /// 目前 Unix 秒數；時鐘早於 epoch 時回傳 0。
 pub(super) fn now_seconds() -> i64 {
@@ -55,12 +59,14 @@ impl Session {
         };
         self.accepted_completion = Some(text);
         self.candidate_window = false;
+        self.navigating = false;
         true
     }
 
     pub(super) fn press_char(&mut self, ch: char) {
         self.accepted_completion = None;
         self.suggestion = None;
+        self.navigating = false;
         let window = self.candidate_window;
         if window && self.select_by_digit(ch) {
             self.candidate_window = false;
@@ -151,6 +157,7 @@ impl Session {
         // 混合模式的候選是英文補完或拼字建議，選了就取代待定按鍵。
         if self.config.mode == Mode::Mixed && self.ascii.accept(&candidate.surface) {
             self.candidate_window = false;
+            self.navigating = false;
             self.highlighted = 0;
             return true;
         }
@@ -171,7 +178,17 @@ impl Session {
             Mode::Zh if !self.zh.pending().is_empty() => {
                 self.zh.press(Key::new(KeyCode::Space, None, false));
             }
+            Mode::Zh
+                if !self.candidate_window
+                    && !self.candidates.is_empty()
+                    && !self.style.space_inserts_space =>
+            {
+                // 音節打完後空白開候選窗；「空白只插空白」設定保持原行為。
+                self.candidate_window = true;
+                self.navigating = false;
+            }
             _ if self.candidate_window && !self.candidates.is_empty() => {
+                self.navigating = false;
                 self.remember_selection();
                 self.learn_composition();
                 let text = self.finalize(self.current_text());
@@ -185,7 +202,15 @@ impl Session {
     }
 
     pub(super) fn backspace(&mut self) {
+        // 候選窗開著時退格只關窗，不刪已組好的字（上游 #106）。
+        if self.candidate_window && self.menu.is_none() {
+            self.candidate_window = false;
+            self.navigating = false;
+            self.highlighted = 0;
+            return;
+        }
         self.candidate_window = false;
+        self.navigating = false;
         match self.config.mode {
             Mode::Zh => {
                 if self.zh.pending().is_empty()
@@ -208,6 +233,142 @@ impl Session {
                 self.ascii.backspace();
             }
         }
+    }
+
+    /// Esc 的優先權：先關候選窗，再清未完成的注音，最後才清整段組字。
+    ///
+    /// 對照上游 `key()` 的 Escape 分支；標示範圍與同音預覽在本埠沒有對應狀態。
+    pub(super) fn escape(&mut self) {
+        if self.candidate_window && self.menu.is_none() {
+            self.candidate_window = false;
+            self.navigating = false;
+            self.highlighted = 0;
+            return;
+        }
+        if self.config.mode == Mode::Zh && !self.zh.pending().is_empty() {
+            self.clear_pending_zhuyin();
+            return;
+        }
+        self.clear_composition();
+    }
+
+    /// 只清掉尚未完成的注音，保留已完成的音節。
+    ///
+    /// `ZhInput` 沒有「清暫存」的公開方法，這裡用退格逐格退掉暫存注音；
+    /// 暫存清空就停手，不會動到已完成的音節。
+    fn clear_pending_zhuyin(&mut self) {
+        let mut guard = 0;
+        while !self.zh.pending().is_empty() && guard < 16 {
+            let before = self.zh.pending();
+            self.zh.press(Key::new(KeyCode::Backspace, None, false));
+            if self.zh.pending() == before {
+                break;
+            }
+            guard += 1;
+        }
+        self.pending_tone = None;
+        self.candidate_window = false;
+        self.navigating = false;
+    }
+
+    /// `Delete`：候選窗開著時只關窗；沒有組字游標，其餘情況不動組字。
+    pub(super) fn delete_forward(&mut self) {
+        if self.candidate_window {
+            self.candidate_window = false;
+            self.navigating = false;
+            self.highlighted = 0;
+        }
+    }
+
+    /// 下鍵：第一次開候選窗並進入選取模式，之後往下換一項。
+    pub(super) fn down(&mut self) {
+        if self.candidates.is_empty() {
+            return;
+        }
+        if !self.candidate_window {
+            self.candidate_window = true;
+            self.navigating = true;
+            return;
+        }
+        if !self.navigating {
+            self.navigating = true;
+            return;
+        }
+        self.move_highlight(1);
+    }
+
+    /// 上鍵：候選窗開著時往上換一項並進入選取模式。
+    pub(super) fn up(&mut self) {
+        if self.candidates.is_empty() || !self.candidate_window {
+            return;
+        }
+        self.navigating = true;
+        self.move_highlight(-1);
+    }
+
+    /// `PageDown`／`PageUp`：換頁，頁碼頭尾相接。
+    pub(super) fn page_step(&mut self, delta: isize) {
+        if self.candidates.is_empty() || !self.candidate_window {
+            return;
+        }
+        let size = self.page_size().max(1);
+        let pages = self.candidates.len().div_ceil(size).max(1) as isize;
+        let page = (self.highlighted / size) as isize;
+        let page = (page + delta).rem_euclid(pages);
+        self.highlighted = page as usize * size;
+        self.navigating = true;
+    }
+
+    /// `Home`／`End`：選取模式中移到候選清單的第一項或最後一項。
+    ///
+    /// 只是顯示候選時這兩個鍵在上游移動組字游標；本埠沒有組字游標，因此
+    /// 不動作，也不把反白跳到別項。
+    pub(super) fn candidate_edge(&mut self, end: bool) {
+        if self.candidates.is_empty() || !self.candidate_window || !self.navigating {
+            return;
+        }
+        self.highlighted = if end { self.candidates.len() - 1 } else { 0 };
+        self.navigating = true;
+    }
+
+    /// 快照的補全尾綴：注音用路徑補全，混打用英文前綴補全。
+    pub(super) fn snapshot_suggestion(&self) -> Option<String> {
+        if self.menu.is_some() || self.candidate_window || self.accepted_completion.is_some() {
+            return None;
+        }
+        if self.config.mode == Mode::Mixed && self.config.english_autocomplete {
+            if let Some(text) = self.ascii.suggestion() {
+                let rest = text.strip_prefix(self.ascii.pending()).unwrap_or(&text);
+                return (!rest.is_empty()).then(|| rest.to_string());
+            }
+        }
+        let text = self.suggestion.as_ref()?;
+        let rest = text.strip_prefix(self.base.as_str()).unwrap_or(text);
+        (!rest.is_empty()).then(|| rest.to_string())
+    }
+
+    /// 高亮候選的顯示原因；只標個人詞彙與常用詞，不影響排序。
+    ///
+    /// 對照上游 `candidateLabels`：個人標示看使用者詞彙與手選紀錄，常用
+    /// 標示看系統 unigram 機率。關聯標示需要鄰詞機率，尚未接上。
+    pub(super) fn highlighted_label(&self) -> Option<&'static str> {
+        if self.config.mode != Mode::Zh || self.menu.is_some() {
+            return None;
+        }
+        let candidate = self.candidates.get(self.highlighted)?;
+        if candidate.source == CandidateSource::Literal {
+            return None;
+        }
+        if self.personal.is_vocab(&candidate.surface) {
+            return Some("personal");
+        }
+        if let Some(reading) = candidate.reading.split_whitespace().next() {
+            if self.personal.is_picked(reading, &candidate.surface) {
+                return Some("personal");
+            }
+        }
+        let lm = self.zh_lm.as_ref()?;
+        (lm.uni(&candidate.surface) >= COMMON_LABEL_PROBABILITY).then_some("common")
     }
 
     pub(super) fn finish_composition(&mut self) {
@@ -432,6 +593,7 @@ impl Session {
         if self.candidates.is_empty() {
             return;
         }
+        self.navigating = true;
         if !self.candidate_window {
             self.candidate_window = true;
             return;
@@ -608,6 +770,7 @@ impl Session {
         self.candidates.clear();
         self.highlighted = 0;
         self.candidate_window = false;
+        self.navigating = false;
         self.segments.clear();
         self.locks.clear();
         self.segment_manual = None;
@@ -1201,4 +1364,247 @@ fn zh_decoder<'a>(
         decoder.beam = crate::decode::DEFAULT_BEAM;
     }
     decoder
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lattice::LexEntry;
+
+    /// 基礎詞庫；另外補 12 個同讀音單字用來翻頁。
+    fn lexicon() -> InMemoryLexicon {
+        let mut lex = InMemoryLexicon::new();
+        for (surface, reading) in [
+            ("我", "ㄨㄛˇ"),
+            ("想", "ㄒㄧㄤˇ"),
+            ("吃", "ㄔ"),
+            ("風", "ㄈㄥ"),
+            ("景", "ㄐㄧㄥˇ"),
+            ("風景", "ㄈㄥ ㄐㄧㄥˇ"),
+            ("麻", "ㄇㄚˊ"),
+            ("麻煩", "ㄇㄚˊ ㄈㄢˊ"),
+        ] {
+            lex.push(LexEntry::new(surface, reading, 0, 0));
+        }
+        for (index, surface) in [
+            "甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸", "子", "丑",
+        ]
+        .iter()
+        .enumerate()
+        {
+            lex.push(LexEntry::new(*surface, "ㄕˋ", index as i32, 0));
+        }
+        lex
+    }
+
+    fn session() -> Session {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.max_candidates = 20;
+        Session::new(config)
+    }
+
+    fn type_syllable(session: &mut Session, reading: &str) {
+        let keyboard = crate::zh::keyboard::Keyboard::standard();
+        for syllable in crate::zh::syllable::parse_reading(reading) {
+            let keys = keyboard.keys(&syllable).expect("音節應該有對應按鍵");
+            for ch in keys.chars() {
+                session.press(Key::char(ch, false));
+            }
+        }
+    }
+
+    /// 對照 `TestDownEntersSelectionModeThenArrowsPage` 的第一段：
+    /// 空白只顯示候選，下鍵才進入選取模式，第一下不移動反白。
+    #[test]
+    fn test_down_enters_selection_mode_without_moving() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄕˋ");
+        let shown = s.press(Key::new(KeyCode::Space, None, false));
+        assert!(!shown.candidates.is_empty(), "空白應開候選窗");
+        assert!(!shown.navigating, "空白只顯示候選，不進入選取模式");
+        assert_eq!(shown.highlighted, 0);
+
+        let down = s.press(Key::new(KeyCode::Down, None, false));
+        assert!(down.navigating, "下鍵進入選取模式");
+        assert_eq!(down.highlighted, 0, "第一下不移動反白");
+        assert!(!down.candidates.is_empty(), "候選窗仍顯示");
+
+        let next = s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(next.highlighted, 1, "第二下換下一項");
+        let back = s.press(Key::new(KeyCode::Up, None, false));
+        assert_eq!(back.highlighted, 0, "上鍵換回上一項");
+    }
+
+    /// 對照 `TestDownEntersSelectionModeThenArrowsPage` 的翻頁段落。
+    #[test]
+    fn test_page_keys_switch_pages_and_wrap() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Space, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
+
+        let down = s.press(Key::new(KeyCode::PageDown, None, false));
+        assert_eq!(down.highlighted, PAGE_SIZE, "PageDown 到第二頁第一項");
+        assert!(down.navigating);
+
+        let wrap = s.press(Key::new(KeyCode::PageDown, None, false));
+        assert_eq!(wrap.highlighted, 0, "最後一頁再往後回到第一頁");
+
+        let back = s.press(Key::new(KeyCode::PageUp, None, false));
+        assert_eq!(back.highlighted, PAGE_SIZE, "PageUp 從第一頁往前到最後一頁");
+    }
+
+    /// 對照 `TestHomeEndDependOnSelectionMode`：選取模式的 Home／End 是
+    /// 第一個／最後一個候選；只是顯示時不動作。
+    #[test]
+    fn test_home_end_move_only_in_selection_mode() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Space, None, false));
+
+        let home = s.press(Key::new(KeyCode::Home, None, false));
+        assert!(!home.navigating, "只是顯示候選時 Home 不進入選取模式");
+        assert_eq!(home.highlighted, 0);
+
+        s.press(Key::new(KeyCode::Down, None, false));
+        let end = s.press(Key::new(KeyCode::End, None, false));
+        assert_eq!(
+            end.highlighted,
+            end.candidates.len() - 1,
+            "End 到清單最後一項"
+        );
+        let home = s.press(Key::new(KeyCode::Home, None, false));
+        assert_eq!(home.highlighted, 0, "Home 回到第一項");
+    }
+
+    /// 對照 `TestDownEntersSelectionMode...` 的「打字離開選取模式」。
+    #[test]
+    fn test_typing_leaves_selection_mode() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        s.press(Key::new(KeyCode::Space, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
+        assert!(s.snapshot().navigating);
+        type_syllable(&mut s, "ㄈㄥ");
+        let snap = s.snapshot();
+        assert!(!snap.navigating, "打字後離開選取模式");
+        assert!(snap.preedit.ends_with('風'), "{}", snap.preedit);
+    }
+
+    /// 對照 `TestEscLeavesSelectionMode`：Esc 關窗、保留組字。
+    #[test]
+    fn test_escape_closes_candidate_window_and_keeps_composition() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Space, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = s.press(Key::new(KeyCode::Escape, None, false));
+        assert!(!snap.navigating, "Esc 離開選取模式");
+        assert_eq!(snap.preedit, "甲", "Esc 保留已組好的字");
+        // 關窗後數字鍵回到注音路徑，不再選字。
+        let typed = s.press(Key::char('2', false));
+        assert_eq!(typed.preedit, "甲ㄉ", "關窗後數字是注音鍵");
+    }
+
+    /// Esc 先清未完成的注音，已完成的音節留著；再按一次才整段清掉。
+    #[test]
+    fn test_escape_clears_pending_syllable_before_composition() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        for ch in "vu".chars() {
+            s.press(Key::char(ch, false));
+        }
+        assert_eq!(s.snapshot().preedit, "我ㄒㄧ");
+        let first = s.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(first.preedit, "我", "第一次 Esc 只清未完成的注音");
+        let second = s.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(second.preedit, "", "第二次 Esc 清掉整段組字");
+    }
+
+    /// 對照 `TestCandidateWindowSwallowsKeys`：退格只關候選窗、不刪字。
+    #[test]
+    fn test_backspace_closes_candidate_window_without_deleting() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert!(!snap.navigating, "退格關閉候選");
+        assert_eq!(snap.preedit, "我", "退格不刪已組好的字");
+        let typed = s.press(Key::char('2', false));
+        assert_eq!(typed.preedit, "我ㄉ", "關窗後數字是注音鍵");
+    }
+
+    /// Delete 沒有組字游標可前向刪除，只關候選窗。
+    #[test]
+    fn test_delete_only_closes_candidate_window() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = s.press(Key::new(KeyCode::Delete, None, false));
+        assert!(!snap.navigating);
+        assert_eq!(snap.preedit, "我", "Delete 不刪組字");
+        let typed = s.press(Key::char('2', false));
+        assert_eq!(typed.preedit, "我ㄉ", "關窗後數字是注音鍵");
+    }
+
+    /// 空白鍵在音節完成後開候選窗，與上游 `openCandidates(0)` 相同。
+    #[test]
+    fn test_space_opens_candidates_after_complete_syllable() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        let snap = s.press(Key::new(KeyCode::Space, None, false));
+        assert!(!snap.candidates.is_empty(), "空白開候選窗");
+        assert!(!snap.navigating);
+        let selected = s.press(Key::new(KeyCode::Space, None, false));
+        assert_eq!(selected.preedit, "", "第二次空白選字並收起組字");
+        assert_eq!(s.commit(), "我");
+    }
+
+    /// 「空白只插空白」設定關閉空白開候選。
+    #[test]
+    fn test_space_inserts_space_keeps_literal_behavior() {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.style.space_inserts_space = true;
+        let mut s = Session::new(config);
+        type_syllable(&mut s, "ㄨㄛˇ");
+        let snap = s.press(Key::new(KeyCode::Space, None, false));
+        assert!(!snap.navigating, "設定關閉時不進入選取模式");
+        assert_eq!(snap.preedit, "我", "空白不選字");
+    }
+
+    /// 快照的 suggestion 是 Tab 會補上的尾綴。
+    #[test]
+    fn test_snapshot_suggestion_is_completion_tail() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄇㄚˊ");
+        let snap = s.snapshot();
+        assert_eq!(snap.suggestion.as_deref(), Some("煩"), "{:?}", snap.preedit);
+    }
+
+    /// 個人詞彙的候選標上 `personal`，不影響排序。
+    #[test]
+    fn test_snapshot_label_marks_personal_vocab() {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.personal.add_vocab("窩", "ㄨㄛˇ");
+        let mut s = Session::new(config);
+        type_syllable(&mut s, "ㄨㄛˇ");
+        let at = s
+            .candidates()
+            .iter()
+            .position(|candidate| candidate.surface == "窩")
+            .expect("自訂詞應在候選中");
+        let snap = s.select(at);
+        assert_eq!(snap.label.as_deref(), Some("personal"));
+    }
+
+    /// 沒有標示來源的一般候選不捏造 label。
+    #[test]
+    fn test_snapshot_label_is_none_without_evidence() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        assert_eq!(s.snapshot().label, None);
+    }
 }
