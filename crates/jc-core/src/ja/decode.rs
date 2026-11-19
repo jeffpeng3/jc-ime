@@ -28,6 +28,7 @@ use crate::ja::lexicon::{
     SingleColumnCost, DEFAULT_CONNECTION_COST, UNKNOWN_WORD_COST,
 };
 use crate::ja::lm::LanguageModel;
+use crate::ja::rewrite::particle_reading_alternative;
 use crate::lang::Mode;
 use crate::segment::{Script, Segment};
 
@@ -505,6 +506,8 @@ pub struct JaBuilder<'a> {
     pub context: JaContext,
     /// 對平假名讀音套用詞面書寫系統偏好。
     pub prefer_hiragana: bool,
+    /// 對助詞同音かな額外嘗試另一種讀音（わ→は、え→へ、お→を）。
+    pub particle_rewrite: bool,
 }
 
 impl<'a> JaBuilder<'a> {
@@ -524,10 +527,16 @@ impl<'a> JaBuilder<'a> {
             self.unknown_word_cost
         };
         let mut starts = Vec::with_capacity(reading.len());
+        let mut swapped = reading.to_vec();
+        let ambiguous: Vec<(usize, char)> = reading
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &unit)| particle_reading_alternative(unit).map(|alt| (pos, alt)))
+            .collect();
         for start in 0..reading.len() {
             let mut nodes: Vec<JaNode> = Vec::new();
             if let Some(source) = self.source {
-                source.matches(reading, start, &mut |m| {
+                let mut push = |reading: &[char], start: usize, m: JaWordMatch<'_>| {
                     if m.end.saturating_sub(start) > max_units {
                         return;
                     }
@@ -544,7 +553,33 @@ impl<'a> JaBuilder<'a> {
                         left_id: m.left_id,
                         right_id: m.right_id,
                     });
-                });
+                };
+                source.matches(reading, start, &mut |m| push(reading, start, m));
+                if self.particle_rewrite {
+                    // 只在一個詞的長度範圍內替換讀音，避免為整句每個同音かな
+                    // 都重建一次索引查詢。
+                    let longest = source.longest_reading_units().max(1);
+                    let stop = reading.len().min(start.saturating_add(longest));
+                    for &(pos, alt) in ambiguous
+                        .iter()
+                        .filter(|(pos, _)| *pos >= start && *pos < stop)
+                    {
+                        let original = swapped[pos];
+                        let offset = pos - start;
+                        swapped[pos] = alt;
+                        source.matches(&swapped, start, &mut |m| {
+                            // 只收真正用到交替讀音的詞條；其餘與原本查詢重複。
+                            if m.entry.reading.chars().nth(offset) != Some(alt) {
+                                return;
+                            }
+                            if !particle_alternation_allowed(original, m.entry) {
+                                return;
+                            }
+                            push(&swapped, start, m);
+                        });
+                        swapped[pos] = original;
+                    }
+                }
             }
             if self.prefer_hiragana {
                 apply_script_policy(&mut nodes, reading, start);
@@ -564,6 +599,18 @@ impl<'a> JaBuilder<'a> {
         }
         Lattice { starts }
     }
+}
+
+/// 交替讀音是否可以用在這筆詞條。
+///
+/// 「わ→は」除了助詞，還要允許 `こんにちは`、`あるいは` 這種整詞讀音本來就
+/// 以「は」表記的詞條，否則使用者把整詞打成同音かな時無法還原。「え→へ」與
+/// 「お→を」只接受助詞，避免把 `えき` 讀成 `へき`（壁）這類同音詞。
+fn particle_alternation_allowed(original: char, entry: &JaEntry) -> bool {
+    if entry.pos_class() == JaPosClass::Particle {
+        return true;
+    }
+    original == 'わ' && entry.reading.chars().count() > 1
 }
 
 /// 文節分割器。
@@ -721,6 +768,7 @@ pub struct JaDecoder {
     reranker: Option<Arc<dyn JaReranker>>,
     rerank_enabled: bool,
     prefer_hiragana: bool,
+    particle_rewrite: bool,
     lm: Option<Arc<LanguageModel>>,
     lm_weight: f64,
 }
@@ -735,6 +783,7 @@ impl std::fmt::Debug for JaDecoder {
             .field("max_candidates", &self.max_candidates)
             .field("has_context", &self.context.is_some())
             .field("prefer_hiragana", &self.prefer_hiragana)
+            .field("particle_rewrite", &self.particle_rewrite)
             .field("lm_weight", &self.lm_weight)
             .finish()
     }
@@ -757,6 +806,7 @@ impl JaDecoder {
             reranker: None,
             rerank_enabled: true,
             prefer_hiragana: false,
+            particle_rewrite: false,
             lm: None,
             lm_weight: 0.0,
         }
@@ -854,6 +904,20 @@ impl JaDecoder {
     pub fn with_prefer_hiragana(mut self, prefer: bool) -> Self {
         self.prefer_hiragana = prefer;
         self
+    }
+
+    /// 開啟或關閉助詞讀音交替。
+    ///
+    /// 開啟後，建立 lattice 時會對「わ」「え」「お」額外嘗試「は」「へ」「を」
+    /// 的讀音，由詞典與 Viterbi 決定是否採用；詞面本身不在這裡改寫。
+    pub fn with_particle_rewrite(mut self, enabled: bool) -> Self {
+        self.particle_rewrite = enabled;
+        self
+    }
+
+    /// 助詞讀音交替是否開啟。
+    pub fn particle_rewrite(&self) -> bool {
+        self.particle_rewrite
     }
 
     /// 設定語言模型。
@@ -1041,6 +1105,7 @@ impl JaDecoder {
             learning: self.learning.as_deref(),
             context: ctx.clone(),
             prefer_hiragana: self.prefer_hiragana,
+            particle_rewrite: self.particle_rewrite,
         }
     }
 
@@ -2227,6 +2292,59 @@ mod tests {
         assert_eq!(results[0].conversion().cost, 9_068);
         assert_eq!(results[1].surface(), "私わ");
         assert_eq!(results[1].conversion().cost, 9_312);
+    }
+
+    #[test]
+    fn test_particle_rewrite_reading_alternation() {
+        let path = jc_testdata::require_data!("packs/ja-lexicon-mozc-v2.pack");
+        let plain = JaDecoder::open_with_context(&path).unwrap();
+        let rewritten = JaDecoder::open_with_context(&path)
+            .unwrap()
+            .with_particle_rewrite(true);
+
+        for (reading, want) in [
+            // わ→は：助詞，以及整詞讀音本來就是「は」的詞。
+            ("わたしわ", "私は"),
+            ("こんにちわ", "こんにちは"),
+            ("あるいわ", "あるいは"),
+            // え→へ、お→を：格助詞。
+            ("ほんおよむ", "本を読む"),
+            ("みずおのむ", "水を飲む"),
+            ("にほんえいく", "日本へ行く"),
+            ("がっこうえいく", "学校へ行く"),
+        ] {
+            assert_eq!(
+                convert_surface(&rewritten, reading),
+                want,
+                "助詞改寫開啟：{reading}"
+            );
+        }
+
+        // 關閉時保留原本的統計結果，證明差異來自交替假設。
+        assert_eq!(convert_surface(&plain, "わたしわ"), "私羽");
+        assert_eq!(convert_surface(&plain, "ほんおよむ"), "本お読む");
+        assert_eq!(convert_surface(&plain, "にほんえいく"), "日本栄区");
+
+        // 一般詞不受影響：えき 不能變成 へき（壁），おちゃ 不能變成 をちゃ。
+        assert_eq!(convert_surface(&rewritten, "えき"), "駅");
+        assert_eq!(convert_surface(&rewritten, "おちゃ"), "お茶");
+    }
+
+    #[test]
+    fn test_particle_rewrite_keeps_existing_wa_words() {
+        let path = jc_testdata::require_data!("packs/ja-lexicon-mozc-v2.pack");
+        let plain = JaDecoder::open_with_context(&path).unwrap();
+        let rewritten = JaDecoder::open_with_context(&path)
+            .unwrap()
+            .with_particle_rewrite(true);
+
+        // 這些詞本來就以「わ」表記，交替假設不得蓋掉詞典結果。
+        for reading in ["すなわち", "いわば"] {
+            let before = convert_surface(&plain, reading);
+            let after = convert_surface(&rewritten, reading);
+            assert_eq!(after, before, "{reading} 不該被改寫");
+            assert_eq!(after, reading);
+        }
     }
 
     #[test]

@@ -125,8 +125,13 @@ pub fn resolve_ja_pack(root: &Path, explicit: Option<&Path>) -> Result<PathBuf, 
 }
 
 /// 載入日文解碼器，使用預設 pack（見 [`resolve_ja_pack`]）。
+///
+/// 使用者輸入的 `わたしわ`、`みずおのむ` 需要靠助詞讀音交替才能得到
+/// `私は`、`水を飲む`，因此 CLI 一律開啟。
 pub fn load_ja_decoder(root: &Path) -> Result<jc_core::ja::decode::JaDecoder, CliError> {
-    loader::load_ja_decoder(root).map_err(to_cli)
+    loader::load_ja_decoder(root)
+        .map(|decoder| decoder.with_particle_rewrite(true))
+        .map_err(to_cli)
 }
 
 /// 模型集合根目錄：`JC_JA_MODELS`，否則資料根目錄下的 `models/`。
@@ -146,7 +151,9 @@ pub fn load_ja_decoder_with_pack(
     root: &Path,
     pack: Option<&Path>,
 ) -> Result<jc_core::ja::decode::JaDecoder, CliError> {
-    loader::load_ja_decoder_with_pack(root, pack).map_err(to_cli)
+    loader::load_ja_decoder_with_pack(root, pack)
+        .map(|decoder| decoder.with_particle_rewrite(true))
+        .map_err(to_cli)
 }
 
 /// 載入 OpenCC tw2s 字典；資料在資料根目錄的 `opencc/`。
