@@ -74,6 +74,8 @@
 | `defaults-policy` | `e116f5f` | `175f417` | 通過（fmt／clippy／test／兩個 eval） | 2026-11-20 04:08 |
 | `engine-data` | `24b876b` | `8aa5ab1` | clippy 通過；jc-engine 4 個 test 失敗 | 2026-11-20 04:13 |
 | `ja-ime-survey` | `4eac1ef` | `c9b8998` | check 通過 | 2026-11-20 04:16 |
+| `engine-data`（zh-select） | `8dc6235` | `d2aba42` | 通過（fmt／clippy／test） | 2026-11-20 04:28 |
+| `ja-personal-wire` | `ea161f8` | `b32beb2` | 通過（fmt／clippy／test） | 2026-11-20 04:28 |
 
 ## 衝突與修正
 
@@ -617,3 +619,18 @@
 
 - `ja-ime-survey`（合併 `c9b8998`）：無衝突，只新增 `docs/reports/ja-ime-survey-2026-11-20.md`（898 行），沒有程式改動。
   `cargo check --workspace --all-targets` exit 0（全部 cached）。
+
+- `engine-data` 第二次合併（`d2aba42`，含 `8dc6235`）：無衝突。加 `--allow-empty-data` 讓整合測試不必準備資料，
+  並在啟動時安裝 zh-select 模型；`tests/stdio.rs`、`tests/socket.rs` 各加一行參數。上一輪的 4 個 jc-engine 失敗全部解除。
+  worktree 內的未追蹤 `Cargo.fetches.lock`（blaze 產生）沒有進 main，另外在 `.gitignore` 補一行避免誤入（commit `3f67a14`）。
+
+- `ja-personal-wire`（合併 `b32beb2`）：無衝突。`ja/personal.rs` 加 300 行、`personal/mod.rs` 加 424 行，
+  `session.rs` 接上日文學習，`jc-cli` 的 `cli.rs`／`converter.rs` 接 `--user-data`。
+
+  三個 gate：`cargo fmt --all -- --check` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0、
+  `cargo test --workspace --no-fail-fast` **exit 0**（39 targets、925 passed、0 failed）。
+
+  engine 實測（`jc-engine --data /mnt/work/jc/jc-ime-data`，握手→按鍵→snapshot→commit→shutdown）：
+  - `--mode mixed`：`ji3` → **我**（正確）。
+  - `--mode ja`：`watashiwa` → **私羽**；Go 參考是 `私わ`，差異與先前 `mixed-e2e` 記錄一致（Mozc pack 詞面成本，
+    不是路由或解碼錯誤），照實記錄不視為失敗。`--mode mixed` 下 `watashiwa` 仍走英文直通輸出 `watashiwa`。
