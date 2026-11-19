@@ -79,6 +79,8 @@
 | `ajimee-eval` | `8663bea` | `7885302` | 通過（fmt／clippy／全量 test） | 2026-11-20 04:31 |
 | `ja-models-fetch` | `0f76eec` | `44e8a5f` | check 通過 | 2026-11-20 04:31 |
 | `ja-cost-diag` | `fca198b` | `058f44b` | test 通過；clippy 1 個錯 | 2026-11-20 04:42 |
+| `rerank-gating` | `a0a6f32` | `5932532` | test 1 個失敗；clippy 待 ja-cost 修 | 2026-11-20 04:55 |
+| `ja-particle-rewrite` | `a5a5aab` | `af7ef2f` | test 2 個失敗；clippy 待 ja-cost 修 | 2026-11-20 05:05 |
 
 ## 衝突與修正
 
@@ -659,3 +661,35 @@
   - `私+羽` 的連接成本 **966**（`matrix(1902, 1949)`），`私+わ` 的連接成本 **5556**（`matrix(1902, 431)`），差 **4590**。
   - `私わ` 的詞成本便宜 **4346**，仍被連接成本差 4590 蓋過，淨差 244，所以輸出 `私羽` 而非 Go 參考的 `私わ`。
     這是 Mozc context 矩陣的既有權重，不是解碼錯誤。
+
+- `rerank-gating`（合併 `5932532`）：`cli.rs`、`eval_cmd.rs` 有衝突，照兩邊意圖都保留解：`--gate`（`WordGate`、`reject_ja_flags` 加 gate 參數）
+  與 ajimee 的 `--items`／`JaOptions` 並存；`run_command` 以 `gate: rerank.then_some(*gate)` 傳入。合併後另補一個整合修正（`3ea5ab5`）：
+  `ja()` 不再使用 `rerank` 欄位，改成 `rerank: _`，消掉 clippy 的 unused variable。
+  gate：fmt exit 0；test exit 101（40 targets、934 passed、1 failed）：
+  `ja::decode::tests::test_word_reranker_sees_decoded_left_context`（`decode.rs:2172`，`["今日", ""]` vs `["", "今日"]`），屬 rerank-gating。
+  clippy 只剩 ja-cost 的 `needless_lifetimes`（ja-cost-diag 待修）。
+
+  門檻表（`--gate Gap(100)`）：
+  - modern-500：top-1 **86.0%**、top-5 **98.0%**、p50 **7.3 ms**，只送 **6%** 詞群進模型。
+  - ajimee-200：**46.5%**。
+  - hard-cases：**54.3%**，未達「> 54.3%」的目標。
+  - 門檻放寬到 350 時 hard-cases 升到 **57.1%**，但 top-5 掉到 **94.3%**。
+
+- `ja-particle-rewrite`（合併 `af7ef2f`）：`ja/decode.rs` 自動合併，無衝突。`JaBuilder` 加 `particle_rewrite`（核心預設 false，
+  `jc-cli` 的 `data::load_ja_decoder*` 一律 `with_particle_rewrite(true)`），`rewrite.rs` 加助詞讀音交替。
+
+  三組題庫 top-1 不變：modern-500 **86.0%**、hard-cases **54.3%**、ajimee-200 **46.0%**（`--items` 逐題比對開啟／關閉完全相同）。
+
+  七個案例（關閉 → 開啟）：`わたしわ` 私羽 → **私は**；`こんにちわ` こんにちわ → **こんにちは**；`あるいわ` → **あるいは**；
+  `ほんおよむ` 本お読む → **本を読む**；`にほんえいく` 日本栄区 → **日本へ行く**；`すなわち`／`いわば` 不變。
+
+  限制：`え→へ`、`お→を` 只開放給助詞位置，不能給一般詞，因為實測 `〜についてえきではなす` 會讓 modern-500 的 `駅` 變成 `壁`。
+
+  gate：fmt exit 0；test exit 101（40 targets、936 passed、2 failed）：
+  - `eval_cmd::tests::mixed_golden_compares_surfaces_and_boundaries`（`eval_cmd.rs:1311`）：mixed golden 期望 `私わ`，實際 `私は`，
+    是本次改寫的預期結果，golden 期望值需由相關 task 更新。
+  - `ja::decode::tests::test_word_reranker_sees_decoded_left_context`：上一輪 rerank-gating 既有失敗，與本 branch 無關。
+  clippy 仍是 ja-cost 的 `needless_lifetimes`。
+
+  engine 缺口（依指示回報、未自行改）：`crates/jc-engine/src/loader.rs` 沒有任何 `with_particle_rewrite` 呼叫，
+  核心預設是 `false`，所以 **jc-engine 目前沒有開啟助詞改寫**；只有 `jc-cli` 開了。
