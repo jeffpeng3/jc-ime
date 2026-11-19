@@ -26,6 +26,20 @@
 | `fix-cli-ja` | `a8fbc7e` | `7b7e8bc` | 通過 | 2026-11-19 22:41 |
 | `zh-golden` | `9068771` | `2e6156b` | 通過 | 2026-11-19 23:07 |
 | `jc-platform` | `92f57b2` | `7f19601` | 通過 | 2026-11-19 23:10 |
+| `bigram-data` | `3d96d6a` | `27ca97e` | 通過 | 2026-11-19 23:12 |
+| `eval-ja-ambiguous` | `f8fb416` | `ea85686` | 通過 | 2026-11-19 23:12 |
+| `zh-golden-rest` | `59b67ce` | `09abcd6` | 通過 | 2026-11-19 23:16 |
+| `jc-model` | `63d6049` | `8d4015c` | 通過 | 2026-11-19 23:18 |
+| `eval-fuzzy` | `9ba1fe8` | `35c769f` | 通過（解衝突） | 2026-11-19 23:21 |
+| `zh-data` | `333abac` | `b2f6d80` | 通過 | 2026-11-19 23:23 |
+| `zh-models` | `f188bf7` | `5d85e54` | 通過 | 2026-11-19 23:27 |
+| `docs-milestone` | `5f87d03` | `52ac22e` | 通過 | 2026-11-19 23:29 |
+| `ci-clippy` | `34055f4` | `34ecac4` | 通過 | 2026-11-19 23:30 |
+| `zh-symbols` | `f6db514` | `b6de2a9` | 通過 | 2026-11-19 23:30 |
+| `english-pack` | `fd5d8cf` | `15055d2` | 通過（解衝突） | 2026-11-19 23:40 |
+| `fix-mixed-clippy` | `c57992c` | `77f2788` | 通過（fmt＋clippy） | 2026-11-19 23:47 |
+| `ci-lint` | `2732fb3` | `e08a59a` | 通過（fmt＋clippy） | 2026-11-19 23:47 |
+| `fix-windows-cfg` | `0131ebe` | `cf3beba` | 通過（check＋clippy） | 2026-11-20 00:03 |
 
 ## 衝突與修正
 
@@ -114,3 +128,85 @@
 
 - `jc-platform`（合併 `7f19601`）：無衝突。新增 `clock.rs`、`headless.rs`、`host.rs`、`tests/contract.rs`，
   改寫 `lib.rs` 的宿主契約；`Cargo.lock` 自動合併。沒有編譯錯誤要修，未改任何實作。
+
+- `bigram-data`（合併 `27ca97e`）：無衝突，只新增 `docs/port/bigram-data.md` 與 `scripts/fetch_chewing_bigram.sh`，沒有 Rust 改動。
+  `cargo check` 全部 cached 通過。新酷音 bigram 已重建到 `/mnt/work/jc/jc-ime-data/build-zh-bigram/`
+  （`lexicon.bin` 8.4M、`lm.bin` 31.4M、`manifest.json`、`NOTICE.txt`、`report.txt`），資料在 git 外。
+
+- `eval-ja-ambiguous`（合併 `ea85686`）：無衝突。只改 `crates/jc-cli/src/bin/ja-eval.rs`（新增 `--file`／`--split`）
+  與 `docs/port/eval-ja-ambiguous.md`。沒有編譯錯誤要修，未改任何實作。
+
+  量測（`ja-lexicon-ambiguous`，1200 題）：v2 Mozc pack holdout top-1 **30.2%**（121/400）、top-5 58.5%；
+  public-core pack holdout top-1 **52.2%**、top-5 93.8%。差異來自題庫原始建構用的是 public-core pack
+  （候選成本取自 public-core，reference 是它的最低成本詞面），不是 decoder 問題，所以 `jc-core` 未改。
+
+- `zh-golden-rest`（合併 `09abcd6`）：無衝突。新增 `crates/jc-core/src/zhconv.rs`，`mixed.rs`、`session.rs`、
+  `output/mod.rs` 接上 mixed ASCII 推斷與簡體轉換，`jc-cli` 的 `data.rs`／`eval_cmd.rs` 接字典載入。
+  沒有編譯錯誤要修，未改任何實作。
+
+  golden 實測（`jc-cli eval zh-golden`）：**通過 41/45**（對照上一輪 35/45）。
+  剩 4 例全是學習依賴：`learning-select-preference`、`learning-forget-request`、
+  `undo-learned-word`、`undo-custom-word`，期望值未動。
+  zhconv 字典在 `/mnt/work/jc/jc-ime-data/opencc/`（OpenCC 1.4.2，Apache-2.0），git 外。
+
+- `jc-model`（合併 `8d4015c`）：`Cargo.lock` 自動合併。新增 `manifest.rs`、`layout.rs`、`tokenizer.rs`、`rerank.rs`、
+  `punctuation_model.rs`、`runtime.rs`、`role.rs`、`error.rs`、`punct.rs`、`bin/probe.rs`；`ort` 走 optional feature `onnx`，
+  預設建置不拉入。沒有編譯錯誤要修，未改任何實作。
+
+  效能（`bin/probe` 回報）：reranker **32 ms**、punctuation **2 ms**（單次推論延遲）。
+  行為差異：`vocab.json` 沒有 piece log-probability，tokenizer 改用**最長前綴匹配 + byte fallback**，
+  不做 unigram Viterbi；已寫在 `docs/port/jc-model.md`。
+
+- `eval-fuzzy`（合併 `35c769f`）：新增 `crates/jc-core/src/zh/fuzzy.rs`、`crates/jc-eval/src/fuzzy.rs`。
+  `crates/jc-cli/src/eval_cmd.rs` 有兩處衝突，已按「兩邊意圖都保留」處理：
+  匯入改成 union（保留 main 的 `RerankOptions`／`SessionConfig`，加上 branch 的 `Lattice`、`zh::fuzzy`）；
+  main 的 `apply_options`／`fuzzy_pair` 與 branch 的 `run_fuzzy_zh`／`classify_zh_miss`／`run_fuzzy_ja`／
+  `set_fuzzy_empty`／`file_sha256` 全數保留。沒有改任何實作邏輯。
+
+  量測（`jc-cli eval fuzzy`）：全部 **919** 題；注音 319 題 top-1 **44.5%**（前身／舊版 40.4%），
+  提升來自 near-sound 81.4% → 100%。日文 600 題 top-1 1.5%，降級主因是 unhandled 182 題。
+
+- `zh-data`（合併 `b2f6d80`）：git 自動合併 `Cargo.lock`、`jc-cli/src/data.rs`，無衝突。
+  新增 `crates/jc-data/src/zh/`（`format`、`lexicon`、`lm`、`error`、`mod`、`tests`、`testutil`），
+  `jc-data/lib.rs` 加 `pub mod zh;`，`jc-cli` 接 `--data` 載入。沒有編譯錯誤要修，未改任何實作。
+
+  bigram：`build-zh-bigram` 的 `lm.bin` 有 **7,028,326** 筆 bigram（成本 238021 詞、31.4 MB）；
+  `jc-core` 的注音解碼器用詞性連接成本，**解碼未使用 bigram**，兩包 5-best 相同，
+  需要時由呼叫端直接呼叫 `jc_data::zh::Lm::bi`。
+
+- `zh-models`（合併 `5d85e54`）：無衝突，只新增 `docs/port/zh-models.md` 與 `scripts/fetch_zh_models.sh`，沒有 Rust 改動。
+  兩個注音模型已取得（`zh-select`：`Funmula/0c-sequence-d512`、`zh-punct`：`Funmula/0c-punct-d512`，皆 MIT，revision 已固定）。
+  `vocab.json` 是 **zuin-phonetic-v1**（27,857 字、416 注音 base），不是 sentencepiece，
+  `jc-model` 的 tokenizer 目前不支援，實際注音推論接線待後續 task。
+
+- `docs-milestone`（合併 `52ac22e`）：無衝突，只有文件改動：`README.md`、`docs/architecture.md`、`docs/history.md` 更新到 M2，
+  新增 `docs/status.md`。`cargo check` 全部 cached 通過，確認沒動到程式。
+  `README.md` 的 `## 致謝` 段落仍在（文字重排換行，內容未變）。
+
+- `ci-clippy`（合併 `34ecac4`）：無衝突，29 個檔全部是 clippy／fmt 修正（245 增、158 刪），另有 `docs/port/ci-clippy.md`。
+  `cargo check --workspace --all-targets` 通過，0 warning。
+- `zh-symbols`（合併 `b6de2a9`）：`jc-core/src/session.rs` 自動合併，無衝突。新增 `symbols.rs`、`emoji.rs`、`punct.rs`，
+  `session.rs` 接上符號、表情、全形數字與補標點，`lib.rs` 加模組宣告。`cargo check --workspace --all-targets` 通過，0 warning。
+
+- `english-pack`（合併 `15055d2`）：新增 crate `crates/jc-englishpack`、`scripts/build_english_pack.sh`，workspace `Cargo.toml` 加 member。
+  `crates/jc-core/src/mixed.rs` 的 `suggestion()` 有衝突：main 用 `prototype().words()` 加 `one_edit_apart` 掃原型詞表，
+  branch 改用真詞表 `dict.corrections(raw, 1)`。採 branch 版讓載入真實詞表的意圖成真，`one_edit_apart`
+  隨 branch 一起移除，沒有留下未使用的函式。沒有改其他實作邏輯。
+
+  資料：`words.bin` 已建置在 `/mnt/work/jc/jc-ime-data/english/`（82,015 詞、1,522,028 bytes，另有 `manifest.json`、`NOTICE.txt`）。
+  branch 回報的 `strace` 顯示 `manifest.json` 與 `words.bin` 都被開啟，`query` 來源是 `english/words.bin`，可證實不是 `prototype()`。
+
+- `fix-mixed-clippy`（合併 `77f2788`，含 `f9ecb66`、`c57992c`）：無衝突。修掉兩個 `neg_cmp_op_on_partial_ord`：
+  `jc-core/src/mixed.rs` 的 `near_common`、`jc-englishpack/src/compile.rs` 的權重檢查，都改成先算 `valid_*` 布林再判斷。
+- `ci-lint`（合併 `e08a59a`）：無衝突。只改 `jc-core/src/emoji.rs` 的 `needless_range_loop`（`for i in 0..MAX_RECENT + 10` 改 iterator）
+  與 `docs/port/ci-lint.md`。
+
+  驗證結果：`cargo fmt --all -- --check` exit 0；`cargo clippy --workspace --all-targets -- -D warnings` **exit 0**；
+  `cargo check --workspace --all-targets` 也通過（0 warning）。
+
+- `fix-windows-cfg`（合併 `cf3beba`）：無衝突。`jc-engine/src/main.rs` 的 unix socket 路徑加 `#[cfg(unix)]`，
+  非 unix 提供同名 `serve_socket` 回 `named pipe 尚未實作…`，`--socket` 說明改用平台常數；
+  `jc-engine/tests/socket.rs` 加 `#![cfg(unix)]`。
+
+  驗證結果：`cargo check --workspace --all-targets` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0。
+  Windows（msvc）編譯由 CI 驗證，本機 Linux 不做交叉編譯。

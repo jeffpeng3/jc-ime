@@ -65,8 +65,10 @@ mod tests {
 
     #[test]
     fn connection_cost_is_added_after_the_first_edge() {
-        let mut ctx = ScoreContext::default();
-        ctx.connection = ConnectionMatrix::with_fallback(3);
+        let ctx = ScoreContext {
+            connection: ConnectionMatrix::with_fallback(3),
+            ..Default::default()
+        };
         assert_eq!(step_cost(&ctx, Some("前"), 1, &edge(2, 5)), 8);
     }
 

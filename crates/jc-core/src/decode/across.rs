@@ -107,11 +107,12 @@ mod tests {
     }
 
     fn ctx() -> ScoreContext {
-        let mut ctx = ScoreContext::default();
-        ctx.length_bonus = 0;
-        ctx.unknown_cost = 100;
-        ctx.connection = ConnectionMatrix::with_fallback(0);
-        ctx
+        ScoreContext {
+            length_bonus: 0,
+            unknown_cost: 100,
+            connection: ConnectionMatrix::with_fallback(0),
+            ..Default::default()
+        }
     }
 
     #[test]

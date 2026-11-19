@@ -1,0 +1,17 @@
+[package]
+name = "jc-englishpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "ESDB／SCOWL 與產品詞表 → 0cEN v1 英文資料包"
+
+[dependencies]
+jc-core = { path = "../jc-core" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+
+[dev-dependencies]
+jc-testdata = { path = "../jc-testdata" }

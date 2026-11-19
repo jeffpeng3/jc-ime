@@ -427,6 +427,13 @@ fn load_curated_decoder(words: &Path, connection: &Path) -> Result<JaDecoder, Cl
     Ok(decoder)
 }
 
+/// 載入 OpenCC tw2s 字典；資料在資料根目錄的 `opencc/`。
+pub fn load_zhconv(root: &Path) -> Result<jc_core::zhconv::Converter, CliError> {
+    let dir = root.join("opencc");
+    jc_core::zhconv::tw2s_from_dir(&dir)
+        .map_err(|err| CliError::data(format!("讀取 {} 失敗：{err}", dir.display())))
+}
+
 /// 由注音資源建立 session 設定。
 pub fn zh_session_config(
     mode: jc_core::Mode,

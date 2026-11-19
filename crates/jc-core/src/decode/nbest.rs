@@ -138,12 +138,12 @@ impl Decoder<'_> {
         if prefix {
             let top_b = self.top_b();
             let own = self.tail_chars(lat);
-            for at in 0..n {
-                if locked_in(locks, at, n) || states[at].is_empty() {
+            for (at, state) in states.iter().enumerate().take(n) {
+                if locked_in(locks, at, n) || state.is_empty() {
                     continue;
                 }
                 let k_left = n - at;
-                let mut level: Vec<PathState> = states[at].values().flatten().cloned().collect();
+                let mut level: Vec<PathState> = state.values().flatten().cloned().collect();
                 level.sort_by(path_less);
                 level.truncate(top_b);
                 let mut group: BTreeMap<String, PathState> = BTreeMap::new();
@@ -263,7 +263,7 @@ impl Decoder<'_> {
         let _ = prefix;
         let mut best: Option<PathState> = None;
         for p in states[n].values() {
-            if best.as_ref().map_or(true, |b| path_less(p, b).is_lt()) {
+            if best.as_ref().is_none_or(|b| path_less(p, b).is_lt()) {
                 best = Some(p.clone());
             }
         }
@@ -342,11 +342,12 @@ mod tests {
     }
 
     fn ctx() -> ScoreContext {
-        let mut ctx = ScoreContext::default();
-        ctx.length_bonus = 0;
-        ctx.unknown_cost = 100;
-        ctx.connection = ConnectionMatrix::with_fallback(0);
-        ctx
+        ScoreContext {
+            length_bonus: 0,
+            unknown_cost: 100,
+            connection: ConnectionMatrix::with_fallback(0),
+            ..Default::default()
+        }
     }
 
     #[test]

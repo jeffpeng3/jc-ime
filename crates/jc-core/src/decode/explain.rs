@@ -131,10 +131,12 @@ mod tests {
         let mut lex = InMemoryLexicon::new();
         lex.push(entry("注", "ㄓㄨˋ", 10));
         lex.push(entry("音", "ㄧㄣ", 10));
-        let mut ctx = ScoreContext::default();
-        ctx.length_bonus = 0;
-        ctx.unknown_cost = 100;
-        ctx.connection = ConnectionMatrix::with_fallback(2);
+        let ctx = ScoreContext {
+            length_bonus: 0,
+            unknown_cost: 100,
+            connection: ConnectionMatrix::with_fallback(2),
+            ..Default::default()
+        };
         let lat = Lattice::build(&["ㄓㄨˋ", "ㄧㄣ"], &lex, &ctx).expect("建立詞格");
         let d = Decoder::new(&lex, &ctx);
         let e = d.explain_best(&lat, &Locks::new(), false);

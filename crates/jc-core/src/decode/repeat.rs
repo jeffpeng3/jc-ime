@@ -38,9 +38,9 @@ pub fn repeat_kind(w: &str) -> RepeatArc {
 /// 這一列接上詞面 `w`（起點 `at`）時是否要檢查疊字。
 pub fn may_cap(kind: RepeatArc, segs: &[Seg], at: usize, w: &str) -> bool {
     match kind {
-        RepeatArc::SingleRepeat => segs.last().map_or(false, |prev| {
-            prev.end == at && prev.word == w && !prev.partial
-        }),
+        RepeatArc::SingleRepeat => segs
+            .last()
+            .is_some_and(|prev| prev.end == at && prev.word == w && !prev.partial),
         RepeatArc::PairRepeat => true,
         RepeatArc::NoRepeat => false,
     }
@@ -96,9 +96,10 @@ mod tests {
     }
 
     fn plain_ctx() -> crate::score::ScoreContext {
-        let mut ctx = crate::score::ScoreContext::default();
-        ctx.unknown_cost = 100;
-        ctx
+        crate::score::ScoreContext {
+            unknown_cost: 100,
+            ..Default::default()
+        }
     }
 
     fn edge(surface: &str, reading: &str, start: usize, end: usize) -> Edge {

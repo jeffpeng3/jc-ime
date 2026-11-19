@@ -179,11 +179,12 @@ mod tests {
 
     /// 測試用設定：關掉長度折扣與連接成本，只留下詞典成本。
     fn plain_ctx() -> ScoreContext {
-        let mut ctx = ScoreContext::default();
-        ctx.length_bonus = 0;
-        ctx.unknown_cost = 100;
-        ctx.connection = ConnectionMatrix::with_fallback(0);
-        ctx
+        ScoreContext {
+            length_bonus: 0,
+            unknown_cost: 100,
+            connection: ConnectionMatrix::with_fallback(0),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -246,8 +247,10 @@ mod tests {
         lex.push(entry("台", "ㄊㄞˊ", 10, 1));
         lex.push(entry("北", "ㄅㄟˇ", 10, 1));
         lex.push(entry("台北", "ㄊㄞˊ ㄅㄟˇ", 20, 1));
-        let mut ctx = ScoreContext::default();
-        ctx.unknown_cost = 100;
+        let ctx = ScoreContext {
+            unknown_cost: 100,
+            ..Default::default()
+        };
         let readings = ["ㄊㄞˊ", "ㄅㄟˇ"];
         let lat = Lattice::build(&readings, &lex, &ctx).expect("建立詞格");
 
@@ -408,8 +411,10 @@ mod tests {
     fn test_scenario_unknown_syllable_still_decodes() {
         let mut lex = InMemoryLexicon::new();
         lex.push(entry("注", "ㄓㄨˋ", 10, 1));
-        let mut ctx = ScoreContext::default();
-        ctx.unknown_cost = 100;
+        let ctx = ScoreContext {
+            unknown_cost: 100,
+            ..Default::default()
+        };
         let readings = ["ㄓㄨˋ", "ㄅㄧㄤ"];
         let lat = Lattice::build(&readings, &lex, &ctx).expect("建立詞格");
 

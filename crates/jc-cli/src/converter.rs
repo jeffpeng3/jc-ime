@@ -4,7 +4,6 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use jc_core::candidate::Candidate;
 use jc_core::decode::{Decoder, Locks};
@@ -89,12 +88,12 @@ impl Converter for ZhConverter {
 /// 日文轉換器。
 #[derive(Debug, Clone)]
 pub struct JaConverter {
-    decoder: Arc<JaDecoder>,
+    decoder: JaDecoder,
 }
 
 impl JaConverter {
     /// 用已載入的解碼器建立轉換器。
-    pub fn new(decoder: Arc<JaDecoder>) -> Self {
+    pub fn new(decoder: JaDecoder) -> Self {
         Self { decoder }
     }
 
@@ -184,7 +183,7 @@ pub fn load_auto(testdata: &Path) -> Result<AutoConverter, CliError> {
     let decoder = data::load_ja_decoder(&root)?;
     Ok(AutoConverter::new(
         ZhConverter::new(resources),
-        JaConverter::new(Arc::new(decoder)),
+        JaConverter::new(decoder),
     ))
 }
 
@@ -221,7 +220,7 @@ pub fn convert(
     } else {
         let dir = data::testdata_dir(testdata)?;
         let decoder = data::load_ja_decoder(&data::data_root(&dir))?;
-        JaConverter::new(Arc::new(decoder))
+        JaConverter::new(decoder)
             .nbest(reading, n)
             .into_iter()
             .map(|conversion| {

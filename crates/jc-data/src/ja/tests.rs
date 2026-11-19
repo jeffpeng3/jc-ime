@@ -362,7 +362,7 @@ fn sample_pack() -> Vec<u8> {
 fn sample_v2_pack() -> Vec<u8> {
     let mut connection = vec![0i16; 16];
     connection[0] = 42;
-    connection[1 * 4 + 2] = -777;
+    connection[4 + 2] = -777;
     connection[3 * 4 + 3] = 250;
     encode_test_pack_v2(
         &[
@@ -1148,8 +1148,7 @@ fn entry(cost: i16, reading: &str, pos_id: u16, conj_type: u8, conj_form: u8) ->
         "同",
         reading,
         pos_id,
-        conj_type,
-        conj_form,
+        (conj_type, conj_form),
         cost,
         Split::C,
         0,
@@ -1191,10 +1190,10 @@ fn test_compare_entries() {
 #[test]
 fn test_sort_surface_entries_stable() {
     let mut entries = vec![
-        Entry::for_test("同", "あ", 0, 0, 2, 500, Split::C, 1),
-        Entry::for_test("同", "あ", 0, 0, 0, 500, Split::A, 2),
-        Entry::for_test("同", "あ", 0, 0, 0, 500, Split::B, 3),
-        Entry::for_test("同", "え", 0, 0, 0, 400, Split::C, 4),
+        Entry::for_test("同", "あ", 0, (0, 2), 500, Split::C, 1),
+        Entry::for_test("同", "あ", 0, (0, 0), 500, Split::A, 2),
+        Entry::for_test("同", "あ", 0, (0, 0), 500, Split::B, 3),
+        Entry::for_test("同", "え", 0, (0, 0), 400, Split::C, 4),
     ];
     sort_surface_entries(&mut entries);
     let got: Vec<u16> = entries.iter().map(|e| e.flags).collect();

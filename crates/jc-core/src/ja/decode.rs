@@ -438,6 +438,7 @@ pub trait JaReranker {
 ///
 /// 每個起點都走訪詞典的所有讀音前綴，另外固定加入一個單字かな的未知詞
 /// fallback。`prefer_hiragana` 開啟時套用 [`apply_script_policy`]。
+#[derive(Default)]
 pub struct JaBuilder<'a> {
     /// 詞條來源；`None` 時只有未知詞。
     pub source: Option<&'a dyn JaWordSource>,
@@ -451,19 +452,6 @@ pub struct JaBuilder<'a> {
     pub context: JaContext,
     /// 對平假名讀音套用詞面書寫系統偏好。
     pub prefer_hiragana: bool,
-}
-
-impl Default for JaBuilder<'_> {
-    fn default() -> Self {
-        Self {
-            source: None,
-            max_word_units: 0,
-            unknown_word_cost: 0,
-            learning: None,
-            context: JaContext::default(),
-            prefer_hiragana: false,
-        }
-    }
 }
 
 impl<'a> JaBuilder<'a> {
@@ -1311,11 +1299,12 @@ fn apply_script_policy(nodes: &mut Vec<JaNode>, reading: &[char], start: usize) 
         if !hiragana_units(units) {
             continue;
         }
-        if !katakana_surface(&node.entry.surface) && !latin_surface(&node.entry.surface) {
-            if !have_plain || node.entry.cost < best_plain {
-                best_plain = node.entry.cost;
-                have_plain = true;
-            }
+        if !katakana_surface(&node.entry.surface)
+            && !latin_surface(&node.entry.surface)
+            && (!have_plain || node.entry.cost < best_plain)
+        {
+            best_plain = node.entry.cost;
+            have_plain = true;
         }
         if is_dependent(node.entry.pos_class()) && hiragana_surface(&node.entry.surface) {
             dependent_ends.insert(node.end);

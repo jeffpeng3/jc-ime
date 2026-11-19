@@ -8,17 +8,21 @@
 
 pub mod candidate;
 pub mod decode;
+pub mod emoji;
 pub mod ja;
 pub mod key;
 pub mod lang;
 pub mod lattice;
 pub mod mixed;
 pub mod output;
+pub mod punct;
 pub mod reading;
 pub mod score;
 pub mod segment;
 pub mod session;
+pub mod symbols;
 pub mod zh;
+pub mod zhconv;
 
 pub use candidate::{Candidate, CandidateSource};
 pub use decode::{Conversion, EngineError};
