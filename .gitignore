@@ -1,4 +1,5 @@
 /target
+scripts/quant/dump-inputs/target/
 **/*.rs.bk
 build/
 data/
