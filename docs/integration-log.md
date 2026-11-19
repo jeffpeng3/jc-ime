@@ -40,6 +40,7 @@
 | `fix-mixed-clippy` | `c57992c` | `77f2788` | 通過（fmt＋clippy） | 2026-11-19 23:47 |
 | `ci-lint` | `2732fb3` | `e08a59a` | 通過（fmt＋clippy） | 2026-11-19 23:47 |
 | `fix-windows-cfg` | `0131ebe` | `cf3beba` | 通過（check＋clippy） | 2026-11-20 00:03 |
+| `mixed-e2e` | `7c94971` | `b7ee298` | 通過（check＋fmt＋clippy） | 2026-11-20 00:16 |
 
 ## 衝突與修正
 
@@ -210,3 +211,12 @@
 
   驗證結果：`cargo check --workspace --all-targets` exit 0、`cargo clippy --workspace --all-targets -- -D warnings` exit 0。
   Windows（msvc）編譯由 CI 驗證，本機 Linux 不做交叉編譯。
+
+- `mixed-e2e`（合併 `b7ee298`）：無衝突。`jc-core/src/mixed.rs`、`jc-cli` 的 `cli.rs`／`eval_cmd.rs` 補 Mixed 整句轉換與表面比對，
+  另有 `docs/port/mixed-e2e.md`。
+
+  驗證結果：`cargo check --workspace --all-targets` exit 0、`cargo fmt --all -- --check` exit 0、
+  `cargo clippy --workspace --all-targets -- -D warnings` exit 0（沒有跑 `cargo test`）。
+
+  Mixed 對照前身 6 個案例：**4 例完全一致**，2 例（`scenario-a-primary-ja`、`scenario-b-primary-zh`）
+  只差日文詞面 `私わ`（前身）與 `私羽`（Rust），其餘輸出相同；原因是 Mozc pack 的詞面成本差異，不是路由錯誤。
