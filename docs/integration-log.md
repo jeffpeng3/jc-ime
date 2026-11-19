@@ -89,6 +89,7 @@
 | `ja-particle-rewrite`（golden＋engine） | `aa5797f` | `c04e85e` | 通過（clippy＋全量 test） | 2026-11-20 05:30 |
 | `jinen-integrate` | `34688d7` | `72985f6` | 通過（clippy＋全量 test） | 2026-11-20 05:38 |
 | `quant-study` | `cf0926e` | `8e27af0` | check 通過 | 2026-11-20 05:38 |
+| `candle-punct` | `9705bb5` | `f9b2e69` | 通過（clippy＋全量 test） | 2026-11-20 05:46 |
 
 ## 衝突與修正
 
@@ -779,3 +780,20 @@
   - 外部 **Jinen Q5_K_M 最划算**（28.3 MB，品質與延遲平衡）。
   - **int4 在 ARM 上反而變慢**：reranker 由 int8 的 31.9 ms 升到 **70.8 ms**（模型 18.5 MB，但 kernel 走慢路徑）。
   - 另記：reranker 目前讓端到端變差（modern-500 `--rerank off` 86.0%，開啟後更低），維持 opt-in。
+
+- `candle-punct`（合併 `f9b2e69`，含 `9705bb5`，另 `f3249c7` 補 fmt）：`Cargo.toml`、`Cargo.lock`、
+  `jc-model/src/candle/mod.rs`、`lib.rs` 有衝突。解法定成「共用 encoder、兩個模型並存」：
+  - `candle/mod.rs` 以 candle-punct 的共用 `Encoder`／`Layer`（`Option<&Tensor>` 遮罩）為底，補回 reranker 的
+    `position_ids`、`CandleConfig::for_spec`／`pool_slot`、`CandleReranker`（改用共用 `Encoder` 的 forward），以及 `pub mod jinen;`。
+  - 環境變數拆開：punct 用 `JC_PUNCT_WEIGHTS`／`JC_PUNCT_BACKEND`，reranker 用 `JC_RERANK_WEIGHTS`／`JC_RERANK_BACKEND`；
+    新增 `weights_path_with_env`，`rerank.rs` 改用它。
+  - `Cargo.lock` 以 main 版為底，`Cargo.toml` 同時保留 `candle-transformers`／`tokenizers`（Jinen）與 `rayon`。
+
+  gate：`cargo clippy --workspace --all-targets -- -D warnings` **exit 0**；
+  `cargo test --workspace --no-fail-fast` **exit 0**（43 targets、952 passed、0 failed）。
+
+  量測（作者）：candle 標點與 ORT fp32 的 logits **max|Δ| 2.289e-5**、argmax **51200/51200 一致**；
+  端到端文字 **5099/5099 字元一致（100%）**、**500/500 句整句相同**。延遲：
+  - 256 token（視窗上限）：candle 61.25 ms vs ORT fp32 17.51 ms，約 **3.5 倍**。
+  - 13 token（IME 短句）：candle 7.3–10.2 倍慢（1.29–1.43 ms 對比 11.8–13.2 ms 的整段流程）。
+  結論：candle 只適合 reranker 這類長序列，短序列標點不划算，**保留 `ort` 為預設**。
