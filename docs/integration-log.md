@@ -107,6 +107,7 @@
 | `session-backfill` | `ade1479` | `610498c` | 通過（fmt／clippy／test／四個 eval） | 2026-11-20 08:07 |
 | `drop-punct` | `859f6d1` | `dacb52b` | 通過（fmt／clippy／test／兩個 eval；無殘留） | 2026-11-20 08:28 |
 | `jinen-gating-v2` | `81e0cbe` | `83152fc` | test 通過；clippy 1 個錯 | 2026-11-20 08:31 |
+| `candle-zh` | `131f606` | `d8da98f` | 通過（fmt／test／兩個 eval）；clippy 剩 jinen-gate | 2026-11-20 08:37 |
 
 ## 衝突與修正
 
@@ -1025,3 +1026,20 @@
 
   延遲：small 在空閒機器 p50 44–61 ms（排除線 150 ms）；品質優先版混合 p50 **4.76／22.74／55.60 ms**、
   p95 58／47.2／197.9 ms（modern／hard／ajimee）。ajimee 的 74% 呼叫率把 p50 推到 55 ms，是這個方案唯一明顯代價。
+
+- `candle-zh`（合併 `d8da98f`，含 `131f606`）：`cli.rs`、`candle/mod.rs` 自動合併。新增 `candle/zh.rs`（1578 行）與
+  `candle-zh-check` bin，`zh/select.rs` 加 116 行支援 candle 後端。合併時 branch 的 `load_weights` helper 被自動合併吃掉，
+  已補回（`d85610d`，屬解衝突收尾，沒有新行為）。
+
+  gate：fmt exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（44 targets、1055 passed、0 failed）。
+  `cargo clippy --workspace --all-targets -- -D warnings` 仍 exit 101，唯一錯誤是 `jinen-gate.rs:1376` 的
+  `unnecessary_sort_by`（jinen-gating-v2 待修），與本 branch 無關。
+
+  實測（`eval zh-golden`）：
+  - `--backend candle`（預設 fp32 safetensors）：**45/45**，推論 p50 14.00 ms。
+  - `--backend candle` ＋ `JC_ZH_SELECT_WEIGHTS=model.q8_0.gguf`：**45/45**，推論 p50 **10.73 ms**（作者量 9.36 ms，同機重跑有 1–2 ms 波動）。
+  - `--backend ort`：**45/45**，這台環境報 `select-model：沒有推論`（ORT 版模型未安裝），不影響 golden。
+
+  作者量測（Q8_0）：golden **45/45**、逐對排序一致 **99.51%**（5439/5466）、單次推論 p50 **9.36 ms**（fp32 14.05 ms）、
+  常駐 RSS **45.3 MiB**、端到端峰值 RSS **74.7 MiB**（ORT fp32 309.7 MiB）。
+  結論：注音選字在 candle 上比 ORT 更快也更省記憶體（Q8_0 p50 9.4–9.8 ms 對 ORT 11.8–12.6 ms）。
