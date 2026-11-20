@@ -701,10 +701,9 @@ impl Session {
             && self.edit.is_some()
             && self.candidate_window
             && !self.candidates.is_empty()
+            && self.select_window_candidate(self.highlighted)
         {
-            if self.select_window_candidate(self.highlighted) {
-                return;
-            }
+            return;
         }
         if self.config.mode == Mode::Mixed {
             self.ascii.flush();
