@@ -1,0 +1,13 @@
+[package]
+name = "jc-settings-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gpui-kit = "0.10"
+jc-settings = { path = "../jc-settings" }
+serde_json.workspace = true
+log.workspace = true
+env_logger.workspace = true
