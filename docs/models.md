@@ -29,8 +29,9 @@ release 或安裝包。日文 reranker 不再是預設路徑：`SessionConfig::j
 預設 `false`，由 Jinen small 的門檻混合取代。`ja-neural` 沒有 `Role` 列舉，
 `jc-engine` 直接依 `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf`
 載入；tokenizer 沿用 `models/quant/jinen-v2-xsmall/tokenizer.json`。資料根目錄
-`manifest.json` 以 `ja_neural` 角色收錄 Jinen GGUF，並標 `shipped: true`；tokenizer
-（`models/quant/jinen-v2-xsmall/tokenizer.json`）尚未列進 manifest，出貨前要補。
+`manifest.json` 以 `ja_neural` 收錄 Jinen GGUF、以 `ja_tokenizer` 收錄 tokenizer，
+兩筆都標 `shipped: true`、授權 `L-21`；引擎優先用 manifest 解析這兩條路徑，
+manifest 沒有對應項目時才退回寫死的候選路徑。
 
 標點模型的資料檔案保留在原目錄，方便回溯；程式與資料 manifest 都不再引用它們。
 
@@ -99,7 +100,7 @@ Q8_0 是量測與建議使用的注音選字權重：33.9 MiB、推論 p50 9.36 
 | 檔案 | 大小 | SHA-256 |
 |---|---:|---|
 | `jinen-v2-small-Q5_K_M.gguf` | 81,117,824 | `80482707513d6b67dafc31774371cf95d765542abf8d74eebf5f32f92d788bd3` |
-| `tokenizer.json`（`models/quant/jinen-v2-xsmall/`） | 2,047,498 | `477c91a788bf97e7ed993a4441cfb2c4d60033e505ade17d6c367bc09ed6e6ba` |
+| `tokenizer.json`（`models/quant/jinen-v2-xsmall/`，manifest 角色 `ja_tokenizer`） | 2,047,498 | `477c91a788bf97e7ed993a4441cfb2c4d60033e505ade17d6c367bc09ed6e6ba` |
 
 來源 `togatogah/jinen-v2-small.gguf`，revision
 `3461d0573ab447985badde3174165b967d06076c`，授權 CC-BY-SA-4.0。Qwen3
@@ -135,6 +136,11 @@ Q8_0 是量測與建議使用的注音選字權重：33.9 MiB、推論 p50 9.36 
 資料目錄現況的 SHA-256：`c069d44ff0aaa68fcec47f8030fe5075468dba0ef0c63ebc27a02a7acce0f56c`
 （387 bytes，仍含兩個標點鍵）。
 
+Jinen 的 GGUF 與 tokenizer 另由資料根目錄的 `manifest.json` 記錄：
+`ja_neural` 與 `ja_tokenizer` 各一筆、`shipped: true`、授權 `L-21`。
+`jc-engine` 先讀 manifest 解析路徑，缺 `ja_tokenizer` 只記一次警告並維持統計
+轉換，不擋啟動；`data verify` 仍把缺席的隨附檔算成錯誤，出貨前會擋下。
+
 ## 散布檢查
 
 1. `models/zh-select`、`models/zh-punct` 不得出現在 release、安裝包或 git。
@@ -143,6 +149,7 @@ Q8_0 是量測與建議使用的注音選字權重：33.9 MiB、推論 p50 9.36 
    保留作者 Hitoshi Togasaki 與國立國會圖書館的署名；衍生權重同樣採 CC-BY-SA-4.0。
 3. 日文 reranker 與日文標點模型不隨安裝包出貨，權重留在資料目錄供回溯；若重新
    納入散布，附 `legal/THIRD-PARTY-NOTICES.md` 第 9、10 節的署名與授權。
-4. Jinen 的 tokenizer 在 `models/quant/jinen-v2-xsmall/`，不在資料 manifest；出貨前
-   必須補上這一筆，否則安裝後預設路徑缺 tokenizer。
+4. Jinen 的 tokenizer 在 `models/quant/jinen-v2-xsmall/`，以 `ja_tokenizer` 角色列進
+   資料 manifest，`shipped: true`；安裝器依 manifest 複製，缺少時 `data verify`
+   會擋下。
 5. 換 revision 時同步更新本表、下載腳本與帳本；不得只改 manifest 而留下舊雜湊。

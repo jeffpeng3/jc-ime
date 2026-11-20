@@ -40,6 +40,7 @@ Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
   english/words.bin
   english/manifest.json
   models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf
+  models/quant/jinen-v2-xsmall/tokenizer.json   # Jinen tokenizer（small 沿用 xsmall）
   models/zh-select/model.onnx            # 下載項
   models/zh-select/vocab.json            # 下載項
   models/zh-punct/model.onnx             # 下載項，程式自 2026-11-20 起不載入
@@ -48,8 +49,9 @@ Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
   manifest.json                          # 由工具產生；目前尚未寫進這個目錄
 ```
 
-`models/external/jinen-v2-small/` 的層級是 `jc-engine` 目前寫死的路徑
-（`JA_NEURAL_GGUF`）。安裝器要保留這個相對路徑，否則引擎找不到 Jinen。
+`models/external/jinen-v2-small/` 是 `jc-engine` 的預設路徑（`JA_NEURAL_GGUF`）。
+引擎優先讀資料 manifest 的 `ja_neural`、`ja_tokenizer` 兩筆解析路徑；manifest
+沒有對應項目時才退回寫死的路徑與候選清單，因此舊資料根目錄仍可載入。
 `models/zh-select/model.q8_0.gguf` 是本機從 ONNX 轉出的量化衍生物，不是上游
 下載檔，因此不列進 manifest，避免安裝器把它當成可下載的原始檔。
 
@@ -68,7 +70,7 @@ Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
 | `files[].path` | string | 相對資料根目錄，一律用 `/`；不可絕對路徑或含 `..` |
 | `files[].bytes` | integer | 檔案大小 |
 | `files[].sha256` | string | 64 個小寫十六進位字元 |
-| `files[].role` | string | `ja_lexicon`、`zh_lexicon`、`zh_lm`、`english`、`ja_neural`、`zh_select`、`zh_punct` |
+| `files[].role` | string | `ja_lexicon`、`zh_lexicon`、`zh_lm`、`english`、`ja_neural`、`ja_tokenizer`、`zh_select`、`zh_punct` |
 | `files[].license` | string[] | `legal/README.md` 的 `L-xx` 條目 |
 | `files[].shipped` | bool | `true` 隨產品散布；`false` 由使用者下載 |
 | `files[].url` | string? | 下載項的來源 URL；隨附檔沒有這個欄位 |
@@ -78,7 +80,7 @@ Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
 
 ## 真實 manifest
 
-2026-11-20T03:48:18Z 對 `/mnt/work/jc/jc-ime-data` 產生的內容：
+2026-11-20T05:58:02Z 對 `/mnt/work/jc/jc-ime-data` 產生的內容：
 
 ```json
 {
@@ -123,6 +125,14 @@ Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
       "bytes": 81117824,
       "sha256": "80482707513d6b67dafc31774371cf95d765542abf8d74eebf5f32f92d788bd3",
       "role": "ja_neural",
+      "license": ["L-21"],
+      "shipped": true
+    },
+    {
+      "path": "models/quant/jinen-v2-xsmall/tokenizer.json",
+      "bytes": 2047498,
+      "sha256": "477c91a788bf97e7ed993a4441cfb2c4d60033e505ade17d6c367bc09ed6e6ba",
+      "role": "ja_tokenizer",
       "license": ["L-21"],
       "shipped": true
     },
@@ -180,9 +190,9 @@ cargo run -p jc-cli --release -- data manifest /mnt/work/jc/jc-ime-data \
 
 ```text
 manifest：/tmp/opencode/manifest.json
-產生時間：2026-11-20T03:48:18Z
+產生時間：2026-11-20T05:58:02Z
 資料版本：2026-11-20
-檔案：9（隨附 5，下載 4），共 443638737 位元組
+檔案：10（隨附 6，下載 4），共 445686235 位元組
 ```
 
 - 大小與 SHA-256 都是實際讀檔算出，不信任既有的資料包 manifest。
@@ -190,7 +200,7 @@ manifest：/tmp/opencode/manifest.json
 - `--out` 省略時寫 `<root>/manifest.json`。
 - `--version <標籤>` 可覆寫資料版本；預設用 UTC 日期。
 
-隨附 5 個檔共 181,706,109 位元組，下載 4 個檔共 261,932,628 位元組。
+隨附 6 個檔共 183,753,607 位元組，下載 4 個檔共 261,932,628 位元組。
 
 ## 驗證
 
@@ -207,11 +217,12 @@ cargo run -p jc-cli --release -- data verify /mnt/work/jc/jc-ime-data \
 通過      build-zh/lm.bin（zh_lm）
 通過      english/words.bin（english）
 通過      models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf（ja_neural）
+通過      models/quant/jinen-v2-xsmall/tokenizer.json（ja_tokenizer）
 通過      models/zh-select/model.onnx（zh_select）
 通過      models/zh-select/vocab.json（zh_select）
 通過      models/zh-punct/model.onnx（zh_punct）
 通過      models/zh-punct/vocab.json（zh_punct）
-驗證 /tmp/opencode/manifest.json：通過 9/9，錯誤 0，警告 0
+驗證 /tmp/opencode/manifest.json：通過 10/10，錯誤 0，警告 0
 ```
 
 `--manifest` 省略時讀 `<root>/manifest.json`；`--json` 輸出逐檔狀態。
@@ -220,13 +231,13 @@ cargo run -p jc-cli --release -- data verify /mnt/work/jc/jc-ime-data \
 
 | 情況 | 結果 |
 |---|---|
-| `shipped: true` 的檔缺少 | 錯誤，`data verify` 回傳非零，引擎拒絕啟動 |
+| `shipped: true` 的檔缺少 | 錯誤，`data verify` 回傳非零，引擎拒絕啟動；`ja_tokenizer` 例外，引擎只警告並降級 |
 | 任何已存在檔案的大小不符 | 錯誤 |
 | 任何已存在檔案的 SHA-256 不符 | 錯誤 |
 | `shipped: false` 的檔缺少 | 警告，`data verify` 仍回傳 0，引擎只記警告後降級 |
 
 實測：把 `english/words.bin` 複製到暫存根目錄並改 1 個位元組，`data verify`
-回報 `雜湊不符`、`通過 8/9，錯誤 1`、exit 1。移除一個 zh-punct 下載項後，
+回報 `雜湊不符`、`通過 9/10，錯誤 1`、exit 1。移除一個 zh-punct 下載項後，
 回報 `缺少 …（下載項，警告）`、`錯誤 0，警告 1`、exit 0。移除
 `english/words.bin` 後，回報 `缺少 …（隨附檔，錯誤）`、exit 1。
 
@@ -239,15 +250,16 @@ cargo run -p jc-cli --release -- data verify /mnt/work/jc/jc-ime-data \
    的開發資料根目錄用的退路。
 2. manifest 解析失敗或 `schema` 不符：拒絕啟動，錯誤帶 manifest 路徑與原因。
 3. 逐檔比對存在與大小。`shipped: true` 缺少或大小不符：拒絕啟動；
-   `shipped: false` 缺少：警告一次。
+   `shipped: false` 缺少：警告一次。`ja_tokenizer` 缺少同樣只警告，Jinen
+   神經轉換停用，日文維持統計轉換。
 4. 只算 `std::fs::metadata`，不算 SHA-256。
 
-實測：在只有 5 個小檔的暫存根目錄產生 manifest，刪掉 `build-zh/lm.bin` 後啟動
+實測：在只有 6 個小檔的暫存根目錄產生 manifest，刪掉 `build-zh/lm.bin` 後啟動
 `jc-engine`，得到：
 
 ```text
 [ERROR jc_engine::loader] 資料檔檢查失敗：build-zh/lm.bin（zh_lm）：Missing
-jc-engine: 載入資料失敗：… 資料 manifest 檢查失敗：通過 4/5，錯誤 1，警告 0
+jc-engine: 載入資料失敗：… 資料 manifest 檢查失敗：1 個致命錯誤，通過 5/6
 ```
 
 ## 版本欄位
@@ -273,9 +285,10 @@ jc-engine: 載入資料失敗：… 資料 manifest 檢查失敗：通過 4/5，
 | `build-zh/lm.bin` | `zh_lm` | 同上 | 同上 |
 | `english/words.bin` | `english` | L-08 | ESDB／SCOWL 為 MIT 類授權，附 NOTICE |
 | `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | `ja_neural` | L-21 | Jinen v2 small 為 CC-BY-SA-4.0，散布需附授權全文與 notice |
+| `models/quant/jinen-v2-xsmall/tokenizer.json` | `ja_tokenizer` | L-21 | small 沿用 xsmall 的 tokenizer，授權同 Jinen 權重 |
 
 `legal/README.md` 的 L-21 原本標成評估用、暫不散布。`legal-update`（2026-11-20）已把
-帳本改成可散布，補上 CC-BY-SA-4.0 的 notice，並逐項對照上面 5 筆隨附清單。
+帳本改成可散布，補上 CC-BY-SA-4.0 的 notice，並逐項對照上面 6 筆隨附清單。
 
 ### 下載（`shipped: false`）
 
@@ -295,10 +308,11 @@ Funmula 的兩個模型都是第三方權重，依 `legal/README.md` 的散布�
 ## 測試
 
 - `crates/jc-data/src/manifest.rs`：產生、JSON round-trip、schema 不符、路徑
-  逃逸、雜湊格式、啟動級與完整驗證的差異、下載項警告與隨附檔錯誤、真實資料
-  根目錄全量驗證。
+  逃逸、雜湊格式、啟動級與完整驗證的差異、下載項警告與隨附檔錯誤、Jinen
+  tokenizer 的 `ja_tokenizer` 記錄、真實資料根目錄全量驗證。
 - `crates/jc-cli/src/cli.rs`：`data manifest`、`data verify` 的參數解析與
   互斥旗標。
-- `crates/jc-engine/src/loader.rs`：manifest schema 不符時拒絕啟動。
+- `crates/jc-engine/src/loader.rs`：manifest schema 不符時拒絕啟動；tokenizer
+  路徑從 manifest 解析；`ja_tokenizer` 缺席只警告，Jinen 降級成統計轉換。
 
 依照共通規則，這輪只寫測試與編譯，不執行 `cargo test`。
