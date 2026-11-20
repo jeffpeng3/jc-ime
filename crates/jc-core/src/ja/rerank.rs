@@ -1,4 +1,4 @@
-//! 日文詞層級的神經重排（需要 `onnx` feature）。
+//! 日文詞層級的神經重排。
 //!
 //! 模型是同一讀音多個候選詞的 cross-encoder：訓練資料每組共用左右文、
 //! 只換 candidate slot。這裡照同樣的用法，在 lattice 的節點層對「同讀音
@@ -10,7 +10,7 @@
 //!
 //! 融合公式與前身 `core/ja/rerank/config.go` 的預設權重一致
 //! （`Weights{Neural: 1, Stats: 0.2, Draft: 0.1}`），實作在
-//! [`super::decode`]（`fuse_word_scores`），因為它不需要 ONNX：
+//! [`super::decode`]（`fuse_word_scores`），因為它不需要模型：
 //!
 //! ```text
 //! stats_i  = (max_cost - cost_i) / (max_cost - min_cost)
@@ -96,7 +96,7 @@ pub struct NeuralReranker {
 impl NeuralReranker {
     /// 以預設佈局載入角色目錄。
     pub fn load(dir: impl AsRef<Path>) -> Result<Self, RerankError> {
-        Self::load_with_ort_lib(dir, None)
+        Self::load_with_spec(dir, &ModelSpec::default())
     }
 
     /// 由模型集合根目錄的 `manifest.json` 找出 `ja-rerank` 並載入。
@@ -110,26 +110,12 @@ impl NeuralReranker {
             RerankError::Unavailable(format!("{:?}", set.availability(Role::JaRerank)))
         })?;
         let spec = set.spec(Role::JaRerank).cloned().unwrap_or_default();
-        Self::load_with_spec(dir, &spec, None)
+        Self::load_with_spec(dir, &spec)
     }
 
-    /// 以預設佈局載入，並指定 ONNX Runtime 動態庫。
-    ///
-    /// `ort_lib` 為 `None` 時使用 `ORT_DYLIB_PATH`。
-    pub fn load_with_ort_lib(
-        dir: impl AsRef<Path>,
-        ort_lib: Option<&Path>,
-    ) -> Result<Self, RerankError> {
-        Self::load_with_spec(dir, &ModelSpec::default(), ort_lib)
-    }
-
-    /// 以指定佈局載入，並指定 ONNX Runtime 動態庫。
-    pub fn load_with_spec(
-        dir: impl AsRef<Path>,
-        spec: &ModelSpec,
-        ort_lib: Option<&Path>,
-    ) -> Result<Self, RerankError> {
-        let model = Reranker::load_with_spec(dir, spec, ort_lib)?;
+    /// 以指定佈局載入。
+    pub fn load_with_spec(dir: impl AsRef<Path>, spec: &ModelSpec) -> Result<Self, RerankError> {
+        let model = Reranker::load_with_spec(dir, spec)?;
         Ok(Self {
             model,
             stats: Mutex::new(StatsInner::default()),

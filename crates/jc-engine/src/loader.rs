@@ -541,7 +541,7 @@ pub fn load_zhconv(root: &Path) -> Result<jc_core::zhconv::Converter, LoadError>
 pub fn install_select_model(models: &Path) -> Result<(), LoadError> {
     let dir = jc_core::zh::select::resolve_model_dir(models)
         .map_err(|err| LoadError(format!("找不到 zh-select 模型：{err}")))?;
-    let model = jc_core::zh::select::SelectModel::load(&dir, None)
+    let model = jc_core::zh::select::SelectModel::load(&dir)
         .map_err(|err| LoadError(format!("載入 zh-select 模型失敗：{err}")))?;
     jc_core::zh::select::install(model);
     Ok(())

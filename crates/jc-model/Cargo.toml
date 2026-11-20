@@ -23,13 +23,6 @@ candle-transformers = { version = "0.11", default-features = false }
 tokenizers = { version = "0.23", default-features = false }
 # encoder 的 linear 以輸出維度切給 rayon 平行；只用在 candle 路徑。
 rayon = "1"
-# `load-dynamic`：建置時不連結也不下載 ONNX Runtime，執行期才載入動態庫。
-ort = { version = "=2.0.0-rc.15", default-features = false, features = [
-    "std",
-    "load-dynamic",
-    "api-31",
-] }
-
 [dev-dependencies]
 jc-testdata = { path = "../jc-testdata" }
 

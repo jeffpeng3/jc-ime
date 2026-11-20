@@ -15,11 +15,9 @@ pub enum ModelError {
     /// vocab.json 不是合法 JSON 或違反格式契約。
     #[error("tokenizer 錯誤：{0}")]
     Tokenizer(String),
-    /// ONNX Runtime 無法初始化。
-    #[error("ONNX Runtime 初始化失敗：{0}")]
-    Runtime(String),
-    /// ONNX 推論失敗。
-    #[error("ONNX 推論失敗：{0}")]
+    /// 推論輸入或輸出違反契約
+    /// （候選數過多、分數長度不符、分數不是有限值）。
+    #[error("推論失敗：{0}")]
     Inference(String),
     /// candle 推論失敗。
     #[error("candle 推論失敗：{0}")]

@@ -11,9 +11,9 @@
 //! }
 //! ```
 //!
-//! 每個角色目錄內預設放 `model.int8.onnx` 與 `vocab.json`，可用 `model`、
-//! `vocab` 欄位覆寫。manifest、模型檔或 ONNX Runtime 缺席都不算錯誤，只是
-//! 該角色 [`Availability::Unavailable`]。
+//! 每個角色目錄內預設放 `model.safetensors` 與 `vocab.json`，可用 `model`、
+//! `vocab` 欄位覆寫。manifest 或模型檔缺席都不算錯誤，只是該角色
+//! [`Availability::Unavailable`]。
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -27,7 +27,7 @@ use crate::Role;
 /// 集合 manifest 的 schema 名稱。
 pub const SET_SCHEMA: &str = "jc.model-set/1";
 /// 預設模型檔名。
-pub const DEFAULT_MODEL_FILE: &str = "model.int8.onnx";
+pub const DEFAULT_MODEL_FILE: &str = "model.safetensors";
 /// 預設 tokenizer 檔名。
 pub const DEFAULT_VOCAB_FILE: &str = "vocab.json";
 /// 重排模型的預設序列長度。
@@ -53,7 +53,7 @@ pub struct ModelSpec {
     /// 角色目錄，相對於集合根目錄；絕對路徑照用。
     #[serde(default)]
     pub dir: Option<String>,
-    /// ONNX 檔名，相對於角色目錄。
+    /// 模型檔名，相對於角色目錄。
     #[serde(default)]
     pub model: Option<String>,
     /// vocab.json 檔名，相對於角色目錄。
@@ -77,9 +77,11 @@ pub struct ModelSpec {
     /// PAD token id。
     #[serde(default)]
     pub padding_id: Option<i64>,
-    /// ONNX Runtime intra-op 執行緒數。
+    /// 推論執行緒上限；保留 manifest schema 相容，candle 實際使用 Rayon
+    /// 全域執行緒池。
     #[serde(default)]
     pub threads: Option<usize>,
+
     /// 單次推論預算，毫秒。
     #[serde(default)]
     pub timeout_ms: Option<u64>,
@@ -168,14 +170,14 @@ pub struct SetManifest {
     pub models: BTreeMap<String, ModelSpec>,
 }
 
-/// 模型可用狀態；缺模型或沒有 ONNX Runtime 時引擎退回統計路徑，不應失敗。
+/// 模型可用狀態；缺模型時引擎退回統計路徑，不應失敗。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Availability {
-    /// 模型檔存在，且執行期可載入 ONNX Runtime，可以推論。
+    /// 模型檔存在，可以載入推論。
     Loaded {
         /// 角色。
         role: Role,
-        /// ONNX 檔大小。
+        /// 模型檔大小。
         bytes: u64,
     },
     /// 沒有可用的模型。
@@ -255,11 +257,6 @@ impl ModelSet {
 
         let mut resolved = BTreeMap::new();
         let mut availability = BTreeMap::new();
-        // 沒有 ONNX Runtime 時，即使模型檔齊全也不能推論。
-        let runtime = crate::runtime::probe();
-        let runtime_reason = runtime
-            .reason()
-            .map(|reason| format!("ONNX Runtime 不可用：{reason}"));
         for role in Role::all() {
             let Some(spec) = specs.get(&role).cloned() else {
                 availability.insert(
@@ -274,22 +271,8 @@ impl ModelSet {
             match resolve(&root, role, &spec) {
                 Ok(r) => {
                     let bytes = fs::metadata(&r.model).map(|m| m.len()).unwrap_or(0);
-                    match &runtime_reason {
-                        Some(reason) => {
-                            resolved.insert(role, r);
-                            availability.insert(
-                                role,
-                                Availability::Unavailable {
-                                    role,
-                                    reason: reason.clone(),
-                                },
-                            );
-                        }
-                        None => {
-                            availability.insert(role, Availability::Loaded { role, bytes });
-                            resolved.insert(role, r);
-                        }
-                    }
+                    availability.insert(role, Availability::Loaded { role, bytes });
+                    resolved.insert(role, r);
                 }
                 Err(reason) => {
                     availability.insert(role, Availability::Unavailable { role, reason });
@@ -414,7 +397,7 @@ mod tests {
         match set.availability(Role::JaRerank) {
             Availability::Unavailable { reason, .. } => {
                 assert!(reason.starts_with("模型檔不存在："), "{reason}");
-                assert!(reason.ends_with("model.int8.onnx"), "{reason}");
+                assert!(reason.ends_with("model.safetensors"), "{reason}");
             }
             other => panic!("未預期的狀態：{other:?}"),
         }
@@ -425,7 +408,7 @@ mod tests {
     fn manifest_resolves_files_and_reports_size() {
         let dir = tempdir("loaded");
         fs::create_dir_all(dir.join("rerank")).unwrap();
-        fs::write(dir.join("rerank/model.int8.onnx"), vec![0u8; 1234]).unwrap();
+        fs::write(dir.join("rerank/model.safetensors"), vec![0u8; 1234]).unwrap();
         fs::write(dir.join("rerank/vocab.json"), b"{}").unwrap();
         fs::write(
             dir.join("manifest.json"),
@@ -443,7 +426,7 @@ mod tests {
         // 檔案解析與執行期能否推論無關，路徑一律要解析出來。
         assert_eq!(
             set.model_path(Role::JaRerank).unwrap(),
-            dir.join("rerank/model.int8.onnx")
+            dir.join("rerank/model.safetensors")
         );
         assert_eq!(
             set.vocab_path(Role::JaRerank).unwrap(),
@@ -454,10 +437,7 @@ mod tests {
                 assert_eq!(*role, Role::JaRerank);
                 assert_eq!(*bytes, 1234);
             }
-            Availability::Unavailable { role, reason } => {
-                assert_eq!(*role, Role::JaRerank);
-                assert!(reason.starts_with("ONNX Runtime 不可用："), "{reason}");
-            }
+            other => panic!("未預期的狀態：{other:?}"),
         }
         let spec = set.spec(Role::JaRerank).unwrap();
         assert_eq!(spec.seq_len(), 96);
@@ -478,7 +458,7 @@ mod tests {
     fn unknown_role_is_ignored() {
         let dir = tempdir("role");
         fs::create_dir_all(dir.join("rerank")).unwrap();
-        fs::write(dir.join("rerank/model.int8.onnx"), vec![0u8; 5]).unwrap();
+        fs::write(dir.join("rerank/model.safetensors"), vec![0u8; 5]).unwrap();
         fs::write(dir.join("rerank/vocab.json"), b"{}").unwrap();
         fs::write(
             dir.join("manifest.json"),
@@ -493,7 +473,7 @@ mod tests {
         assert!(set.spec(Role::JaRerank).is_some());
         assert_eq!(
             set.model_path(Role::JaRerank).unwrap(),
-            dir.join("rerank/model.int8.onnx")
+            dir.join("rerank/model.safetensors")
         );
         fs::remove_dir_all(&dir).unwrap();
     }

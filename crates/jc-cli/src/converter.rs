@@ -355,8 +355,6 @@ pub struct ConvertOptions {
     pub json: bool,
     /// 啟用注音選字模型重排。
     pub select_model: bool,
-    /// 推論後端；`None` 時讀 `JC_RERANK_BACKEND` 與預設 `ort`。
-    pub backend: Option<jc_model::Backend>,
     /// 個人化學習資料目錄；未指定時不載入。
     pub user_data: Option<PathBuf>,
     /// 指定轉換模式；目前只有 `en` 會走英文候選。
@@ -384,16 +382,10 @@ pub fn convert(
         n,
         json,
         select_model,
-        backend,
         user_data,
         mode,
         pick,
     } = options;
-    // 後端在載入任何模型前設定；沒有指定時讓 jc-model 讀
-    // `JC_RERANK_BACKEND`，預設仍是 ort。
-    if let Some(backend) = backend {
-        jc_model::set_default_backend(backend);
-    }
     if select_model {
         if let Err(err) = data::install_select_model(testdata.as_deref()) {
             eprintln!("警告：--select-model on 無法載入選字模型，維持統計排序：{err}");

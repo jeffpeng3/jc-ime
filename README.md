@@ -25,7 +25,7 @@ Windows wrapper、設定／更新／安裝器尚未實作。逐項現況見
 |---|---|
 | `jc-core` | 鍵序列、注音音節與鍵盤、lattice／Viterbi、注音解碼、日文輸入與解碼、Mixed 路由、session、輸出 |
 | `jc-data` | 日文 `0CJADIC` pack v1／v2 與注音 `lexicon.bin`／`lm.bin` 的零拷貝讀取、manifest 驗證 |
-| `jc-model` | ONNX Runtime 接線：manifest、tokenizer、reranker、標點模型 |
+| `jc-model` | candle 接線：manifest、tokenizer、reranker、注音選字與 Jinen |
 | `jc-proto` | 引擎與 wrapper 的訊框、請求／回應、版本握手 |
 | `jc-platform` | 平台抽象：`InputHost`、`HostEvent`、`Clock`、`Scheduler` |
 | `jc-engine` | 引擎行程，處理協定並把按鍵交給 `jc-core::Session` |
@@ -41,13 +41,12 @@ cargo build --workspace
 cargo check --workspace --all-targets
 ```
 
-模型推論預設不編譯，也不下載 ONNX Runtime。需要驗證 reranker 時用：
+模型推論使用 candle，讀模型目錄的 `model.safetensors` 或 `model.gguf`，
+不需要外部動態庫。需要驗證 reranker 時用：
 
 ```sh
 cargo run -p jc-cli --release -- eval ja --corpus modern-500 --rerank on
 ```
-
-需要系統上有 ONNX Runtime 動態庫，或改用 `--backend candle` 讀 safetensors。
 
 ## 跑評測
 

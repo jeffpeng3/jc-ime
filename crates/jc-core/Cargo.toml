@@ -16,12 +16,6 @@ unicode-script = "0.5"
 unicode_categories = "0.1"
 jc-data = { path = "../jc-data" }
 jc-model = { path = "../jc-model" }
-# `load-dynamic`：執行期才載入 ONNX Runtime，建置時不下載。
-ort = { version = "=2.0.0-rc.15", default-features = false, features = [
-    "std",
-    "load-dynamic",
-    "api-31",
-] }
 
 [dev-dependencies]
 jc-testdata = { path = "../jc-testdata" }

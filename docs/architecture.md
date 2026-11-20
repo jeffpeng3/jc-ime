@@ -11,7 +11,7 @@ wrapper（各平台獨立）              引擎行程
 
 jc-cli ── jc-core、jc-data、jc-eval、jc-testdata  （開發工具）
 jc-jadic ── 產出 pack v2                     （資料匯入）
-jc-model ── ONNX／candle 載入與推論          （注音選字已接進 jc-core）
+jc-model ── candle 載入與推論（reranker、注音選字、Jinen）
 jc-platform ── wrapper 契約                  （尚未接進 jc-engine）
 ```
 
@@ -25,7 +25,7 @@ jc-platform ── wrapper 契約                  （尚未接進 jc-engine）
 | `jc-core` | 注音音節與鍵盤、lattice／Viterbi、注音解碼、日文輸入與解碼、Mixed 路由、session、輸出 | 檔案格式、IPC、任何 OS API |
 | `jc-data` | 日文 `0CJADIC` pack v1／v2、注音 `lexicon.bin`／`lm.bin` 的 mmap 讀取、manifest 驗證、連接矩陣與 bigram 查詢 | 匯入與寫檔（屬 `jc-jadic`）、轉換決策 |
 | `jc-jadic` | Mozc `dictionary_oss` 解析、去重排序、pack v2 與 manifest 寫出 | 執行期轉換 |
-| `jc-model` | 模型 manifest、tokenizer、reranker 與標點推論、逾時 | 解碼排序、個人化 |
+| `jc-model` | 模型 manifest、tokenizer、candle reranker／注音選字／Jinen 推論 | 解碼排序、個人化 |
 | `jc-proto` | 訊框、請求／回應列舉、版本握手、錯誤碼 | 組字狀態 |
 | `jc-platform` | `InputHost`、`HostEvent`、`Clock`、`Scheduler` 的語意契約 | 任何視窗或 OS handle |
 | `jc-engine` | 一條連線的請求迴圈、握手、把按鍵交給 `Session` | 轉換邏輯、詞典載入 |

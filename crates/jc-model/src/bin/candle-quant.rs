@@ -26,12 +26,12 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use jc_model::candle::{export_gguf, export_gguf_with_embedding, EmbeddingDtype, QuantDtype};
 use jc_model::layout::{pack_batch, PackedBatch};
 use jc_model::manifest::ModelSpec;
-use jc_model::{Backend, Reranker, Tokenizer};
+use jc_model::{Reranker, Tokenizer};
 use serde_json::{json, Value};
 
 fn main() -> ExitCode {
@@ -160,7 +160,7 @@ fn bench(args: &[String]) -> Result<(), String> {
         .map_err(|err| format!("載入 tokenizer 失敗：{err}"))?;
     let started = Instant::now();
     std::env::set_var(jc_model::candle::WEIGHTS_ENV, &args.weights);
-    let model = Reranker::load_with_backend(&args.model_dir, &spec, None, Backend::Candle)
+    let model = Reranker::load_with_spec(&args.model_dir, &spec)
         .map_err(|err| format!("載入模型失敗：{err}"))?;
     let load_ms = started.elapsed().as_secs_f64() * 1000.0;
     let rss_load = rss_bytes().ok_or("讀不到 /proc/self/status")?;
@@ -234,7 +234,7 @@ fn bench(args: &[String]) -> Result<(), String> {
 
 fn score(model: &Reranker, batch: &PackedBatch, id: &str) -> Result<Vec<f32>, String> {
     model
-        .score_packed_with(batch, Duration::from_secs(10))
+        .score_packed(batch)
         .map_err(|err| format!("{id} 推論失敗：{err}"))
 }
 

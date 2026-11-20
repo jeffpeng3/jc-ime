@@ -121,7 +121,7 @@ fn run() -> Result<(), CliError> {
     }
     let model_dir = resolve_model_dir(&models_root)
         .map_err(|err| CliError::data(format!("找不到 zh-select 模型：{err}")))?;
-    let model = SelectModel::load(&model_dir, None)
+    let model = SelectModel::load(&model_dir)
         .map_err(|err| CliError::data(format!("載入 zh-select 模型失敗：{err}")))?;
     let groups = score_groups(groups, &model);
 

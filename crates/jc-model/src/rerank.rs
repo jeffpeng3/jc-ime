@@ -1,20 +1,16 @@
 //! 日文候選重排模型。
 //!
 //! 模型輸入是 `input_ids`／`attention_mask`，輸出是每個候選字一個
-//! `scores`。分數越高越相關。推論超過預算（預設 100 ms）就回 `None`，
-//! 呼叫端保留統計排序。
+//! `scores`。分數越高越相關。推論失敗或超時由呼叫端保留統計排序。
 
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use ort::session::Session;
-
-use crate::candle::{Backend, CandleReranker, QuantReranker};
+use crate::candle::{quant, CandleReranker, QuantReranker};
 use crate::error::{ModelError, Result};
 use crate::layout::{pack_batch, validate_layout, PackedBatch};
 use crate::manifest::ModelSpec;
-use crate::runtime::{build_session, run_timed};
 use crate::tokenizer::Tokenizer;
 use crate::Role;
 
@@ -32,82 +28,47 @@ pub struct Reranker {
     spec: ModelSpec,
 }
 
-/// 實際執行 forward 的後端。
+/// 實際執行 forward 的權重格式。
 enum Engine {
-    /// ONNX Runtime session；`Session::run` 需要 `&mut`。
-    Ort(Mutex<Session>),
-    /// candle；forward 沒有內部可變狀態，鎖只為了與 ORT 介面一致。
-    Candle(Mutex<CandleReranker>),
+    /// candle fp32（`model.safetensors`）；forward 沒有內部可變狀態。
+    Fp32(Mutex<CandleReranker>),
     /// candle + GGUF 量化權重。
-    CandleQuant(Mutex<QuantReranker>),
+    Quant(Mutex<QuantReranker>),
 }
 
 impl Reranker {
     /// 以預設佈局載入角色目錄。
     pub fn load(dir: impl AsRef<Path>) -> Result<Self> {
-        Self::load_with_spec(dir, &ModelSpec::default(), None)
+        Self::load_with_spec(dir, &ModelSpec::default())
     }
 
-    /// 以指定佈局與 ORT 動態庫路徑載入。
+    /// 以指定佈局載入角色目錄。
     ///
-    /// 使用 [`crate::candle::default_backend`] 選定的後端；預設是 ORT。
-    /// `ort_lib` 為 `None` 時使用 `ORT_DYLIB_PATH`。
-    pub fn load_with_spec(
-        dir: impl AsRef<Path>,
-        spec: &ModelSpec,
-        ort_lib: Option<&Path>,
-    ) -> Result<Self> {
-        Self::load_with_backend(dir, spec, ort_lib, crate::candle::default_backend())
-    }
-
-    /// 以指定佈局、後端與 ORT 動態庫路徑載入。
-    ///
-    /// candle 後端會依 [`crate::candle::weights_path`] 找 safetensors，不會
-    /// 初始化 ONNX Runtime。
-    pub fn load_with_backend(
-        dir: impl AsRef<Path>,
-        spec: &ModelSpec,
-        ort_lib: Option<&Path>,
-        backend: Backend,
-    ) -> Result<Self> {
+    /// 依 [`crate::candle::weights_path`] 找 safetensors 或 GGUF；`.gguf`
+    /// 自動走量化路徑。找不到權重時回 [`ModelError::Candle`]，呼叫端退回
+    /// 統計排序。
+    pub fn load_with_spec(dir: impl AsRef<Path>, spec: &ModelSpec) -> Result<Self> {
         validate(spec)?;
         let dir = dir.as_ref();
         let tokenizer = Tokenizer::load(dir.join(spec.vocab_file()))?;
-        let engine = match backend {
-            Backend::Ort => {
-                crate::runtime::init_runtime(ort_lib)?;
-                let session = build_session(&dir.join(spec.model_file()), spec.threads())?;
-                Engine::Ort(Mutex::new(session))
-            }
-            Backend::Candle => {
-                let weights = crate::candle::weights_path(dir, spec).ok_or_else(|| {
-                    ModelError::Candle(format!(
-                        "找不到 candle 權重，預期 {} 或 ${} 指定的檔案",
-                        dir.join(crate::candle::DEFAULT_WEIGHTS_FILE).display(),
-                        crate::candle::WEIGHTS_ENV
-                    ))
-                })?;
-                // `.gguf` 走量化權重；副檔名是 safetensors 時走 fp32。
-                if crate::candle::quant::is_gguf(&weights) {
-                    Engine::CandleQuant(Mutex::new(QuantReranker::load(&weights, spec)?))
-                } else {
-                    Engine::Candle(Mutex::new(CandleReranker::load(&weights, spec)?))
-                }
-            }
+        let weights = crate::candle::weights_path(dir, spec).ok_or_else(|| {
+            ModelError::Candle(format!(
+                "找不到 candle 權重，預期 {} 或 ${} 指定的檔案",
+                dir.join(crate::candle::DEFAULT_WEIGHTS_FILE).display(),
+                crate::candle::WEIGHTS_ENV
+            ))
+        })?;
+        // `.gguf` 走量化權重；副檔名是 safetensors 時走 fp32。
+        let engine = if quant::is_gguf(&weights) {
+            Engine::Quant(Mutex::new(QuantReranker::load(&weights, spec)?))
+        } else {
+            Engine::Fp32(Mutex::new(CandleReranker::load(&weights, spec)?))
         };
         Ok(Self {
             engine,
             tokenizer,
             spec: spec.clone(),
         })
-    }
-
-    /// 實際使用的後端。
-    pub fn backend(&self) -> Backend {
-        match self.engine {
-            Engine::Ort(_) => Backend::Ort,
-            Engine::Candle(_) | Engine::CandleQuant(_) => Backend::Candle,
-        }
     }
 
     /// 模型角色。
@@ -125,7 +86,7 @@ impl Reranker {
         &self.spec
     }
 
-    /// 為單一候選字打分；逾時或失敗回 `None`。
+    /// 為單一候選字打分；失敗回 `None`。
     ///
     /// `left`／`right` 為 `None` 或空字串代表沒有那一側的上下文。
     pub fn score(&self, left: Option<&str>, candidate: &str, right: &str) -> Option<f32> {
@@ -133,7 +94,7 @@ impl Reranker {
             .and_then(|mut v| if v.len() == 1 { v.pop() } else { None })
     }
 
-    /// 為多個候選字打分；逾時或失敗回 `None`。
+    /// 為多個候選字打分；失敗回 `None`。
     pub fn score_batch(
         &self,
         left: Option<&str>,
@@ -175,43 +136,19 @@ impl Reranker {
 
     /// 為已打包的 batch 打分，保留錯誤原因。
     ///
-    /// 兩個後端共用同一份 token id 與 attention mask，這是 parity 比對的
-    /// 入口。ORT 會在 `spec.timeout()` 後中止；candle 的 forward 無法中途
-    /// 停止，只回報結果，群組之間的預算由呼叫端控制。
+    /// candle 的 forward 無法中途停止；群組之間的預算由呼叫端控制。
     pub fn score_packed(&self, batch: &PackedBatch) -> Result<Vec<f32>> {
-        self.score_packed_with(batch, self.spec.timeout())
-    }
-
-    /// 與 [`Reranker::score_packed`] 相同，但 ORT 的預算由呼叫端指定。
-    ///
-    /// 只給對照與量測用：manifest 的 100 ms 上限是產品契約，離線比對 fp32
-    /// 參考模型時需要更長的預算。candle 不受 `timeout` 影響。
-    pub fn score_packed_with(&self, batch: &PackedBatch, timeout: Duration) -> Result<Vec<f32>> {
         if batch.rows == 0 {
             return Ok(Vec::new());
         }
         match &self.engine {
-            Engine::Ort(session) => {
-                let mut session = session
-                    .lock()
-                    .map_err(|_| ModelError::Inference("session 鎖已損壞".into()))?;
-                run_timed(
-                    &mut session,
-                    batch.ids.clone(),
-                    batch.mask.clone(),
-                    batch.rows,
-                    batch.seq,
-                    timeout,
-                    "scores",
-                )
-            }
-            Engine::Candle(model) => {
+            Engine::Fp32(model) => {
                 let model = model
                     .lock()
                     .map_err(|_| ModelError::Candle("模型鎖已損壞".into()))?;
                 model.score_packed(batch)
             }
-            Engine::CandleQuant(model) => {
+            Engine::Quant(model) => {
                 let model = model
                     .lock()
                     .map_err(|_| ModelError::Candle("模型鎖已損壞".into()))?;

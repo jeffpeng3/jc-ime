@@ -67,8 +67,6 @@ pub enum Command {
         json: bool,
         /// 啟用注音選字模型重排。
         select_model: bool,
-        /// 選字模型的推論後端：`ort` 或 `candle`。
-        backend: jc_model::Backend,
     },
     /// 跑一個日文題庫。
     EvalJa {
@@ -82,8 +80,6 @@ pub enum Command {
         rerank: bool,
         /// 詞群門檻：`off`、成本差上限 `N`，或 `cand:N`（候選數下限）。
         gate: WordGate,
-        /// 重排的推論後端：`ort` 或 `candle`。
-        backend: jc_model::Backend,
         /// 左文來源：`off` 不給左文，`rolling` 用前一題的輸出當左文。
         left: LeftMode,
         /// 是否啟用 Jinen 神經轉換；`--neural off` 完全回到統計路徑。
@@ -129,9 +125,6 @@ pub enum Command {
         json: bool,
         /// 啟用注音選字模型重排。
         select_model: bool,
-        /// 推論後端：`ort` 或 `candle`；未指定時讀 `JC_RERANK_BACKEND`，
-        /// 預設 `ort`。
-        backend: Option<jc_model::Backend>,
         /// 個人化學習資料目錄；未指定時不載入。
         user_data: Option<PathBuf>,
         /// 指定轉換模式；目前只有 `en` 會走英文候選。
@@ -203,7 +196,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut stats = false;
     let mut rerank = None;
     let mut gate = None;
-    let mut backend = None;
+    let mut backend = false;
     let mut left = LeftMode::Off;
     let mut neural = None;
     let mut json = false;
@@ -262,11 +255,8 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
             }
             "--backend" => {
                 index += 1;
-                backend = Some(
-                    value(rest, index, "--backend")?
-                        .parse::<jc_model::Backend>()
-                        .map_err(CliError::Usage)?,
-                );
+                parse_backend(value(rest, index, "--backend")?)?;
+                backend = true;
             }
             "--left" => {
                 index += 1;
@@ -301,7 +291,6 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 mu,
                 stats,
                 select_model: select_model.unwrap_or(true),
-                backend: backend.unwrap_or(jc_model::Backend::Ort),
                 json,
             })
         }
@@ -313,7 +302,6 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 pack,
                 rerank: rerank.unwrap_or(false),
                 gate: gate.unwrap_or(DEFAULT_WORD_RERANK_GATE),
-                backend: backend.unwrap_or(jc_model::Backend::Ort),
                 left,
                 neural: neural.unwrap_or(true),
                 json,
@@ -357,12 +345,24 @@ fn reject_zh_flags(
     Ok(())
 }
 
-/// 只有日文題庫接受 `--backend`。
-fn reject_backend(backend: Option<jc_model::Backend>, command: &str) -> Result<(), CliError> {
-    if backend.is_some() {
+/// `--backend` 只有注音 golden 與日文題庫接受。
+fn reject_backend(backend: bool, command: &str) -> Result<(), CliError> {
+    if backend {
         return Err(CliError::Usage(format!("{command} 不接受 --backend")));
     }
     Ok(())
+}
+
+/// `--backend` 只接受 `candle`；ORT 後端已移除，其他值直接回錯，
+/// 不靜默忽略。
+fn parse_backend(value: &str) -> Result<(), CliError> {
+    if value == jc_model::BACKEND_NAME {
+        return Ok(());
+    }
+    Err(CliError::Usage(format!(
+        "--backend 只接受 {}，實際為 {value}",
+        jc_model::BACKEND_NAME
+    )))
 }
 
 /// 只有日文題庫接受 `--rerank`、`--gate` 與 `--left`。
@@ -440,7 +440,6 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     let mut n = 5usize;
     let mut json = false;
     let mut select_model = true;
-    let mut backend = None;
     let mut user_data = None;
     let mut mode = None;
     let mut pick = None;
@@ -461,8 +460,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
             }
             "--backend" => {
                 index += 1;
-                let raw = value(args, index, "--backend")?;
-                backend = Some(raw.parse().map_err(CliError::Usage)?);
+                parse_backend(value(args, index, "--backend")?)?;
             }
             "--lm" => {
                 index += 1;
@@ -524,7 +522,6 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
         n,
         json,
         select_model,
-        backend,
         user_data,
         mode,
         pick,
@@ -676,7 +673,6 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             stats,
             json,
             select_model,
-            backend,
         } => crate::eval_cmd::zh_golden(
             crate::eval_cmd::GoldenOptions {
                 testdata: testdata.clone(),
@@ -686,7 +682,6 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 stats: *stats,
                 json: *json,
                 select_model: *select_model,
-                backend: *backend,
             },
             out,
         ),
@@ -696,7 +691,6 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             pack,
             rerank,
             gate,
-            backend,
             left,
             neural,
             json,
@@ -708,7 +702,6 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 pack: pack.clone(),
                 rerank: *rerank,
                 gate: rerank.then_some(*gate),
-                backend: *backend,
                 left: *left,
                 neural: *neural,
                 json: *json,
@@ -734,7 +727,6 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             n,
             json,
             select_model,
-            backend,
             user_data,
             mode,
             pick,
@@ -748,7 +740,6 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 n: *n,
                 json: *json,
                 select_model: *select_model,
-                backend: *backend,
                 user_data: user_data.clone(),
                 mode: *mode,
                 pick: *pick,
@@ -787,23 +778,22 @@ pub fn usage() -> String {
     format!(
         "jc-cli {}（開發工具）\n\n\
          用法：\n  \
-         jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--select-model on|off] [--backend ort|candle] [--json]\n  \
+         jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--select-model on|off] [--backend candle] [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] \
-         [--rerank on|off] [--gate off|<成本差>|cand:<N>] [--backend ort|candle] \
+         [--rerank on|off] [--gate off|<成本差>|cand:<N>] [--backend candle] \
          [--left off|rolling] [--json] [--items]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
-         jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--backend ort|candle] [--user-data <dir>] [--pick <n>] [--json]\n  \
+         jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--backend candle] [--user-data <dir>] [--pick <n>] [--json]\n  \
          jc-cli tokenize ja [--testdata <dir>] [--vocab <model>] [--text <字串>]... [--diff] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
-         --backend 選擇日文 reranker 的推論後端；預設 ort，candle 讀 model.safetensors。\n\
+         --backend 只接受 candle；ORT 已移除，其他值會直接報錯。\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
          --corpus 是 ja/ 目錄裡的題庫名稱；目錄下每份題庫 json 都會被掃到。\n\
          --data 指向注音二進位資料包（lexicon.bin、lm.bin、manifest.json）；\n\
          指定時注音走真實詞庫並自動載入同目錄的 lm.bin。\n\
          --lm 覆寫 bigram 語言模型；--mu 是 bigram 與 unigram 的內插權重（預設 0.7）。\n\
-         --select-model on 需要 zh-select 模型與 ONNX Runtime；預設 on，可用 off 關閉。\n\
-         --backend 選 reranker 推論後端：ort（預設）或 candle（讀 model.safetensors，不需要 ONNX Runtime）。\n\
+         --select-model on 需要 zh-select 的 candle 權重；預設 on，可用 off 關閉。\n\
          --user-data 指定個人資料目錄；日文學習寫進同一個 personal.json，--pick 記下第幾個候選。\n",
         env!("CARGO_PKG_VERSION")
     )
@@ -836,7 +826,6 @@ mod tests {
                 stats: false,
                 json: true,
                 select_model: true,
-                backend: jc_model::Backend::Ort,
             }
         );
     }
@@ -851,7 +840,6 @@ mod tests {
                 pack: None,
                 rerank: false,
                 gate: DEFAULT_WORD_RERANK_GATE,
-                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 neural: true,
                 json: false,
@@ -870,7 +858,6 @@ mod tests {
                 pack: None,
                 rerank: false,
                 gate: DEFAULT_WORD_RERANK_GATE,
-                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 neural: false,
                 json: false,
@@ -899,7 +886,6 @@ mod tests {
                 pack: Some(PathBuf::from("/tmp/ja.pack")),
                 rerank: false,
                 gate: DEFAULT_WORD_RERANK_GATE,
-                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 neural: true,
                 json: false,
@@ -918,7 +904,6 @@ mod tests {
                 pack: None,
                 rerank: true,
                 gate: DEFAULT_WORD_RERANK_GATE,
-                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 neural: true,
                 json: false,
@@ -931,6 +916,7 @@ mod tests {
 
     #[test]
     fn parses_ja_backend_switch() {
+        // `--backend candle` 是唯一合法的值；ORT 已移除。
         assert_eq!(
             parse(&args(&[
                 "eval",
@@ -947,15 +933,20 @@ mod tests {
                 pack: None,
                 rerank: true,
                 gate: DEFAULT_WORD_RERANK_GATE,
-                backend: jc_model::Backend::Candle,
                 left: LeftMode::Off,
                 neural: true,
                 json: false,
                 items: false,
             }
         );
-        assert!(parse(&args(&["eval", "ja", "--backend", "tensorrt"])).is_err());
-        assert!(parse(&args(&["eval", "fuzzy", "--backend", "ort"])).is_err());
+        for value in ["ort", "tensorrt"] {
+            let err = parse(&args(&["eval", "ja", "--backend", value])).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("--backend 只接受 candle，實際為 {value}")
+            );
+        }
+        assert!(parse(&args(&["eval", "fuzzy", "--backend", "candle"])).is_err());
     }
 
     #[test]
@@ -968,7 +959,6 @@ mod tests {
                 pack: None,
                 rerank: false,
                 gate: DEFAULT_WORD_RERANK_GATE,
-                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 neural: true,
                 json: false,
@@ -989,7 +979,6 @@ mod tests {
                 pack: None,
                 rerank: true,
                 gate: WordGate::Gap(200),
-                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 neural: true,
                 json: false,
@@ -1004,7 +993,6 @@ mod tests {
                 pack: None,
                 rerank: false,
                 gate: WordGate::Candidates(3),
-                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 neural: true,
                 json: false,
@@ -1019,7 +1007,6 @@ mod tests {
                 pack: None,
                 rerank: false,
                 gate: WordGate::Off,
-                backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
                 neural: true,
                 json: false,
@@ -1045,7 +1032,6 @@ mod tests {
                 n: 3,
                 json: false,
                 select_model: true,
-                backend: None,
                 user_data: None,
                 mode: None,
                 pick: None,
@@ -1076,7 +1062,6 @@ mod tests {
                 n: 5,
                 json: false,
                 select_model: true,
-                backend: None,
                 user_data: Some(PathBuf::from("/tmp/opencode/ja-user")),
                 mode: None,
                 pick: Some(2),
@@ -1100,7 +1085,6 @@ mod tests {
                 n: 5,
                 json: false,
                 select_model: true,
-                backend: None,
                 user_data: None,
                 mode: None,
                 pick: None,
@@ -1116,7 +1100,6 @@ mod tests {
                 stats: false,
                 json: false,
                 select_model: false,
-                backend: jc_model::Backend::Ort,
             }
         );
         assert!(parse(&args(&["convert", "ㄨㄛˇ", "--select-model", "auto"])).is_err());
@@ -1124,14 +1107,9 @@ mod tests {
 
     #[test]
     fn parses_convert_backend() {
-        let parsed = parse(&args(&["convert", "わたし", "--backend", "candle"])).unwrap();
-        match parsed {
-            Command::Convert { backend, .. } => {
-                assert_eq!(backend, Some(jc_model::Backend::Candle));
-            }
-            other => panic!("應解析成 convert，實際為 {other:?}"),
-        }
-        assert!(parse(&args(&["convert", "わたし", "--backend", "tensorrt"])).is_err());
+        assert!(parse(&args(&["convert", "わたし", "--backend", "candle"])).is_ok());
+        let err = parse(&args(&["convert", "わたし", "--backend", "ort"])).unwrap_err();
+        assert_eq!(err.to_string(), "--backend 只接受 candle，實際為 ort");
     }
 
     #[test]
@@ -1159,7 +1137,6 @@ mod tests {
                 n: 5,
                 json: false,
                 select_model: true,
-                backend: None,
                 user_data: None,
                 mode: None,
                 pick: None,
