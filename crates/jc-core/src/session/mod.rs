@@ -838,6 +838,26 @@ impl Session {
         self.snapshot()
     }
 
+    /// 輸入結束時把日文尚未轉換的讀音補齊。
+    ///
+    /// 只對非延遲整句的逐字変換有效；延遲整句模式請用
+    /// [`Session::ja_live_idle`]。回傳轉換後的快照。
+    pub fn ja_live_flush(&mut self) -> Snapshot {
+        let plan = match self.live.as_mut() {
+            Some(live) => {
+                let (plan, converted) = live.flush();
+                converted.then_some(plan)
+            }
+            None => None,
+        };
+        if let Some(plan) = plan {
+            let units = self.romaji.units().to_vec();
+            let reading: String = units.iter().map(Unit::as_str).collect();
+            self.apply_live_plan(&plan, &units, &reading);
+        }
+        self.snapshot()
+    }
+
     /// 檢查日文逐字変換的 debounce 期限；到期就轉換並更新組字狀態。
     ///
     /// 期限未到或功能關閉時回傳目前快照，不改變狀態。
@@ -2043,6 +2063,8 @@ mod tests {
         };
         let mut s = Session::new(config);
         type_ja(&mut s, "toukyou");
+        // 非延遲模式在輸入結束時補齊尚未轉換的讀音。
+        s.ja_live_flush();
         assert_eq!(s.snapshot().preedit, "東京");
         let shown = s.press(Key::new(KeyCode::Space, None, false));
         let surfaces: Vec<&str> = shown
@@ -2154,6 +2176,7 @@ mod tests {
         config.neural = None;
         let mut s = ja_live_session(config);
         type_ja(&mut s, "kyou");
+        s.ja_live_flush();
         assert_eq!(s.snapshot().preedit, "今日");
 
         let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
@@ -2171,6 +2194,9 @@ mod tests {
             .iter()
             .any(|candidate| candidate.surface == "キョウ"));
 
+        // 第一下進入選取模式，第二下移到「きょう」。
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
         let picked = s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(picked.preedit, "きょう", "選字只換游標所在片段");
         let right = s.press(Key::new(KeyCode::ArrowRight, None, false));
@@ -2202,6 +2228,8 @@ mod tests {
 
         let mut s = ja_learning_session(true);
         type_ja(&mut s, "kyou");
+        // 預設延遲整句：停頓後才轉換並產生候選。
+        s.ja_live_idle();
         assert_eq!(s.candidates()[0].surface, "今日");
         // 第一次方向鍵只開候選窗，第二次移到第二候選。
         s.press(Key::new(KeyCode::ArrowRight, None, false));
@@ -2217,10 +2245,12 @@ mod tests {
 
         // 同一讀音再打一次：學習後的首選是剛剛手選的詞。
         type_ja(&mut s, "kyou");
+        s.ja_live_idle();
         assert_eq!(s.candidates()[0].surface, "京");
 
         // 反悔後回到統計順序。
         assert!(s.undo_learning());
+        s.ja_live_idle();
         assert_eq!(s.candidates()[0].surface, "今日");
     }
 
@@ -2229,11 +2259,13 @@ mod tests {
     fn test_ja_learning_disabled_keeps_statistical_order() {
         let mut s = ja_learning_session(false);
         type_ja(&mut s, "kyou");
+        s.ja_live_idle();
         s.press(Key::new(KeyCode::ArrowRight, None, false));
         s.press(Key::new(KeyCode::ArrowRight, None, false));
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "京");
         type_ja(&mut s, "kyou");
+        s.ja_live_idle();
         assert_eq!(s.candidates()[0].surface, "今日");
     }
 
@@ -2242,9 +2274,11 @@ mod tests {
     fn test_ja_passive_learning_keeps_clear_statistical_winner() {
         let mut s = ja_learning_session(true);
         type_ja(&mut s, "kyou");
+        s.ja_live_idle();
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "今日");
         type_ja(&mut s, "kyou");
+        s.ja_live_idle();
         assert_eq!(s.candidates()[0].surface, "今日");
     }
 
@@ -2255,6 +2289,7 @@ mod tests {
 
         let mut s = ja_learning_session(true);
         type_ja(&mut s, "kyou");
+        s.ja_live_idle();
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "今日");
         assert_eq!(
@@ -2270,6 +2305,7 @@ mod tests {
         );
 
         type_ja(&mut s, "kyou");
+        s.ja_live_idle();
         assert_eq!(s.candidates()[0].surface, "今日", "排序不變");
     }
 
@@ -2383,6 +2419,8 @@ mod tests {
         let runtime = stub_runtime("京", std::time::Duration::ZERO, &calls);
         let (mut s, _) = ja_neural_session(1_400, Some(runtime), 180);
         type_ja(&mut s, "kyou");
+        // 延遲整句：停頓後才轉換，神經門檻也在這時候跑。
+        s.ja_live_idle();
         assert_eq!(s.snapshot().preedit, "京");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "京");
@@ -2396,6 +2434,7 @@ mod tests {
         let runtime = stub_runtime("京", std::time::Duration::ZERO, &calls);
         let (mut s, _) = ja_neural_session(2_000, Some(runtime), 180);
         type_ja(&mut s, "kyou");
+        s.ja_live_idle();
         assert_eq!(s.snapshot().preedit, "今日");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         s.press(Key::new(KeyCode::Enter, None, false));
@@ -2417,6 +2456,7 @@ mod tests {
         );
 
         type_ja(&mut s, "ou");
+        s.ja_live_idle();
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
             1,
@@ -2431,9 +2471,12 @@ mod tests {
     fn test_ja_neural_skips_when_mean_candidates_below_min() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let runtime = stub_runtime("京", std::time::Duration::ZERO, &calls);
-        let (mut s, _) = ja_neural_session(1_400, Some(runtime), 180);
-        s.config.ja_neural.min_mean_candidates = 9.0;
+        // 逐字変換的門檻在建立 Session 時就複製給控制器，必須先改設定。
+        let mut config = ja_neural_config(1_400, Some(runtime), 180);
+        config.ja_neural.min_mean_candidates = 9.0;
+        let mut s = Session::new(config);
         type_ja(&mut s, "kyou");
+        s.ja_live_idle();
         assert_eq!(s.snapshot().preedit, "今日");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         s.press(Key::new(KeyCode::Enter, None, false));
@@ -2447,6 +2490,7 @@ mod tests {
         let runtime = stub_runtime("京", std::time::Duration::from_millis(80), &calls);
         let (mut s, _) = ja_neural_session(1_400, Some(runtime), 5);
         type_ja(&mut s, "kyou");
+        s.ja_live_idle();
         assert_eq!(s.snapshot().preedit, "今日");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "今日");
@@ -2462,6 +2506,7 @@ mod tests {
         disabled.config.ja_neural.enabled = false;
         for session in [&mut missing, &mut disabled] {
             type_ja(session, "kyou");
+            session.ja_live_idle();
             assert_eq!(session.snapshot().preedit, "今日");
             session.press(Key::new(KeyCode::Enter, None, false));
             assert_eq!(session.commit(), "今日");
@@ -2479,6 +2524,8 @@ mod tests {
             enabled: true,
             debounce: std::time::Duration::ZERO,
             deferred_sentence: false,
+            // 這個測試驗的是即時逐字路徑；停頓補正走更嚴的門檻。
+            neural_timing: live::NeuralTiming::Inline,
             ..live::Config::default()
         };
         Session::new(config)
@@ -2492,6 +2539,8 @@ mod tests {
         let mut s = ja_live_neural_session(1_400, Some(runtime));
         assert!(s.ja_live_enabled());
         type_ja(&mut s, "kyou");
+        // 輸入結束時補齊讀音；停頓再把最後一個文節送神經門檻。
+        s.ja_live_flush();
         assert_eq!(s.snapshot().preedit, "京");
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),

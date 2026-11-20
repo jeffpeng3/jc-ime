@@ -229,7 +229,13 @@ mod tests {
         let mut out = String::new();
         for segment in &segments {
             if segment.owner == Owner::User {
-                out.push_str(&composition.text()[segment.span.start..segment.span.end]);
+                let text: String = composition
+                    .text()
+                    .chars()
+                    .skip(segment.span.start)
+                    .take(segment.span.end - segment.span.start)
+                    .collect();
+                out.push_str(&text);
             }
         }
         let runs = composition.auto_runs();

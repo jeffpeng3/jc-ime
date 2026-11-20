@@ -326,6 +326,9 @@ impl Composition {
         if start >= end {
             return 0;
         }
+        // 範圍可能只蓋到長片段的一部分（例如兩音節的詞只選第一個字）；
+        // 先切出文字邊界，所有權才能精確落在使用者選的字上。
+        self.ensure_text_boundaries(start, end);
         let mut marked = 0;
         let mut groups: Vec<(Lang, Vec<usize>)> = Vec::new();
         for (index, segment) in self.segments.iter().enumerate() {
@@ -624,6 +627,38 @@ impl Composition {
         self.text.get(start..end).unwrap_or_default().to_string()
     }
 
+    /// 在文字位置 `start`、`end` 切出片段邊界。
+    ///
+    /// 邊界落在片段內部時，依字數比例把讀音單位分給左右兩半，讓
+    /// [`Owner::User`] 只蓋到使用者真正選到的字。
+    fn ensure_text_boundaries(&mut self, start: usize, end: usize) {
+        for boundary in [start, end] {
+            if boundary == 0 {
+                continue;
+            }
+            let found = self
+                .segments
+                .iter()
+                .enumerate()
+                .find_map(|(index, segment)| {
+                    let chars = segment.chars();
+                    if segment.units == 0 || chars == 0 {
+                        return None;
+                    }
+                    if segment.span.start < boundary && boundary < segment.span.end {
+                        let offset = boundary - segment.span.start;
+                        let left = (offset * segment.units + chars / 2) / chars;
+                        Some((index, left))
+                    } else {
+                        None
+                    }
+                });
+            if let Some((index, left_units)) = found {
+                self.split_segment(index, left_units);
+            }
+        }
+    }
+
     /// 在讀音單位 `start` 與 `start + units` 切出片段邊界。
     fn ensure_unit_boundaries(&mut self, lang: Lang, start: usize, units: usize) {
         let end = start.saturating_add(units);
@@ -694,7 +729,8 @@ impl Composition {
         self.users.sort_by(|a, b| {
             (lang_order(a.lang), a.start, a.units).cmp(&(lang_order(b.lang), b.start, b.units))
         });
-        self.apply_owners();
+        // 標記是讀音座標；文字已縮短時，落在目前讀音之外的就不要再留著。
+        self.prune_marks();
     }
 
     /// 依目前文字與標記重新套用 `owner`；標記本身不動。
@@ -890,6 +926,7 @@ impl UnitAxis<'_> {
         }
         let end = start.saturating_add(units);
         let mut cursor = 0usize;
+        let mut covered = 0usize;
         let mut readings = Vec::new();
         let mut surface_start = None;
         let mut surface_end = 0;
@@ -903,8 +940,12 @@ impl UnitAxis<'_> {
                 return None;
             }
             readings.push(segment.reading.clone());
+            covered += segment.units;
             surface_start.get_or_insert(segment.span.start);
             surface_end = segment.span.end;
+        }
+        if covered != units {
+            return None;
         }
         let lang = self.segments.first()?.lang;
         let start = surface_start?;
@@ -1100,10 +1141,25 @@ mod tests {
         assert_eq!(c.user_marks()[0].start, 1);
         c.shift_units(Lang::Zh, 1, 1);
         assert_eq!(c.user_marks()[0].start, 2);
-        // 跨過編輯點的標記直接解除。
-        c.mark_user_units(Lang::Zh, 0, 2, "ㄊㄞˊ ㄅㄟˇ", "台北");
-        c.shift_units(Lang::Zh, 1, -1);
+
+        // 舊標記被平移到目前讀音之外：下次標記時要清乾淨。
+        c.shift_units(Lang::Zh, 0, 5);
+        assert_eq!(c.user_marks()[0].start, 7, "平移本身不清標記");
+        c.mark_user_units(Lang::Zh, 0, 1, "ㄊㄞˊ", "台");
+        assert_eq!(c.user_marks().len(), 1, "超出讀音範圍的舊標記要清掉");
+        assert_eq!(c.user_marks()[0].start, 0);
+
+        // 編輯點跨過標記：該片段退回 Auto。
+        c.shift_units(Lang::Zh, 0, -1);
         assert!(c.user_marks().is_empty());
+
+        // 編輯點之後仍完整的片段保留；刪字不會解鎖後面的 User 片段。
+        let mut later = composition();
+        later.mark_user(2..3);
+        later.shift_units(Lang::Zh, 1, -1);
+        assert_eq!(later.user_marks().len(), 1);
+        assert_eq!(later.user_marks()[0].start, 1);
+        assert_eq!(later.user_marks()[0].reading, "ㄏㄠˇ");
     }
 
     #[test]

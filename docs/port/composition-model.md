@@ -34,6 +34,7 @@ Session 編輯 ──→ Composition（text / cursor / segments / User 標記）
 | `Session::auto_runs()` | 目前會被送去轉換的連續 `Auto` 區段。 |
 | `Session::user_marks()` | 使用者固定片段的讀音座標。 |
 | `Session::convert_auto_runs()` | 逐段呼叫 `zh`／`ja` 後端，回傳每段結果；`User` 片段不會出現。 |
+| `Session::ja_live_flush()` | 非延遲模式輸入結束時補齊日文尚未轉換的讀音。 |
 | `Snapshot.owners` | 與 `Snapshot.segments` 對齊的所有權，供外殼標示。 |
 
 ### 所有權
@@ -117,7 +118,19 @@ Session 編輯 ──→ Composition（text / cursor / segments / User 標記）
 
 ## 測試
 
-只寫、只編譯；依共通規則沒有執行 `cargo test`。
+`RUST_FONTCONFIG_DLOPEN=1 cargo test -p jc-core` 全綠（674 + 97）。
+
+預設改成延遲整句後，日文測試改成照新流程驅動：打完字呼叫
+`Session::ja_live_idle()`（延遲整句）或 `Session::ja_live_flush()`（非延遲
+逐字）。沒有放寬任何期望值，也沒有改回立即轉換。
+
+另外修掉測試暴露的實作問題：
+
+- `flush()` 直接跳過邊界 hold，輸入結束一定把最後一段轉完。
+- 游標移動或開片段候選窗時不再清掉候選清單；整句候選也不會蓋掉片段候選。
+- 日文片段選字會記錄學習，學習翻掉第一名時顯示跟著換。
+- 非延遲模式片段選字後用 `lock_through` 固定；整段鎖定時 `prefix_intact`
+  不再誤判成前綴被破壞。
 
 | 任務書測試 | Rust 測試 |
 |---|---|
