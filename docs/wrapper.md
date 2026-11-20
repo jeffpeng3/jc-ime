@@ -18,16 +18,16 @@
 | 長度前綴＋JSON 訊框 | 已實作，上限 1 MiB | `crates/jc-proto/src/frame.rs` |
 | 版本握手 | 已實作，精確比對 `3` | `crates/jc-engine/src/lib.rs` |
 | 按鍵／快照／提交／關機 | 已實作 | `jc-proto` 的 `Request`／`Response` |
-| 候選明細與分段 | 已實作，v3 新增 | `State.details`、`State.segments` |
+| 候選明細與分段 | 已實作，v3 新增；日文候選帶 `pos` | `State.details`、`State.segments` |
 | IME 開關 | 引擎沒有這個概念，由 wrapper 自己管 | 無 |
-| 設定頻道 | **未實作**，引擎只吃命令列參數 | `crates/jc-engine/src/main.rs` |
+| 設定 | 啟動時讀 `settings.json`；沒有執行期設定請求 | `crates/jc-engine/src/config.rs` |
 | 主動通知 | **未實作**，只有請求／回應 | `crates/jc-engine/src/lib.rs` |
 | client crate | `jc-windows` 已實作；`jc-linux`／`jc-mac` 是佔位 | `crates/jc-windows`、`crates/jc-linux`、`crates/jc-mac` |
 | 神經模型（注音選字） | 已接線，資料與模型存在時啟動即安裝 | `crates/jc-core/src/zh/select.rs` |
 | 神經模型（日文轉換） | 已接線，Jinen small 預設開啟，逾時回退統計 | `crates/jc-core/src/session/neural.rs` |
 | 神經模型（日文重排） | 程式在，但預設關閉，不建議使用 | `loader.rs` 的 `ja_rerank` |
 | 學習資料持久化 | 核心有檔案格式；引擎啟動尚未載入個人化檔案 | `jc-core::personal` |
-| Windows TSF wrapper | **未實作** | 無 |
+| Windows TSF wrapper | 已實作（x64），可安裝並用 `Win+Space` 選取 | `crates/jc-tsf` |
 
 ## 1. 生命週期
 
@@ -47,7 +47,7 @@ jc-engine --data <資料根目錄> [--mode zh|ja|mixed|en] \
 |---|---|
 | `--data <dir>` | 資料根目錄；沒給時讀 `JC_DATA`，兩者都沒有就結束（exit 1） |
 | `--mode` | 啟動時的輸入模式，預設 `zh`；**沒有執行期切換模式的請求** |
-| `--socket <path>` | Unix 上用 domain socket；Windows 上取最後一段掛到 `\\.\pipe\` |
+| `--socket <path>` | Unix 上用 domain socket；Windows 上取最後一段掛到 `\\.\pipe\`；`--supervise` 不給時用 `jc-ime-<SID 尾段>` |
 | `--max-frame` | 單一訊框上限，預設 1048576 |
 | `--allow-empty-data` | 不載入資料，只給協定測試用；**產品不可使用** |
 
@@ -70,7 +70,7 @@ jc-engine --data <資料根目錄> [--mode zh|ja|mixed|en] \
 timeout；握手完成前把狀態顯示成「初始化中」。Jinen 的載入與推論成本見
 `docs/port/jinen-default.md`。
 
-`jc-engine --version` 會印 `jc-engine 0.1.0（協定 3）` 後結束。這段文字是給
+`jc-engine --version` 會印 `jc-engine 0.1.0-rc.1（協定 3）` 後結束。這段文字是給
 人看的，不是穩定格式。wrapper 判斷版本一律以握手回應為準。
 
 ### 1.2 何時啟動
@@ -94,7 +94,12 @@ timeout；握手完成前把狀態顯示成「初始化中」。Jinen 的載入�
 
 ### 1.4 崩潰後怎麼重啟
 
-引擎沒有 supervisor、沒有 health check、沒有自動重啟。wrapper 要自己做：
+引擎可用 `--supervise` 常駐：監督者用 Local mutex 保證單一實例，子行程結束
+就依退避重啟（0.5 s、1 s、2 s、5 s、10 s，上限 30 s），health check 失敗走
+同一條路徑，log 寫成環狀檔。Windows 預設 `%LOCALAPPDATA%\jc-ime\supervisor.log`。
+
+沒有用 `--supervise` 時，引擎沒有 supervisor、沒有 health check、沒有自動重啟。
+wrapper 要自己做：
 
 1. 從讀取端拿到 EOF、寫入得到 `EPIPE`，或子行程結束，都算引擎消失。
 2. 立刻清掉畫面上的組字與候選，丟棄未送出的按鍵。
@@ -118,7 +123,7 @@ timeout；握手完成前把狀態顯示成「初始化中」。Jinen 的載入�
 
 因此共用引擎時，wrapper 端應該有一個 per-user broker，只維持一條連線，
 把各應用程式的請求排隊送出。組字狀態是引擎的，不是每個應用程式一份；
-焦點切換時一定要先收掉上一個應用程式的組字，見 §5.4。
+焦點切換時一定要先收掉上一個應用程式的組字，見 §5.7。
 
 ### 1.6 責任分界
 
@@ -154,6 +159,22 @@ Windows 的 `--socket` 一律取最後一段掛到 `\\.\pipe\`：
 
 pipe 開 `PIPE_REJECT_REMOTE_CLIENTS`，一次一個 instance。Windows 分支的實際
 編譯與行為由 CI 的 `windows (msvc)` job 驗證。
+
+`--supervise` 沒給 `--socket` 時，名稱由 `jc-windows::resolve_pipe_name` 決定，
+`jc-tsf`、監督者與子行程共用同一份規則：
+
+| 順序 | 來源 | 值 |
+|---|---|---|
+| 1 | 環境變數 `JC_IME_PIPE` | 原樣使用（trim 後非空才生效） |
+| 2 | `HKCU\Software\jc-ime\EnginePipe`（REG_SZ） | 原樣使用 |
+| 3 | 目前使用者的 SID | `jc-ime-<SID 最後一段>`，例如 `…-1001` → `jc-ime-1001` |
+| 4 | 取不到 SID | `jc-ime`（共用名稱）＋ 一次警告 |
+
+SID 只取最後一段（RID），名稱只含 `[A-Za-z0-9-]`。同一台機器上不同使用者會
+得到不同 pipe；同一使用者開兩個 RDP session 仍共用一個名稱，這是已知限制。
+要讓自訂名稱同時套用到 IME 與引擎，必須寫進 `JC_IME_PIPE` 或上述註冊機碼，
+不能只改一方的 `--socket`。非 Windows 平台沒有 SID，固定用 `JC_IME_PIPE`
+或 `jc-ime`，不產生警告。
 
 ### 2.2 stdio
 
@@ -216,10 +237,10 @@ pipe 開 `PIPE_REJECT_REMOTE_CLIENTS`，一次一個 instance。Windows 分支�
 ```text
 wrapper                                   engine
    │  {"op":"hello","protocol":3,          │
-   │   "client":"jc-tsf/0.1.0"}            │
+   │   "client":"jc-tsf/0.1.0-rc.1"}            │
    │ ────────────────────────────────────▶ │
    │  {"op":"ready","protocol":3,          │
-   │   "engine":"jc-engine 0.1.0"}         │
+   │   "engine":"jc-engine 0.1.0-rc.1"}         │
    │ ◀──────────────────────────────────── │
 ```
 
@@ -310,9 +331,9 @@ Shift+Tab 有兩種表示：`{"kind":"shift_tab"}` 配 `shift:true`，或
 `{"kind":"tab"}` 配 `shift:true`。兩者在不同路徑都會用到，wrapper 一律送
 前者並把 `shift` 設 `true`。
 
-`ctrl` 目前只有一個用途：`Ctrl+,` 輸出全形逗號，而且要先開啟
-`SessionConfig::ctrl_punct`。`jc-engine` 沒有對應的命令列參數，所以**未實作**
-從引擎開啟。其他 Ctrl 組合引擎直接忽略。
+`ctrl` 目前只有一個用途：`Ctrl+,` 輸出全形逗號，而且要在 `settings.json` 開啟
+`features.ctrl-punctuation`（用 `jc-engine --print-settings` 確認生效值）。
+其他 Ctrl 組合引擎直接忽略。
 
 ### 4.4 IME 開關
 
@@ -404,12 +425,13 @@ Shift+Tab 有兩種表示：`{"kind":"shift_tab"}` 配 `shift:true`，或
 | `source` | string | `lexicon`、`personal`、`predicted`、`literal` |
 | `cost` | i32 | 路徑成本，越小越優先；不是機率，也不適合跨長度相加 |
 | `learned` | bool | `source == personal` 時為 `true`；`false` 時省略 |
+| `pos` | string | 詞性名稱，日文候選才有；注音候選一定沒有這個欄位 |
 
 `cost` 只供除錯與排序說明。候選順序已由核心決定，wrapper 不要拿 `cost`
 重排。
 
-**尚未提供**：詞性，以及學習次數／時間／來源權重。要顯示「名詞」「常用詞」
-這類標籤，目前只能靠 `source` 與 `learned` 推測。
+**尚未提供**：學習次數／時間／來源權重。`pos` 是 pack 裡的完整詞性名稱
+（例如 `名詞,普通名詞,一般,*`），要顯示成短標籤請自己截短。
 
 ### 5.3 segments
 
@@ -463,7 +485,29 @@ static int Utf16Offset(string text, int runeIndex) {
 
 不要自己保留上一份 `preedit` 再拼接。每次 `State` 都是完整快照。
 
-### 5.6 焦點與組字
+### 5.6 組字底線與顯示屬性
+
+組字範圍要畫底線，讓使用者看得出哪一段還沒提交。Windows TSF 的實作是
+`ITfDisplayAttributeProvider`：把自己註冊到 `GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER`，
+再用 `ITfProperty`（`GUID_PROP_ATTRIBUTE`）把 atom 套到 composition range。
+
+| 欄位 | 值 | 說明 |
+|---|---|---|
+| `lsStyle` | `TF_LS_DOT` | 虛線底線 |
+| `fBoldLine` | `FALSE` | 細線 |
+| `crText`／`crBk` | `TF_CT_NONE` | 沿用應用程式文字色與背景 |
+| `crLine` | `COLOR_WINDOWTEXT` | 跟隨系統視窗文字色 |
+| `bAttr` | `TF_ATTR_INPUT` | 語意是「尚未轉換的輸入」 |
+
+屬性是唯讀常數，`SetAttributeInfo` 回 `E_NOTIMPL`。atom 只在同一個 TSF
+用戶端內有效，每次 `Activate` 都要重新註冊；註冊或套用失敗只記 log，
+不影響組字、提交與按鍵。提交或取消時先 `ITfProperty::Clear` 再
+`EndComposition`，不要讓底線留在已提交的文字上。
+
+Fcitx5、macOS 這類沒有 display attribute 的 wrapper 用同一個視覺規則自己畫
+虛線。底線只覆蓋 `preedit` 的範圍，候選窗本身不畫。
+
+### 5.7 焦點與組字
 
 引擎不知道焦點在哪個應用程式，組字狀態是全引擎共用的。切換焦點時沒有
 `FocusLost` 事件可送，`HostEvent` 目前只存在於 `jc-platform`，引擎沒有
@@ -473,7 +517,7 @@ wrapper 必須在焦點離開時主動收尾，否則使用者在另一個應用
 上一個應用程式的組字。建議送 `Esc` 取消；如果產品政策是「切換焦點自動
 確定」，就在焦點還有效時送 `Commit` 並插入文字。
 
-### 5.7 suggestion 與 label
+### 5.8 suggestion 與 label
 
 - `suggestion` 是 Tab 會接受的尾綴，適合用淡色接在 `preedit` 後面顯示。
   它只在候選窗關閉、且沒有已接受的補全時出現。
@@ -535,15 +579,27 @@ wrapper 可以用它決定候選窗的視覺強調，例如 `true` 時才畫選�
 ### 6.4 highlight 與滑鼠點選
 
 `State.highlighted` 是目前的候選索引，0 時省略。畫高亮直接用這個值，不要
-自己推。**滑鼠事件仍未實作**：點選候選只能由 wrapper 轉成按鍵序列。
+自己推。
 
-若要支援滑鼠，用 `highlighted` 當目前位置 `h`，點第 `k` 項時：
+Windows TSF 的候選窗已實作滑鼠點選：`SetSelection(nIndex)` 把頁內位置換成
+一個數字鍵（頁內位置 0–8 → `1`–`9`；10 項頁面時第 10 項 → `0`），送給引擎後
+由核心的 `select_by_digit` 選取並提交。點第 7 項只送一個鍵，不再模擬 6 次
+`Down` 加一次 `Space`。換算用 `nIndex % CANDIDATE_PAGE_SIZE`，頁面大小是核心
+常數，外殼不要寫死。
+
+數字鍵由核心換算成 `current_page * CANDIDATE_PAGE_SIZE + 頁內位置`，而
+`current_page` 來自 `highlighted`。只有同頁的索引可以只送數字鍵；點到別頁的
+項目要忽略並記 log，等下一輪 `State` 更新，否則會選到目前頁同位置的候選。
+`Finalize()` 在已送數字鍵時不補鍵，`Abort()` 送 `Escape`。
+
+其他 wrapper（Fcitx5、macOS）沒有滑鼠事件可用，只能照下列步驟轉成按鍵。用
+`highlighted` 當目前位置 `h`，點第 `k` 項時：
 
 1. 先送 `down` 直到 `navigating` 為 `true`；第一次只開窗不移動。
 2. 再送 `(k - h + n) mod n` 次 `down`。
 3. 送 `space`，再依 §7.2 補 `Commit`。
 
-這條路徑仍會因狀態不同步而出錯，第一版建議先不支援滑鼠。
+這條路徑仍會因狀態不同步而出錯；能直接送數字鍵就不要走模擬。
 
 ### 6.5 數字鍵與其他選字鍵
 
@@ -552,9 +608,9 @@ wrapper 可以用它決定候選窗的視覺強調，例如 `true` 時才畫選�
 
 wrapper 看不到「候選窗已開」這個狀態，所以：
 
-- 不要自行把 1–9 當成選字鍵。
-- 若產品一定要數字選字，先送 `down` 開窗，再送數字。這件事同樣依賴
-  `highlighted` 與 `navigating`，見 §6.4。
+- 使用者直接按 1–9 就照原樣送，不要攔截或自行選字。
+- 要程式化選第 `n` 項（例如滑鼠點選），先確認候選非空、且索引在核心目前
+  頁，再送對應數字鍵；換算見 §6.4。
 - `Shift+Delete`／`Shift+Backspace` 在候選窗開著時是「忘記這個候選」的
   學習操作，不要對應到應用程式的刪除。
 
@@ -760,7 +816,7 @@ use jc_windows::Client;
 
 let mut client = Client::connect_with_retry(
     "jc-engine",
-    "jc-tsf/0.1.0",
+    "jc-tsf/0.1.0-rc.1",
     Duration::from_secs(1),
     5,
     Duration::from_millis(500),
@@ -803,28 +859,27 @@ Linux CI 能編譯、能跑測試。佔位 crate 沒有 `todo!()`，所有入口
 
 以下都是目前 v3 的真實限制，不是設定問題。
 
-1. **沒有詞性與學習證據權重**。`details` 有讀音、來源、成本與 `learned`
-   布林值，但沒有 part-of-speech，也沒有次數、時間或來源權重。
-2. **沒有滑鼠事件**。點選、滾輪都要 wrapper 轉成 `Key` 序列。
+1. **沒有學習次數與來源權重**。`details` 有讀音、來源、成本、`learned` 與
+   `pos`，但沒有次數、時間或來源權重。
+2. **協定沒有滑鼠事件**。TSF 候選窗已把點選轉成數字鍵；其他 wrapper 仍要
+   自己把點選與滾輪轉成 `Key`。
 3. **沒有候選窗開關旗標**。只能用 `candidates` 是否為空推測。
 4. **沒有選字即時提交**。Space／數字選字後要補一次 `Commit`，見 §7.2。
 5. **沒有主動通知**。學習完成、模型狀態、候選變更都不會推送。
 6. **一次一條連線**。多應用程式共用會排隊，沒有多工。
-7. **沒有 config 頻道**。簡繁轉換、Ctrl 標點、英文自動補完、輸入風格、
-   模糊音，都無法從 wrapper 開啟。引擎只吃命令列。
+7. **沒有執行期設定頻道**。簡繁轉換、Ctrl 標點、英文自動補完、輸入風格、
+   模糊音都只能在啟動時由 `settings.json` 決定；改了要重啟引擎。
 8. **模式不能切換**。`--mode` 只影響啟動。
 9. **引擎端沒有載入個人化檔案**。核心有 rollback、弱負向訊號與最短觸發
    長度，但 `jc-engine` 啟動時不會讀取使用者學習檔。
 10. **日文 reranker 預設關閉**。重排由 Jinen small 取代，`ja_rerank` 只
     保留給實驗。
-11. **組字不能任意位置編輯**。候選窗開著但未選取時，Home／End 可以移動
-    注音游標格，但插入與刪除都在尾端。
-12. **`--mode en` 的 Enter 不產生換行**，見 §7.3。
-13. **右文脈沒進 Jinen**。`max_context_chars.right` 欄位存在，但 prompt
+11. **`--mode en` 的 Enter 不產生換行**，見 §7.3。
+12. **右文脈沒進 Jinen**。`max_context_chars.right` 欄位存在，但 prompt
     只送左文脈。
-14. **`ja_live` 不套 Jinen**。逐字変換走自己的路徑，預設關閉。
-15. **Windows TSF wrapper 未實作**。named pipe 與 client crate 已就緒，
-    平台外殼還沒開始。
+13. **`ja_live` 尚未預設開啟**。逐字変換已接同一套 Jinen 門檻，預設仍走
+    一般轉換。
+14. **TSF 只建 x64**。32 位元程式不會載入這個輸入法；MSI 也還沒有簽章。
 
 ## 12. 待補
 
@@ -839,10 +894,10 @@ Linux CI 能編譯、能跑測試。佔位 crate 沒有 `todo!()`，所有入口
 | 5 | `Shutdown` 不檢查握手 | 任何本機行程都能關引擎 | 要求先 `Hello`，或加權限檢查 |
 | 6 | `docs/proto.md` 說 Esc 後 `preedit` 為空 | 候選窗開著時 Esc 只關窗 | 文件補上 Esc 的三段優先序 |
 | 7 | `docs/proto.md` 說每個 Key 都回 `State` | Enter 回 `Committed`，錯誤回 `Error` | 文件補上回應矩陣 |
-| 8 | 沒有詞性、學習次數與權重 | 候選窗無法顯示「名詞」「常用」 | v4 加欄位，保持舊 wrapper 可解析 |
+| 8 | 沒有學習次數與來源權重 | 候選窗無法顯示「常用」或信心 | v4 加欄位，保持舊 wrapper 可解析 |
 | 9 | `Ready` 沒有通告 `max_frame` 與能力 | wrapper 只能猜 | 加 `max_frame`，之後再加 `features` |
 | 10 | 沒有切換模式、IME 開關的請求 | 每個模式要一個引擎 | 加 `set_mode`，或明確寫成 wrapper 責任 |
-| 11 | 沒有設定頻道 | 簡繁、標點、風格都打不開 | 加 `configure` 請求，或在啟動時吃設定檔 |
+| 11 | 沒有執行期設定請求 | 設定改了要重啟引擎 | 加 `configure` 請求，或明確寫成啟動時設定 |
 | 12 | 沒有 undo／forget | 無法撤銷學習或提交 | 加 `undo`／`forget` |
 | 13 | 沒有焦點事件 | 共用引擎時組字會跨應用程式殘留 | 加 `focus_lost`，或由 wrapper 保證送 Esc |
 | 14 | 多連線序列處理 | 第二個應用程式會卡住 | per-connection 執行緒或 broker 契約 |
@@ -858,8 +913,8 @@ Linux CI 能編譯、能跑測試。佔位 crate 沒有 `todo!()`，所有入口
 `--allow-empty-data` 就能重現。
 
 ```text
-→ [len]"{"op":"hello","protocol":3,"client":"jc-tsf/0.1.0"}"
-← [len]"{"op":"ready","protocol":3,"engine":"jc-engine 0.1.0"}"
+→ [len]"{"op":"hello","protocol":3,"client":"jc-tsf/0.1.0-rc.1"}"
+← [len]"{"op":"ready","protocol":3,"engine":"jc-engine 0.1.0-rc.1"}"
 
 → [len]"{"op":"key","key":{"code":{"kind":"char","value":"ㄇ"},"text":"ㄇ","shift":false}}"
 ← [len]"{"op":"state","preedit":"ㄇ","cursor":1,"candidates":[],"cursor_rune":1}"
