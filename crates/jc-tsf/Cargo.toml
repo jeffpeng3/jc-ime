@@ -25,6 +25,9 @@ windows = { version = "0.62", features = [
   "Win32_System_LibraryLoader",
   "Win32_System_Ole",
   "Win32_System_Registry",
+  # RegCreateKeyExW 要寫明機碼檢視（KEY_WOW64_64KEY／32KEY），這個函式掛在
+  # Win32_Security 之下。
+  "Win32_Security",
   "Win32_System_Variant",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_TextServices",

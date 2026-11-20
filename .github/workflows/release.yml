@@ -464,7 +464,7 @@ jobs:
               printf '企業的 AppLocker／WDAC 白名單也會擋下未簽章 MSI。\n\n'
             fi
             printf '## 已知限制\n\n'
-            printf -- '- Windows TIP 有 x64 與 x86 兩份；32 位元程式（例如舊版 Office）要在該程式切到「jc 注音（32 位元）」。\n'
+            printf -- '- Windows TIP 同時包含 x64 與 x86 兩份 DLL，共用同一個「jc 注音」項目；32 位元程式（例如舊版 Office）不需要手動切換。\n'
             printf -- '- MSI 是 per-machine 安裝，需要系統管理員；只會把輸入法加進執行安裝的帳號。\n'
             printf -- '- 注音神經選字模型（Funmula `zh-select`）依授權不隨附，需另外下載。\n'
             printf -- '- Linux 版目前只有引擎、CLI 與設定程式，沒有桌面輸入法整合。\n'

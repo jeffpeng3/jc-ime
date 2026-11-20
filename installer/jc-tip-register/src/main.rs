@@ -5,22 +5,23 @@
 //!
 //! | 子命令 | 權限 | 執行時機 |
 //! |---|---|---|
-//! | `machine-register <jc-tsf.dll>` | 提升（deferred、`Impersonate="no"`） | 安裝檔案之後 |
-//! | `machine-unregister [<jc-tsf.dll>]` | 提升 | 移除檔案之前 |
+//! | `machine-register <dll>...` | 提升（deferred、`Impersonate="no"`） | 安裝檔案之後 |
+//! | `machine-unregister [<dll>...]` | 提升 | 移除檔案之前 |
 //! | `user-install` | 目前使用者（immediate） | 安裝完成之後 |
 //! | `user-uninstall <0\|1>` | 目前使用者 | 解除安裝時 |
 //! | `settings` | 目前使用者 | 開始功能表的設定捷徑 |
 //! | `legal` | 目前使用者 | 開始功能表的「授權」捷徑 |
 //!
-//! `machine-*` 呼叫 `jc-tsf.dll` 自己的 `DllRegisterServer`／`DllUnregisterServer`，
-//! 不重抄一份註冊邏輯；只有 DLL 已不在（例如被防毒隔離）時才用內建的退路直接
-//! 清 CTF 機碼。`user-*` 透過 `input.dll` 的 `InstallLayoutOrTip` 修改目前使用者的
-//! 語言清單，這一步**不能**在 SYSTEM 身分執行，否則記號會落在 SYSTEM 的 HKCU。
+//! `machine-*` 優先呼叫 `jc-tsf.dll` 自己的 `DllRegisterServer`／
+//! `DllUnregisterServer`，不重抄一份註冊邏輯；DLL 不在（例如被防毒隔離）時才用
+//! 內建的退路直接清 CTF 機碼。`user-*` 透過 `input.dll` 的 `InstallLayoutOrTip`
+//! 修改目前使用者的語言清單，這一步**不能**在 SYSTEM 身分執行，否則記號會落在
+//! SYSTEM 的 HKCU。
 //!
-//! 產品有 x64 與 x86 兩份 `jc-tsf`，各自一個 CLSID。這支程式是 x64，載入不了
-//! 32 位元 DLL，所以 `machine-*` 先判斷目標 DLL 的架構（`--arch` 可覆寫）：
-//! 同架構才呼叫 DLL 的匯出函式，跨架構由這裡直接寫對應機碼檢視並呼叫 TSF 介面。
-//! 詳見 `docs/port/x86-tip.md`。
+//! 產品有 x64 與 x86 兩份 `jc-tsf`，**共用同一個 CLSID 與 profile**，只差註冊在
+//! 哪一個機碼檢視。這支程式是 x64，載入不了 32 位元 DLL，所以 `machine-*` 對每個
+//! 路徑判斷 PE 架構（`--arch` 可覆寫）：同架構才呼叫 DLL 的匯出函式，跨架構由
+//! 這裡直接寫對應檢視並呼叫 TSF 介面。詳見 `docs/port/x86-tip.md`。
 //!
 //! 結束碼：0 成功、2 用法錯誤、3 執行失敗。MSI 以 0／非 0 判定。
 
@@ -39,16 +40,17 @@ mod platform;
 /// 說明文字。
 #[cfg_attr(not(windows), allow(dead_code))]
 fn usage() -> &'static str {
-    "用法：jc-tip-register <子命令> [--arch x64|x86] [參數]\n\
+    "用法：jc-tip-register <子命令> [參數]\n\
      \n\
-     \x20 machine-register [--arch] <jc-tsf.dll>  註冊 COM、CTF profile 與分類，並設定 AppContainer 讀取權限\n\
-     \x20 machine-unregister [--arch] [dll]       反向移除；DLL 不在時直接清 CTF 機碼\n\
-     \x20 user-install                    把 jc 注音（x64 與 x86）加進目前使用者的語言清單\n\
+     \x20 machine-register [--arch x64|x86] <dll>...  註冊 COM、CTF profile 與分類，並設定 AppContainer 讀取權限\n\
+     \x20 machine-unregister [dll...]                 反向移除；DLL 不在時直接清 CTF 機碼（兩個檢視都清）\n\
+     \x20 user-install                    把 jc 注音加進目前使用者的語言清單\n\
      \x20 user-uninstall <0|1>            從目前使用者移除；1 表示保留使用者設定\n\
      \x20 settings                        以目前使用者的路徑啟動 jc-settings-ui.exe\n\
      \x20 legal                           用記事本開啟 legal\\THIRD-PARTY-NOTICES.md\n\
      \n\
-     --arch 省略時由 DLL 的 PE 標頭自動判斷；machine-* 與 user-* 由\n\
+     machine-register 通常一次給兩個 DLL（x64 與 x86）；--arch 省略時由 PE 標頭\n\
+     自動判斷，只在手動修復單一架構時才需要指定。machine-* 與 user-* 由\n\
      installer/jc-ime.wxs 的自訂動作呼叫；settings 是開始功能表捷徑的入口，會把\n\
      %LOCALAPPDATA% 展開後再交給設定程式；legal 是「授權」捷徑的入口。"
 }
@@ -56,19 +58,17 @@ fn usage() -> &'static str {
 /// 解析後的子命令。
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
-    /// 以系統權限註冊文字服務；`arch` 為 `None` 時自動判斷。
+    /// 以系統權限註冊文字服務；每個 DLL 寫自己那個機碼檢視。
     MachineRegister {
-        /// `jc-tsf.dll` 的路徑。
-        dll: PathBuf,
-        /// `--arch` 指定的架構。
+        /// `jc-tsf.dll` 的路徑；通常 x64 與 x86 各一個。
+        dlls: Vec<PathBuf>,
+        /// `--arch` 指定的架構（只給一個 DLL 時才有意義）。
         arch: Option<arch::Arch>,
     },
-    /// 以系統權限移除文字服務；路徑可省略（兩個架構都清）。
+    /// 以系統權限移除文字服務；路徑可省略（兩個檢視都清）。
     MachineUnregister {
         /// `jc-tsf.dll` 的路徑。
-        dll: Option<PathBuf>,
-        /// `--arch` 指定的架構。
-        arch: Option<arch::Arch>,
+        dlls: Vec<PathBuf>,
     },
     /// 把 profile 加進目前使用者的語言清單。
     UserInstall,
@@ -113,24 +113,22 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
     match command.as_str() {
         "machine-register" => {
             let (arch, positional) = split_arch(rest)?;
-            match positional.as_slice() {
-                [dll] => Ok(Command::MachineRegister {
-                    dll: PathBuf::from(dll),
-                    arch,
-                }),
-                _ => Err("machine-register 需要一個 jc-tsf.dll 路徑".into()),
+            if positional.is_empty() {
+                return Err("machine-register 需要至少一個 jc-tsf.dll 路徑".into());
             }
+            Ok(Command::MachineRegister {
+                dlls: positional.iter().map(PathBuf::from).collect(),
+                arch,
+            })
         }
         "machine-unregister" => {
             let (arch, positional) = split_arch(rest)?;
-            match positional.as_slice() {
-                [] => Ok(Command::MachineUnregister { dll: None, arch }),
-                [dll] => Ok(Command::MachineUnregister {
-                    dll: Some(PathBuf::from(dll)),
-                    arch,
-                }),
-                _ => Err("machine-unregister 最多接受一個 DLL 路徑".into()),
+            if arch.is_some() {
+                return Err("machine-unregister 一律清兩個機碼檢視，不接受 --arch".into());
             }
+            Ok(Command::MachineUnregister {
+                dlls: positional.iter().map(PathBuf::from).collect(),
+            })
         }
         "user-install" => match rest {
             [] => Ok(Command::UserInstall),
@@ -166,10 +164,8 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
 #[cfg(windows)]
 fn run(args: &[String]) -> Result<(), platform::Error> {
     match parse_args(args).map_err(platform::Error::Usage)? {
-        Command::MachineRegister { dll, arch } => platform::machine_register(&dll, arch),
-        Command::MachineUnregister { dll, arch } => {
-            platform::machine_unregister(dll.as_deref(), arch)
-        }
+        Command::MachineRegister { dlls, arch } => platform::machine_register(&dlls, arch),
+        Command::MachineUnregister { dlls } => platform::machine_unregister(&dlls),
         Command::UserInstall => platform::user_install(),
         Command::UserUninstall { keep_user_data } => platform::user_uninstall(keep_user_data),
         Command::Settings => platform::open_settings(),
@@ -208,23 +204,43 @@ mod tests {
         values.iter().map(|value| value.to_string()).collect()
     }
 
+    fn paths(values: &[&str]) -> Vec<PathBuf> {
+        values.iter().map(PathBuf::from).collect()
+    }
+
     #[test]
     fn machine_register_requires_a_path() {
         assert!(parse_args(&args(&["machine-register"])).is_err());
         assert_eq!(
             parse_args(&args(&["machine-register", r"C:\a\jc-tsf.dll"])),
             Ok(Command::MachineRegister {
-                dll: PathBuf::from(r"C:\a\jc-tsf.dll"),
+                dlls: paths(&[r"C:\a\jc-tsf.dll"]),
                 arch: None,
             })
         );
     }
 
-    /// x86 DLL 由 x64 的安裝器註冊時一定要帶 `--arch`（或讓它自動判斷）。
+    /// WXS 一次給兩個 DLL；順序就是參數順序。
+    #[test]
+    fn machine_register_accepts_both_architectures_in_one_call() {
+        assert_eq!(
+            parse_args(&args(&[
+                "machine-register",
+                r"C:\a\jc-tsf.dll",
+                r"C:\a\jc-tsf-x86.dll"
+            ])),
+            Ok(Command::MachineRegister {
+                dlls: paths(&[r"C:\a\jc-tsf.dll", r"C:\a\jc-tsf-x86.dll"]),
+                arch: None,
+            })
+        );
+    }
+
+    /// 手動修復單一架構時可以指定 `--arch`，放在路徑前後都行。
     #[test]
     fn machine_register_accepts_arch_before_or_after_the_path() {
         let expected = Ok(Command::MachineRegister {
-            dll: PathBuf::from(r"C:\a\jc-tsf-x86.dll"),
+            dlls: paths(&[r"C:\a\jc-tsf-x86.dll"]),
             arch: Some(Arch::X86),
         });
         assert_eq!(
@@ -258,25 +274,20 @@ mod tests {
     fn machine_unregister_path_is_optional() {
         assert_eq!(
             parse_args(&args(&["machine-unregister"])),
-            Ok(Command::MachineUnregister {
-                dll: None,
-                arch: None
-            })
+            Ok(Command::MachineUnregister { dlls: Vec::new() })
         );
         assert_eq!(
-            parse_args(&args(&["machine-unregister", r"C:\a\jc-tsf.dll"])),
+            parse_args(&args(&[
+                "machine-unregister",
+                r"C:\a\jc-tsf.dll",
+                r"C:\a\jc-tsf-x86.dll"
+            ])),
             Ok(Command::MachineUnregister {
-                dll: Some(PathBuf::from(r"C:\a\jc-tsf.dll")),
-                arch: None
+                dlls: paths(&[r"C:\a\jc-tsf.dll", r"C:\a\jc-tsf-x86.dll"]),
             })
         );
-        assert_eq!(
-            parse_args(&args(&["machine-unregister", "--arch", "x86"])),
-            Ok(Command::MachineUnregister {
-                dll: None,
-                arch: Some(Arch::X86)
-            })
-        );
+        // 反安裝不分架構：兩個檢視都清，所以不接受 --arch。
+        assert!(parse_args(&args(&["machine-unregister", "--arch", "x86"])).is_err());
     }
 
     #[test]

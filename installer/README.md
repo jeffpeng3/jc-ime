@@ -91,31 +91,28 @@ TSF DLL）。
 
 | 動作 | 種類 | 身分 | 時機 | 內容 |
 |---|---|---|---|---|
-| `RegisterTip` | deferred | SYSTEM | `InstallFiles` 之後 | `jc-tip-register machine-register <jc-tsf.dll>` |
-| `RegisterTipX86` | deferred | SYSTEM | `RegisterTip` 之後 | `machine-register --arch x86 <jc-tsf-x86.dll>` |
-| `RollbackRegisterTip` | rollback | SYSTEM | `RegisterTip` 之前 | `machine-unregister` |
-| `RollbackRegisterTipX86` | rollback | SYSTEM | `RegisterTipX86` 之前 | `machine-unregister --arch x86` |
-| `UnregisterTip` | deferred | SYSTEM | 反安裝、`RemoveFiles` 之前 | `machine-unregister <jc-tsf.dll>`，DLL 不在時內建清理 |
-| `UnregisterTipX86` | deferred | SYSTEM | `UnregisterTip` 之後 | `machine-unregister --arch x86` |
-| `RollbackUnregisterTip` | rollback | SYSTEM | `UnregisterTip` 之前 | `machine-register` |
-| `RollbackUnregisterTipX86` | rollback | SYSTEM | `UnregisterTipX86` 之前 | `machine-register --arch x86` |
-| `InstallTipLayout` | immediate | 使用者 | `InstallFinalize` 之後 | `user-install`（`InstallLayoutOrTip`，兩個架構各一次） |
+| `RegisterTip` | deferred | SYSTEM | `InstallFiles` 之後 | `machine-register <jc-tsf.dll> <jc-tsf-x86.dll>`；x64 由 DLL 自己註冊，x86 由安裝器寫 `Wow6432Node` |
+| `RollbackRegisterTip` | rollback | SYSTEM | `RegisterTip` 之前 | `machine-unregister <兩個 DLL>` |
+| `UnregisterTip` | deferred | SYSTEM | 反安裝、`RemoveFiles` 之前 | `machine-unregister <兩個 DLL>`，兩個檢視都清；DLL 不在時內建清理 |
+| `RollbackUnregisterTip` | rollback | SYSTEM | `UnregisterTip` 之前 | `machine-register <兩個 DLL>` |
+| `InstallTipLayout` | immediate | 使用者 | `InstallFinalize` 之後 | `user-install`（`InstallLayoutOrTip`，一組 profile） |
 | `RemoveTipLayout` | immediate | 使用者 | 反安裝的 `InstallFinalize` 之後 | `user-uninstall [KEEPUSERSETTINGS]` |
 
 `machine-*` 必須是 SYSTEM：CTF 機碼在 HKLM。`user-*` 必須是使用者：`InstallLayoutOrTip`
 只寫呼叫者的 HKCU，在 SYSTEM 執行會加到 SYSTEM 的語言清單。
 
-`RegisterTip` 與 `RegisterTipX86` 用 `Return="check"`：註冊失敗就讓安裝失敗並回滾，
-不留半套 TIP。`UnregisterTip*` 與兩個 `user-*` 用 `Return="ignore"`：反安裝不能被
-已隔離的 DLL 或使用者的語言設定卡住。
+`RegisterTip` 用 `Return="check"`：註冊失敗就讓安裝失敗並回滾，不留半套 TIP。
+`UnregisterTip` 與兩個 `user-*` 用 `Return="ignore"`：反安裝不能被已隔離的 DLL 或
+使用者的語言設定卡住。
 
 ### 兩個架構
 
 TSF 依宿主行程的位元數載入 DLL，所以 32 位元程式需要另一份：`jc-tsf-x86.dll`
-（`i686-pc-windows-msvc`）註冊在 `Wow6432Node`，用另一個 CLSID。`jc-tip-register`
-是 x64 程式，載入不了 32 位元 DLL，所以 `machine-register --arch x86` 由它自己用
-`KEY_WOW64_32KEY` 寫機碼再呼叫 TSF 介面。`installer/jc-ime.wxs` 的
-`TsfDllX86` 元件標了 `Win64="no"`。完整理由、GUID 對照與反安裝流程見
+（`i686-pc-windows-msvc`）註冊在 `Wow6432Node`。兩份**共用同一個 CLSID 與
+profile**，只差註冊的機碼檢視，因此使用者的語言清單只有一項「jc 注音」。
+`jc-tip-register` 是 x64 程式，載入不了 32 位元 DLL，所以 x86 那個檢視由它自己用
+`KEY_WOW64_32KEY` 寫。`installer/jc-ime.wxs` 的 `TsfDllX86` 元件標了
+`Win64="no"`。完整理由、GUID 對照、`reg query` 驗證步驟與反安裝流程見
 [`../docs/port/x86-tip.md`](../docs/port/x86-tip.md)。
 
 開始功能表有兩個捷徑：`jc 注音設定`（`jc-tip-register settings`）與

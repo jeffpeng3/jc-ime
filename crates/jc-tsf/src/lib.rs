@@ -4,9 +4,10 @@
 //! 這個 crate 的範圍；`docs/port/tsf-skeleton.md` 有完整的行為與未驗證清單。
 //!
 //! 同一個 crate 建兩份：`x86_64-pc-windows-msvc` 出 `jc-tsf.dll`（x64），
-//! `i686-pc-windows-msvc` 出 `jc-tsf-x86.dll`。兩份的差別只有 `guids.rs` 依
-//! `target_pointer_width` 選到的 CLSID、profile GUID 與顯示名稱；TSF 依宿主行程
-//! 的位元數載入對應的那一份，理由與註冊流程見 `docs/port/x86-tip.md`。
+//! `i686-pc-windows-msvc` 出 `jc-tsf-x86.dll`。兩份的 CLSID、profile GUID 與顯示
+//! 名稱完全相同，只是各自註冊到自己那個機碼檢視（64 位元或 `Wow6432Node`）；
+//! TSF 依宿主行程的位元數載入對應的那一份。理由與註冊流程見
+//! `docs/port/x86-tip.md`。
 //!
 //! 非 Windows 平台上整個 crate 是空的：Linux CI 的 `cargo check --workspace`
 //! 會編出一個沒有任何符號的 cdylib，不提供替代實作。
