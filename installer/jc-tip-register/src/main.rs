@@ -14,12 +14,14 @@
 //!
 //! `machine-*` 只碰 TSF 的 profile 與分類（`HKLM\SOFTWARE\Microsoft\CTF`）。
 //! **CLSID 的 `InprocServer32` 由 MSI 自己寫**：`installer/jc-ime.wxs` 在兩個 TSF
-//! DLL 的 `File` 各掛一個 `<Class>`，WiX 因此產生 `RegisterClassInfo` 資料表，
-//! `WriteRegistryValues` 會把 64 位元檢視與 `Wow6432Node` 兩份都寫好。
+//! DLL 的 `File` 各掛一個 `<Class Advertise="no">`，WiX 因此產生 Registry table
+//! 的資料列，`WriteRegistryValues` 會把 64 位元檢視與 `Wow6432Node` 兩份都寫好。
+//! （`Advertise="no"` 不走 Class table，所以 `RegisterClassInfo` 不參與。）
 //!
 //! 這樣安排是因為 rc.5／rc.6 的 `RegisterTip` 在 `RegisterCategory` 崩
 //! `0xC0000005`：當時 64 位元檢視的 CLSID 還不存在，msctf 註冊分類時拿不到類別
-//! 工廠。把 CLSID 交給 MSI 之後，自訂動作開始跑時兩個檢視都已經就緒。
+//! 工廠。把 CLSID 交給 MSI 之後，自訂動作排在 `WriteRegistryValues` 之後，開始跑
+//! 時兩個檢視都已經就緒。
 //!
 //! `user-*` 透過 `input.dll` 的 `InstallLayoutOrTip` 修改目前使用者的語言清單，
 //! 這一步**不能**在 SYSTEM 身分執行，否則記號會落在 SYSTEM 的 HKCU。

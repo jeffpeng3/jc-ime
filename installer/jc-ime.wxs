@@ -13,10 +13,10 @@
 
   安裝順序（InstallExecuteSequence）：
     InstallFiles
-    WriteRegistryValues
-      → 由 <Class> 寫 HKCR\CLSID\{...}\InprocServer32
-                                   x64 元件寫 64 位元檢視，
-                                   TsfDllX86（Bitness="always32"）寫 Wow6432Node
+    WriteRegistryValues                        由 <Class>（Advertise="no"）寫
+                                               HKCR\CLSID\{...}\InprocServer32：
+                                               x64 元件寫 64 位元檢視，
+                                               TsfDllX86（always32）寫 Wow6432Node
       → RegisterTip（deferred、SYSTEM）         RegisterProfile 與三個 RegisterCategory
     InstallFinalize
       → InstallTipLayout（immediate、使用者）   InstallLayoutOrTip(ILOT_INSTALL)
@@ -24,7 +24,7 @@
   反安裝順序：
     RemoveRegistryValues（標準順序 2600）       由 <Class> 移除兩個檢視的 CLSID
     UnregisterTip（deferred、SYSTEM）           UnregisterProfile 與三個
-                                                UnregisterCategory；不需要 CLSID
+                                                UnregisterCategory
     RemoveFiles（3500）
     InstallFinalize
       → RemoveTipLayout（immediate、使用者）    只刪 %LOCALAPPDATA%\jc-ime；
@@ -32,9 +32,16 @@
 
   為什麼 CLSID 交給 MSI：rc.5／rc.6 由 DLL 的 DllRegisterServer 自己寫，結果
   RegisterCategory 在 64 位元檢視的 CLSID 還沒出現時就存取違規（0xC0000005）。
-  <Class> 讓 Windows Installer 的 RegisterClassInfo／WriteRegistryValues 負責寫
-  兩個檢視，自訂動作開始跑時類別工廠已經查得到。詳見
-  docs/port/tsf-installer.md。
+  交給 MSI 之後，機碼的寫入與移除由 Windows Installer 排進標準動作，自訂動作
+  只要接在正確的一側。詳見 docs/port/tsf-installer.md。
+
+  `<Class>` 用 Advertise="no"（不要 Windows Installer 的 advertised class 行為），
+  所以 WiX 產生的是 Registry table 的資料列，不是 Class table：
+    - 寫入：WriteRegistryValues（標準順序 5000）
+    - 移除：RemoveRegistryValues（2600）
+  RegisterClassInfo／UnregisterClassInfo 只處理 Class table，與這裡無關。因此
+  UnregisterTip 必須排在 RemoveRegistryValues 之前（2600 < 2700 < 3500），
+  UnregisterProfile 執行時 CLSID 還在。
 
   為什麼反安裝不呼叫 ILOT_UNINSTALL：移除語系的最後一個 layout 時，Windows 會
   把系統地區改成英文。參考專案為此停用這一步（windows-chewing-tsf issue 553）。
@@ -94,10 +101,15 @@
       <Custom Action="RollbackRegisterTip" Before="RegisterTip" Condition="NOT REMOVE" />
       <Custom Action="RegisterTip" After="WriteRegistryValues" Condition="NOT REMOVE" />
 
-      <!-- 反安裝：先移除 TIP，再刪檔案；順序反了會留下無法移除的機碼。 -->
+      <!-- 反安裝：先移除 profile，再讓 MSI 移除 CLSID 與檔案。
+           UnregisterTip 一定要排在 RemoveRegistryValues 之前：<Class> 用
+           Advertise="no"，WiX 產生的 CLSID 機碼是 Registry table 的資料列，由
+           RemoveRegistryValues（2600）刪除，比 UnregisterClassInfo（2700）與
+           RemoveFiles（3500）都早。排在 RemoveFiles 之前不夠，那時 CLSID 已經
+           不在了。 -->
       <Custom Action="RollbackUnregisterTip" Before="UnregisterTip"
               Condition='REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' />
-      <Custom Action="UnregisterTip" Before="RemoveFiles" Condition='REMOVE~="ALL"' />
+      <Custom Action="UnregisterTip" Before="RemoveRegistryValues" Condition='REMOVE~="ALL"' />
 
       <!-- 使用者語言清單：必須在 SYSTEM 的註冊完成之後、且以使用者身分執行。
            RemoveTipLayout 只清使用者資料，不從語言清單移除 layout。 -->
@@ -148,10 +160,11 @@
     Component 標 `Bitness="always32"`（WiX v5 的元件架構寫法），機碼與檔案才不會
     被當成 64 位元元件處理。
 
-    CLSID 由 <Class> 註冊，不是由 DLL 的 DllRegisterServer：Windows Installer 的
-    RegisterClassInfo／WriteRegistryValues 會在自訂動作之前把 HKCR\CLSID 的
-    InprocServer32 寫好，包括 x86 元件在 Wow6432Node 的那一份。省略 Server 表示
-    伺服器就是同一個 <File>，所以 File 必須 KeyPath="yes"。
+    CLSID 由 <Class> 註冊，不是由 DLL 的 DllRegisterServer。這裡用
+    Advertise="no"，WiX 會把 CLSID 寫成 Registry table 的資料列（不是 Class
+    table），所以兩個檢視的 InprocServer32 都由 WriteRegistryValues 寫入、
+    RemoveRegistryValues 移除；RegisterClassInfo／UnregisterClassInfo 不參與。
+    省略 Server 表示伺服器就是同一個 <File>，所以 File 必須 KeyPath="yes"。
   -->
   <Fragment>
     <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
@@ -497,11 +510,11 @@
     machine-* 一定要 Impersonate="no"：CTF 機碼在 HKLM，需要 SYSTEM 權限。
     user-* 一定要 Impersonate="yes"：InstallLayoutOrTip 寫的是呼叫者的 HKCU。
 
-    RegisterTip 排在 WriteRegistryValues 之後：此時兩個檢視的 CLSID 都已由
-    RegisterClassInfo 寫好，RegisterCategory 不會拿到不存在的類別工廠。
-    反安裝的 UnregisterTip 維持在 RemoveFiles 之前，CLSID 機碼由標準順序 2600 的
-    RemoveRegistryValues 移除，兩邊各清各的；UnregisterProfile／UnregisterCategory
-    只碰 CTF store，不需要 CLSID。詳見 docs/port/tsf-installer.md。
+    RegisterTip 排在 WriteRegistryValues 之後：<Class Advertise="no"> 的機碼由
+    WriteRegistryValues 寫入，所以此時兩個檢視的 CLSID 都在，RegisterCategory
+    不會拿到不存在的類別工廠。反安裝的 UnregisterTip 排在 RemoveRegistryValues
+    之前，UnregisterProfile 執行時 CLSID 也還在；兩邊各清各的，不互相搶。
+    詳見 docs/port/tsf-installer.md。
   -->
   <Fragment>
     <CustomAction Id="RegisterTip"
@@ -539,7 +552,9 @@
                   Impersonate="yes"
                   Return="ignore" />
 
-    <!-- 名稱沿用 RemoveTipLayout，但只刪使用者資料；不呼叫 ILOT_UNINSTALL。 -->
+    <!-- 名稱沿用 RemoveTipLayout，但只跑 user-uninstall 清使用者資料
+         （ExeCommand 帶 [KEEPUSERSETTINGS]，1 代表保留）；語言清單那一步是
+         no-op，不呼叫 ILOT_UNINSTALL。 -->
     <CustomAction Id="RemoveTipLayout"
                   FileRef="FileTipRegister"
                   ExeCommand="user-uninstall [KEEPUSERSETTINGS]"
