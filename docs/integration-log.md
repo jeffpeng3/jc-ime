@@ -1055,3 +1055,42 @@
   內容：`crates/jc-proto/tests/fixtures/` 共 **11 個手寫 JSON**（6 個 request、5 個 response）；新增 `tests/fixtures.rs`，
   涵蓋各訊息往返、**v1 形狀可解析**（舊欄位缺漏仍能解），以及 **PROTOCOL_VERSION 與 fixture 宣告的版本號一致性守門**。
   不改任何欄位名稱或型別。
+
+## 2026-11-20 11:23 六條收尾合併與最終 gate
+
+依序合併（每條合完都跑 `cargo check --workspace --all-targets`，全部 exit 0）：
+
+| Branch | Commit | Merge commit | 結果 |
+|---|---|---|---|
+| `wrapper-spec` | `78ab884` | `df70788` | docs 831 行（`docs/wrapper.md`、README、architecture），無衝突 |
+| `client-crates` | `183cd6c` | `2965c71` | 新 crate `jc-windows`／`jc-linux`／`jc-mac` 與 members，無衝突 |
+| `named-pipe` | `67ab620` | `a402047` | `jc-engine` 加 `pipe_windows.rs`，無衝突 |
+| `jinen-default` | `c39546c` | `881f8b0` | `cli.rs` 衝突：`reject_ja_flags` 加 `neural` 參數，兩邊語意都保留 |
+| `personal-improve` | `d3d0202` | `5d6a90e` | 與 jinen 的 neural 路徑並存（rollback／skip 都在），無衝突 |
+| `proto-candidates` | `e86e4b0` | `f333f72` | 協定升 v3（State 加 `details`／`segments`／`highlighted`） |
+| `fp16-flag` | `bfd2d2a` | `d5147ec` | `.cargo/config.toml` 改 `+fp16`，unknown feature 警告消失 |
+| `jinen-default`（修測試） | `56d98a8` | `19c6db5` | ZWJ cluster 與半截讀音重複呼叫修正 |
+
+整合修正（不屬任何 branch 的實作）：
+- `68b370f`：`eval zh-golden` 恢復接受 `--backend`（jinen-default 的 reject 蓋掉 candle-zh 的語意）。
+- `f6466a7`：`jc-windows/tests/client.rs` 的 `State` fixture 補上 v3 新欄位。
+
+最終 gate（HEAD `19c6db5`）：
+- `cargo fmt --all -- --check` exit 0。
+- `cargo clippy --workspace --all-targets -- -D warnings` **exit 0**，`unknown and unstable feature` 警告 0 筆。
+- `cargo test --workspace --no-fail-fast` **exit 0**（52 targets、**1118 passed、0 failed**）。
+- `cargo test -p jc-proto` 全過（v1／v2 形狀仍可解析）；`PROTOCOL_VERSION = 3` 與 `docs/proto.md`（v3 凍結）一致；
+  `jc-windows` 握手全用 `jc_proto::PROTOCOL_VERSION`，沒有寫死。
+
+題庫：
+| 題庫 | 目標 | 實測 |
+|---|---|---|
+| `zh-golden`（預設 ort） | 45/45 | **45/45** |
+| `zh-golden --backend candle` | 45/45 | **45/45** |
+| `ja modern-500` | 92.0% | **93.6%**（top-5 98.4%、p50 11.4 ms） |
+| `ja hard-cases` | 80.0% | **80.0%**（top-5 94.3%、p50 19.7 ms） |
+| `ja ajimee-200` | 71.0% | **71.0%**（top-5 79.5%、timeout 24.5%） |
+| `fuzzy` 注音 | 44.5% | **44.5%**（319 題） |
+| `mixed` | 6/6 | **6/6** |
+
+全綠後 push `origin main`。
