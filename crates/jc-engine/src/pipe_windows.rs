@@ -6,6 +6,13 @@
 //!
 //! 只使用 blocking Win32 API，沒有 async runtime，也沒有執行緒池：
 //! `ConnectNamedPipe` 會阻塞到有 client 連上，之後整條連線在同一執行緒跑完。
+//!
+//! 整個檔案是 Windows 專屬：`main.rs` 用 `#[cfg(windows)] mod pipe_windows;`
+//! 掛進來，檔案自己也再宣告一次 `#![cfg(windows)]`。若有人拿掉 `mod` 上的
+//! `cfg`，非 Windows 建置會因為模組變空而編不過，不會靜靜地編出一份用不到的
+//! Win32 程式碼。
+
+#![cfg(windows)]
 
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -207,10 +214,7 @@ impl Read for PipeStream {
         match err.raw_os_error().map(|code| code as u32) {
             // message 比緩衝區大：這次先回傳已讀到的部分，剩下的下次再讀。
             Some(ERROR_MORE_DATA) if read > 0 => Ok(read as usize),
-            Some(ERROR_MORE_DATA) => Err(io::Error::new(
-                io::ErrorKind::Other,
-                "message-mode 讀取沒有進度",
-            )),
+            Some(ERROR_MORE_DATA) => Err(io::Error::other("message-mode 讀取沒有進度")),
             // 用戶端斷線：當成一般 EOF，讓上層回到等待下一個連線。
             _ if is_client_gone(&err) => Ok(0),
             _ => Err(err),
