@@ -125,22 +125,26 @@ pub fn register() -> Result<()> {
         log_result("ITfInputProcessorProfiles::AddLanguageProfile", &result);
         result?;
 
+        install_log("CoCreateInstance(CLSID_TF_CategoryMgr)：開始");
         let categories: ITfCategoryMgr =
             CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER).map_err(
                 |error| {
                     install_log(&format!(
-                        "CoCreateInstance(CLSID_TF_CategoryMgr)：失敗（{error}）"
+                        "CoCreateInstance(CLSID_TF_CategoryMgr)：失敗（HRESULT 0x{:08X}：{error}）",
+                        error.code().0 as u32
                     ));
                     error
                 },
             )?;
-        install_log("CoCreateInstance(CLSID_TF_CategoryMgr)：成功");
+        install_log("CoCreateInstance(CLSID_TF_CategoryMgr)：成功（HRESULT 0x00000000）");
 
+        install_log("RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)：開始");
         let result =
             categories.RegisterCategory(&CLSID_JC_TSF, &GUID_TFCAT_TIP_KEYBOARD, &CLSID_JC_TSF);
         log_result("RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)", &result);
         result?;
         // 沒有這個能力分類，Windows 不會接受 ITfUIElementMgr::BeginUIElement。
+        install_log("RegisterCategory(GUID_TFCAT_TIPCAP_UIELEMENTENABLED)：開始");
         let result = categories.RegisterCategory(
             &CLSID_JC_TSF,
             &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
@@ -152,6 +156,7 @@ pub fn register() -> Result<()> {
         );
         result?;
         // 組字底線：這個 CLSID 同時是 ITfDisplayAttributeProvider 的實作。
+        install_log("RegisterCategory(GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER)：開始");
         let result = categories.RegisterCategory(
             &CLSID_JC_TSF,
             &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
@@ -366,11 +371,14 @@ fn install_log(message: &str) {
     let _ = file.sync_all();
 }
 
-/// 把 TSF 呼叫的結果寫成一行。
+/// 把 TSF 呼叫的結果與 HRESULT 寫成一行。
 fn log_result<T>(label: &str, result: &Result<T>) {
     match result {
-        Ok(_) => install_log(&format!("{label}：成功")),
-        Err(error) => install_log(&format!("{label}：失敗（{error}）")),
+        Ok(_) => install_log(&format!("{label}：成功（HRESULT 0x00000000）")),
+        Err(error) => install_log(&format!(
+            "{label}：失敗（HRESULT 0x{:08X}：{error}）",
+            error.code().0 as u32
+        )),
     }
 }
 

@@ -60,14 +60,6 @@ pub fn step(message: &str) {
     let _ = file.sync_all();
 }
 
-/// 把 `Result` 的結果寫成一行，方便包住每個 TSF 呼叫。
-pub fn result<T, E: std::fmt::Display>(label: &str, result: &Result<T, E>) {
-    match result {
-        Ok(_) => step(&format!("{label}：成功")),
-        Err(error) => step(&format!("{label}：失敗（{error}）")),
-    }
-}
-
 /// 目前時間的 Unix epoch 毫秒；系統時鐘早於 epoch 時回 0。
 fn timestamp_millis() -> u128 {
     SystemTime::now()

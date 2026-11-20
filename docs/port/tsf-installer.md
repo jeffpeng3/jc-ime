@@ -321,3 +321,53 @@ jc-tip-register.exe machine-register "%ProgramFiles%\jc-ime\jc-tsf.dll" "%Progra
 | `cargo check --target x86_64-pc-windows-msvc`（`installer/jc-tip-register`） | 通過，0 錯誤 |
 | `cargo test`（`installer/jc-tip-register`） | 15 passed；純解析測試，Linux 可跑 |
 | 真機安裝 MSI、查兩個 `InprocServer32` | 未執行，需 Windows |
+
+### 第二次 bisect：崩點在 `ITfCategoryMgr`
+
+用 RC5 的檔案在真機手動執行，結果：
+
+| 觀察 | 結果 |
+|---|---|
+| `machine-register` | 崩 `0xC0000005` |
+| `machine-unregister` | exit 0 |
+| `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}\Enable` | 已寫入 `1` |
+| `...\LanguageProfile\0x00000404\{PROFILE}\Description` | 已寫入「jc 注音」 |
+| `reg query HKLM\SOFTWARE\Microsoft\CTF /s /f "{CLSID}"` | 只有 TIP 主鍵 1 個相符，沒有任何分類資料 |
+| 安裝目錄 ACL 的 `S-1-15-2-1`／`S-1-15-2-2` | 沒有 |
+
+`Register` 與 `AddLanguageProfile` 都成功，崩點在 `ITfCategoryMgr` 的
+`RegisterCategory`。後面的 `ensure_tip_key` 與 `grant_app_container` 都沒有跑到，
+所以 ACL 也沒有加上。日誌因此把 CategoryMgr 這一段補到「前後各一行、每次呼叫都
+帶 HRESULT」的粒度：
+
+```text
+[time] [pid] CoCreateInstance(CLSID_TF_CategoryMgr)：開始
+[time] [pid] CoCreateInstance(CLSID_TF_CategoryMgr)：成功（HRESULT 0x00000000）
+[time] [pid] RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)：開始
+[time] [pid] RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)：成功（HRESULT 0x00000000）
+```
+
+下一次若再崩，最後一行會直接指出是哪一個 `RegisterCategory`。
+
+### AppContainer ACL 預設關閉
+
+`grant_app_container` 現在只在環境變數 `JC_IME_APP_CONTAINER=1` 時執行，預設跳過，
+日誌會留下「grant_app_container：已跳過（未設定 JC_IME_APP_CONTAINER）」。
+
+預設關閉的理由：
+
+- `S-1-15-2-1`／`S-1-15-2-2` 只給 UWP／AppContainer 應用程式載入 TIP 用，桌面程式
+  不受影響。
+- 這是 `GetNamedSecurityInfoW` → `SetEntriesInAclW` → `SetNamedSecurityInfoW` 的
+  手工 ACL 操作，放在安裝關鍵路徑上，任何一步出錯都會讓整個註冊失敗。
+- 這次 bisect 已確認崩點在 CategoryMgr，但 ACL 不該是安裝的必要條件；需要 UWP
+  支援時再明確開啟即可。
+
+開啟方式：
+
+```bat
+set JC_IME_APP_CONTAINER=1
+jc-tip-register.exe machine-register "%ProgramFiles%\jc-ime\jc-tsf.dll" "%ProgramFiles%\jc-ime\jc-tsf-x86.dll"
+```
+
+開啟後用 `icacls "%ProgramFiles%\jc-ime"` 確認兩個 SID 的讀取／執行 ACE 存在。

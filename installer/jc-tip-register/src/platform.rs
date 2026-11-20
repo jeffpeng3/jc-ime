@@ -220,20 +220,33 @@ pub fn machine_register(dlls: &[PathBuf], requested: Option<Arch>) -> Result<(),
 
     // AppContainer（UWP）要讀得到安裝目錄才能載入 TIP。兩個架構在同一個目錄，
     // 但 ACL 是冪等的（`SET_ACCESS`），重跑不會堆疊重複的 ACE。
-    // 失敗只警告：桌面程式不受影響，而且安裝不該因為 ACL 而中斷。
+    // 這是 UWP 才需要的權限，桌面程式不受影響；預設關閉，避免手工 ACL 操作
+    // 落在安裝關鍵路徑上（見 docs/port/tsf-installer.md 的 RC5 bisect）。
     if let Some(Some(dir)) = directory {
-        log::step(&format!("grant_app_container：{}", dir.display()));
-        if let Err(error) = grant_app_container(&dir) {
-            log::step(&format!("grant_app_container：失敗（{error}）"));
-            eprintln!(
-                "jc-tip-register：設定 AppContainer 讀取權限失敗（桌面程式不受影響）：{error}"
-            );
+        if app_container_enabled() {
+            log::step(&format!("grant_app_container：{}", dir.display()));
+            if let Err(error) = grant_app_container(&dir) {
+                log::step(&format!("grant_app_container：失敗（{error}）"));
+                eprintln!(
+                    "jc-tip-register：設定 AppContainer 讀取權限失敗（桌面程式不受影響）：{error}"
+                );
+            } else {
+                log::step("grant_app_container：成功");
+            }
         } else {
-            log::step("grant_app_container：成功");
+            log::step("grant_app_container：已跳過（未設定 JC_IME_APP_CONTAINER）");
         }
     }
     log::step("machine-register：成功");
     Ok(())
+}
+
+/// 只有明確設定 `JC_IME_APP_CONTAINER=1` 才執行 AppContainer ACL。
+fn app_container_enabled() -> bool {
+    std::env::var_os("JC_IME_APP_CONTAINER")
+        .as_deref()
+        .and_then(std::ffi::OsStr::to_str)
+        == Some("1")
 }
 
 /// 寫 `HKCR\CLSID\{...}\InprocServer32`；檢視由 `target.view` 決定。
@@ -309,18 +322,21 @@ fn register_in_store() -> Result<(), Error> {
         let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         log::step(&format!("CoInitializeEx = 0x{:08X}", hr.0 as u32));
 
+        log::step("CoCreateInstance(CLSID_TF_InputProcessorProfiles)：開始");
         let profiles: ITfInputProcessorProfiles =
             CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)
                 .map_err(|error| {
-                    log::step(&format!(
-                        "CoCreateInstance(CLSID_TF_InputProcessorProfiles)：失敗（{error}）"
-                    ));
+                    log_hr::<()>(
+                        "CoCreateInstance(CLSID_TF_InputProcessorProfiles)",
+                        &Err(error.clone()),
+                    );
                     Error::from(error)
                 })?;
-        log::step("CoCreateInstance(CLSID_TF_InputProcessorProfiles)：成功");
+        log::step("CoCreateInstance(CLSID_TF_InputProcessorProfiles)：成功（HRESULT 0x00000000）");
 
+        log::step("ITfInputProcessorProfiles::Register：開始");
         let result = profiles.Register(&CLSID_GUID);
-        log::result("ITfInputProcessorProfiles::Register", &result);
+        log_hr("ITfInputProcessorProfiles::Register", &result);
         result?;
 
         let name = wide(PROFILE_DESCRIPTION);
@@ -328,6 +344,7 @@ fn register_in_store() -> Result<(), Error> {
         let name = &name[..name.len() - 1];
         // `&[]` 的 as_ptr() 是非 NULL 的對齊位址，msctf 可能先讀再判斷長度；
         // 指向真正的 NUL、長度 0 才是「沒有圖示」。
+        log::step("ITfInputProcessorProfiles::AddLanguageProfile：開始");
         let result = profiles.AddLanguageProfile(
             &CLSID_GUID,
             LANGID_ZH_TW,
@@ -336,49 +353,65 @@ fn register_in_store() -> Result<(), Error> {
             &NO_ICON[..0],
             0,
         );
-        log::result("ITfInputProcessorProfiles::AddLanguageProfile", &result);
+        log_hr("ITfInputProcessorProfiles::AddLanguageProfile", &result);
         result?;
 
+        log::step("CoCreateInstance(CLSID_TF_CategoryMgr)：開始");
         let categories: ITfCategoryMgr =
             CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER).map_err(
                 |error| {
-                    log::step(&format!(
-                        "CoCreateInstance(CLSID_TF_CategoryMgr)：失敗（{error}）"
-                    ));
+                    log_hr::<()>(
+                        "CoCreateInstance(CLSID_TF_CategoryMgr)",
+                        &Err(error.clone()),
+                    );
                     Error::from(error)
                 },
             )?;
-        log::step("CoCreateInstance(CLSID_TF_CategoryMgr)：成功");
+        log::step("CoCreateInstance(CLSID_TF_CategoryMgr)：成功（HRESULT 0x00000000）");
 
         // 沒有 `GUID_TFCAT_TIP_KEYBOARD`，輸入法設定頁不會列出來。
+        log::step("RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)：開始");
         let result =
             categories.RegisterCategory(&CLSID_GUID, &GUID_TFCAT_TIP_KEYBOARD, &CLSID_GUID);
-        log::result("RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)", &result);
+        log_hr("RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)", &result);
         result?;
         // 沒有這個能力分類，Windows 不會接受 `ITfUIElementMgr::BeginUIElement`。
+        log::step("RegisterCategory(GUID_TFCAT_TIPCAP_UIELEMENTENABLED)：開始");
         let result = categories.RegisterCategory(
             &CLSID_GUID,
             &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
             &CLSID_GUID,
         );
-        log::result(
+        log_hr(
             "RegisterCategory(GUID_TFCAT_TIPCAP_UIELEMENTENABLED)",
             &result,
         );
         result?;
         // 組字底線：這個 CLSID 同時是 `ITfDisplayAttributeProvider` 的實作。
+        log::step("RegisterCategory(GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER)：開始");
         let result = categories.RegisterCategory(
             &CLSID_GUID,
             &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
             &CLSID_GUID,
         );
-        log::result(
+        log_hr(
             "RegisterCategory(GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER)",
             &result,
         );
         result?;
     }
     Ok(())
+}
+
+/// 把 TSF 呼叫的 HRESULT 寫進安裝日誌。
+fn log_hr<T>(label: &str, result: &windows::core::Result<T>) {
+    match result {
+        Ok(_) => log::step(&format!("{label}：成功（HRESULT 0x00000000）")),
+        Err(error) => log::step(&format!(
+            "{label}：失敗（HRESULT 0x{:08X}：{error}）",
+            error.code().0 as u32
+        )),
+    }
 }
 
 /// 移除文字服務：profile 只清一次，兩個檢視的 CLSID 機碼都刪。
