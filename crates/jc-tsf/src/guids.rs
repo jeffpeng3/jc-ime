@@ -22,6 +22,14 @@ pub const GUID_PROFILE_JC_TSF: GUID = GUID::from_u128(0x8f0a9b3c_2d4e_4f50_a1b2_
 /// GUID，不是每個實例不同；發佈後不可改。
 pub const GUID_CANDIDATE_UI_ELEMENT: GUID = GUID::from_u128(0x9c4e7a21_6b3d_4f08_b5a7_2e1d8c6f9034);
 
+/// 組字底線的顯示屬性 GUID。
+///
+/// 這個 GUID 同時是 `ITfDisplayAttributeInfo::GetGUID` 的回傳值，也是
+/// `ITfProperty`（`GUID_PROP_ATTRIBUTE`）值裡的 `TfGuidAtom` 所指的對象。
+/// 發佈後不可改，否則已經記住 atom 的應用程式會拿到錯的顯示屬性。
+pub const GUID_DISPLAY_ATTRIBUTE_INPUT: GUID =
+    GUID::from_u128(0xa2c9f1d4_7b3e_4c58_9e21_5d8a6f0b4c72);
+
 /// 文字服務註冊的語言。第一版只有繁體中文（台灣）。
 pub const LANGID_ZH_TW: u16 = 0x0404;
 
@@ -54,6 +62,14 @@ mod tests {
         assert_eq!(
             registry_key(&GUID_PROFILE_JC_TSF),
             "{8F0A9B3C-2D4E-4F50-A1B2-C3D4E5F60718}"
+        );
+    }
+
+    #[test]
+    fn display_attribute_key_is_stable() {
+        assert_eq!(
+            registry_key(&GUID_DISPLAY_ATTRIBUTE_INPUT),
+            "{A2C9F1D4-7B3E-4C58-9E21-5D8A6F0B4C72}"
         );
     }
 }

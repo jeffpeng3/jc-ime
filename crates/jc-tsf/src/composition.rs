@@ -10,6 +10,7 @@
 use std::cell::{Cell, RefCell};
 use std::mem::ManuallyDrop;
 use std::ptr;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -18,11 +19,12 @@ use jc_proto::{CandidateDetail, Key, KeyCode, Request, Response};
 use windows::core::{implement, IUnknownImpl, Interface, Ref, Result, PCWSTR};
 use windows::Win32::Foundation::{E_FAIL, FALSE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Variant::{VARIANT, VT_I4};
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
     ITfEditSession, ITfEditSession_Impl, ITfInsertAtSelection, ITfKeyEventSink, ITfKeystrokeMgr,
-    ITfRange, ITfSource, ITfThreadMgr, ITfThreadMgrEventSink, ITfUIElementMgr,
-    INSERT_TEXT_AT_SELECTION_FLAGS, TF_AE_END, TF_ANCHOR_END, TF_ANCHOR_START,
+    ITfProperty, ITfRange, ITfSource, ITfThreadMgr, ITfThreadMgrEventSink, ITfUIElementMgr,
+    GUID_PROP_ATTRIBUTE, INSERT_TEXT_AT_SELECTION_FLAGS, TF_AE_END, TF_ANCHOR_END, TF_ANCHOR_START,
     TF_DEFAULT_SELECTION, TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION, TF_SELECTIONSTYLE,
     TF_ST_CORRECTION,
 };
@@ -31,7 +33,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowLongPtrW, GWLP_USERDATA, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
 };
 
-use crate::candidates::{CandidateHost, CandidateItem, CandidateSnapshot};
+use crate::candidates::{CandidateActions, CandidateHost, CandidateItem, CandidateSnapshot};
+use crate::display;
 use crate::engine::{self, Job, Queue};
 use crate::keys;
 use crate::logging;
@@ -94,7 +97,8 @@ pub struct Control {
     /// 目前的組字物件。
     composition: RefCell<Option<ITfComposition>>,
     last: Cell<LastState>,
-    generation: Cell<u64>,
+    /// 按鍵世代；與候選元素的滑鼠點選共用，過期的 `State` 才會被丟棄。
+    generation: Rc<Cell<u64>>,
     /// 已送出但還沒回覆的選取導覽鍵世代；用來避免快速連打時重複補 `Down`。
     navigation_armed: Cell<Option<u64>>,
     hwnd: HWND,
@@ -102,6 +106,8 @@ pub struct Control {
     jobs: Sender<Job>,
     /// 交給 Windows 畫的候選清單；只在 UI 執行緒使用。
     candidate: RefCell<CandidateHost>,
+    /// `GUID_DISPLAY_ATTRIBUTE_INPUT` 的 `TfGuidAtom`；`None` 代表底線停用。
+    display_atom: Option<u32>,
     sink_state: Arc<SinkState>,
     /// 組字 sink 的 COM 引用；由 TSF 保管，這裡只負責存活。
     sink: ITfCompositionSink,
@@ -136,18 +142,30 @@ impl Control {
         }
         .into();
 
+        // 底線沒有 atom 就畫不出來；失敗只影響外觀，其他輸入照常。
+        let display_atom = display::try_register_guid_atom();
+
+        // 滑鼠點選與一般按鍵共用同一個世代計數器與請求通道。
+        let generation = Rc::new(Cell::new(0));
+        let actions = Rc::new(CandidateActions::new(
+            jobs.clone(),
+            Rc::clone(&generation),
+            Arc::clone(&queue),
+        ));
+
         Self {
             thread_mgr,
             client_id,
             context: RefCell::new(None),
             composition: RefCell::new(None),
             last: Cell::new(LastState::default()),
-            generation: Cell::new(0),
+            generation,
             navigation_armed: Cell::new(None),
             hwnd: HWND::default(),
             queue,
             jobs,
-            candidate: RefCell::new(CandidateHost::new(ui_manager)),
+            candidate: RefCell::new(CandidateHost::new(ui_manager, actions)),
+            display_atom,
             sink_state,
             sink,
             key_sink: None,
@@ -420,6 +438,7 @@ impl Control {
             CandidateSnapshot {
                 items,
                 highlighted: state.highlighted,
+                navigating: state.navigating,
             },
             document,
         );
@@ -520,11 +539,11 @@ impl Control {
                 self.set_preedit(ec, &context, preedit, *caret)
             }
             EditAction::End => {
-                self.close_composition(ec);
+                self.close_composition(ec, &context);
                 Ok(())
             }
             EditAction::Commit { text } => {
-                self.close_composition(ec);
+                self.close_composition(ec, &context);
                 self.insert_text(ec, &context, text)
             }
         }
@@ -555,8 +574,8 @@ impl Control {
         };
 
         // SAFETY: 所有範圍都在同一個 edit session 內使用。
+        let range = unsafe { composition.GetRange()? };
         unsafe {
-            let range = composition.GetRange()?;
             // 第一次寫入用 0；之後都是修正，讓 TSF 不要把整段當成新輸入。
             let flags = if fresh { 0 } else { TF_ST_CORRECTION };
             range.SetText(ec, flags, &wide)?;
@@ -570,17 +589,64 @@ impl Control {
             caret_range.Collapse(ec, TF_ANCHOR_END)?;
             select(context, ec, caret_range)?;
         }
+
+        // 底線套在整個組字範圍上；每次更新都重設，字數變動也會跟著調整。
+        self.set_display_attribute(ec, context, &range);
         Ok(())
     }
 
     /// 結束組字；先取出來再呼叫，避免 `OnCompositionTerminated` 重入時撞到借用。
-    fn close_composition(&self, ec: u32) {
+    ///
+    /// 底線屬性必須在 `EndComposition` 之前清掉，否則範圍消失後就找不到
+    /// `ITfProperty` 的值可以移除。
+    fn close_composition(&self, ec: u32, context: &ITfContext) {
         let Some(composition) = self.composition.replace(None) else {
             return;
         };
+        self.clear_display_attribute(ec, context, &composition);
         // SAFETY: 這個 edit session 有讀寫權。
         if let Err(error) = unsafe { composition.EndComposition(ec) } {
             logging::warn(format!("EndComposition 失敗：{error}"));
+        }
+    }
+
+    /// 把顯示屬性 atom 套到組字範圍。
+    ///
+    /// 失敗只記錄 debug log：底線是裝飾，不能因此讓組字或提交失敗。
+    fn set_display_attribute(&self, ec: u32, context: &ITfContext, range: &ITfRange) {
+        let Some(atom) = self.display_atom else {
+            return;
+        };
+        let result = (|| -> Result<()> {
+            let property: ITfProperty = unsafe { context.GetProperty(&GUID_PROP_ATTRIBUTE)? };
+            let mut value = VARIANT::default();
+            // SAFETY: vt 設成 VT_I4 之後，lVal 是有效的 union 分支。
+            unsafe {
+                (*value.Anonymous.Anonymous).vt = VT_I4;
+                (*value.Anonymous.Anonymous).Anonymous.lVal = atom as i32;
+            }
+            // SAFETY: property 與 range 都屬於這個 edit session。
+            unsafe { property.SetValue(ec, range, &value) }
+        })();
+        if let Err(error) = result {
+            logging::debug(format!("設定組字底線失敗：{error}"));
+        }
+    }
+
+    /// 清掉組字範圍上的顯示屬性；失敗同樣只記錄。
+    fn clear_display_attribute(&self, ec: u32, context: &ITfContext, composition: &ITfComposition) {
+        if self.display_atom.is_none() {
+            return;
+        }
+        let result = (|| -> Result<()> {
+            // SAFETY: composition 仍在這個 edit session 內有效。
+            let range = unsafe { composition.GetRange()? };
+            let property: ITfProperty = unsafe { context.GetProperty(&GUID_PROP_ATTRIBUTE)? };
+            // SAFETY: property 與 range 都屬於這個 edit session。
+            unsafe { property.Clear(ec, &range) }
+        })();
+        if let Err(error) = result {
+            logging::debug(format!("清除組字底線失敗：{error}"));
         }
     }
 

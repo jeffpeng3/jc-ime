@@ -10,6 +10,7 @@
 
 mod candidates;
 mod composition;
+mod display;
 mod engine;
 mod guids;
 mod keys;
@@ -25,17 +26,20 @@ use windows::core::{
     HRESULT,
 };
 use windows::Win32::Foundation::{
-    CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_NOINTERFACE, LPARAM, S_FALSE, S_OK, WPARAM,
+    CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_INVALIDARG, E_NOINTERFACE, LPARAM, S_FALSE,
+    S_OK, WPARAM,
 };
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
 use windows::Win32::UI::TextServices::{
-    ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfKeyEventSink, ITfKeyEventSink_Impl,
-    ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfThreadMgr, ITfThreadMgrEventSink,
-    ITfThreadMgrEventSink_Impl,
+    IEnumTfDisplayAttributeInfo, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
+    ITfDisplayAttributeInfo, ITfDisplayAttributeProvider, ITfDisplayAttributeProvider_Impl,
+    ITfKeyEventSink, ITfKeyEventSink_Impl, ITfTextInputProcessor, ITfTextInputProcessor_Impl,
+    ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, TF_E_NOPROVIDER,
 };
 
 use composition::Control;
-use guids::CLSID_JC_TSF;
+use display::{DisplayAttributeEnumerator, DisplayAttributeInfo};
+use guids::{CLSID_JC_TSF, GUID_DISPLAY_ATTRIBUTE_INPUT};
 
 /// 目前仍然活著的文字服務物件數量，供 [`DllCanUnloadNow`] 判斷能否卸載。
 static LIVE_OBJECTS: AtomicUsize = AtomicUsize::new(0);
@@ -49,7 +53,8 @@ static LIVE_OBJECTS: AtomicUsize = AtomicUsize::new(0);
     ITfTextInputProcessor,
     ITfThreadMgrEventSink,
     ITfKeyEventSink,
-    ITfCompositionSink
+    ITfCompositionSink,
+    ITfDisplayAttributeProvider
 )]
 pub struct TextService {
     /// 已啟用的狀態；`None` 代表尚未 `Activate` 或已經 `Deactivate`。
@@ -202,6 +207,27 @@ impl ITfCompositionSink_Impl for TextService_Impl {
             control.on_composition_terminated();
         }
         Ok(())
+    }
+}
+
+impl ITfDisplayAttributeProvider_Impl for TextService_Impl {
+    fn EnumDisplayAttributeInfo(&self) -> Result<IEnumTfDisplayAttributeInfo> {
+        let enumerator: IEnumTfDisplayAttributeInfo = DisplayAttributeEnumerator::new().into();
+        Ok(enumerator)
+    }
+
+    // COM 的出參指標由呼叫端保證有效；trait 方法本身不能標成 unsafe。
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    fn GetDisplayAttributeInfo(&self, guid: *const GUID) -> Result<ITfDisplayAttributeInfo> {
+        if guid.is_null() {
+            return Err(E_INVALIDARG.into());
+        }
+        // SAFETY: 呼叫端保證 guid 指向一個有效的 GUID。
+        if unsafe { *guid } != GUID_DISPLAY_ATTRIBUTE_INPUT {
+            return Err(TF_E_NOPROVIDER.into());
+        }
+        let info: ITfDisplayAttributeInfo = DisplayAttributeInfo.into();
+        Ok(info)
     }
 }
 

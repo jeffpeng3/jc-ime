@@ -5,22 +5,32 @@
 //! 時 `EndUIElement`。Windows 只透過 [`ITfCandidateListUIElement`] 讀取畫面
 //! 需要的資料，因此這個檔案只提供「讀得到的快照」，不碰引擎、不改字。
 //!
+//! 滑鼠點選由 [`ITfCandidateListUIElementBehavior`] 接住：`SetSelection` 把
+//! 點到的索引換成「上／下鍵」請求，`Finalize` 送 `Space` 確認，`Abort` 送
+//! `Escape` 關閉。實際選到哪一項、要提交什麼字，全部由引擎回應決定，wrapper
+//! 不從快照自己挑字。
+//!
 //! **顯示限制**：這個介面每個候選只有一個 `GetString`，沒有讀音或 label
 //! 的欄位。`GetDescription` 是整個 UI 元素的說明，不是逐項的第二行。因此
 //! 讀音與 label 只留在快照裡供除錯，畫面上只會看到候選字面；要顯示讀音或
 //! 標籤必須改成自繪視窗，不能靠這個介面。
 
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
+use jc_proto::{Key, KeyCode, Request};
 use windows::core::{implement, Error, IUnknownImpl, Interface, Result, BOOL, BSTR, GUID};
 use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::UI::TextServices::{
-    ITfCandidateListUIElement, ITfCandidateListUIElement_Impl, ITfDocumentMgr, ITfUIElement,
-    ITfUIElementMgr, ITfUIElement_Impl, TF_CLUIE_COUNT, TF_CLUIE_CURRENTPAGE, TF_CLUIE_DOCUMENTMGR,
-    TF_CLUIE_PAGEINDEX, TF_CLUIE_SELECTION, TF_CLUIE_STRING,
+    ITfCandidateListUIElement, ITfCandidateListUIElementBehavior,
+    ITfCandidateListUIElementBehavior_Impl, ITfCandidateListUIElement_Impl, ITfDocumentMgr,
+    ITfUIElement, ITfUIElementMgr, ITfUIElement_Impl, TF_CLUIE_COUNT, TF_CLUIE_CURRENTPAGE,
+    TF_CLUIE_DOCUMENTMGR, TF_CLUIE_PAGEINDEX, TF_CLUIE_SELECTION, TF_CLUIE_STRING,
 };
 
+use crate::engine::{Job, Queue};
 use crate::guids::GUID_CANDIDATE_UI_ELEMENT;
 use crate::logging;
 
@@ -55,6 +65,10 @@ pub struct CandidateSnapshot {
     pub items: Vec<CandidateItem>,
     /// 引擎目前的高亮索引。
     pub highlighted: usize,
+    /// 引擎是否已進入明確的候選選取模式。
+    ///
+    /// 只用來計算滑鼠點選要補幾個導覽鍵，不影響畫面是否顯示候選。
+    pub navigating: bool,
 }
 
 /// 分頁後的候選清單。
@@ -136,14 +150,112 @@ impl CandidatePages {
     }
 }
 
+/// 把滑鼠點選轉成引擎看得懂的按鍵請求。
+///
+/// 只送「上／下鍵」移動高亮，不改字、不直接挑候選；`Finalize` 再由引擎用
+/// 目前高亮項提交。`generation` 與 [`crate::composition::Control`] 共用同一
+/// 個計數器，過期的 `State` 才會照既有規則被丟棄。
+pub struct CandidateActions {
+    jobs: Sender<Job>,
+    generation: Rc<Cell<u64>>,
+    queue: Arc<Queue>,
+}
+
+impl CandidateActions {
+    /// 建立與 `Control` 共用的請求通道。
+    pub fn new(jobs: Sender<Job>, generation: Rc<Cell<u64>>, queue: Arc<Queue>) -> Self {
+        Self {
+            jobs,
+            generation,
+            queue,
+        }
+    }
+
+    /// 引擎是否已連線；斷線時點選只記 log，不排隊。
+    fn connected(&self) -> bool {
+        self.queue.is_connected()
+    }
+
+    /// 同一批按鍵共用一個世代，讓引擎依序處理、畫面只認最後的結果。
+    fn send_keys(&self, keys: &[Key]) {
+        if keys.is_empty() {
+            return;
+        }
+        let generation = self.generation.get() + 1;
+        self.generation.set(generation);
+        for key in keys {
+            let job = Job {
+                generation,
+                request: Request::Key { key: *key },
+            };
+            if self.jobs.send(job).is_err() {
+                logging::warn("worker 已結束，候選點選請求被丟棄");
+                break;
+            }
+        }
+    }
+}
+
+/// 從目前高亮走到目標索引要送哪些鍵。
+///
+/// 規則與引擎的 `down`／`up` 一致：
+///
+/// - 還沒進選取模式時，第一個 `Down` 只開窗／進入選取模式，不會移動高亮；
+/// - 進入選取模式後，一個 `Down`／`Up` 移動一格，兩端會循環。
+///
+/// 因此往前要先補一個 `Down`，往後則不用（`Up` 在未選取時會直接移動）。
+/// 取前後較短的方向，索引無效時回空清單。
+fn navigation_keys(current: u32, target: u32, count: u32, navigating: bool) -> Vec<Key> {
+    if count == 0 || target >= count || current >= count {
+        return Vec::new();
+    }
+    let mut keys = Vec::new();
+    if !navigating {
+        // 這一下不會移動高亮，只負責進入選取模式。
+        keys.push(Key::new(KeyCode::Down, None, false));
+    }
+
+    let forward = (target + count - current) % count;
+    let backward = (current + count - target) % count;
+    let (code, steps) = if forward <= backward {
+        (KeyCode::Down, forward)
+    } else {
+        (KeyCode::Up, backward)
+    };
+    for _ in 0..steps {
+        keys.push(Key::new(code, None, false));
+    }
+    keys
+}
+
+/// `Finalize` 的按鍵：空白鍵選取目前高亮項，由引擎決定提交內容。
+fn confirm_key() -> Key {
+    Key::new(KeyCode::Space, None, false)
+}
+
+/// `Abort` 的按鍵：Escape 關掉引擎的候選窗。
+fn abort_key() -> Key {
+    Key::new(KeyCode::Escape, None, false)
+}
+
 /// COM 物件與 [`CandidateHost`] 共用的資料。
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct ElementData {
     pages: CandidatePages,
     document: Option<ITfDocumentMgr>,
     shown: bool,
     /// 上一次變更的欄位；初始值是 [`ALL_UPDATED`]。
     flags: u32,
+    /// 引擎上一次回報的選取模式。
+    navigating: bool,
+    /// 送出點選請求的通道；`None` 代表候選窗停用。
+    actions: Option<Rc<CandidateActions>>,
+    /// 已送出、但還沒被引擎 `State` 確認的目標索引。
+    requested: Option<u32>,
+    /// 送出請求後是否已進入選取模式（用來避免重複補 `Down`）。
+    requested_navigating: bool,
+    /// 這次候選是否已經 `Finalize`／`Abort`，避免重複送確認鍵。
+    settled: bool,
 }
 
 impl ElementData {
@@ -174,6 +286,10 @@ impl ElementData {
         self.pages.reset_starts();
         self.document = document;
         self.flags = flags;
+        self.navigating = snapshot.navigating;
+        // 引擎的 State 是權威值；之前本地記下的點選目標到此為止。
+        self.requested = None;
+        self.requested_navigating = false;
         flags
     }
 }
@@ -192,7 +308,12 @@ fn same_document(left: &Option<ITfDocumentMgr>, right: &Option<ITfDocumentMgr>) 
 /// 資料用 `Rc<RefCell<_>>` 分享：COM 物件要活到 `EndUIElement`，而
 /// [`CandidateHost`] 必須能就地更新同一份內容。所有呼叫都在 TSF 的 UI
 /// 執行緒；這個元素刻意不是 agile，不提供跨執行緒存取。
-#[implement(ITfCandidateListUIElement, Agile = false)]
+#[implement(
+    ITfUIElement,
+    ITfCandidateListUIElement,
+    ITfCandidateListUIElementBehavior,
+    Agile = false
+)]
 struct CandidateListElement {
     data: Rc<RefCell<ElementData>>,
 }
@@ -299,6 +420,80 @@ impl ITfCandidateListUIElement_Impl for CandidateListElement_Impl {
     }
 }
 
+impl ITfCandidateListUIElementBehavior_Impl for CandidateListElement_Impl {
+    fn SetSelection(&self, nindex: u32) -> Result<()> {
+        let data = self.get_impl().data();
+        let Some(actions) = data.actions.clone() else {
+            return Ok(());
+        };
+        let count = data.pages.count();
+        if nindex >= count {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+        if !actions.connected() {
+            logging::debug("引擎未連線，忽略候選點選");
+            return Ok(());
+        }
+
+        // 連續點選時以前一次「已送出但還沒確認」的索引為基準，避免每次都用
+        // 過期的引擎高亮重算而多走好幾格。
+        let current = data.requested.unwrap_or_else(|| data.pages.selection());
+        let navigating = if data.requested.is_some() {
+            data.requested_navigating
+        } else {
+            data.navigating
+        };
+        let keys = navigation_keys(current, nindex, count, navigating);
+        drop(data);
+
+        {
+            let mut data = self.get_impl().data_mut();
+            data.requested = Some(nindex);
+            data.requested_navigating = true;
+            data.settled = false;
+        }
+        logging::debug(format!(
+            "候選點選 index={nindex}（目前 {current}），送 {} 個導覽鍵",
+            keys.len()
+        ));
+        actions.send_keys(&keys);
+        Ok(())
+    }
+
+    fn Finalize(&self) -> Result<()> {
+        let data = self.get_impl().data();
+        if data.settled || data.pages.count() == 0 {
+            return Ok(());
+        }
+        let Some(actions) = data.actions.clone() else {
+            return Ok(());
+        };
+        drop(data);
+
+        self.get_impl().data_mut().settled = true;
+        // 只送「選取目前高亮項」的請求；要提交什麼字由引擎決定。
+        logging::debug("候選點選確認，送 Space");
+        actions.send_keys(&[confirm_key()]);
+        Ok(())
+    }
+
+    fn Abort(&self) -> Result<()> {
+        let data = self.get_impl().data();
+        if data.settled {
+            return Ok(());
+        }
+        let Some(actions) = data.actions.clone() else {
+            return Ok(());
+        };
+        drop(data);
+
+        self.get_impl().data_mut().settled = true;
+        logging::debug("候選點選取消，送 Escape");
+        actions.send_keys(&[abort_key()]);
+        Ok(())
+    }
+}
+
 /// 管理 UI 元素的顯示生命週期。
 ///
 /// `BeginUIElement` 之後 Windows 可能自己畫，也可能要求 TIP 自己畫
@@ -308,6 +503,8 @@ pub struct CandidateHost {
     manager: Option<ITfUIElementMgr>,
     element: Option<ITfCandidateListUIElement>,
     data: Option<Rc<RefCell<ElementData>>>,
+    /// 滑鼠點選要用的請求通道。
+    actions: Rc<CandidateActions>,
     /// `BeginUIElement` 配到的識別碼。
     id: u32,
     /// 是否已 `BeginUIElement` 且尚未 `EndUIElement`。
@@ -316,11 +513,12 @@ pub struct CandidateHost {
 
 impl CandidateHost {
     /// 建立宿主；`manager` 為 `None` 時整個候選窗等於停用。
-    pub fn new(manager: Option<ITfUIElementMgr>) -> Self {
+    pub fn new(manager: Option<ITfUIElementMgr>, actions: Rc<CandidateActions>) -> Self {
         Self {
             manager,
             element: None,
             data: None,
+            actions,
             id: 0,
             started: false,
         }
@@ -384,6 +582,11 @@ impl CandidateHost {
             document,
             shown: true,
             flags: ALL_UPDATED,
+            navigating: snapshot.navigating,
+            actions: Some(Rc::clone(&self.actions)),
+            requested: None,
+            requested_navigating: false,
+            settled: false,
         }));
         let element: ITfCandidateListUIElement = CandidateListElement {
             data: Rc::clone(&data),
@@ -437,6 +640,7 @@ mod tests {
                 })
                 .collect(),
             highlighted,
+            navigating: false,
         }
     }
 
@@ -508,5 +712,59 @@ mod tests {
 
         let flags = data.apply(&snapshot(&["我", "我", "餓"], 1), None);
         assert_eq!(flags & TF_CLUIE_COUNT, TF_CLUIE_COUNT);
+    }
+
+    #[test]
+    fn click_moves_forward_with_a_down_prefix() {
+        let keys = navigation_keys(0, 2, 9, false);
+        assert_eq!(keys.len(), 3);
+        assert!(keys.iter().all(|key| key.code == KeyCode::Down));
+    }
+
+    #[test]
+    fn click_on_the_same_item_only_enters_selection_mode() {
+        let keys = navigation_keys(1, 1, 9, false);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].code, KeyCode::Down);
+    }
+
+    #[test]
+    fn click_uses_the_shorter_direction() {
+        let keys = navigation_keys(0, 8, 9, true);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].code, KeyCode::Up);
+
+        let keys = navigation_keys(8, 0, 9, true);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].code, KeyCode::Down);
+
+        let keys = navigation_keys(2, 5, 9, true);
+        assert_eq!(keys.len(), 3);
+        assert!(keys.iter().all(|key| key.code == KeyCode::Down));
+
+        let keys = navigation_keys(5, 2, 9, true);
+        assert_eq!(keys.len(), 3);
+        assert!(keys.iter().all(|key| key.code == KeyCode::Up));
+    }
+
+    #[test]
+    fn click_backward_before_selection_still_prefixes_down() {
+        let keys = navigation_keys(5, 4, 9, false);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].code, KeyCode::Down);
+        assert_eq!(keys[1].code, KeyCode::Up);
+    }
+
+    #[test]
+    fn click_outside_the_list_sends_nothing() {
+        assert!(navigation_keys(0, 9, 9, true).is_empty());
+        assert!(navigation_keys(0, 0, 0, false).is_empty());
+        assert!(navigation_keys(9, 0, 9, false).is_empty());
+    }
+
+    #[test]
+    fn confirm_and_abort_use_engine_keys() {
+        assert_eq!(confirm_key().code, KeyCode::Space);
+        assert_eq!(abort_key().code, KeyCode::Escape);
     }
 }
