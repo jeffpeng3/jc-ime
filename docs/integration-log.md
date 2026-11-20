@@ -1209,3 +1209,39 @@
 - **x86 TIP 未做**：只有 64 位元 TIP，32 位元程式無法使用這個輸入法。
 - **授權文件未打進 MSI**：安裝包內沒有 `LICENSE`／`NOTICE`／`legal/` 內容。
 - **引擎啟動沒有監督程式**：靠 `HKLM\...\Run` 拉起，掛掉不會自動重啟。
+
+## 2026-11-20 13:05 佇列合併：integration-fix → settings-ui-testfix → candidate-paging → data-download → legal-update → tsf-installer
+
+| Branch | Commit | Merge commit |
+|---|---|---|
+| `integration-fix` | `a80461f` | `ed3ccd7` |
+| `settings-ui-testfix` | `f01c016` | `d2f6b03` |
+| `candidate-paging` | `61fd8ff` | `3b55f95` |
+| `data-download` | `f1ed410` | `67961a6` |
+| `legal-update` | `873918a` | `1c79412` |
+| `tsf-installer` | `f4f4ae1` | `16373c2` |
+
+- `legal-update` 對 `docs/port/data-pack.md`、`docs/port/ja-models-fetch.md`、`docs/integration-log.md` 的修改已逐行核對，
+  只是把「僅本機評估」改成可散布的敘述，沒有動資料或程式。
+- `tsf-installer` 的 `installer/` 不參與 cargo build：workspace member 未變，`cargo check --workspace --all-targets` exit 0。
+- `integration-fix` 讓 jc-core 測試回到全綠（`cargo test -p jc-core --lib` 640 passed、0 failed）。
+
+### gate（本機）
+
+- `cargo fmt --all -- --check` exit 0。
+- `RUST_FONTCONFIG_DLOPEN=1 cargo check --workspace --all-targets` exit 0；`cargo check -p jc-tsf -p jc-tsf-smoke --target x86_64-pc-windows-msvc` exit 0。
+- `cargo clippy -D warnings` **失敗**，兩個錯仍待原 branch 修：
+  - `crates/jc-core/src/session/core.rs:692` `collapsible_if`（composition-cursor）。
+  - `crates/jc-core/src/ja/live.rs:790` `type_complexity`（ja-live-neural，僅 lib test）。
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**8 failed**（`jc-settings-ui` 本機無法連結，依指示只用 CI 驗）。
+  已在各自 worktree 單獨重跑確認是 branch 自帶，不是合併造成：
+  - `candidate-paging`（5 個）：`jc-proto` 的 `response_state_minimal_accepts_version_one_shape`、
+    `response_state_v2_round_trips_all_new_fields`、`response_state_v3_round_trips_structured_fields`、
+    `response_state_v3_pos_round_trips`（fixture 有 `page_size: 9`，序列化時被 `skip_serializing_if` 省略），
+    以及 `session::input_style::tests::test_selection_key_columns`（5 vs 4）。
+  - `data-download`（3 個）：`download::tests::present_requires_size_and_hash`、
+    `different_size_is_size_mismatch`、`same_size_with_different_bytes_is_hash_mismatch`。
+
+### 題庫（本機）
+
+`zh-golden` **45/45**、`ja modern-500 --neural quality` **93.6%**、`--neural off` **86.0%**、`fuzzy` **44.5%**、`mixed` **6/6**。
