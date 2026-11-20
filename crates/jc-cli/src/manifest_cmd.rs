@@ -6,7 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use jc_data::manifest::{DataManifest, FileCheck, VerifyLevel, MANIFEST_FILE};
+use jc_data::manifest::{CheckStatus, DataManifest, FileCheck, VerifyLevel, MANIFEST_FILE};
 
 use crate::cli::CliError;
 
@@ -80,23 +80,43 @@ pub fn verify(
         .unwrap_or_else(|| root.join(MANIFEST_FILE));
     let manifest = DataManifest::load(&path).map_err(data_error)?;
     let report = manifest.verify(root, VerifyLevel::Full);
+    // 人讀輸出跳過缺席的下載項：`shipped: false` 本來就不隨產品散布，缺席是
+    // 正常狀態。--json 仍輸出完整 report，引擎啟動日誌也仍讀 report.checks
+    // 逐項提示「相關功能維持停用」，不能改 DataManifest::verify 的回傳。
+    let shown: Vec<&FileCheck> = report
+        .checks
+        .iter()
+        .filter(|check| !is_absent_download(check))
+        .collect();
+    let shown_summary = format!(
+        "通過 {}/{}，錯誤 {}，警告 {}",
+        shown
+            .iter()
+            .filter(|check| check.status == CheckStatus::Ok)
+            .count(),
+        shown.len(),
+        shown.iter().filter(|check| check.is_error()).count(),
+        shown.iter().filter(|check| check.is_warning()).count(),
+    );
     if json {
         let text =
             serde_json::to_string_pretty(&report).map_err(|err| CliError::data(err.to_string()))?;
         writeln!(stream, "{text}")?;
     } else {
-        for check in &report.checks {
+        for check in &shown {
             writeln!(stream, "{}", describe(check))?;
         }
-        writeln!(stream, "驗證 {}：{}", path.display(), report.summary())?;
+        writeln!(stream, "驗證 {}：{}", path.display(), shown_summary)?;
     }
     if !report.is_ok() {
-        return Err(CliError::data(format!(
-            "資料驗證失敗：{}",
-            report.summary()
-        )));
+        return Err(CliError::data(format!("資料驗證失敗：{}", shown_summary)));
     }
     Ok(())
+}
+
+/// 缺席的下載項不進人讀輸出：不是錯誤，也不是需要使用者處理的警告。
+fn is_absent_download(check: &FileCheck) -> bool {
+    check.status == CheckStatus::Missing && !check.shipped
 }
 
 fn describe(check: &FileCheck) -> String {
@@ -125,5 +145,89 @@ fn describe(check: &FileCheck) -> String {
         jc_data::manifest::CheckStatus::Read { message } => {
             format!("讀取失敗  {}：{message}", check.path)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jc_data::manifest::{DataFile, DataRole, SCHEMA};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jc-cli-verify-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write(dir: &Path, rel: &str, bytes: &[u8]) {
+        let path = dir.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        let dir = temp_dir(name);
+        write(&dir, "build-zh/lexicon.bin", b"data");
+        let (bytes, sha256) =
+            jc_data::manifest::sha256_file(dir.join("build-zh/lexicon.bin")).unwrap();
+        let manifest = DataManifest {
+            schema: SCHEMA.to_string(),
+            version: "test".to_string(),
+            generated_at: "2026-11-20T00:00:00Z".to_string(),
+            files: vec![
+                DataFile {
+                    path: "build-zh/lexicon.bin".to_string(),
+                    bytes,
+                    sha256,
+                    role: DataRole::ZhLexicon,
+                    license: vec!["L-13".to_string()],
+                    shipped: true,
+                    url: None,
+                },
+                DataFile {
+                    path: "models/zh-select/model.onnx".to_string(),
+                    bytes: 10,
+                    sha256: "0".repeat(64),
+                    role: DataRole::ZhSelect,
+                    license: vec!["L-11".to_string()],
+                    shipped: false,
+                    url: Some("https://example.invalid/model.onnx".to_string()),
+                },
+            ],
+        };
+        write(
+            &dir,
+            MANIFEST_FILE,
+            manifest.to_json_pretty().unwrap().as_bytes(),
+        );
+        dir
+    }
+
+    #[test]
+    fn human_output_hides_absent_downloads() {
+        let dir = fixture("human");
+        let mut out = Vec::new();
+        verify(&dir, None, false, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("通過      build-zh/lexicon.bin（zh_lexicon）"));
+        assert!(!text.contains("缺少"));
+        assert!(text.contains("通過 1/1，錯誤 0，警告 0"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn json_output_keeps_full_report() {
+        let dir = fixture("json");
+        let mut out = Vec::new();
+        verify(&dir, None, true, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(report["checks"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            report["checks"][1]["status"]["status"].as_str(),
+            Some("missing")
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 }
