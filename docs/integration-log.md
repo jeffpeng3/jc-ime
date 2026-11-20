@@ -1824,3 +1824,23 @@ gate：
 - clippy exit 0；fmt exit 0。
 - 題庫（逐項與合併前相同）：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
 - `git branch --no-merged main`：空。
+
+## 2026-11-21 06:35 ci-data-pack（`5971dce` → `7a6b09d`）
+
+CI 的 linux 與 windows job 在測試前下載正式資料包，公開 repo variable `JC_DATA_BUNDLE_URL`／
+`JC_DATA_BUNDLE_SHA256` 已設定；強制驗 SHA-256、解開、找 manifest 根目錄並寫入 `JC_IMEDATA`；
+URL／SHA 為空或 SHA 不符直接失敗。`release.yml`、`Cargo.toml`、Rust 測試沒改。
+`docs/release.md`、`docs/status.md` 補說明。
+
+這也處理了上一輪 unify-segment 的 CI 失敗：`test_mixed_english_suggestion_and_completion`
+在本機有英文詞表時通過，CI 沒有詞表時退回內建原型而失敗（本機以
+`JC_ENGLISH_PACK=/tmp/opencode/empty-pack` 可重現 `"我ㄘㄍㄠㄠㄣ"` vs `"我hellp"`）。
+CI 現在會先下載正式資料包，英文詞表隨之可用。
+
+gate（以 `JC_IMEDATA=/mnt/work/jc/jc-ime-data` 模擬 CI）：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、1313 passed、0 failed）。
+- clippy exit 0；fmt exit 0；`ci.yml` YAML 有效。
+- 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+  （第一次帶 env 跑 ja 得到 92.0%，該次 timeout 欄 1.0%；連續重跑四次都是 92.2%、timeout 0.0%，
+  判定為單題 timeout 抖動，不是回歸。）
+- `git branch --no-merged main`：空。
