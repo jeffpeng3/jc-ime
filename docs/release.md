@@ -1,7 +1,8 @@
 # 發佈流程
 
-`release.yml` 負責 release 建置與 GitHub Release；日常 CI（`ci.yml`）仍然只做
-debug 測試與 clippy。兩邊刻意分開：發佈前唯一一次 release 測試在 `verify` job。
+`release.yml` 負責 release 建置與 GitHub Release；日常 CI（`ci.yml`）跑 debug 測試與
+clippy，並在測試前下載與 release 相同的資料包，把 `JC_IMEDATA` 指向解開後的根目錄。
+兩邊刻意分開：發佈前唯一一次 release 測試在 `verify` job。
 
 ## 觸發方式
 
@@ -76,6 +77,12 @@ variable：
 workflow 下載後會實際算 SHA-256；不一致就讓 `windows` job 失敗，錯誤訊息會印出
 預期與實際值。沒有提供這個值時只警告並繼續，之後仍由 `jc-cli data verify` 驗
 manifest 內每個檔案的雜湊。正式發版建議一定要鎖 SHA-256。
+
+CI 的 `linux`／`windows` job 也下載這同一份資料包，但只讀公開 repo variable
+`JC_DATA_BUNDLE_URL`／`JC_DATA_BUNDLE_SHA256`（不讀 secret、也不吃 workflow_dispatch
+輸入）。因為是公開 variable，fork PR 也讀得到；兩個值任一為空或 SHA 不符就讓 CI
+失敗，不會退回沒有資料的降級環境。CI 把找到的資料根目錄寫進 `JC_IMEDATA`，並在
+log 印出根目錄與 manifest 的 `version` 供核對。
 
 資料包格式可以是 `.tar.zst`、`.tzst`、`.tar.gz`、`.tgz` 或 `.zip`，內容是資料
 根目錄；上層多一層 `jc-ime-data/` 也可以，workflow 會自動找有 `manifest.json`
@@ -213,6 +220,9 @@ release 與 CI 都用 `Swatinem/rust-cache@v2`。
 
 CI 連 workspace crate 的產物一起快取：每個 commit 通常只改幾個 crate，還原後 cargo 只
 重編改到的。release 只快取依賴，release 產物一份太大，每個 tag 存一份會擠掉其他快取。
+
+CI 現在也會在測試前下載與 release 相同的資料包；`JC_IMEDATA` 由公開 variable
+提供，fork PR 也讀得到。資料包本身不快取，每個 job 都重新下載並驗 SHA-256。
 
 `verify` 與 `linux（tar.gz）` 同為 ubuntu-24.04、同為 release profile、同一次 run、
 同一份 `Cargo.lock`，因此共用 `release-linux`：`verify` 先跑並寫入快取，打包 job
