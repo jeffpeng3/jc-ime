@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use jc_core::candidate::Candidate;
 use jc_core::decode::{Decoder, Locks};
-use jc_core::ja::decode::{JaContext, JaDecoder};
+use jc_core::ja::decode::{mean_candidates, JaContext, JaDecoder};
 use jc_core::ja::personal::{
     learn_unified, UnifiedLearning, UNIFIED_MANUAL_WEIGHT, UNIFIED_PASSIVE_WEIGHT,
 };
@@ -199,30 +199,34 @@ impl JaConverter {
     /// 統計結果永遠保留；第一名只有在成本差命中門檻、且輸出通過五條
     /// 驗證時才換成 Jinen 的結果。
     pub fn nbest(&self, reading: &str, n: usize) -> Vec<jc_core::decode::Conversion> {
+        if n == 0 {
+            return Vec::new();
+        }
         let ctx = self.context();
-        let mut conversions = self.decoder.nbest(reading, &ctx, n);
-        let Some(first) = conversions.first() else {
-            return conversions;
+        let chars: Vec<char> = reading.chars().collect();
+        // 一次解到至少兩條：候選清單與 gating 的 top-2 共用同一次搜尋。
+        let (results, gap) = self.decoder.results_with_gap(&chars, &ctx, n.max(2));
+        let Some(best) = results.first() else {
+            return Vec::new();
         };
-        let baseline = first.surface.clone();
-        let (statistical_cost, runner_up_cost) =
-            if self.neural.enabled && self.neural.runtime.is_some() {
-                // 門檻只取兩條統計路徑，與 gating 實驗的 `gap` 定義一致。
-                let chars: Vec<char> = reading.chars().collect();
-                let gate = self.decoder.results(&chars, &ctx, 2);
-                match gate.first() {
-                    Some(result) => (
-                        result.conversion().cost,
-                        gate.get(1).map(|second| second.conversion().cost),
-                    ),
-                    None => (first.cost, None),
-                }
-            } else {
-                (
-                    first.cost,
-                    conversions.get(1).map(|conversion| conversion.cost),
-                )
-            };
+        let mut conversions: Vec<jc_core::decode::Conversion> = results
+            .iter()
+            .take(n)
+            .map(|result| result.conversion())
+            .collect();
+        let baseline = best.surface();
+        // 門檻只用統計轉換已經有的資訊；平均候選數在這裡一次算好，
+        // 不在等候模型的路徑上重新解碼或查詞典。
+        let needs_neural = self.neural.enabled && self.neural.runtime.is_some();
+        let statistical_cost = best.conversion().cost;
+        let (runner_up_cost, mean) = if needs_neural {
+            (
+                gap.map(|gap| statistical_cost.saturating_add(gap)),
+                mean_candidates(best, self.decoder.source().as_ref()),
+            )
+        } else {
+            (results.get(1).map(|second| second.conversion().cost), 1.0)
+        };
         let decision = maybe_convert(
             &self.neural,
             &NeuralInput {
@@ -232,12 +236,15 @@ impl JaConverter {
                 statistical: &baseline,
                 statistical_cost,
                 runner_up_cost,
+                mean_candidates: mean,
             },
         );
         if let NeuralDecision::Accepted { surface } = decision {
             // 神經輸出沒有詞邊界；清空 segments，只留下整體字串。
-            conversions[0].surface = surface;
-            conversions[0].segments.clear();
+            if let Some(first) = conversions.first_mut() {
+                first.surface = surface;
+                first.segments.clear();
+            }
         }
         conversions
     }

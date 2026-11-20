@@ -3,6 +3,7 @@
 //! 型別、設定與公開 API 在上層模組；這裡只放實作細節。
 
 use super::*;
+use crate::ja::decode::mean_candidates;
 use crate::score::BigramLm;
 
 /// 「常用」候選標示的系統詞頻門檻，對照上游 `commonLabelProbability`。
@@ -1292,31 +1293,34 @@ impl Session {
             right: String::new(),
         };
         let chars: Vec<char> = reading.chars().collect();
-        let mut results = decoder.results(&chars, &ctx, self.max_candidates());
+        let (mut results, gap) = decoder.results_with_gap(&chars, &ctx, self.max_candidates());
+        // 門檻的 top-1 取學習排序前的統計結果，與 gating 實驗一致。
+        let gate = results.first().map(|first| {
+            (
+                first.conversion().cost,
+                mean_candidates(first, decoder.source().as_ref()),
+            )
+        });
         self.rank_ja_learning(&mut results, &ctx.left);
         let Some(best) = results.first() else {
             self.base = reading;
             return;
         };
         let baseline = best.surface();
-        // 門檻沿用 gating 實驗的訊號：只取兩條統計路徑，同詞面去重後
-        // 只剩一條就視為沒有備案、一定觸發。這與候選清單的 N-best 分開算。
-        let (statistical_cost, runner_up_cost) =
-            if self.config.ja_neural.enabled && self.config.ja_neural.runtime.is_some() {
-                let gate = decoder.results(&chars, &ctx, 2);
-                match gate.first() {
-                    Some(first) => (
-                        first.conversion().cost,
-                        gate.get(1).map(|result| result.conversion().cost),
-                    ),
-                    None => (best.conversion().cost, None),
-                }
-            } else {
-                (
-                    best.conversion().cost,
-                    results.get(1).map(|result| result.conversion().cost),
-                )
-            };
+        // 門檻沿用 gating 實驗的訊號：只看最前面兩條原始路徑，詞面相同就
+        // 視為沒有備案、一定觸發。這與候選清單的 N-best 分開算。
+        // `mean_candidates` 從 top-1 統計結果算，不在等候模型的路徑上補算。
+        let needs_neural = self.config.ja_neural.enabled && self.config.ja_neural.runtime.is_some();
+        let (statistical_cost, runner_up_cost, mean_candidates) = if needs_neural {
+            let (cost, mean) = gate.unwrap_or((best.conversion().cost, 1.0));
+            (cost, gap.map(|gap| cost.saturating_add(gap)), mean)
+        } else {
+            (
+                best.conversion().cost,
+                results.get(1).map(|result| result.conversion().cost),
+                1.0,
+            )
+        };
         // 統計結果先算好；只有門檻命中且通過驗證才換成神經輸出。
         let decision = neural::maybe_convert(
             &self.config.ja_neural,
@@ -1327,6 +1331,7 @@ impl Session {
                 statistical: &baseline,
                 statistical_cost,
                 runner_up_cost,
+                mean_candidates,
             },
         );
         let replaced = decision.accepted_surface().map(str::to_string);
