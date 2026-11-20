@@ -1,4 +1,4 @@
-//! 引擎行程：在 Linux 開發期用 stdio 或 unix socket。Windows 之後接 named pipe。
+//! 引擎行程：stdio、unix socket 或 Windows named pipe。
 //! 這是唯一的長期執行核心，wrapper 只透過 `jc-proto` 與它溝通。
 //!
 //! 用法：
@@ -10,8 +10,8 @@
 //! `--allow-empty-data` 跳過資料載入，只用空 session，供協定測試與除錯；
 //! 正式啟動仍要求 `--data` 或 `JC_DATA`。
 //!
-//! stdio 模式在所有平台都能跑；`--socket` 目前只有 unix 實作，其他平台
-//! 會回報 `named pipe 尚未實作`。
+//! stdio 模式在所有平台都能跑；`--socket` 在 unix 是 unix domain socket，
+//! 在 Windows 是本機 named pipe（見 `pipe_windows`），其他平台回報尚未實作。
 
 use std::io::{self, BufReader, BufWriter};
 #[cfg(unix)]
@@ -24,11 +24,14 @@ use jc_engine::loader::load_engine_data;
 use jc_engine::{engine_label, serve, Engine};
 use jc_proto::{DEFAULT_MAX_FRAME, PROTOCOL_VERSION};
 
+#[cfg(windows)]
+mod pipe_windows;
+
 /// 啟動方式。
 enum Transport {
     /// 標準輸入／輸出，開發期與整合測試用。
     Stdio,
-    /// unix domain socket，一次服務一個連線。非 unix 平台尚未支援。
+    /// unix domain socket（unix）或 named pipe（Windows），一次服務一個連線。
     Socket(PathBuf),
 }
 
@@ -153,10 +156,16 @@ fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::R
     Ok(())
 }
 
-/// 非 unix 平台沒有 unix socket，明確回報錯誤而不是 panic。
-#[cfg(not(unix))]
+/// Windows：`path` 是 pipe 名稱或路徑，交給 named pipe 分支。
+#[cfg(windows)]
+fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
+    pipe_windows::serve_pipe(engine, path, max_frame)
+}
+
+/// 既不是 unix 也不是 Windows 的平台沒有 socket 傳輸，明確回報錯誤而不是 panic。
+#[cfg(not(any(unix, windows)))]
 fn serve_socket(_engine: &mut Engine, _path: &Path, _max_frame: usize) -> anyhow::Result<()> {
-    bail!("named pipe 尚未實作，這個平台目前只能使用 stdio 模式")
+    bail!("這個平台不支援 --socket，只能使用 stdio 模式")
 }
 
 /// 清掉上次留下的 socket 檔；有引擎正在監聽時拒絕啟動。
@@ -261,9 +270,13 @@ fn value_of(args: &[String], index: &mut usize, flag: &str) -> Result<String, St
 /// `--socket` 的說明文字依平台而不同。
 #[cfg(unix)]
 const SOCKET_HELP: &str = "  --socket <path>     改用 unix domain socket，一次服務一個連線\n";
-/// 非 unix 平台沒有 unix socket 實作。
-#[cfg(not(unix))]
-const SOCKET_HELP: &str = "  --socket <path>     named pipe 尚未實作，目前只支援 stdio\n";
+/// Windows 的 `--socket` 是 named pipe 名稱或路徑。
+#[cfg(windows)]
+const SOCKET_HELP: &str =
+    "  --socket <name>     改用本機 named pipe（\\\\.\\pipe\\<name>），一次服務一個連線\n";
+/// 其他平台沒有 socket 傳輸。
+#[cfg(not(any(unix, windows)))]
+const SOCKET_HELP: &str = "  --socket <path>     這個平台不支援，目前只支援 stdio\n";
 
 fn print_usage() {
     println!(
@@ -364,16 +377,16 @@ mod tests {
         assert!(parse(&["--socket"]).is_err());
     }
 
-    /// 非 unix 平台的 `--socket` 必須回傳明確錯誤，不能 panic。
-    #[cfg(not(unix))]
+    /// 既不是 unix 也不是 Windows 的平台的 `--socket` 必須回傳明確錯誤，不能 panic。
+    #[cfg(not(any(unix, windows)))]
     #[test]
-    fn socket_mode_reports_named_pipe_unimplemented() {
+    fn socket_mode_reports_unsupported_platform() {
         let mut engine = Engine::new();
         let err = serve_socket(&mut engine, Path::new("engine.sock"), DEFAULT_MAX_FRAME)
-            .expect_err("非 unix 平台不該啟動 socket");
+            .expect_err("這個平台不該啟動 socket");
         assert!(
-            err.to_string().contains("named pipe 尚未實作"),
-            "錯誤訊息應說明 named pipe 尚未實作：{err}"
+            err.to_string().contains("不支援 --socket"),
+            "錯誤訊息應說明平台不支援：{err}"
         );
     }
 }
