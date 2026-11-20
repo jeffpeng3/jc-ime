@@ -181,6 +181,24 @@ pub enum Command {
         /// 輸出 JSON。
         json: bool,
     },
+    /// 產生資料根目錄的 `manifest.json`。
+    DataManifest {
+        /// 資料根目錄。
+        root: PathBuf,
+        /// 輸出檔；未指定時寫 `<root>/manifest.json`。
+        out: Option<PathBuf>,
+        /// 資料內容版本標籤；未指定時用 UTC 日期。
+        version: Option<String>,
+    },
+    /// 驗證資料根目錄的 manifest。
+    DataVerify {
+        /// 資料根目錄。
+        root: PathBuf,
+        /// manifest 路徑；未指定時讀 `<root>/manifest.json`。
+        manifest: Option<PathBuf>,
+        /// 輸出 JSON。
+        json: bool,
+    },
     /// 顯示說明。
     Help,
     /// 顯示版本。
@@ -199,6 +217,7 @@ pub fn parse(args: &[String]) -> Result<Command, CliError> {
         "convert" => parse_convert(&args[1..]),
         "tokenize" => parse_tokenize(&args[1..]),
         "bench" => parse_bench(&args[1..]),
+        "data" => parse_data(&args[1..]),
         other => Err(CliError::Usage(format!("不認得的子命令 {other}"))),
     }
 }
@@ -677,6 +696,68 @@ fn parse_bench(args: &[String]) -> Result<Command, CliError> {
     })
 }
 
+fn parse_data(args: &[String]) -> Result<Command, CliError> {
+    let Some(kind) = args.first().map(String::as_str) else {
+        return Err(CliError::Usage("data 需要 manifest 或 verify".to_string()));
+    };
+    let rest = &args[1..];
+    let (mut root, mut out, mut version, mut manifest, mut json) = (None, None, None, None, false);
+    let mut index = 0;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--out" => {
+                index += 1;
+                out = Some(PathBuf::from(value(rest, index, "--out")?));
+            }
+            "--version" => {
+                index += 1;
+                version = Some(value(rest, index, "--version")?.to_string());
+            }
+            "--manifest" => {
+                index += 1;
+                manifest = Some(PathBuf::from(value(rest, index, "--manifest")?));
+            }
+            "--json" => json = true,
+            other if other.starts_with("--") => {
+                return Err(CliError::Usage(format!("data {kind} 不認得的參數 {other}")));
+            }
+            other => {
+                if root.is_some() {
+                    return Err(CliError::Usage("data 只接受一個資料根目錄".to_string()));
+                }
+                root = Some(PathBuf::from(other));
+            }
+        }
+        index += 1;
+    }
+    let root = root.ok_or_else(|| CliError::Usage(format!("data {kind} 需要資料根目錄")))?;
+    match kind {
+        "manifest" => {
+            if manifest.is_some() || json {
+                return Err(CliError::Usage(
+                    "data manifest 只接受 --out 與 --version".to_string(),
+                ));
+            }
+            Ok(Command::DataManifest { root, out, version })
+        }
+        "verify" => {
+            if out.is_some() || version.is_some() {
+                return Err(CliError::Usage(
+                    "data verify 只接受 --manifest 與 --json".to_string(),
+                ));
+            }
+            Ok(Command::DataVerify {
+                root,
+                manifest,
+                json,
+            })
+        }
+        other => Err(CliError::Usage(format!(
+            "data 只支援 manifest 或 verify，收到 {other}"
+        ))),
+    }
+}
+
 fn value<'a>(args: &'a [String], index: usize, flag: &str) -> Result<&'a str, CliError> {
     args.get(index)
         .map(String::as_str)
@@ -805,6 +886,16 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             repeat,
             json,
         } => crate::bench::run(testdata.clone(), data.clone(), file, *repeat, *json, out),
+        Command::DataManifest {
+            root,
+            out: target,
+            version,
+        } => crate::manifest_cmd::manifest(root, target.as_deref(), version.as_deref(), out),
+        Command::DataVerify {
+            root,
+            manifest,
+            json,
+        } => crate::manifest_cmd::verify(root, manifest.as_deref(), *json, out),
     }
 }
 
@@ -822,6 +913,8 @@ pub fn usage() -> String {
          jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--backend candle] [--user-data <dir>] [--pick <n>] [--json]\n  \
          jc-cli tokenize ja [--testdata <dir>] [--vocab <model>] [--text <字串>]... [--diff] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
+         jc-cli data manifest <root> [--out <manifest.json>] [--version <標籤>]\n  \
+         jc-cli data verify <root> [--manifest <manifest.json>] [--json]\n\n\
          --backend 只接受 candle；ORT 已移除，其他值會直接報錯。\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
          --corpus 是 ja/ 目錄裡的題庫名稱；目錄下每份題庫 json 都會被掃到。\n\
@@ -829,7 +922,9 @@ pub fn usage() -> String {
          指定時注音走真實詞庫並自動載入同目錄的 lm.bin。\n\
          --lm 覆寫 bigram 語言模型；--mu 是 bigram 與 unigram 的內插權重（預設 0.7）。\n\
          --select-model on 需要 zh-select 的 candle 權重；預設 on，可用 off 關閉。\n\
-         --user-data 指定個人資料目錄；日文學習寫進同一個 personal.json，--pick 記下第幾個候選。\n",
+         --user-data 指定個人資料目錄；日文學習寫進同一個 personal.json，--pick 記下第幾個候選。\n\
+         data manifest 會實際算大小與 SHA-256；下載項不存在就略過，隨附檔缺少則失敗。\n\
+         data verify 逐檔檢查存在、大小與 SHA-256；缺少隨附檔或內容不符會回傳非零。\n",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -1217,6 +1312,47 @@ mod tests {
         assert!(parse(&args(&["tokenize"])).is_err());
         assert!(parse(&args(&["tokenize", "zh"])).is_err());
         assert!(parse(&args(&["tokenize", "ja", "--text"])).is_err());
+    }
+
+    #[test]
+    fn parses_data_manifest_and_verify() {
+        assert_eq!(
+            parse(&args(&[
+                "data",
+                "manifest",
+                "/data/root",
+                "--out",
+                "/tmp/manifest.json",
+                "--version",
+                "2026-11-20",
+            ]))
+            .unwrap(),
+            Command::DataManifest {
+                root: PathBuf::from("/data/root"),
+                out: Some(PathBuf::from("/tmp/manifest.json")),
+                version: Some("2026-11-20".to_string()),
+            }
+        );
+        assert_eq!(
+            parse(&args(&[
+                "data",
+                "verify",
+                "/data/root",
+                "--manifest",
+                "/tmp/manifest.json",
+                "--json",
+            ]))
+            .unwrap(),
+            Command::DataVerify {
+                root: PathBuf::from("/data/root"),
+                manifest: Some(PathBuf::from("/tmp/manifest.json")),
+                json: true,
+            }
+        );
+        assert!(parse(&args(&["data"])).is_err());
+        assert!(parse(&args(&["data", "manifest"])).is_err());
+        assert!(parse(&args(&["data", "manifest", "/data", "--json"])).is_err());
+        assert!(parse(&args(&["data", "verify", "/data", "--out", "/tmp/x"])).is_err());
     }
 
     #[test]

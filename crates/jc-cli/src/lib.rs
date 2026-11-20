@@ -9,6 +9,7 @@ pub mod cli;
 pub mod converter;
 pub mod data;
 pub mod eval_cmd;
+pub mod manifest_cmd;
 pub mod tokenize;
 
 pub use cli::{run, CliError, Command};

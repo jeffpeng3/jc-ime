@@ -20,6 +20,7 @@ use jc_core::score::{BigramLm, ScoreContext, ZhLm};
 use jc_core::session::neural::{NeuralEngine, NeuralError, NeuralRequest, NeuralRuntime};
 use jc_core::session::SessionConfig;
 use jc_core::Mode;
+use jc_data::manifest::{CheckStatus, DataManifest, VerifyLevel, MANIFEST_FILE};
 use jc_model::candle::jinen::Jinen;
 
 /// 注音詞典資料包目錄（相對於資料根目錄）。
@@ -709,6 +710,57 @@ pub enum EngineDataError {
     /// 檔案存在但讀取失敗。
     #[error(transparent)]
     Load(#[from] LoadError),
+    /// 資料根目錄的 `manifest.json` 無效。
+    #[error("資料 manifest 無效：{0}")]
+    Manifest(#[from] jc_data::manifest::ManifestError),
+    /// 資料根目錄的 `manifest.json` 逐檔檢查失敗。
+    #[error("資料 manifest 檢查失敗：{0}")]
+    ManifestFiles(String),
+}
+
+/// 啟動時的 manifest 檢查：只讀 manifest、比對存在與大小。
+///
+/// 沒有 `manifest.json` 只警告；manifest 格式錯誤、隨附檔缺少或大小不符
+/// 則拒絕啟動。下載項（`shipped: false`）缺席只警告，功能自然降級。
+fn check_data_manifest(root: &Path) -> Result<(), EngineDataError> {
+    let path = root.join(MANIFEST_FILE);
+    if !path.is_file() {
+        log::warn!(
+            "找不到資料 manifest {}，跳過完整性檢查；可用 jc-cli data manifest 產生",
+            path.display()
+        );
+        return Ok(());
+    }
+    let manifest = DataManifest::load(&path)?;
+    let report = manifest.verify(root, VerifyLevel::Startup);
+    for check in &report.checks {
+        match &check.status {
+            CheckStatus::Ok => {}
+            CheckStatus::Missing if !check.shipped => {
+                log::warn!(
+                    "下載項缺席：{}（{}），相關功能維持停用",
+                    check.path,
+                    check.role.as_str()
+                );
+            }
+            status => {
+                log::error!(
+                    "資料檔檢查失敗：{}（{}）：{status:?}",
+                    check.path,
+                    check.role.as_str()
+                );
+            }
+        }
+    }
+    if !report.is_ok() {
+        return Err(EngineDataError::ManifestFiles(report.summary()));
+    }
+    log::info!(
+        "資料 manifest 檢查通過（{}，資料版本 {}）",
+        report.summary(),
+        manifest.version
+    );
+    Ok(())
 }
 
 /// 依資料根目錄載入引擎所需資料。
@@ -722,6 +774,9 @@ pub fn load_engine_data(root: &Path) -> Result<EngineData, EngineDataError> {
     if !root.is_dir() {
         return Err(EngineDataError::MissingRoot(root.to_path_buf()));
     }
+    // 只驗路徑存在與大小；SHA-256 留給 `jc-cli data verify`，避免每次啟動
+    // 重算上百 MB。沒有 manifest 時只警告，讓舊資料根目錄仍可啟動。
+    check_data_manifest(root)?;
     let zh_dir = root.join(ZH_DIR);
     let lexicon_bin = zh_dir.join("lexicon.bin");
     if !lexicon_bin.is_file() {
@@ -916,6 +971,25 @@ mod tests {
         assert!(
             err.to_string().contains("lexicon.bin"),
             "錯誤應指出缺少的詞典：{err}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_manifest_refuses_startup() {
+        let dir =
+            std::env::temp_dir().join(format!("jc-engine-bad-manifest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(MANIFEST_FILE),
+            br#"{"schema":"0c.data-pack/9","version":"v","generated_at":"t","files":[]}"#,
+        )
+        .unwrap();
+        let err = load_engine_data(&dir).unwrap_err();
+        assert!(
+            err.to_string().contains("manifest"),
+            "schema 不符應拒絕啟動：{err}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
