@@ -1370,3 +1370,42 @@ gate：test exit 0（54 targets、1231 passed、0 failed）、clippy exit 0、fm
 ### CI（push `4bbf535`，run 44698221828）
 
 - linux (core)：success；windows (msvc)：success。
+
+## 2026-11-20 15:40 composition-model（帶入 live-default）與 ci-cache
+
+| Branch | Commit | Merge commit |
+|---|---|---|
+| `composition-model`（含 `live-default` 三個 commit） | `b919e1b` | `c0b1689` |
+| `ci-cache` | `95f6ed4` | `9b45f1e` |
+
+- `composition-model`：收斂成語言無關的 Auto／User 模型與轉換後端，並把日文預設改成延遲整句轉換（`ja_conversion = live`）；
+  `docs/status.md` 只衝突里程碑一行，取兩邊資訊合併（auto 92.2／quality 93.6，hard-cases 80.0／ajimee 71.0）。
+- `ci-cache`：`Swatinem/rust-cache` 分組，`ci-linux`／`ci-windows`、`release-linux`（verify 與 linux 共用）／`release-windows`；
+  兩份 workflow 都通過 `python3 -c "yaml.safe_load(...)"`。
+
+### gate（composition-model 合併後）
+
+- `cargo check --workspace --all-targets` exit 0、fmt exit 0。
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**20 failed**（54 targets、1245 passed）。
+- 已在 `composition-model` 的 worktree 單獨重跑：`jc-core` 19 failed、`jc-settings` 1 failed，**全部是 branch 自帶**，
+  不是合併造成，需回 composition-model 修。清單：
+  - `composition::tests::shift_units_moves_user_mark_after_edit_point`
+  - `composition::tests::user_segment_splits_runs_and_appears_in_context`
+  - `ja::live::tests::test_candidates_and_invalid_span`
+  - `session::backends::tests::only_auto_runs_are_sent`
+  - `session::mixed::tests::test_japanese_run_infers_from_romaji`
+  - `session::segments::tests::test_fuzzy_near_reading_is_not_blocked`
+  - `session::tests::test_ja_learning_disabled_keeps_statistical_order`
+  - `session::tests::test_ja_learning_ranks_manual_choice_first_and_undo_restores`
+  - `session::tests::test_ja_live_candidates_include_all_kana_scripts`
+  - `session::tests::test_ja_live_cursor_and_segment_candidates`
+  - `session::tests::test_ja_live_neural_adopts_complete_reading_only`
+  - `session::tests::test_ja_neural_not_called_for_incomplete_reading`
+  - `session::tests::test_ja_neural_replaces_when_gap_below_threshold`
+  - `session::tests::test_ja_neural_skips_when_gap_above_threshold`
+  - `session::tests::test_ja_neural_skips_when_mean_candidates_below_min`
+  - `session::tests::test_ja_neural_timeout_keeps_statistical_result`
+  - `session::tests::test_ja_neural_unavailable_keeps_statistical_result`
+  - `session::tests::test_ja_passive_learning_keeps_clear_statistical_winner`
+  - `session::tests::test_ja_short_reading_records_evidence_only`
+  - `jc-settings`：`features_tests::test_bool_settings_defaults_and_persist`
