@@ -8,6 +8,7 @@ pub mod bench;
 pub mod cli;
 pub mod converter;
 pub mod data;
+pub mod download_cmd;
 pub mod eval_cmd;
 pub mod manifest_cmd;
 pub mod tokenize;
