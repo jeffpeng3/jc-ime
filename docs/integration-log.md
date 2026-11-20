@@ -106,6 +106,7 @@
 | `session-g4-mixed`（CI 修正） | `6b76ce1` | `fb4e7ab` | 通過（clippy＋全量 test） | 2026-11-20 07:58 |
 | `session-backfill` | `ade1479` | `610498c` | 通過（fmt／clippy／test／四個 eval） | 2026-11-20 08:07 |
 | `drop-punct` | `859f6d1` | `dacb52b` | 通過（fmt／clippy／test／兩個 eval；無殘留） | 2026-11-20 08:28 |
+| `jinen-gating-v2` | `81e0cbe` | `83152fc` | test 通過；clippy 1 個錯 | 2026-11-20 08:31 |
 
 ## 衝突與修正
 
@@ -1008,3 +1009,19 @@
 
   殘留檢查：`grep -rn 'SharedPunctuator\|punctuate\|--punct' crates/ | grep -v ctrl_punct` 為 **0 筆**；
   `ctrl_punct` 與 `punct_mark` 仍保留（`session/mod.rs:110`、`:116`）。
+
+- `jinen-gating-v2`（合併 `83152fc`，含 `81e0cbe`）：無衝突，只改 `jinen-gate` bin（+1047／−191）與 `docs/port/jinen-gating-v2.md`。
+
+  gate：`cargo test --workspace --no-fail-fast` **exit 0**（43 targets、1050 passed、0 failed）；
+  `cargo clippy --workspace --all-targets -- -D warnings` **exit 101**，1 個錯：
+  `crates/jc-cli/src/bin/jinen-gate.rs:1376` `clippy::unnecessary_sort_by`（應改 `sort_by_key`），需回 jinen-gating-v2 修。
+
+  品質優先版（gap < 460 改用 Jinen **small**）：
+  | 題庫 | 前一版 | small 版 | 驗收 | 增益 | Jinen 呼叫率 |
+  |---|---:|---:|---:|---:|---:|
+  | modern-500 | 90.4% | **93.6%** | 86.0 | +3.2 | 30% |
+  | hard-cases | 71.4% | **80.0%** | 71.4 | +8.6 | 54% |
+  | ajimee-200 | 64.0% | **71.5%** | 64.0 | +7.5 | 74% |
+
+  延遲：small 在空閒機器 p50 44–61 ms（排除線 150 ms）；品質優先版混合 p50 **4.76／22.74／55.60 ms**、
+  p95 58／47.2／197.9 ms（modern／hard／ajimee）。ajimee 的 74% 呼叫率把 p50 推到 55 ms，是這個方案唯一明顯代價。
