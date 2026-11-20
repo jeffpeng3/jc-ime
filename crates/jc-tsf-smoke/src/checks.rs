@@ -262,27 +262,35 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
         report.info("jc-tsf.dll 沒有 jc_test_key 匯出（release 建置正常，需要時開 test-export）");
     }
 
-    // ── 7. 註冊探測（只回報） ────────────────────────────────────────
+    // ── 7. 註冊探測（兩個機碼檢視） ──────────────────────────────────
+    //
+    // 對應手動驗證的 `reg query ... /reg:64` 與 `/reg:32`：兩個檢視都要看到同一個
+    // CLSID，而且各指到對應架構的 DLL。只看得到一邊就代表有一個架構的程式打不出
+    // 字，所以算失敗；完全沒安裝才算略過。
     let clsid_text = product::registry_key(&product::CLSID_JC_TSF);
     match registry::probe(&clsid_text) {
-        Ok(found) if found.found => report.pass(
-            "7. 註冊探測",
-            format!(
-                r"HKLM\{} 下有 {}（共 {} 個 TIP）",
-                registry::TIP_KEY,
-                clsid_text,
-                found.total
+        Ok(probe) => match probe.verdict(&clsid_text) {
+            registry::Verdict::Installed { x64_dll, x86_dll } => report.pass(
+                "7. 註冊探測",
+                format!(
+                    "兩個檢視都有 {clsid_text}：64 位元 → {x64_dll}（{} 個 TIP）、\
+                     32 位元 → {x86_dll}（{} 個 TIP）",
+                    probe.x64.tip_count, probe.x86.tip_count
+                ),
             ),
-        ),
-        Ok(found) => report.skip(
-            "7. 註冊探測",
-            format!(
-                r"HKLM\{} 下有 {} 個 TIP，沒有 {}（尚未安裝，不判定失敗）",
-                registry::TIP_KEY,
-                found.total,
-                clsid_text
+            registry::Verdict::NotInstalled => report.skip(
+                "7. 註冊探測",
+                format!("64 位元與 32 位元檢視都沒有 {clsid_text}（尚未安裝，不判定失敗）"),
             ),
-        ),
+            registry::Verdict::Broken(message) => report.fail(
+                "7. 註冊探測",
+                format!(
+                    "{message}。修復：以管理員執行 jc-tip-register machine-register \
+                     \"%ProgramFiles%\\jc-ime\\jc-tsf.dll\" \
+                     \"%ProgramFiles%\\jc-ime\\jc-tsf-x86.dll\""
+                ),
+            ),
+        },
         Err(error) => report.skip("7. 註冊探測", format!("{error}（不判定失敗）")),
     }
 
