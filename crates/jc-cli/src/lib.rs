@@ -7,6 +7,7 @@
 pub mod bench;
 pub mod cli;
 pub mod converter;
+pub mod corpus_cmd;
 pub mod data;
 pub mod diff_cmd;
 pub mod download_cmd;
