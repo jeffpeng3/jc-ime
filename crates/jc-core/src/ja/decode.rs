@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use unicode_script::{Script as UnicodeScript, UnicodeScript as _};
 
+use crate::candidate::PosTable;
 use crate::decode::Conversion;
 use crate::ja::lexicon::{
     unknown_entry, ConnectionCost, JaConnectionCost, JaEntry, JaError, JaLexicon, JaPosClass,
@@ -154,6 +155,8 @@ pub struct JaClauseSegment {
     pub reading: String,
     /// 這一小段的詞面。
     pub surface: String,
+    /// 詞條在 pack 的 POS id；未知詞或自訂來源沒有詞性時是 `None`。
+    pub pos: Option<u32>,
 }
 
 /// 一個文節。
@@ -194,6 +197,17 @@ impl JaResult {
     /// 串接所有文節詞面。
     pub fn surface(&self) -> String {
         self.clauses.iter().map(|c| c.surface.as_str()).collect()
+    }
+
+    /// 候選的 POS id。
+    ///
+    /// 取第一個文節的第一個詞段，也就是主要詞的詞性；只有附屬語或未知詞
+    /// 時回傳 `None`。對外顯示的名稱由詞典的 POS 表查。
+    pub fn pos_id(&self) -> Option<u32> {
+        self.clauses
+            .first()
+            .and_then(|clause| clause.segments.first())
+            .and_then(|segment| segment.pos)
     }
 
     /// 轉成 `jc-core` 的 [`Conversion`]。
@@ -290,6 +304,21 @@ pub trait JaWordSource: Send + Sync {
 
     /// 回傳讀音以 `reading` 開頭的詞條，含完全相等者。
     fn prefixed(&self, reading: &[char]) -> Vec<&JaEntry>;
+
+    /// 詞性字串對應的 POS id；沒有 POS 表的來源回傳 `None`。
+    fn pos_id(&self, _pos: &str) -> Option<u32> {
+        None
+    }
+
+    /// 依 POS id 查名稱；沒有 POS 表的來源回傳 `None`。
+    fn pos_name(&self, _id: u32) -> Option<&str> {
+        None
+    }
+
+    /// 候選共用的 POS 名稱表；沒有 POS 表的來源回傳 `None`。
+    fn pos_table(&self) -> Option<PosTable> {
+        None
+    }
 }
 
 /// 一次前綴查詢的結果。
@@ -313,6 +342,8 @@ pub struct JaDictionary {
     lex: Arc<JaLexicon>,
     index: HashMap<Box<str>, Vec<u32>>,
     context_ids: Vec<(Option<u16>, Option<u16>)>,
+    pos_ids: HashMap<Box<str>, u32>,
+    pos_table: PosTable,
     longest: usize,
 }
 
@@ -347,11 +378,21 @@ impl JaDictionary {
             let raw = &pack_entries[i];
             context_ids.push((raw.left_id(), raw.right_id()));
         }
+        let pos_ids: HashMap<Box<str>, u32> = lex
+            .pack()
+            .pos_list()
+            .iter()
+            .enumerate()
+            .map(|(id, name)| (Box::from(name.as_str()), id as u32))
+            .collect();
+        let pos_table = lex.pos_table();
         Self {
             longest: lex.longest_reading_units(),
             lex,
             index,
             context_ids,
+            pos_ids,
+            pos_table,
         }
     }
 
@@ -427,6 +468,18 @@ impl JaWordSource for JaDictionary {
         });
         out
     }
+
+    fn pos_id(&self, pos: &str) -> Option<u32> {
+        self.pos_ids.get(pos).copied()
+    }
+
+    fn pos_name(&self, id: u32) -> Option<&str> {
+        self.pos_table.name(id)
+    }
+
+    fn pos_table(&self) -> Option<PosTable> {
+        Some(self.pos_table.clone())
+    }
 }
 
 /// lattice 上的一條弧：從 `start` 走到 `end` 的一個詞。
@@ -444,6 +497,8 @@ pub struct JaNode {
     pub left_id: Option<u16>,
     /// right context ID；未知詞固定 `None`。
     pub right_id: Option<u16>,
+    /// 詞條的 POS id；未知詞或來源沒有 POS 表時是 `None`。
+    pub pos_id: Option<u32>,
 }
 
 impl JaNode {
@@ -456,6 +511,7 @@ impl JaNode {
             unknown: false,
             left_id: None,
             right_id: None,
+            pos_id: None,
         }
     }
 
@@ -612,6 +668,7 @@ impl<'a> JaBuilder<'a> {
                         let delta = learning.cost(reading, start, &entry, &self.context);
                         entry.cost = entry.cost.saturating_add(delta);
                     }
+                    let pos_id = source.pos_id(entry.pos.as_ref());
                     nodes.push(JaNode {
                         start,
                         end: m.end,
@@ -619,6 +676,7 @@ impl<'a> JaBuilder<'a> {
                         unknown: false,
                         left_id: m.left_id,
                         right_id: m.right_id,
+                        pos_id,
                     });
                 };
                 source.matches(reading, start, &mut |m| push(reading, start, m));
@@ -661,6 +719,7 @@ impl<'a> JaBuilder<'a> {
                 unknown: true,
                 left_id: None,
                 right_id: None,
+                pos_id: None,
             });
             starts.push(nodes);
         }
@@ -768,6 +827,7 @@ fn clause(nodes: &[&JaNode], conn: &dyn ConnectionCost) -> JaClause {
         segments.push(JaClauseSegment {
             reading: node.entry.reading.to_string(),
             surface: node.entry.surface.to_string(),
+            pos: node.pos_id,
         });
     }
     JaClause {
@@ -1015,6 +1075,16 @@ impl JaDecoder {
     /// 詞條來源。
     pub fn source(&self) -> &Arc<dyn JaWordSource> {
         &self.source
+    }
+
+    /// 依 POS id 查詞性名稱；來源沒有 POS 表時回傳 `None`。
+    pub fn pos_name(&self, id: u32) -> Option<&str> {
+        self.source.pos_name(id)
+    }
+
+    /// 候選共用的 POS 名稱表；來源沒有 POS 表時回傳 `None`。
+    pub fn pos_table(&self) -> Option<PosTable> {
+        self.source.pos_table()
     }
 
     /// 詞性連接成本。
@@ -2936,6 +3006,24 @@ mod tests {
         assert_eq!(convert_surface(&dec, "きょう"), "今日");
         assert_eq!(convert_surface(&dec, "がっこう"), "学校");
         assert!(convert_surface(&dec, "にほんご").starts_with("日本語"));
+    }
+
+    #[test]
+    fn test_real_pack_candidates_carry_pos() {
+        let _path = jc_testdata::require_data!("packs/ja-lexicon-public-core.pack");
+        let dec = real_decoder().expect("開啟真實 pack");
+        let results = dec.results(&units("きょう"), &JaContext::default(), 1);
+        let id = results[0].pos_id().expect("今日 要有 POS id");
+        assert_eq!(id, 41, "public-core pack 的 今日 pos id");
+        assert_eq!(
+            dec.pos_name(id),
+            Some("名詞,普通名詞,副詞可能,*"),
+            "POS id 要能查回 pack 的名稱"
+        );
+
+        let results = dec.results(&units("たべる"), &JaContext::default(), 1);
+        let id = results[0].pos_id().expect("食べる 要有 POS id");
+        assert_eq!(dec.pos_name(id), Some("動詞,一般,*,*"));
     }
 
     #[test]

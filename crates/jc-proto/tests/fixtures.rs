@@ -230,6 +230,25 @@ fn response_state_v3_round_trips_structured_fields() {
 }
 
 #[test]
+fn response_state_v3_pos_round_trips() {
+    let response: Response = round_trip("response_state_v3_pos.json");
+    match response {
+        Response::State {
+            candidates,
+            details,
+            cursor_rune,
+            ..
+        } => {
+            assert_eq!(details.len(), candidates.len());
+            assert_eq!(details[0].pos.as_deref(), Some("名詞,普通名詞,一般,*"));
+            assert_eq!(details[1].pos.as_deref(), Some("名詞,固有名詞,地域,一般"));
+            assert_eq!(cursor_rune, 3);
+        }
+        other => panic!("應是 State，得到 {other:?}"),
+    }
+}
+
+#[test]
 fn response_committed_round_trips() {
     let response: Response = round_trip("response_committed.json");
     assert_eq!(response, Response::Committed { text: "我".into() });

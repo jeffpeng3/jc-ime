@@ -360,6 +360,8 @@ pub struct ConvertOptions {
     pub n: usize,
     /// 輸出 JSON。
     pub json: bool,
+    /// 顯示候選詞性；不加時輸出與原本相同。
+    pub pos: bool,
     /// 啟用注音選字模型重排。
     pub select_model: bool,
     /// 個人化學習資料目錄；未指定時不載入。
@@ -388,6 +390,7 @@ pub fn convert(
         stats,
         n,
         json,
+        pos,
         select_model,
         user_data,
         mode,
@@ -481,16 +484,21 @@ pub fn convert(
                 }
             }
         }
+        let pos_table = decoder.pos_table();
         let candidates = results
             .iter()
             .map(|result| {
                 let conversion = result.conversion();
-                Candidate::new(
+                let mut candidate = Candidate::new(
                     conversion.surface,
                     reading.to_string(),
                     conversion.cost,
                     jc_core::candidate::CandidateSource::Lexicon,
-                )
+                );
+                if let (Some(id), Some(table)) = (result.pos_id(), pos_table.clone()) {
+                    candidate = candidate.with_pos(id, table);
+                }
+                candidate
             })
             .collect();
         (candidates, LmQueryStats::default())
@@ -500,11 +508,15 @@ pub fn convert(
             .iter()
             .enumerate()
             .map(|(index, candidate)| {
-                json!({
+                let mut row = json!({
                     "rank": index + 1,
                     "surface": candidate.surface,
                     "cost": candidate.cost,
-                })
+                });
+                if pos {
+                    row["pos"] = json!(candidate.pos_name());
+                }
+                row
             })
             .collect();
         if stats {
@@ -529,15 +541,30 @@ pub fn convert(
         )?;
         return Ok(());
     }
-    writeln!(out, "rank  surface  cost")?;
+    if pos {
+        writeln!(out, "rank  surface  cost  pos")?;
+    } else {
+        writeln!(out, "rank  surface  cost")?;
+    }
     for (index, candidate) in candidates.iter().enumerate() {
-        writeln!(
-            out,
-            "{:>4}  {:<8} {:>5}",
-            index + 1,
-            candidate.surface,
-            candidate.cost
-        )?;
+        if pos {
+            writeln!(
+                out,
+                "{:>4}  {:<8} {:>5}  {}",
+                index + 1,
+                candidate.surface,
+                candidate.cost,
+                candidate.pos_name().unwrap_or("-")
+            )?;
+        } else {
+            writeln!(
+                out,
+                "{:>4}  {:<8} {:>5}",
+                index + 1,
+                candidate.surface,
+                candidate.cost
+            )?;
+        }
     }
     if candidates.is_empty() {
         writeln!(out, "（沒有候選：讀音 {reading:?}）")?;
@@ -624,6 +651,18 @@ mod tests {
         let converter = ZhConverter::new(resources());
         let got = converter.convert("ㄨㄛˇ ㄒㄧㄤˇ", 5);
         assert_eq!(got.first().map(String::as_str), Some("我想"));
+    }
+
+    #[test]
+    fn zh_candidates_have_no_pos() {
+        let converter = ZhConverter::new(resources());
+        let got = converter.nbest("ㄨㄛˇ ㄒㄧㄤˇ", 5);
+        assert_eq!(got[0].surface, "我想");
+        assert!(
+            got.iter()
+                .all(|candidate| candidate.pos.is_none() && candidate.pos_name().is_none()),
+            "注音候選一律沒有詞性"
+        );
     }
 
     #[test]

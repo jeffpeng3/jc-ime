@@ -1399,21 +1399,28 @@ impl Session {
         } else {
             best.conversion().segments
         };
+        let pos_table = decoder.pos_table();
         self.candidates = results
             .iter()
             .map(|result| {
                 let conversion = result.conversion();
-                Candidate::new(
+                let mut candidate = Candidate::new(
                     conversion.surface,
                     reading.clone(),
                     conversion.cost,
                     CandidateSource::Lexicon,
-                )
+                );
+                if let (Some(id), Some(table)) = (result.pos_id(), pos_table.clone()) {
+                    candidate = candidate.with_pos(id, table);
+                }
+                candidate
             })
             .collect();
         if let (Some(surface), Some(candidate)) = (replaced, self.candidates.first_mut()) {
-            // 顯示與提交都走候選清單，第一名必須跟著換。
+            // 顯示與提交都走候選清單，第一名必須跟著換；字面已不是原本的
+            // 詞條，詞性一併清掉，避免顯示上一筆的詞性。
             candidate.surface = surface;
+            candidate.clear_pos();
         }
         self.last_ja_results = results;
     }
@@ -1507,16 +1514,21 @@ impl Session {
                 results = decoder.results(&chars, &JaContext::default(), self.max_candidates());
                 let left = self.committed.clone();
                 self.rank_ja_learning(&mut results, &left);
+                let pos_table = decoder.pos_table();
                 candidates = results
                     .iter()
                     .map(|result| {
                         let conversion = result.conversion();
-                        Candidate::new(
+                        let mut candidate = Candidate::new(
                             conversion.surface,
                             reading.to_string(),
                             conversion.cost,
                             CandidateSource::Lexicon,
-                        )
+                        );
+                        if let (Some(id), Some(table)) = (result.pos_id(), pos_table.clone()) {
+                            candidate = candidate.with_pos(id, table);
+                        }
+                        candidate
                     })
                     .collect();
             }

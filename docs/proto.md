@@ -105,9 +105,15 @@ UTF-16 位移的外殼請自己從 `cursor_rune` 換算，不要假設 `cursor` 
 | `source` | string | `lexicon`、`personal`、`predicted` 或 `literal` |
 | `cost` | i32 | 路徑成本，**越小越優先** |
 | `learned` | bool | `source == personal` 時為 `true`；`false` 時省略 |
+| `pos` | string? | 詞性名稱；沒有詞性時省略 |
 
 `cost` 是 MeCab 語意的整數路徑成本，可以是負數，**不是機率**，也不適合直接
 相加比較不同長度的候選。只供除錯與排序說明；顯示順序已由核心決定。
+
+`pos` 的來源是日文詞典 pack 的 POS 表，名稱例如 `名詞,普通名詞,一般,*`。
+核心的候選只保存 POS id，名稱在映射線格式時查共用的名稱表，不會為每個候選
+複製字串。注音詞典沒有詞性，**注音候選一律不帶 `pos`**；wrapper 不得用空的
+`pos` 推測詞性。日文候選的 POS id 取第一個文節的第一個詞段（主要詞）。
 
 `source` 的線格式：
 
@@ -186,10 +192,10 @@ UTF-16 位移的外殼請自己從 `cursor_rune` 換算，不要假設 `cursor` 
 
 以下資訊目前不在協定內，wrapper 不應從現有欄位推測：
 
-1. **詞性**：`CandidateDetail` 沒有 part-of-speech 欄位。
-2. **學習證據權重**：只有 `learned` 布林值，沒有次數、時間、來源證據或權重。
-3. **模型候選來源**：無法分辨候選是統計解碼或神經模型產生，`source` 只描述
+1. **學習證據權重**：只有 `learned` 布林值，沒有次數、時間、來源證據或權重。
+2. **模型候選來源**：無法分辨候選是統計解碼或神經模型產生，`source` 只描述
    詞典／個人／預測／字面四類。
+3. **注音詞性**：注音詞典沒有詞性，`pos` 一律省略；這個欄位只描述日文候選。
 
 ## 8. 變更流程
 
@@ -205,4 +211,4 @@ UTF-16 位移的外殼請自己從 `cursor_rune` 換算，不要假設 `cursor` 
 |---|---|---|
 | 1 | 2026-11-19 | 初版：Hello／Key／Snapshot／Commit、長度前綴 framing |
 | 2 | 2026-11-20 | `State` 新增 `cursor_rune`、`suggestion`、`label`、`navigating`；新增 `Shutdown` 與 `Unknown`；錯誤碼改為列舉 |
-| 3 | 2026-11-20 | `State` 新增 `details`（與 `candidates` 等長同序）、`segments`（rune 位移）、`highlighted`；`CandidateSource` 提供 snake_case 線格式；文件明訂 `cursor_rune` 為權威值 |
+| 3 | 2026-11-20 | `State` 新增 `details`（與 `candidates` 等長同序）、`segments`（rune 位移）、`highlighted`；`CandidateSource` 提供 snake_case 線格式；文件明訂 `cursor_rune` 為權威值。同日補充：`CandidateDetail` 新增選填 `pos`，日文候選帶 pack 的詞性名稱，注音一律省略 |

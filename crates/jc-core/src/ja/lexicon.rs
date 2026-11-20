@@ -20,6 +20,8 @@ use std::sync::Arc;
 use jc_data::ja::{Pack, PackError};
 use thiserror::Error;
 
+use crate::candidate::PosTable;
+
 pub use jc_data::ja::Split;
 
 /// 未知詞的單一かな成本，對齊前身的 `decode.DefaultUnknownCost = 8.0`。
@@ -324,6 +326,20 @@ impl JaLexicon {
     /// 底層 pack。
     pub fn pack(&self) -> &Pack {
         &self.pack
+    }
+
+    /// 依 POS id 查 pack 的詞性名稱。
+    ///
+    /// id 就是 pack POS table 的索引；越界或 pack 沒有 POS 表時回傳 `None`。
+    pub fn pos_name(&self, id: u32) -> Option<&str> {
+        self.pack.pos_list().get(id as usize).map(String::as_str)
+    }
+
+    /// 建立候選共用的 POS 名稱表。
+    ///
+    /// 表內容直接來自 pack 的 POS table，索引與 pack 的 `pos_id` 相同。
+    pub fn pos_table(&self) -> PosTable {
+        PosTable::new(self.pack.pos_list().iter().map(String::as_str))
     }
 
     /// 以同一個 pack 建立 context ID 連接成本表。
@@ -901,6 +917,27 @@ mod tests {
         assert!(lex.lookup("存在しない").is_empty());
         assert!(!lex.has("存在しない"));
         assert!(lex.has("明日"));
+    }
+
+    #[test]
+    fn test_pos_name_reads_pack_table() {
+        let lex = test_lexicon();
+        let names = lex.pack().pos_list();
+        let noun = names
+            .iter()
+            .position(|name| name == "名詞,普通名詞,一般,*")
+            .unwrap() as u32;
+        assert_eq!(lex.pos_name(noun), Some("名詞,普通名詞,一般,*"));
+        assert_eq!(
+            lex.pos_name(names.len() as u32),
+            None,
+            "越界的 POS id 回傳 None"
+        );
+
+        let table = lex.pos_table();
+        assert_eq!(table.len(), names.len());
+        assert_eq!(table.name(noun), Some("名詞,普通名詞,一般,*"));
+        assert_eq!(table.name(names.len() as u32), None);
     }
 
     #[test]

@@ -38,6 +38,12 @@ pub struct CandidateDetail {
     /// 是否來自學習結果；`source == personal` 時為 `true`，其餘省略。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub learned: bool,
+    /// 詞性名稱，來自日文 pack 的 POS 表；沒有詞性時省略。
+    ///
+    /// 注音候選沒有詞性，這個欄位一定是 `None`。名稱由共用表查出，候選本身
+    /// 只保存 POS id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos: Option<String>,
 }
 
 /// 組字片段，位移一律以 **rune**（Unicode scalar value）計算。
@@ -188,6 +194,7 @@ impl Response {
                 source: candidate.source,
                 cost: candidate.cost,
                 learned: candidate.source == CandidateSource::Personal,
+                pos: candidate.pos_name().map(str::to_string),
             })
             .collect();
         let segments = segments
@@ -388,6 +395,38 @@ mod tests {
             }
             other => panic!("應是 State，得到 {other:?}"),
         }
+    }
+
+    #[test]
+    fn state_maps_pos_id_to_name_and_omits_missing_pos() {
+        let table = jc_core::candidate::PosTable::new(["名詞,普通名詞,一般,*", "動詞,自立,*,*"]);
+        let candidates = vec![
+            jc_core::candidate::Candidate::new(
+                "今日",
+                "きょう",
+                15,
+                jc_core::candidate::CandidateSource::Lexicon,
+            )
+            .with_pos(0, table),
+            jc_core::candidate::Candidate::new(
+                "我",
+                "ㄨㄛˇ",
+                12,
+                jc_core::candidate::CandidateSource::Lexicon,
+            ),
+        ];
+        let snapshot = jc_core::Snapshot {
+            candidates,
+            ..jc_core::Snapshot::from_preedit("きょう")
+        };
+        let text = serde_json::to_string(&Response::state(snapshot)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let details = value["details"].as_array().expect("details");
+        assert_eq!(details[0]["pos"], "名詞,普通名詞,一般,*");
+        assert!(
+            details[1].get("pos").is_none(),
+            "注音候選沒有詞性，不得輸出 pos"
+        );
     }
 
     #[test]
