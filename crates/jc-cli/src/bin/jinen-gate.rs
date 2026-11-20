@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use jc_core::ja::decode::{JaContext, JaDecoder, JaResult};
+use jc_core::ja::decode::{segment_candidate_counts, JaContext, JaDecoder, JaResult};
 use jc_model::candle::jinen::{self, Jinen};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -405,7 +405,11 @@ fn stats_side(decoder: &JaDecoder, reading: &str, ctx: &JaContext) -> (String, S
         units.len() as f64 / nodes as f64
     };
 
-    let mut group_counts: Vec<usize> = Vec::new();
+    // 候選數與歧義度與 Session 共用 `segment_candidate_counts`：以 top-1
+    // 路徑上的每個詞段為一個詞群，查同讀音詞條數並去重詞面。
+    let group_counts: Vec<usize> = first
+        .map(|result| segment_candidate_counts(result, decoder.source().as_ref()))
+        .unwrap_or_default();
     // top-1 路徑上的未知詞：同讀音查不到任何詞條。最長連續未知詞長度用
     // 字元數計算，跨越相鄰的未知詞段累加。
     let mut max_unknown_run = 0usize;
@@ -415,19 +419,13 @@ fn stats_side(decoder: &JaDecoder, reading: &str, ctx: &JaContext) -> (String, S
         for clause in &result.clauses {
             for segment in &clause.segments {
                 let seg: Vec<char> = segment.reading.chars().collect();
-                let entries = decoder.source().exact(&seg);
                 top1_words += 1;
-                if entries.is_empty() {
+                if decoder.source().exact(&seg).is_empty() {
                     current_unknown_run += seg.len();
                     max_unknown_run = max_unknown_run.max(current_unknown_run);
                 } else {
                     current_unknown_run = 0;
                 }
-                let mut surfaces: Vec<&str> =
-                    entries.iter().map(|entry| entry.surface.as_ref()).collect();
-                surfaces.sort_unstable();
-                surfaces.dedup();
-                group_counts.push(surfaces.len().max(1));
             }
         }
     }

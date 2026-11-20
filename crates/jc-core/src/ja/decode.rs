@@ -217,6 +217,41 @@ impl JaResult {
     }
 }
 
+/// top-1 路徑上每個詞段的候選詞面數。
+///
+/// 詞段是 [`JaClause::segments`] 的一項；候選詞面是同讀音在詞典中所有詞條
+/// 的詞面去重後的數量。查不到詞條的未知詞段記 1。回傳順序與詞段順序一致。
+///
+/// 這是 gating 實驗的 `mean_candidates` 與 `ambiguous_ratio` 的共同來源：
+/// eval 與 Session 都呼叫這一份，不各自重寫。
+pub fn segment_candidate_counts(result: &JaResult, source: &dyn JaWordSource) -> Vec<usize> {
+    let mut counts = Vec::new();
+    for clause in &result.clauses {
+        for segment in &clause.segments {
+            let reading: Vec<char> = segment.reading.chars().collect();
+            let entries = source.exact(&reading);
+            let mut surfaces: Vec<&str> =
+                entries.iter().map(|entry| entry.surface.as_ref()).collect();
+            surfaces.sort_unstable();
+            surfaces.dedup();
+            counts.push(surfaces.len().max(1));
+        }
+    }
+    counts
+}
+
+/// top-1 路徑上每個詞段（同讀音去重後）的平均候選詞面數。
+///
+/// 沒有詞段時回傳 1.0。這個值在統計轉換完成時就算好，門檻判斷只讀結果，
+/// 不會在等候模型的路徑上重新解碼。
+pub fn mean_candidates(result: &JaResult, source: &dyn JaWordSource) -> f32 {
+    let counts = segment_candidate_counts(result, source);
+    if counts.is_empty() {
+        return 1.0;
+    }
+    counts.iter().sum::<usize>() as f32 / counts.len() as f32
+}
+
 /// 日文候選的來源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JaCandidateSource {
@@ -1025,10 +1060,53 @@ impl JaDecoder {
             return Vec::new();
         }
         let (hyps, finals, lat) = self.search(reading, ctx, n);
+        self.results_from(&hyps, &finals, &lat, reading, ctx)
+    }
+
+    /// 回傳前 `n` 條結果，並附上 gating 的 `gap`。
+    ///
+    /// `gap` 的語意與 `results(..., 2)` 相同：只看最前面兩條**原始路徑**，
+    /// 詞面相同就視為沒有備案（`None`）。這裡用同一次搜尋產生候選與門檻，
+    /// 呼叫端不必為了 top-2 再解一次。
+    pub fn results_with_gap(
+        &self,
+        reading: &[char],
+        ctx: &JaContext,
+        n: usize,
+    ) -> (Vec<JaResult>, Option<i32>) {
+        if n == 0 || reading.is_empty() {
+            return (Vec::new(), None);
+        }
+        let (hyps, finals, lat) = self.search(reading, ctx, n.max(2));
+        let gap = match (finals.first(), finals.get(1)) {
+            (Some(first), Some(second)) => {
+                let first_surface = self.result(&hyps, first, &lat).surface();
+                let second_surface = self.result(&hyps, second, &lat).surface();
+                if first_surface == second_surface {
+                    None
+                } else {
+                    Some(((second.cost - first.cost) * COST_SCALE).round() as i32)
+                }
+            }
+            _ => None,
+        };
+        let mut results = self.results_from(&hyps, &finals, &lat, reading, ctx);
+        results.truncate(n);
+        (results, gap)
+    }
+
+    fn results_from(
+        &self,
+        hyps: &[Hypothesis],
+        finals: &[SearchResult],
+        lat: &Lattice,
+        reading: &[char],
+        ctx: &JaContext,
+    ) -> Vec<JaResult> {
         let mut out: Vec<JaResult> = Vec::with_capacity(finals.len());
         let mut seen: HashSet<String> = HashSet::new();
-        for sr in &finals {
-            let mut result = self.result(&hyps, sr, &lat);
+        for sr in finals {
+            let mut result = self.result(hyps, sr, lat);
             let surface = result.surface();
             if !seen.insert(surface) {
                 continue;
@@ -2040,6 +2118,56 @@ mod tests {
 
     fn test_decoder() -> JaDecoder {
         JaDecoder::new(test_source())
+    }
+
+    /// 平均候選數與 eval 共用同一份統計；同讀音詞面去重後才計數。
+    #[test]
+    fn test_mean_candidates_counts_deduped_surfaces() {
+        let decoder = test_decoder();
+        let ctx = JaContext::default();
+        let results = decoder.results(&units("きょう"), &ctx, 2);
+        let first = results.first().expect("要有結果");
+        assert_eq!(
+            segment_candidate_counts(first, decoder.source().as_ref()),
+            vec![3]
+        );
+        assert_eq!(mean_candidates(first, decoder.source().as_ref()), 3.0);
+    }
+
+    /// `results_with_gap` 的候選與 `results` 完全相同，關閉神經時才不會變。
+    #[test]
+    fn test_results_with_gap_candidates_match_results() {
+        let decoder = test_decoder();
+        let ctx = JaContext::default();
+        for reading in ["きょう", "はし", "あした", "を"] {
+            let (with_gap, _) = decoder.results_with_gap(&units(reading), &ctx, 5);
+            let plain = decoder.results(&units(reading), &ctx, 5);
+            assert_eq!(with_gap, plain, "{reading}");
+        }
+    }
+
+    /// `results_with_gap` 一次給候選與 gating 的 top-2 成本差。
+    #[test]
+    fn test_results_with_gap_matches_top_two_paths() {
+        let decoder = test_decoder();
+        let ctx = JaContext::default();
+        let (results, gap) = decoder.results_with_gap(&units("きょう"), &ctx, 5);
+        assert_eq!(gap, Some(1_000), "今日 1000、京 2000");
+        assert_eq!(results.len(), 3, "きょう 有三個不同詞面");
+        assert_eq!(results[0].surface(), "今日");
+        let (_, no_backup) = decoder.results_with_gap(&units("を"), &ctx, 5);
+        assert_eq!(no_backup, None, "只有一條路徑時視為沒有備案");
+    }
+
+    /// 沒有詞段時平均值是 1，不是 0；門檻才不會把空結果當成「很多候選」。
+    #[test]
+    fn test_mean_candidates_without_segments_is_one() {
+        let empty = JaResult {
+            clauses: Vec::new(),
+            cost: 0.0,
+            score: 0.0,
+        };
+        assert_eq!(mean_candidates(&empty, test_source().as_ref()), 1.0);
     }
 
     const ANTHY_SAMPLE: &str = "\

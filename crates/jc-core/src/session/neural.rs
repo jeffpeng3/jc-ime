@@ -22,8 +22,14 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-/// 預設的成本差門檻；由 `jinen-gating-v2` 的 small 掃描結果決定。
-pub const DEFAULT_GAP_THRESHOLD: i32 = 460;
+/// 預設的成本差門檻；低呼叫版，由 `gating-lowcall` 的 dev 掃描結果決定。
+pub const DEFAULT_GAP_THRESHOLD: f32 = 472.5;
+
+/// 品質優先版的成本差門檻；沿用 `jinen-gating-v2` 的 small 掃描結果。
+pub const QUALITY_GAP_THRESHOLD: f32 = 460.0;
+
+/// 預設的平均候選數下限；只有 `mean_candidates` 大於這個值才呼叫模型。
+pub const DEFAULT_MIN_MEAN_CANDIDATES: f32 = 5.98;
 
 /// 預設的推論預算，對齊 Mozkey 的互動上限。
 pub const DEFAULT_TIMEOUT_MS: u64 = 180;
@@ -83,12 +89,19 @@ impl Default for ContextChars {
 ///
 /// `runtime` 為 `None` 代表模型沒有載入：行為與關閉完全相同，不報錯、
 /// 不增加延遲。`enabled` 是 `--neural off` 的開關，關閉時連門檻都不算。
+///
+/// 預設是低呼叫版：`gap < 472.5` 且 `mean_candidates > 5.98` 才呼叫模型。
+/// 品質優先版用 [`NeuralConfig::quality`]。
 #[derive(Clone)]
 pub struct NeuralConfig {
     /// 是否啟用神經轉換；預設開啟。
     pub enabled: bool,
     /// `top1`／`top2` 的成本差門檻；小於這個值才呼叫模型。
-    pub gap_threshold: i32,
+    pub gap_threshold: f32,
+    /// top-1 路徑平均候選數下限；大於這個值才呼叫模型。
+    ///
+    /// 設成 `0.0` 等於不檢查，品質優先版就是這樣。
+    pub min_mean_candidates: f32,
     /// 使用的模型。
     pub model: NeuralModel,
     /// 推論預算；超過就沿用統計結果。
@@ -104,10 +117,33 @@ impl Default for NeuralConfig {
         Self {
             enabled: true,
             gap_threshold: DEFAULT_GAP_THRESHOLD,
+            min_mean_candidates: DEFAULT_MIN_MEAN_CANDIDATES,
             model: NeuralModel::Small,
             timeout_ms: DEFAULT_TIMEOUT_MS,
             max_context_chars: ContextChars::default(),
             runtime: None,
+        }
+    }
+}
+
+impl NeuralConfig {
+    /// 品質優先版：只檢查 `gap < 460`，不看平均候選數。
+    ///
+    /// 用於 `--neural quality`；重現 `jinen-gating-v2` 的
+    /// 93.6／80.0／71.5，代價是呼叫率與尾端延遲較高。
+    pub fn quality() -> Self {
+        Self {
+            gap_threshold: QUALITY_GAP_THRESHOLD,
+            min_mean_candidates: 0.0,
+            ..Self::default()
+        }
+    }
+
+    /// 關閉版：不呼叫模型，也不做門檻判斷。
+    pub fn off() -> Self {
+        Self {
+            enabled: false,
+            ..Self::default()
         }
     }
 }
@@ -117,6 +153,7 @@ impl fmt::Debug for NeuralConfig {
         f.debug_struct("NeuralConfig")
             .field("enabled", &self.enabled)
             .field("gap_threshold", &self.gap_threshold)
+            .field("min_mean_candidates", &self.min_mean_candidates)
             .field("model", &self.model)
             .field("timeout_ms", &self.timeout_ms)
             .field("max_context_chars", &self.max_context_chars)
@@ -223,6 +260,10 @@ pub struct NeuralInput<'a> {
     pub statistical_cost: i32,
     /// 統計第二名的原始成本；`None` 代表沒有備案，一定觸發。
     pub runner_up_cost: Option<i32>,
+    /// top-1 路徑上每個詞段（同讀音去重後）的平均候選詞面數。
+    ///
+    /// 必須在統計轉換完成時算好，不能在等候模型的路徑上才算。
+    pub mean_candidates: f32,
 }
 
 /// 一次轉換的決定。
@@ -540,10 +581,15 @@ pub fn maybe_convert(config: &NeuralConfig, input: &NeuralInput<'_>) -> NeuralDe
         return NeuralDecision::Unavailable;
     };
     if let Some(runner_up) = input.runner_up_cost {
-        if runner_up.saturating_sub(input.statistical_cost) >= config.gap_threshold {
+        let gap = runner_up.saturating_sub(input.statistical_cost);
+        if gap as f32 >= config.gap_threshold {
             runtime.record(&NeuralDecision::Skipped);
             return NeuralDecision::Skipped;
         }
+    }
+    if input.mean_candidates <= config.min_mean_candidates {
+        runtime.record(&NeuralDecision::Skipped);
+        return NeuralDecision::Skipped;
     }
     if input.reading.is_empty() {
         runtime.record(&NeuralDecision::Skipped);
@@ -608,6 +654,7 @@ mod tests {
             statistical,
             statistical_cost: 1_000,
             runner_up_cost: Some(1_200),
+            mean_candidates: 8.0,
         }
     }
 
@@ -747,6 +794,18 @@ mod tests {
         (Arc::new(runtime), calls)
     }
 
+    /// 預設是低呼叫版：gap 472.5 與平均候選數 5.98。
+    #[test]
+    fn test_default_thresholds_are_low_call() {
+        let config = NeuralConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.gap_threshold, 472.5);
+        assert_eq!(config.min_mean_candidates, 5.98);
+        let quality = NeuralConfig::quality();
+        assert_eq!(quality.gap_threshold, 460.0);
+        assert_eq!(quality.min_mean_candidates, 0.0);
+    }
+
     /// 門檻以上不呼叫模型。
     #[test]
     fn test_gap_threshold_skips_engine() {
@@ -757,7 +816,7 @@ mod tests {
         };
         let mut input = input("きょう", "", "今日");
         input.statistical_cost = 1_000;
-        input.runner_up_cost = Some(1_460);
+        input.runner_up_cost = Some(1_473);
         assert_eq!(maybe_convert(&config, &input), NeuralDecision::Skipped);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(config.runtime.unwrap().stats().skipped, 1);
@@ -773,7 +832,7 @@ mod tests {
         };
         let mut input = input("きょう", "", "今日");
         input.statistical_cost = 1_000;
-        input.runner_up_cost = Some(1_459);
+        input.runner_up_cost = Some(1_472);
         let decision = maybe_convert(&config, &input);
         assert_eq!(
             decision,
@@ -781,6 +840,51 @@ mod tests {
                 surface: "京".to_string()
             }
         );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// 平均候選數沒有超過下限時不呼叫模型。
+    #[test]
+    fn test_mean_candidates_threshold_skips_engine() {
+        let (runtime, calls) = runtime("京");
+        let config = NeuralConfig {
+            runtime: Some(runtime),
+            ..NeuralConfig::default()
+        };
+        let mut input = input("きょう", "", "今日");
+        input.mean_candidates = 5.98;
+        assert_eq!(maybe_convert(&config, &input), NeuralDecision::Skipped);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        input.mean_candidates = 5.99;
+        assert_eq!(
+            maybe_convert(&config, &input),
+            NeuralDecision::Accepted {
+                surface: "京".to_string()
+            }
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// 品質優先版只看 gap，不看平均候選數。
+    #[test]
+    fn test_quality_mode_ignores_mean_candidates() {
+        let (runtime, calls) = runtime("京");
+        let config = NeuralConfig {
+            runtime: Some(runtime),
+            ..NeuralConfig::quality()
+        };
+        let mut input = input("きょう", "", "今日");
+        input.mean_candidates = 1.0;
+        input.runner_up_cost = Some(1_459);
+        assert_eq!(
+            maybe_convert(&config, &input),
+            NeuralDecision::Accepted {
+                surface: "京".to_string()
+            }
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        input.runner_up_cost = Some(1_460);
+        assert_eq!(maybe_convert(&config, &input), NeuralDecision::Skipped);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 

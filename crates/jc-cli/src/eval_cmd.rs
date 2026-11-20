@@ -254,8 +254,8 @@ pub struct JaOptions {
     pub backend: jc_model::Backend,
     /// 左文來源。
     pub left: LeftMode,
-    /// 是否啟用 Jinen 神經轉換；預設開啟，模型缺席時自動回退。
-    pub neural: bool,
+    /// 是否啟用 Jinen 神經轉換：`auto`（預設）、`quality` 或 `off`。
+    pub neural: crate::cli::NeuralMode,
     /// 輸出聚合報告 JSON。
     pub json: bool,
     /// 輸出含逐題結果的 JSON。
@@ -284,20 +284,27 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
     let (rules, selected) = select_ja_corpora(&dir, &corpus)?;
     let root = data::data_root(&dir);
     let decoder = data::load_ja_decoder_with_pack(&root, pack.as_deref())?;
-    let mut neural_config = jc_core::session::NeuralConfig::default();
-    if neural {
+    let mut neural_config = match neural {
+        crate::cli::NeuralMode::Auto => jc_core::session::NeuralConfig::default(),
+        crate::cli::NeuralMode::Quality => jc_core::session::NeuralConfig::quality(),
+        crate::cli::NeuralMode::Off => {
+            // 完全回到舊路徑：不載入模型，也不做門檻判斷。
+            jc_core::session::NeuralConfig::off()
+        }
+    };
+    if neural != crate::cli::NeuralMode::Off {
         match data::load_ja_neural(&root) {
             Ok(runtime) => {
                 neural_config.runtime = Some(runtime);
             }
             Err(err) => {
-                eprintln!("警告：--neural on 無法載入 Jinen，沿用統計轉換：{err}");
+                eprintln!(
+                    "警告：--neural {} 無法載入 Jinen，沿用統計轉換：{err}",
+                    neural.as_str()
+                );
                 neural_config.enabled = false;
             }
         }
-    } else {
-        // 完全回到舊路徑：不載入模型，也不做門檻判斷。
-        neural_config.enabled = false;
     }
     let reranker = if rerank {
         // 後端是行程層級設定，必須在載入模型前指定。
@@ -366,7 +373,7 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
             write!(out, "{line}")?;
         }
     }
-    if let Some(stats) = neural_stats.filter(|_| neural) {
+    if let Some(stats) = neural_stats.filter(|_| neural != crate::cli::NeuralMode::Off) {
         if json {
             eprintln!("{}", stats.summary());
         } else {

@@ -29,8 +29,8 @@ pub use input_style::{
 pub use neural::{
     ContextChars, NeuralConfig, NeuralDecision, NeuralEngine, NeuralError, NeuralInput,
     NeuralModel, NeuralRequest, NeuralRuntime, NeuralStatsSnapshot, RejectReason, Validation,
-    DEFAULT_GAP_THRESHOLD, DEFAULT_LEFT_CONTEXT_CHARS, DEFAULT_RIGHT_CONTEXT_CHARS,
-    DEFAULT_TIMEOUT_MS,
+    DEFAULT_GAP_THRESHOLD, DEFAULT_LEFT_CONTEXT_CHARS, DEFAULT_MIN_MEAN_CANDIDATES,
+    DEFAULT_RIGHT_CONTEXT_CHARS, DEFAULT_TIMEOUT_MS, QUALITY_GAP_THRESHOLD,
 };
 pub use segments::tone_mark_keys;
 
@@ -107,7 +107,8 @@ pub struct SessionConfig {
     /// 日文神經轉換（Jinen）設定；預設開啟，但沒有注入模型時完全不呼叫。
     ///
     /// 統計結果永遠先算好；只有成本差小於
-    /// [`NeuralConfig::gap_threshold`] 時才問模型，通過五條驗證才替換。
+    /// [`NeuralConfig::gap_threshold`] 且平均候選數大於
+    /// [`NeuralConfig::min_mean_candidates`] 時才問模型，通過五條驗證才替換。
     /// `--neural off` 把 [`NeuralConfig::enabled`] 設成 `false`，回到舊路徑。
     pub ja_neural: NeuralConfig,
     /// 日文逐字変換設定；預設關閉，關閉時日文走一般変換流程。
@@ -1667,6 +1668,12 @@ mod tests {
             ja_entry("今日", "きょう", 1_000),
             ja_entry("京", "きょう", second_cost),
             ja_entry("きょう", "きょう", 3_000),
+            // 同讀音候選湊到 8 個詞面，讓預設 `mean_candidates > 5.98` 成立。
+            ja_entry("凶", "きょう", 3_100),
+            ja_entry("況", "きょう", 3_200),
+            ja_entry("教", "きょう", 3_300),
+            ja_entry("郷", "きょう", 3_400),
+            ja_entry("協", "きょう", 3_500),
         ]);
         let mut config = SessionConfig::new(Mode::Ja);
         config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
@@ -1709,6 +1716,20 @@ mod tests {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let runtime = stub_runtime("京", std::time::Duration::ZERO, &calls);
         let (mut s, _) = ja_neural_session(2_000, Some(runtime), 180);
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.snapshot().preedit, "今日");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "今日");
+    }
+
+    /// 平均候選數沒有超過下限時不呼叫模型；就算 gap 很小也一樣。
+    #[test]
+    fn test_ja_neural_skips_when_mean_candidates_below_min() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let runtime = stub_runtime("京", std::time::Duration::ZERO, &calls);
+        let (mut s, _) = ja_neural_session(1_400, Some(runtime), 180);
+        s.config.ja_neural.min_mean_candidates = 9.0;
         type_ja(&mut s, "kyou");
         assert_eq!(s.snapshot().preedit, "今日");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);

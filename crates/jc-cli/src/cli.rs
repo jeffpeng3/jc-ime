@@ -19,6 +19,29 @@ pub enum LeftMode {
     Rolling,
 }
 
+/// `--neural` 的三種模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NeuralMode {
+    /// 低呼叫版：`gap < 472.5` 且 `mean_candidates > 5.98`。
+    #[default]
+    Auto,
+    /// 品質優先版：只看 `gap < 460`。
+    Quality,
+    /// 完全關閉，回到統計路徑。
+    Off,
+}
+
+impl NeuralMode {
+    /// 命令列字串；與 `--neural` 的取值一致。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Quality => "quality",
+            Self::Off => "off",
+        }
+    }
+}
+
 /// 命令列錯誤。
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
@@ -86,8 +109,8 @@ pub enum Command {
         backend: jc_model::Backend,
         /// 左文來源：`off` 不給左文，`rolling` 用前一題的輸出當左文。
         left: LeftMode,
-        /// 是否啟用 Jinen 神經轉換；`--neural off` 完全回到統計路徑。
-        neural: bool,
+        /// 是否啟用 Jinen 神經轉換：`auto`（預設）、`quality` 或 `off`。
+        neural: NeuralMode,
         /// 輸出 JSON。
         json: bool,
         /// 輸出含逐題結果的 JSON。
@@ -282,7 +305,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
             }
             "--neural" => {
                 index += 1;
-                neural = Some(switch(value(rest, index, "--neural")?, "--neural")?);
+                neural = Some(parse_neural(value(rest, index, "--neural")?)?);
             }
             "--json" => json = true,
             "--items" => items = true,
@@ -315,7 +338,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 gate: gate.unwrap_or(DEFAULT_WORD_RERANK_GATE),
                 backend: backend.unwrap_or(jc_model::Backend::Ort),
                 left,
-                neural: neural.unwrap_or(true),
+                neural: neural.unwrap_or(NeuralMode::Auto),
                 json,
                 items,
             })
@@ -370,7 +393,7 @@ fn reject_ja_flags(
     rerank: Option<bool>,
     gate: Option<WordGate>,
     left: LeftMode,
-    neural: Option<bool>,
+    neural: Option<NeuralMode>,
     command: &str,
 ) -> Result<(), CliError> {
     if rerank.is_some() {
@@ -548,6 +571,18 @@ fn switch(value: &str, flag: &str) -> Result<bool, CliError> {
         "off" => Ok(false),
         other => Err(CliError::Usage(format!(
             "{flag} 只接受 on 或 off，收到 {other:?}"
+        ))),
+    }
+}
+
+/// 解析 `--neural` 的 `auto`／`quality`／`off`。
+fn parse_neural(value: &str) -> Result<NeuralMode, CliError> {
+    match value {
+        "auto" => Ok(NeuralMode::Auto),
+        "quality" => Ok(NeuralMode::Quality),
+        "off" => Ok(NeuralMode::Off),
+        other => Err(CliError::Usage(format!(
+            "--neural 只接受 auto、quality 或 off，收到 {other:?}"
         ))),
     }
 }
@@ -853,7 +888,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
-                neural: true,
+                neural: NeuralMode::Auto,
                 json: false,
                 items: false,
             }
@@ -862,21 +897,22 @@ mod tests {
 
     #[test]
     fn parses_ja_neural_switch() {
-        assert_eq!(
-            parse(&args(&["eval", "ja", "--neural", "off"])).unwrap(),
-            Command::EvalJa {
-                testdata: None,
-                corpus: "modern-500".to_string(),
-                pack: None,
-                rerank: false,
-                gate: DEFAULT_WORD_RERANK_GATE,
-                backend: jc_model::Backend::Ort,
-                left: LeftMode::Off,
-                neural: false,
-                json: false,
-                items: false,
-            }
-        );
+        for (value, want) in [
+            ("auto", NeuralMode::Auto),
+            ("quality", NeuralMode::Quality),
+            ("off", NeuralMode::Off),
+        ] {
+            let Command::EvalJa { neural, .. } =
+                parse(&args(&["eval", "ja", "--neural", value])).unwrap()
+            else {
+                panic!("要解析成 eval ja");
+            };
+            assert_eq!(neural, want, "--neural {value}");
+        }
+        let Command::EvalJa { neural, .. } = parse(&args(&["eval", "ja"])).unwrap() else {
+            panic!("要解析成 eval ja");
+        };
+        assert_eq!(neural, NeuralMode::Auto, "預設是低呼叫版");
         assert!(parse(&args(&["eval", "ja", "--neural", "maybe"])).is_err());
         assert!(parse(&args(&["eval", "fuzzy", "--neural", "off"])).is_err());
     }
@@ -901,7 +937,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
-                neural: true,
+                neural: NeuralMode::Auto,
                 json: false,
                 items: false,
             }
@@ -920,7 +956,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
-                neural: true,
+                neural: NeuralMode::Auto,
                 json: false,
                 items: false,
             }
@@ -949,7 +985,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 backend: jc_model::Backend::Candle,
                 left: LeftMode::Off,
-                neural: true,
+                neural: NeuralMode::Auto,
                 json: false,
                 items: false,
             }
@@ -970,7 +1006,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
-                neural: true,
+                neural: NeuralMode::Auto,
                 json: false,
                 items: true,
             }
@@ -991,7 +1027,7 @@ mod tests {
                 gate: WordGate::Gap(200),
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
-                neural: true,
+                neural: NeuralMode::Auto,
                 json: false,
                 items: false,
             }
@@ -1006,7 +1042,7 @@ mod tests {
                 gate: WordGate::Candidates(3),
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
-                neural: true,
+                neural: NeuralMode::Auto,
                 json: false,
                 items: false,
             }
@@ -1021,7 +1057,7 @@ mod tests {
                 gate: WordGate::Off,
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
-                neural: true,
+                neural: NeuralMode::Auto,
                 json: false,
                 items: false,
             }
