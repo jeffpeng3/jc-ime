@@ -353,6 +353,10 @@ jobs:
     needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    # 收尾清理需要刪快取的權限；job 層級覆蓋 workflow 的 contents: read。
+    permissions:
+      contents: read
+      actions: write
     env:
       RELEASE_VERSION: ${{ needs.verify.outputs.version }}
     steps:
@@ -415,6 +419,17 @@ jobs:
           path: |
             target/release-package/jc-ime-${{ needs.verify.outputs.version }}-linux-x86_64.tar.gz
             target/release-package/jc-ime-${{ needs.verify.outputs.version }}-linux-x86_64.tar.gz.sha256
+
+      # 收尾清理舊快取：只在 main 跑。標籤觸發時 ref 是 refs/tags/*，不會執行，
+      # tag 範圍的漏網快取由每週排程的 cache-prune.yml 處理。
+      # 清理失敗不讓 release 變紅；並行 run 的快取由 skip-recent-hours 保護。
+      - name: 清理舊快取
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/cache-prune.sh --skip-recent-hours 6
 
   publish:
     name: publish（GitHub Release）
