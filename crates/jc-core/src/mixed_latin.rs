@@ -494,6 +494,13 @@ fn better(score: i32, pieces: u16, prev_lang: usize, best: Option<Cell>, opts: &
     prev_lang == prefer && best.prev_lang as usize != prefer
 }
 
+/// 整段按鍵是否剛好組成一個完整羅馬字單字。
+fn whole_romaji_word(keys: &[char]) -> bool {
+    let text: String = keys.iter().collect();
+    crate::mixed::kana_for(&text, &crate::mixed::Config::default(), None)
+        .is_some_and(|(_, pending)| pending.is_empty())
+}
+
 /// 計算位置 `j` 的最佳解；只讀 `j` 以前的格，因此可以逐鍵增量。
 fn compute_cell(
     cells: &mut [[Option<Cell>; LANGS]],
@@ -562,9 +569,17 @@ fn compute_cell(
         // 一聲：注音音節已經完整時，後面的空白屬於該音節，不是分隔符。
         // 連續空白只讓最後一個當一聲。
         let next_is_space = chars.get(j).is_some_and(|ch| ch.is_whitespace());
+        // 整段是單一合法羅馬字時，空白通常是分隔符：`desu ` 是 `です` 加
+        // 空白，不能拆成 `で` 加注音 `su `。若候選前的部分本身是注音
+        // （`lo ` 的 `l`＝ㄠ），仍讓空白當最後一音節的一聲。
+        let whole_romaji = whole_romaji_word(&chars[..j - 1]);
         if !next_is_space {
             let low = (j - 1).saturating_sub(MAX_SYLLABLE_CHARS);
             for start in low..j - 1 {
+                // 整段是單一羅馬字，而候選前的部分不是完整注音時，不要拆開。
+                if whole_romaji && start > 0 && zh_grammar().parse(&chars[..start]).is_none() {
+                    continue;
+                }
                 let Some((reading, false)) = zh_grammar().parse(&chars[start..j - 1]) else {
                     continue;
                 };
@@ -1307,5 +1322,13 @@ mod tests {
         assert_eq!(split.pieces[0].text("sa vul3"), "sa");
         assert_eq!(split.pieces[1].text("sa vul3"), "vul3");
         assert_eq!(split.pieces[1].start, 3);
+    }
+
+    #[test]
+    fn test_first_tone_does_not_follow_kana_piece() {
+        let split = split("desu ", &opts(), &NoLexicon).expect("切分");
+        assert_eq!(split.pieces.len(), 1);
+        assert_eq!(split.pieces[0].lang, SplitLang::Ja);
+        assert_eq!(split.pieces[0].reading, "です");
     }
 }

@@ -4329,4 +4329,16 @@ mod tests {
         let r = Router::new().with_zh(&lex, &ctx).with_english(&e);
         assert_eq!(r.convert("ji3hellp").expect("轉換").surface, "我hellp");
     }
+
+    #[test]
+    fn test_first_tone_does_not_break_japanese_word() {
+        let r = Router::new();
+        // `desu ` 是整段羅馬字加分隔符，不是 `で` 加注音 `su `。
+        let segs = r.segments("desu ");
+        assert_eq!(segs.len(), 2);
+        assert_eq!((segs[0].start, segs[0].end), (0, 4));
+        assert_eq!(segs[0].mode, Mode::Ja);
+        assert_eq!(segs[1].script, Script::Symbol);
+        assert_eq!(&"desu "[segs[1].start..segs[1].end], " ");
+    }
 }

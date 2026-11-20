@@ -15,7 +15,7 @@ Go 參考實作沒有對應的切分器；這個 task 只重組既有 Rust 程�
 | 規則 | 內容 | 實作位置 |
 |---|---|---|
 | R1 切段 | 注音、日文假名／漢字、英數 run、符號、空白；大寫與全角不進 DP | `build_atoms`、`is_latin_split_input` |
-| R2 空白是一聲 | run 加空白後，DP 的**最後一個片段**是注音、空白被它吃掉，且該音節原本沒有聲調鍵；前面的片段可以是英文或日文 | `space_is_first_tone`、`push_token_run`、`AsciiInput::space` |
+| R2 空白是一聲 | run 加空白後，DP 的**最後一個片段**是注音、空白被它吃掉，且該音節原本沒有聲調鍵；前面的片段可以是英文或注音 | `space_is_first_tone`、`push_token_run`、`AsciiInput::space` |
 | R3 標點當韻母 | `. , ; / -` 在 run 開頭，或前面不是缺韻母的合法音節時，是符號 atom | `compute_cell` 的開頭標點限制、`split_at_symbol_punct`、`punct_is_final` |
 | R4 語言連貫 | `Options::initial_lang` 接住前一個 run 的語言，切換成本照算 | `Dp::new`、`build_atoms` 的 `last_lang` |
 | R5 後處理 | `group_words` 是唯一的片語合併；英文詞判定只用 `is_english_word` | `plan_input`、`LexiconAdapter::english` |
@@ -32,6 +32,10 @@ Go 參考實作沒有對應的切分器；這個 task 只重組既有 Rust 程�
 | `dk4 xi` | A：兩段都注音；B：`xi` 兩邊合法時逐 run 跳到日文 | 兩段都注音（R4） |
 | `m ` | A：ㄩ；B：分隔 | `ㄩ` 的一聲（淤） |
 
+R2 的例外：整段按鍵剛好是一個完整羅馬字時（`desu `），空白是分隔符，不能
+拆成 `で` 加注音 `su `；若候選前的部分本身是注音（`lo ` 的 `l`＝ㄠ），空白仍
+是最後一音節的一聲。
+
 任務書的 `m ` → `媽` 與 `lo y` → `ㄠ ㄗ` 兩個範例和專案的按鍵表衝突：大千
 鍵盤 `m` 是 ㄩ、`a8` 才是 ㄇㄚ；`l` 是 ㄠ、`o` 是 ㄟ，所以 `lo` 是兩個音節。
 統一行為以按鍵表為準，測試固定記錄實際輸出（見
@@ -47,6 +51,7 @@ Go 參考實作沒有對應的切分器；這個 task 只重組既有 Rust 程�
 | `test_r2_space_is_first_tone_only_when_run_parses` | R2 的 per-piece 條件（`helloji ` 也可吃空白） |
 | `test_initial_lang_carries_previous_run_language` | `Options::initial_lang` |
 | `test_punct_at_run_start_is_not_a_final` | run 開頭標點不產生注音 |
+| `test_first_tone_does_not_break_japanese_word` | `desu ` 不被拆成 `で`＋`尼` |
 | `test_incremental_matches_router` | 532 筆按鍵流，session 增量與路由逐位元組一致 |
 
 ## 既有期望值變更
