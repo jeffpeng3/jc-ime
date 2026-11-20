@@ -28,12 +28,18 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼，也沒有 Wind
 
 | 名稱 | 值 | 用途 |
 |---|---|---|
-| `CLSID_JC_TSF` | `{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}` | 文字服務物件的 CLSID |
+| `CLSID_JC_TSF` | `{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}` | 文字服務物件的 CLSID；x64 與 x86 共用 |
 | `GUID_PROFILE_JC_TSF` | `{8F0A9B3C-2D4E-4F50-A1B2-C3D4E5F60718}` | TSF profile GUID（只存在 profile 資料庫） |
 | LANGID | `0x0404`（zh-TW） | 第一版只有繁體中文注音 |
 | 顯示名稱 | `jc 注音` | 語言列與設定頁看到的名稱 |
 
 兩份常數都定義在 `crates/jc-tsf/src/guids.rs`。發佈後不可改。
+
+這個 crate 建兩份（`x86_64-pc-windows-msvc` 與 `i686-pc-windows-msvc`），兩份拿到
+**完全相同**的 CLSID 與 profile：同一個 CLSID 在 64 位元與 `Wow6432Node` 兩個機碼
+檢視各有一個 `InprocServer32`，TSF 依宿主行程位元數挑對的 DLL。使用者的語言清單
+因此只有一項「jc 注音」。差異只有 `register.rs` 的 `REGISTRY_VIEW`
+（`KEY_WOW64_64KEY`／`KEY_WOW64_32KEY`）。詳見 `docs/port/x86-tip.md`。
 
 ## 註冊機碼
 
@@ -53,7 +59,10 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼，也沒有 Wind
 使用者的預設輸入法，要自己到系統設定裡加。
 
 `DllUnregisterServer` 反向做：`RemoveLanguageProfile`、`Unregister`、
-`UnregisterCategory`，最後 `RegDeleteTreeW` 刪掉整個 `CLSID\{...}`。
+`UnregisterCategory`，最後 `RegDeleteTreeW` 刪掉整個 `CLSID\{...}`。機碼檢視一律由
+`REGISTRY_VIEW`（依 `target_pointer_width` 選 `KEY_WOW64_64KEY` 或
+`KEY_WOW64_32KEY`）明確指定，不靠行程位元數的預設檢視；x86 DLL 因此寫到
+`Wow6432Node`。
 
 寫 `HKCR` 與 TSF profile 資料庫需要系統管理員權限，`regsvr32` 要以管理員身分
 執行。使用者若沒有安裝 zh-TW 語言，`AddLanguageProfile` 可能失敗；這是 TSF 的
@@ -63,7 +72,7 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼，也沒有 Wind
 
 | 符號 | 行為 |
 |---|---|
-| `DllGetClassObject` | 只認 `CLSID_JC_TSF`，其他回 `CLASS_E_CLASSNOTAVAILABLE`；不支援 aggregation |
+| `DllGetClassObject` | 只認 `CLSID_JC_TSF`，其他回 `CLASS_E_CLASSNOTAVAILABLE`；不支援 aggregation。x64 與 x86 兩份接受同一個 CLSID，由行程位元數決定載入哪一份 |
 | `DllCanUnloadNow` | 活著的文字服務物件為 0 時回 `S_OK`，否則 `S_FALSE` |
 | `DllRegisterServer` | 見上一節 |
 | `DllUnregisterServer` | 見上一節 |
@@ -201,6 +210,8 @@ OnKeyDown
 |---|---|
 | `cargo check --workspace --all-targets`（Linux） | 通過（`jc-tsf` 是空 crate） |
 | `cargo check --target x86_64-pc-windows-gnu -p jc-tsf --all-targets` | 通過（本機沒有安裝 msvc target，用 gnu target 驗證型別；不連結） |
+| `cargo check --target x86_64-pc-windows-msvc -p jc-tsf --all-targets` | 通過（x64 出貨 target） |
+| `cargo check --target i686-pc-windows-msvc -p jc-tsf --all-targets` | 通過（x86 出貨 target；Linux 只驗到型別） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 通過；`jc-model` 有一個既有的 `unused_mut`，不在本 task 的 owned paths |
 | `cargo clippy --target x86_64-pc-windows-gnu -p jc-tsf --all-targets` | `jc-tsf` 零警告 |
 
@@ -226,7 +237,8 @@ OnKeyDown
 11. 死鍵鍵盤配置（例如美式國際）下 `ToUnicodeEx` 的行為。
 12. 日誌檔在 `%LOCALAPPDATA%` 是否正確建立。
 13. 多個應用程式同時使用時的排隊行為（引擎一次只服務一條連線）。
-14. ARM64 或其他架構的建置（目前只驗證 x86_64）。
+14. ARM64 或其他架構的建置。目前有 x64 與 i686 兩個 target（i686 只在 Linux 上驗到
+    `cargo check`，沒有在 Windows 連結與載入過），ARM64 沒有建置。
 
 ## 已知限制
 

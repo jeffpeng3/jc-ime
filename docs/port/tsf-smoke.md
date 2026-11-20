@@ -63,7 +63,7 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼、沒有 Windows
 | n/a | `crates/jc-tsf-smoke/src/dll.rs`（`LoadLibraryW`、`DllGetClassObject`、`DllCanUnloadNow`、`jc_test_key`） | rewritten |
 | n/a | `crates/jc-tsf-smoke/src/product.rs`（CLSID、profile GUID、LANGID） | rewritten；值與 `jc-tsf/src/guids.rs` 相同（cdylib 無法 import，只能留一份） |
 | n/a | `crates/jc-tsf-smoke/src/engine.rs`（引擎 pipe 探測） | rewritten；連線與握手交給 `jc-windows` |
-| n/a | `crates/jc-tsf-smoke/src/registry.rs`（`HKLM\...\CTF\TIP` 只讀探測） | rewritten |
+| n/a | `crates/jc-tsf-smoke/src/registry.rs`（`CTF\TIP` 與 `InprocServer32`，64 位元與 32 位元兩個檢視） | rewritten |
 | n/a | `crates/jc-tsf-smoke/src/report.rs`（固定輸出格式） | rewritten；Linux 也會編譯 |
 | n/a（Go 沒有 Windows 外殼） | `crates/jc-tsf/src/lib.rs` 的 `jc_test_key` | rewritten；`debug_assertions` 或 feature `test-export` 才編譯 |
 
@@ -83,7 +83,7 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼、沒有 Windows
 | 4 | `CoCreateInstance(CLSID_TF_ThreadMgr, CLSCTX_INPROC_SERVER)` | `S_OK` | — |
 | 5 | `ITfThreadMgr::Activate()` 取得 client id，再 `ITfTextInputProcessor::Activate(tm, id)` | 兩者都 `S_OK`（不崩潰） | `ITfKeystrokeMgr::TestKeyDown('u')` 的 consumed |
 | 6 | `jc-windows` 的 `connect_with_retry` → `Hello` → `Key(Escape)` | 連得上且兩個往返都成功 | 連不上只印 `[SKIP]`，**不算失敗** |
-| 7 | 列舉 `HKLM\SOFTWARE\Microsoft\CTF\TIP` 的子機碼找本產品 CLSID | 永遠不判失敗 | 找到就 `[PASS]`，沒找到 `[SKIP]` |
+| 7 | 兩個機碼檢視（`/reg:64`、`/reg:32`）各讀 `CTF\TIP\{CLSID}` 與 `HKCR\CLSID\{CLSID}\InprocServer32` | 兩邊都有同一個 CLSID，而且分別指到 `jc-tsf.dll` 與 `jc-tsf-x86.dll` | 只看得到一邊或指到錯的 DLL → `[FAIL]`；兩邊都沒有 → `[SKIP]`（尚未安裝） |
 
 檢查 3 的物件身分是**硬檢查**：msctf 要求 `ITfKeyEventSink` 與
 `ITfTextInputProcessor` 是同一個 COM 物件，獨立 sink 物件會讓按鍵送不進來。
@@ -115,7 +115,7 @@ jc-tsf 免管理員冒煙測試（jc 注音）
 [INFO] ITfKeystrokeMgr::TestKeyDown('u') consumed=false（引擎未連線時應為 false）
 [SKIP] 6. 引擎 pipe：pipe jc-ime 連不上：讀寫失敗：…；引擎未啟動或未安裝，只警告不判定失敗
 [INFO] jc_test_key(VK_J = 0x4A) = 2（連不上引擎 pipe）；僅供參考，不影響結果
-[SKIP] 7. 註冊探測：HKLM\SOFTWARE\Microsoft\CTF\TIP 下有 12 個 TIP，沒有 {7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}（尚未安裝，不判定失敗）
+[SKIP] 7. 註冊探測：64 位元與 32 位元檢視都沒有 {7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}（尚未安裝，不判定失敗）
 [INFO] 釋放物件後 DllCanUnloadNow = 0x00000000（S_OK 代表沒有 refcount 洩漏）
 
 結果：5 項通過、0 項失敗、2 項略過
@@ -128,7 +128,16 @@ jc-tsf 免管理員冒煙測試（jc 注音）
 ```text
 [PASS] 6. 引擎 pipe：Hello → 協定 3、引擎 jc-engine 0.1.0；Key(Escape) → State（組字 ""、候選 0 個）
 [INFO] jc_test_key(VK_J = 0x4A) = 0（按鍵已送達引擎並取得回應）；僅供參考，不影響結果
-[PASS] 7. 註冊探測：HKLM\SOFTWARE\Microsoft\CTF\TIP 下有 {7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}（共 12 個 TIP）
+[PASS] 7. 註冊探測：兩個檢視都有 {7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}：64 位元 → C:\Program Files\jc-ime\jc-tsf.dll（12 個 TIP）、32 位元 → C:\Program Files\jc-ime\jc-tsf-x86.dll（12 個 TIP）
+```
+
+### 只有一半註冊
+
+x64 裝好、x86 沒裝（例如只跑過 `regsvr32 jc-tsf.dll`）時，這一項會失敗並指出缺
+哪一邊：
+
+```text
+[FAIL] 7. 註冊探測：32 位元檢視的 CTF\TIP\{7B7D6E1A-...} 不存在；32 位元檢視的 HKCR\CLSID\{7B7D6E1A-...}\InprocServer32 不存在。修復：以管理員執行 jc-tip-register machine-register "%ProgramFiles%\jc-ime\jc-tsf.dll" "%ProgramFiles%\jc-ime\jc-tsf-x86.dll"
 ```
 
 （實際的 `引擎` 字串由引擎的 `engine_label()` 決定；`State` 的內容依當下組字
@@ -207,7 +216,8 @@ target 做型別檢查；`cargo check` 不連結，兩者的 API 表面相同。
 5. `DllCanUnloadNow` 在釋放所有物件後是否回到 `S_OK`（refcount 洩漏）。
 6. 中文輸出在 `cmd.exe` 的顯示（Rust 對 console handle 使用 `WriteConsoleW`，
    理論上正確，未實測）。
-7. 32 位元 TIP 的註冊位置（`WOW6432Node`）：檢查 7 只讀 64 位元檢視。
+7. 32 位元 TIP 的註冊位置（`WOW6432Node`）：檢查 7 只驗到讀得到 `InprocServer32`
+   的預設值，沒有實際讓 32 位元程式載入那份 DLL。
 8. `jc_test_key` 在真實鍵盤配置（非美式、Dvorak、死鍵）下的鍵位對應。
 9. 引擎正在被真正的輸入法使用時，檢查 6 的行為（可能 `[SKIP]`）。
 

@@ -1,5 +1,14 @@
 //! `DllRegisterServer`／`DllUnregisterServer` 的實作。
 //!
+//! **兩個架構共用同一個 CLSID 與 profile**（`guids.rs`）。差別只有寫入哪一個
+//! 機碼檢視：這支 DLL 依 `target_pointer_width` 明確指定 `KEY_WOW64_64KEY`
+//! （x64）或 `KEY_WOW64_32KEY`（i686），不依賴「行程位元數決定預設檢視」的
+//! 隱含行為。同一個 CLSID 在兩個檢視各有一個 `InprocServer32`，指向該架構的
+//! DLL，TSF 依宿主行程挑一個。
+//!
+//! `HKLM\SOFTWARE\Microsoft\CTF`（profile 與分類）不是 WOW64 轉向機碼，兩個
+//! 架構讀寫的是同一份資料，所以 profile 只會有一組。
+//!
 //! 註冊五件事：
 //!
 //! 1. `HKCR\CLSID\{CLSID}\InprocServer32` 指到這個 DLL，`ThreadingModel`
@@ -22,7 +31,8 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyW, RegDeleteTreeW, RegSetValueExW, HKEY, HKEY_CLASSES_ROOT, REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW, RegSetValueExW, HKEY,
+    HKEY_CLASSES_ROOT, KEY_ALL_ACCESS, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS, REG_SZ,
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, ITfCategoryMgr,
@@ -33,6 +43,17 @@ use windows::Win32::UI::TextServices::{
 use crate::guids::{
     registry_key, CLSID_JC_TSF, GUID_PROFILE_JC_TSF, LANGID_ZH_TW, PROFILE_DESCRIPTION,
 };
+
+/// 這份 DLL 寫入的機碼檢視。
+///
+/// 明確指定，不靠「行程位元數決定預設檢視」：x64 DLL 寫 64 位元檢視，i686 DLL
+/// 寫 `Wow6432Node`。同一個 CLSID 在兩個檢視各指到自己。
+#[cfg(target_pointer_width = "64")]
+const REGISTRY_VIEW: REG_SAM_FLAGS = windows::Win32::System::Registry::KEY_WOW64_64KEY;
+
+/// 這份 DLL 寫入的機碼檢視；見上面 64 位元的說明。
+#[cfg(target_pointer_width = "32")]
+const REGISTRY_VIEW: REG_SAM_FLAGS = windows::Win32::System::Registry::KEY_WOW64_32KEY;
 
 /// 註冊文字服務。
 pub fn register() -> Result<()> {
@@ -114,9 +135,38 @@ pub fn unregister() -> Result<()> {
         }
     }
 
-    let path = crate::wide(&format!("CLSID\\{}", registry_key(&CLSID_JC_TSF)));
-    // SAFETY: path 以 NUL 結尾。
-    let status = unsafe { RegDeleteTreeW(HKEY_CLASSES_ROOT, PCWSTR(path.as_ptr())) };
+    // 只刪這份 DLL 自己那個檢視；另一個檢視由另一個架構的 DLL（或安裝器）負責。
+    delete_clsid_tree()
+}
+
+/// 刪掉這個檢視的 `HKCR\CLSID\{...}` 整棵樹。
+fn delete_clsid_tree() -> Result<()> {
+    let root_path = crate::wide("CLSID");
+    let mut root = HKEY::default();
+    // SAFETY: root_path 以 NUL 結尾；root 成功時由 RegOpenKeyExW 寫入。
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CLASSES_ROOT,
+            PCWSTR(root_path.as_ptr()),
+            None,
+            KEY_ALL_ACCESS | REGISTRY_VIEW,
+            &mut root,
+        )
+    };
+    if status == ERROR_FILE_NOT_FOUND {
+        return Ok(());
+    }
+    if status != ERROR_SUCCESS {
+        return Err(win32_error(status));
+    }
+
+    let path = crate::wide(&registry_key(&CLSID_JC_TSF));
+    // SAFETY: path 以 NUL 結尾；root 是上面開啟的 handle，檢視由它決定。
+    let status = unsafe { RegDeleteTreeW(root, PCWSTR(path.as_ptr())) };
+    // SAFETY: root 由成功的 RegOpenKeyExW 取得。
+    unsafe {
+        let _ = RegCloseKey(root);
+    }
     if status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND {
         Ok(())
     } else {
@@ -134,11 +184,25 @@ fn write_com_registration(dll: &str) -> Result<()> {
 }
 
 /// 寫一個 `REG_SZ` 值；`name` 為 `None` 時寫預設值。
+///
+/// 用 `RegCreateKeyExW` 才能指定 `REGISTRY_VIEW`；`RegCreateKeyW` 只有預設檢視。
 fn set_string(path: &str, name: Option<&str>, value: &str) -> Result<()> {
     let path_wide = crate::wide(path);
     let mut key = HKEY::default();
     // SAFETY: 兩個字串都以 NUL 結尾，key 由 RegCloseKey 釋放。
-    let status = unsafe { RegCreateKeyW(HKEY_CLASSES_ROOT, PCWSTR(path_wide.as_ptr()), &mut key) };
+    let status = unsafe {
+        RegCreateKeyExW(
+            HKEY_CLASSES_ROOT,
+            PCWSTR(path_wide.as_ptr()),
+            None,
+            PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_WRITE | REGISTRY_VIEW,
+            None,
+            &mut key,
+            None,
+        )
+    };
     if status != ERROR_SUCCESS {
         return Err(win32_error(status));
     }

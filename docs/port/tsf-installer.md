@@ -28,7 +28,7 @@ Go 參考實作沒有 MSI，Windows 安裝過程分散在 `0c-update` 與 NSIS �
 
 | 路徑 | 內容 |
 |---|---|
-| `installer/jc-ime.wxs` | MSI：目錄、32 個 `File`（6 程式＋1 資料 manifest＋5 資料檔＋20 授權文件）、`MajorUpgrade`、6 個自訂動作 |
+| `installer/jc-ime.wxs` | MSI：目錄、34 個 `File`（7 程式，含 x64 與 x86 兩份 TSF DLL、1 資料 manifest、5 資料檔、20 授權文件）、`MajorUpgrade`、6 個自訂動作 |
 | `installer/jc-tip-register/` | 輔助程式（獨立 crate，不進 workspace）：`machine-register`、`machine-unregister`、`user-install`、`user-uninstall`、`settings` |
 | `installer/build.ps1` | Windows 完整建置與選用簽章 |
 | `installer/check-payload.py` | WXS 引用與 manifest 的一致性檢查 |
@@ -40,7 +40,8 @@ Go 參考實作沒有 MSI，Windows 安裝過程分散在 `0c-update` 與 NSIS �
 | 主題 | 決定 | 理由 |
 |---|---|---|
 | 打包 | WiX v5 MSI，`Scope="perMachine"` | CTF 機碼在 HKLM；MSIX 不提升權限 |
-| 註冊 | `machine-register` 呼叫 DLL 自己的 `DllRegisterServer` | 註冊邏輯只有一份（`crates/jc-tsf/src/register.rs`），不在安裝器重抄 |
+| 註冊 | `machine-register` 優先呼叫 DLL 自己的 `DllRegisterServer`；跨架構（x64 安裝器 + x86 DLL）由安裝器直接寫機碼 | 註冊邏輯只有一份（`crates/jc-tsf/src/register.rs`），不在安裝器重抄；64 位元行程載入不了 32 位元 DLL，那條路徑不可避免 |
+| 雙架構 | 兩份 DLL 共用同一個 CLSID 與 profile，只註冊在不同機碼檢視 | 使用者的語言清單只有一項，32 位元程式不必手動切換；見 `docs/port/x86-tip.md` |
 | 權限拆分 | 註冊／移除 deferred＋`Impersonate="no"`；語言清單 immediate＋使用者身分 | `InstallLayoutOrTip` 寫呼叫者的 HKCU，SYSTEM 執行會加到 SYSTEM 的 hives |
 | 註冊失敗 | `Return="check"` | 不留半套 TIP；rollback 動作會反向清除 |
 | 移除失敗 | `Return="ignore"`＋內建退路 | DLL 被防毒隔離時仍能清掉 CTF 機碼，反安裝不會卡死 |
@@ -56,7 +57,8 @@ Go 參考實作沒有 MSI，Windows 安裝過程分散在 `0c-update` 與 NSIS �
 ```text
 RollbackUnregisterTip（rollback，SYSTEM）
 UnregisterTip（deferred，SYSTEM）        RemoveLanguageProfile / Unregister /
-                                          UnregisterCategory / RegDeleteTree HKCR
+                                          UnregisterCategory / 刪兩個檢視的
+                                          HKCR\CLSID（64 位元與 Wow6432Node）
 RemoveFiles                              刪程式、資料、Run 值
 InstallFinalize
 RemoveTipLayout（immediate，使用者）      InstallLayoutOrTip(ILOT_UNINSTALL)
@@ -64,7 +66,8 @@ RemoveTipLayout（immediate，使用者）      InstallLayoutOrTip(ILOT_UNINSTAL
 ```
 
 先移除 profile 再刪檔案；反過來會留下刪不掉的 `CTF\TIP` 機碼。`jc-tip-register.exe`
-本身到 `RemoveFiles` 才刪，因為 `UnregisterTip` 要用它。
+本身到 `RemoveFiles` 才刪，因為 `UnregisterTip` 要用它。兩個機碼檢視都要清，漏一個
+會讓 32 位元程式看到一個載入不了的輸入法。
 
 升級時 `RemoveTipLayout` 的條件排除 `UPGRADINGPRODUCTCODE`，使用者的語言清單項目
 不會在版本交替的空檔被移除。
@@ -74,8 +77,9 @@ RemoveTipLayout（immediate，使用者）      InstallLayoutOrTip(ILOT_UNINSTAL
 | 指令 | 結果 |
 |---|---|
 | `cargo check --target x86_64-pc-windows-gnu --all-targets`（`installer/jc-tip-register`） | 通過，0 錯誤 |
+| `cargo check --target x86_64-pc-windows-msvc --all-targets`（同上） | 通過，clippy 0 警告 |
 | `installer/validate-linux.sh` | WiX 5.0.2 編譯與符號解析通過；綁定階段如預期因 Linux 沒有 `msi.dll` 停止 |
-| `uv run --no-project installer/check-payload.py <payload>` | 通過：WXS 引用 12 個檔案，5 個 `shipped` 資料檔的大小與 SHA-256 全部符合 `docs/port/data-pack.md` 的真實 manifest |
+| `uv run --no-project installer/check-payload.py <payload>` | 通過：WXS 引用 34 個檔案，5 個 `shipped` 資料檔的大小與 SHA-256 全部符合 `docs/port/data-pack.md` 的真實 manifest |
 | `wix build`（完整 MSI） | **做不到**，見下 |
 
 ### Linux 做不到的部分
@@ -100,7 +104,9 @@ WiX v5 官方只支援 Windows，Linux 上的 `wix build` 有兩個限制：
 3. `InstallFinalize` 之後的 immediate 自訂動作在提權安裝下的實際身分（應為安裝者）。
 4. 升級與修復（`msiexec /fa`）後的機碼狀態。
 5. AppContainer ACL 是否讓 UWP 應用程式載入 TIP。
-6. 32 位元應用程式看不到 TIP（只建 x64 DLL，已知限制）。
+6. 32 位元應用程式（例如舊版 Office）與 64 位元應用程式共用同一個「jc 注音」項目，
+   而且都能輸入；`reg query ... /reg:32` 指到 `jc-tsf-x86.dll`、`/reg:64` 指到
+   `jc-tsf.dll`。
 7. 引擎 Run 項目在多使用者、多工作階段下的行為：每個工作階段各一個引擎，pipe 同名，
    client 連到哪個實例由 Windows 決定。
 8. `installer-payload` 補進來的授權文件：`%ProgramFiles%\jc-ime\legal\` 的實際

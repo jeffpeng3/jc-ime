@@ -13,16 +13,22 @@
 
   安裝順序（InstallExecuteSequence）：
     InstallFiles
-      → RegisterTip（deferred、SYSTEM）      呼叫 jc-tsf.dll 的 DllRegisterServer
+      → RegisterTip（deferred、SYSTEM）         一次註冊兩個架構：
+                                                  x64 DLL 自己註冊（64 位元檢視）
+                                                  x86 DLL 由安裝器寫 Wow6432Node
     InstallFinalize
-      → InstallTipLayout（immediate、使用者）  InstallLayoutOrTip(ILOT_INSTALL)
+      → InstallTipLayout（immediate、使用者）   InstallLayoutOrTip(ILOT_INSTALL)
 
   反安裝順序：
-    UnregisterTip（deferred、SYSTEM）           DllUnregisterServer，失敗時內建清理
+    UnregisterTip（deferred、SYSTEM）           兩個檢視的 CLSID 與唯一的 profile
     RemoveFiles
     InstallFinalize
       → RemoveTipLayout（immediate、使用者）    InstallLayoutOrTip(ILOT_UNINSTALL)
-                                                並刪除 %LOCALAPPDATA%\jc-ime
+                                                 並刪除 %LOCALAPPDATA%\jc-ime
+
+  為什麼有兩份 DLL：TSF 依宿主行程的位元數載入 TIP，32 位元程式（舊版 Office、
+  部分工具）只找得到 32 位元的 COM 註冊（`Wow6432Node`）。兩份共用同一個 CLSID
+  與 profile，使用者的語言清單只有一項；詳見 docs/port/x86-tip.md。
 
   檔案與機碼都由 MSI 或上述自訂動作建立／移除；沒有 Permanent 元件。
 -->
@@ -121,12 +127,23 @@
   <!--
     程式檔案。jc-tip-register.exe 必須留到 RemoveFiles 之後才刪，因為反安裝的
     UnregisterTip 會呼叫它。
+
+    兩份 TSF DLL：`jc-tsf.dll` 是 x64，`jc-tsf-x86.dll` 是 i686。兩個檔案共用同一個
+    CLSID，只是註冊在不同機碼檢視；檔名分開是因為兩份都放在同一個目錄。x86 的
+    Component 標 `Win64="no"`，機碼與檔案才不會被當成 64 位元元件處理。
   -->
   <Fragment>
     <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
       <Component Id="TsfDll" Guid="{BA82E245-0AC8-4CE0-8350-48A1AA127BDE}">
         <File Id="FileTsfDll"
               Source="$(var.PayloadDir)/jc-tsf.dll"
+              KeyPath="yes"
+              Vital="yes" />
+      </Component>
+
+      <Component Id="TsfDllX86" Guid="{1B4E9C60-2A7D-4E51-9C3F-7A6D5B8E2140}" Win64="no">
+        <File Id="FileTsfDllX86"
+              Source="$(var.PayloadDir)/jc-tsf-x86.dll"
               KeyPath="yes"
               Vital="yes" />
       </Component>
@@ -443,32 +460,37 @@
 
     machine-* 一定要 Impersonate="no"：CTF 機碼在 HKLM，需要 SYSTEM 權限。
     user-* 一定要 Impersonate="yes"：InstallLayoutOrTip 寫的是呼叫者的 HKCU。
+
+    註冊與移除都一次帶兩個 DLL：x64 的那份由 DLL 自己註冊（64 位元檢視），x86 的
+    那份由安裝器以 KEY_WOW64_32KEY 寫 Wow6432Node（x64 行程載入不了 32 位元 DLL）。
+    兩份共用同一個 CLSID 與 profile，所以 profile 只註冊一次；反安裝則兩個檢視
+    都清。詳見 docs/port/x86-tip.md。
   -->
   <Fragment>
     <CustomAction Id="RegisterTip"
                   FileRef="FileTipRegister"
-                  ExeCommand="machine-register &quot;[#FileTsfDll]&quot;"
+                  ExeCommand="machine-register &quot;[#FileTsfDll]&quot; &quot;[#FileTsfDllX86]&quot;"
                   Execute="deferred"
                   Impersonate="no"
                   Return="check" />
 
     <CustomAction Id="RollbackRegisterTip"
                   FileRef="FileTipRegister"
-                  ExeCommand="machine-unregister &quot;[#FileTsfDll]&quot;"
+                  ExeCommand="machine-unregister &quot;[#FileTsfDll]&quot; &quot;[#FileTsfDllX86]&quot;"
                   Execute="rollback"
                   Impersonate="no"
                   Return="ignore" />
 
     <CustomAction Id="UnregisterTip"
                   FileRef="FileTipRegister"
-                  ExeCommand="machine-unregister &quot;[#FileTsfDll]&quot;"
+                  ExeCommand="machine-unregister &quot;[#FileTsfDll]&quot; &quot;[#FileTsfDllX86]&quot;"
                   Execute="deferred"
                   Impersonate="no"
                   Return="ignore" />
 
     <CustomAction Id="RollbackUnregisterTip"
                   FileRef="FileTipRegister"
-                  ExeCommand="machine-register &quot;[#FileTsfDll]&quot;"
+                  ExeCommand="machine-register &quot;[#FileTsfDll]&quot; &quot;[#FileTsfDllX86]&quot;"
                   Execute="rollback"
                   Impersonate="no"
                   Return="ignore" />

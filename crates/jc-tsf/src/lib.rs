@@ -3,6 +3,12 @@
 //! 只做 COM 註冊、按鍵、組字、提交與非同步 IPC。候選窗、設定 UI、安裝器都不在
 //! 這個 crate 的範圍；`docs/port/tsf-skeleton.md` 有完整的行為與未驗證清單。
 //!
+//! 同一個 crate 建兩份：`x86_64-pc-windows-msvc` 出 `jc-tsf.dll`（x64），
+//! `i686-pc-windows-msvc` 出 `jc-tsf-x86.dll`。兩份的 CLSID、profile GUID 與顯示
+//! 名稱完全相同，只是各自註冊到自己那個機碼檢視（64 位元或 `Wow6432Node`）；
+//! TSF 依宿主行程的位元數載入對應的那一份。理由與註冊流程見
+//! `docs/port/x86-tip.md`。
+//!
 //! 非 Windows 平台上整個 crate 是空的：Linux CI 的 `cargo check --workspace`
 //! 會編出一個沒有任何符號的 cdylib，不提供替代實作。
 
@@ -39,10 +45,19 @@ use windows::Win32::UI::TextServices::{
 
 use composition::Control;
 use display::{DisplayAttributeEnumerator, DisplayAttributeInfo};
-use guids::{CLSID_JC_TSF, GUID_DISPLAY_ATTRIBUTE_INPUT};
+use guids::{registry_key, CLSID_JC_TSF, GUID_DISPLAY_ATTRIBUTE_INPUT};
 
 /// 目前仍然活著的文字服務物件數量，供 [`DllCanUnloadNow`] 判斷能否卸載。
 static LIVE_OBJECTS: AtomicUsize = AtomicUsize::new(0);
+
+/// 日誌用：這份 DLL 的架構與 CLSID。
+fn build_identity() -> String {
+    format!(
+        "{}，{}",
+        std::env::consts::ARCH,
+        registry_key(&CLSID_JC_TSF)
+    )
+}
 
 /// 文字服務物件。
 ///
@@ -304,7 +319,7 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
 pub extern "system" fn DllRegisterServer() -> HRESULT {
     match register::register() {
         Ok(()) => {
-            logging::info("註冊完成");
+            logging::info(format!("註冊完成（{}）", build_identity()));
             S_OK
         }
         Err(error) => {
@@ -320,7 +335,7 @@ pub extern "system" fn DllRegisterServer() -> HRESULT {
 pub extern "system" fn DllUnregisterServer() -> HRESULT {
     match register::unregister() {
         Ok(()) => {
-            logging::info("反註冊完成");
+            logging::info(format!("反註冊完成（{}）", build_identity()));
             S_OK
         }
         Err(error) => {
