@@ -1,11 +1,13 @@
 //! 統計轉換與 Jinen 的離線門檻實驗。
 //!
-//! 對每題同時產生統計（Viterbi）與 Jinen 的結果，記錄五個**輸入側**訊號與
-//! 兩邊是否命中，再離線掃描「什麼時候改用 Jinen」。這裡不接 `Session`，
-//! 只產生分析用的資料與報表。
+//! 對每題同時產生統計（Viterbi）與 Jinen 的結果，記錄八個**輸入側**訊號與
+//! 各路徑是否命中，再離線掃描「什麼時候改用 Jinen」以及「要不要升級到
+//! small」。這裡不接 `Session`，只產生分析用的資料與報表。
 //!
 //! ```sh
 //! cargo run -p jc-cli --release --bin jinen-gate -- collect --corpus modern-500
+//! cargo run -p jc-cli --release --bin jinen-gate -- collect --corpus modern-500 \
+//!     --gguf2 /path/to/jinen-v2-small-Q5_K_M.gguf
 //! cargo run -p jc-cli --release --bin jinen-gate -- sweep
 //! ```
 //!
@@ -13,7 +15,6 @@
 //! 只用輸入側訊號掃門檻。門檻在每組題庫的 dev 半邊挑選，holdout 半邊只
 //! 回報、不參與選擇；用答案逐題挑最好結果的數字另外標成「上限參考」。
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
@@ -46,6 +47,9 @@ struct Args {
     testdata: PathBuf,
     gguf: Option<PathBuf>,
     tokenizer: Option<PathBuf>,
+    /// 第二個模型（small）的 GGUF；指定時 `collect` 會多跑一次。
+    gguf2: Option<PathBuf>,
+    tokenizer2: Option<PathBuf>,
     limit: Option<usize>,
     max_new_tokens: usize,
     threads: usize,
@@ -62,6 +66,8 @@ impl Default for Args {
             testdata: PathBuf::from(DEFAULT_TESTDATA),
             gguf: None,
             tokenizer: None,
+            gguf2: None,
+            tokenizer2: None,
             limit: None,
             max_new_tokens: jinen::DEFAULT_MAX_NEW_TOKENS,
             threads: 4,
@@ -100,6 +106,14 @@ struct Signals {
     ambiguous_ratio: f64,
     /// 單一詞群的最大候選數。
     max_candidates: usize,
+    /// 統計 top-1 輸出的漢字比例。題庫讀音是純假名，漢字密度只能從轉換結果
+    /// 取；它仍然只看輸入與詞典，不含答案，用來近似「專業詞彙多」。
+    kanji_ratio: f64,
+    /// top-1 路徑上最長連續未知詞的字元長度。未知詞＝該詞段在同讀音下
+    /// 查不到任何詞條。
+    max_unknown_run: usize,
+    /// top-1 與 top-2 的詞數差（絕對值）；只有一條路徑時取 top-1 的詞數。
+    path_len_diff: usize,
 }
 
 /// Mozkey 的三條輸出檢查結果；`true` 表示通過。
@@ -130,10 +144,20 @@ struct Row {
     jinen: String,
     jinen_hit: bool,
     jinen_nfkc_hit: bool,
+    /// 第二個模型（small）的輸出；沒有指定時為 `None`。
+    #[serde(default)]
+    jinen2: Option<String>,
+    #[serde(default)]
+    jinen2_hit: bool,
     signals: Signals,
     checks: Checks,
+    /// 第二個模型輸出的三條檢查；沒有跑模型2 時與 `checks` 相同。
+    checks2: Checks,
     stats_ms: f64,
     jinen_ms: f64,
+    /// 第二個模型（small）的單題延遲；沒有跑時為 0。
+    #[serde(default)]
+    jinen2_ms: f64,
 }
 
 fn main() -> ExitCode {
@@ -192,6 +216,27 @@ fn collect(args: &Args) -> Result<(), String> {
         .generate("テスト", "", args.max_new_tokens)
         .map_err(|err| format!("暖機失敗：{err}"))?;
 
+    // 第二個模型（通常是 small）：沒有指定就不跑。
+    let mut model2 = match &args.gguf2 {
+        Some(gguf2) => {
+            let tokenizer2 = resolve_tokenizer_second(args, gguf2)?;
+            let load_started = Instant::now();
+            let mut loaded = Jinen::load(gguf2, &tokenizer2)
+                .map_err(|err| format!("載入 {} 失敗：{err}", gguf2.display()))?;
+            eprintln!(
+                "模型2 {}｜tokenizer {}｜載入 {:.1} ms",
+                gguf2.display(),
+                tokenizer2.display(),
+                load_started.elapsed().as_secs_f64() * 1000.0
+            );
+            loaded
+                .generate("テスト", "", args.max_new_tokens)
+                .map_err(|err| format!("暖機（模型2）失敗：{err}"))?;
+            Some(loaded)
+        }
+        None => None,
+    };
+
     let items = match args.limit {
         Some(limit) => &corpus.items[..limit.min(corpus.items.len())],
         None => &corpus.items[..],
@@ -209,6 +254,19 @@ fn collect(args: &Args) -> Result<(), String> {
             .map_err(|err| format!("{} 推論失敗：{err}", item.id))?;
         let jinen_ms = jinen_started.elapsed().as_secs_f64() * 1000.0;
 
+        let (jinen2_text, jinen2_hit, jinen2_ms) = match model2.as_mut() {
+            Some(model2) => {
+                let started = Instant::now();
+                let generation2 = model2
+                    .generate(&item.reading, "", args.max_new_tokens)
+                    .map_err(|err| format!("{} 推論失敗（模型2）：{err}", item.id))?;
+                let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+                let hit = accepted_surfaces(item).contains(&generation2.text);
+                (Some(generation2.text), hit, elapsed)
+            }
+            None => (None, false, 0.0),
+        };
+
         let accepted = accepted_surfaces(item);
         let stats_hit = accepted.contains(&stats_output);
         let jinen_hit = accepted.contains(&generation.text);
@@ -220,6 +278,14 @@ fn collect(args: &Args) -> Result<(), String> {
             echo_ok: !echoes_context("", &item.reading, &stats_output, &generation.text),
             emoji_ok: emoji_sequence(&stats_output) == emoji_sequence(&generation.text),
         };
+        let checks2 = match &jinen2_text {
+            Some(text) => Checks {
+                length_ok: !truncated(&stats_output, text),
+                echo_ok: !echoes_context("", &item.reading, &stats_output, text),
+                emoji_ok: emoji_sequence(&stats_output) == emoji_sequence(text),
+            },
+            None => checks.clone(),
+        };
         rows.push(Row {
             id: item.id.clone(),
             reading: item.reading.clone(),
@@ -230,10 +296,14 @@ fn collect(args: &Args) -> Result<(), String> {
             jinen: generation.text,
             jinen_hit,
             jinen_nfkc_hit,
+            jinen2: jinen2_text,
+            jinen2_hit,
             signals,
             checks,
+            checks2,
             stats_ms,
             jinen_ms,
+            jinen2_ms,
         });
         if (index + 1) % 50 == 0 {
             eprintln!("  {}/{}", index + 1, items.len());
@@ -261,6 +331,15 @@ fn collect(args: &Args) -> Result<(), String> {
         neither,
         rejected
     );
+    if model2.is_some() {
+        let small_hits = rows.iter().filter(|row| row.jinen2_hit).count();
+        println!(
+            "{}｜模型2 {:.1}%｜模型2 檢查退回 {}",
+            args.corpus,
+            100.0 * small_hits as f64 / rows.len() as f64,
+            rows.iter().filter(|row| !row.checks2.all()).count()
+        );
+    }
 
     let out = args.out.clone().unwrap_or_else(|| {
         args.dir
@@ -273,6 +352,8 @@ fn collect(args: &Args) -> Result<(), String> {
                 "corpus": args.corpus,
                 "gguf": gguf.display().to_string(),
                 "tokenizer": tokenizer.display().to_string(),
+                "gguf2": args.gguf2.as_ref().map(|p| p.display().to_string()),
+                "jinen2_hits": rows.iter().filter(|row| row.jinen2_hit).count(),
                 "pack": "ja-lexicon-mozc-v2.pack",
                 "decoder": "Viterbi + context 矩陣，無 reranker、無 LM、無 particle rewrite",
                 "context": "",
@@ -325,22 +406,50 @@ fn stats_side(decoder: &JaDecoder, reading: &str, ctx: &JaContext) -> (String, S
     };
 
     let mut group_counts: Vec<usize> = Vec::new();
+    // top-1 路徑上的未知詞：同讀音查不到任何詞條。最長連續未知詞長度用
+    // 字元數計算，跨越相鄰的未知詞段累加。
+    let mut max_unknown_run = 0usize;
+    let mut current_unknown_run = 0usize;
+    let mut top1_words = 0usize;
     if let Some(result) = first {
         for clause in &result.clauses {
             for segment in &clause.segments {
                 let seg: Vec<char> = segment.reading.chars().collect();
-                let mut surfaces: Vec<&str> = decoder
-                    .source()
-                    .exact(&seg)
-                    .iter()
-                    .map(|entry| entry.surface.as_ref())
-                    .collect();
+                let entries = decoder.source().exact(&seg);
+                top1_words += 1;
+                if entries.is_empty() {
+                    current_unknown_run += seg.len();
+                    max_unknown_run = max_unknown_run.max(current_unknown_run);
+                } else {
+                    current_unknown_run = 0;
+                }
+                let mut surfaces: Vec<&str> =
+                    entries.iter().map(|entry| entry.surface.as_ref()).collect();
                 surfaces.sort_unstable();
                 surfaces.dedup();
                 group_counts.push(surfaces.len().max(1));
             }
         }
     }
+    let kanji_ratio = if output.is_empty() {
+        0.0
+    } else {
+        let chars: Vec<char> = output.chars().collect();
+        let kanji = chars.iter().filter(|c| is_kanji(**c)).count();
+        kanji as f64 / chars.len() as f64
+    };
+    // top-2 的詞數；沒有 top-2 時用 top-1 自己，差值記 0。
+    let second_words = results
+        .get(1)
+        .map(|result| {
+            result
+                .clauses
+                .iter()
+                .map(|clause| clause.segments.len())
+                .sum::<usize>()
+        })
+        .unwrap_or(top1_words);
+    let path_len_diff = top1_words.abs_diff(second_words);
     let mean_candidates = if group_counts.is_empty() {
         1.0
     } else {
@@ -362,8 +471,16 @@ fn stats_side(decoder: &JaDecoder, reading: &str, ctx: &JaContext) -> (String, S
             mean_candidates,
             ambiguous_ratio,
             max_candidates,
+            kanji_ratio,
+            max_unknown_run,
+            path_len_diff,
         },
     )
+}
+
+/// 漢字（含擴充 A 區）判定，用來算輸出的漢字密度。
+fn is_kanji(c: char) -> bool {
+    matches!(u32::from(c), 0x3400..=0x4dbf | 0x4e00..=0x9fff)
 }
 
 fn accepted_surfaces(item: &Item) -> Vec<String> {
@@ -507,6 +624,30 @@ fn resolve_tokenizer(args: &Args, gguf: &Path) -> Result<PathBuf, String> {
     ))
 }
 
+/// 第二個模型的 tokenizer：`--tokenizer2` → `JC_JINEN_TOKENIZER2` → 量化目錄
+/// 的 xsmall tokenizer（兩者的詞表逐項相同）→ GGUF 同目錄。
+fn resolve_tokenizer_second(args: &Args, gguf: &Path) -> Result<PathBuf, String> {
+    if let Some(path) = &args.tokenizer2 {
+        return Ok(path.clone());
+    }
+    if let Ok(path) = std::env::var("JC_JINEN_TOKENIZER2") {
+        return Ok(PathBuf::from(path));
+    }
+    let quant =
+        PathBuf::from(DEFAULT_DATA_ROOT).join("models/quant/jinen-v2-xsmall/tokenizer.json");
+    if quant.is_file() {
+        return Ok(quant);
+    }
+    let sibling = gguf.with_file_name("tokenizer.json");
+    if sibling.is_file() {
+        return Ok(sibling);
+    }
+    Err(format!(
+        "找不到模型2 的 tokenizer.json（試過 {}）；可用 --tokenizer2 指定",
+        quant.display()
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // 門檻掃描
 // ---------------------------------------------------------------------------
@@ -518,12 +659,12 @@ const CORPORA: [&str; 3] = ["modern-500", "hard-cases", "ajimee-200"];
 /// 18 題（1 題＝5.6pp），沒有邊際的門檻在 holdout 上很容易掉回基線。
 const SAFETY_MARGIN: f64 = 4.0;
 
-/// 驗收要求。
+/// 驗收要求（沿用 `jinen-gating` 的現況值：三組都不得低於目前門檻組合）。
 fn requirement(name: &str) -> f64 {
     match name {
         "modern-500" => 86.0,
-        "hard-cases" => 60.0,
-        _ => 60.0,
+        "hard-cases" => 71.4,
+        _ => 64.0,
     }
 }
 
@@ -534,6 +675,9 @@ enum Signal {
     Length,
     MeanCandidates,
     Ambiguous,
+    Kanji,
+    UnknownRun,
+    PathDiff,
 }
 
 impl Signal {
@@ -544,6 +688,9 @@ impl Signal {
             Self::Length => "句長 > X",
             Self::MeanCandidates => "平均候選數 > X",
             Self::Ambiguous => "讀音歧義度 > X",
+            Self::Kanji => "輸出漢字比例 > X",
+            Self::UnknownRun => "最長連續未知詞長度 > X",
+            Self::PathDiff => "top1／top2 詞數差 > X",
         }
     }
 
@@ -554,6 +701,9 @@ impl Signal {
             Self::Length => "len",
             Self::MeanCandidates => "meancand",
             Self::Ambiguous => "ambig",
+            Self::Kanji => "kanji",
+            Self::UnknownRun => "unkrun",
+            Self::PathDiff => "pathdiff",
         }
     }
 
@@ -564,6 +714,9 @@ impl Signal {
             Self::Length => Some(row.signals.reading_len as f64),
             Self::MeanCandidates => Some(row.signals.mean_candidates),
             Self::Ambiguous => Some(row.signals.ambiguous_ratio),
+            Self::Kanji => Some(row.signals.kanji_ratio),
+            Self::UnknownRun => Some(row.signals.max_unknown_run as f64),
+            Self::PathDiff => Some(row.signals.path_len_diff as f64),
         }
     }
 
@@ -677,6 +830,8 @@ struct Score {
     hits: usize,
     n: usize,
     calls: usize,
+    /// 其中改用第二個模型（small）的題數。
+    small_calls: usize,
 }
 
 impl Score {
@@ -703,25 +858,89 @@ impl Score {
     }
 }
 
+/// 使用哪個後端。
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Backend {
+    Stats,
+    Jinen,
+    Jinen2,
+}
+
+/// 完整門檻：`rule` 決定要不要改用 Jinen；`escalate` 再決定是否升級到
+/// 第二個模型（small）。兩者都只看輸入側訊號。
+#[derive(Debug, Clone)]
+struct Gate {
+    rule: Rule,
+    escalate: Option<(Signal, f64)>,
+}
+
+impl Gate {
+    fn new(rule: Rule) -> Self {
+        Self {
+            rule,
+            escalate: None,
+        }
+    }
+
+    fn backend(&self, row: &Row) -> Backend {
+        if !self.rule.fires(row) {
+            return Backend::Stats;
+        }
+        match &self.escalate {
+            Some((signal, threshold)) if row.jinen2.is_some() && signal.fires(row, *threshold) => {
+                Backend::Jinen2
+            }
+            _ => Backend::Jinen,
+        }
+    }
+
+    /// 觸發後實際採用的後端是否通過三條檢查。
+    fn accepted(&self, row: &Row, backend: Backend) -> bool {
+        match backend {
+            Backend::Stats => true,
+            Backend::Jinen => row.checks.all(),
+            Backend::Jinen2 => row.checks2.all(),
+        }
+    }
+
+    fn label(&self) -> String {
+        match &self.escalate {
+            Some((signal, threshold)) => format!(
+                "{} → 再 {} {:.4} 用 small",
+                self.rule.label(),
+                signal.short(),
+                threshold
+            ),
+            None => self.rule.label(),
+        }
+    }
+}
+
 /// `subset`：`Some(true)` 只看 dev、`Some(false)` 只看 holdout、`None` 全部。
-fn score(rule: &Rule, corpus: &Corpus, subset: Option<bool>) -> Score {
+fn score(gate: &Gate, corpus: &Corpus, subset: Option<bool>) -> Score {
     let mut out = Score::default();
     for (row, is_dev_row) in corpus.items.iter().zip(&corpus.dev) {
         if subset.is_some_and(|want| *is_dev_row != want) {
             continue;
         }
-        let fire = rule.fires(row);
-        out.add(decide(row, fire), fire);
+        let backend = gate.backend(row);
+        out.add(decide(row, gate, backend), backend != Backend::Stats);
+        if backend == Backend::Jinen2 {
+            out.small_calls += 1;
+        }
     }
     out
 }
 
 /// 觸發且檢查通過才用 Jinen，否則回統計結果。
-fn decide(row: &Row, fire: bool) -> bool {
-    if fire && row.checks.all() {
-        row.jinen_hit
-    } else {
-        row.stats_hit
+fn decide(row: &Row, gate: &Gate, backend: Backend) -> bool {
+    if !gate.accepted(row, backend) {
+        return row.stats_hit;
+    }
+    match backend {
+        Backend::Stats => row.stats_hit,
+        Backend::Jinen => row.jinen_hit,
+        Backend::Jinen2 => row.jinen2_hit,
     }
 }
 
@@ -734,78 +953,128 @@ fn percentile(values: &mut [f64], p: f64) -> f64 {
     values[rank - 1]
 }
 
-/// 給定一組門檻候選，回傳所有單一訊號規則，加上 dev 上可行的兩個訊號 OR。
-fn search(corpora: &[Corpus]) -> Vec<(Rule, Evaluation)> {
-    let signals = [
-        Signal::Gap,
-        Signal::Unknown,
-        Signal::Length,
-        Signal::MeanCandidates,
-        Signal::Ambiguous,
-    ];
-    let mut candidates: BTreeMap<&'static str, Vec<f64>> = BTreeMap::new();
-    for signal in signals {
-        let mut values: Vec<f64> = corpora
-            .iter()
-            .flat_map(|corpus| {
-                corpus
-                    .items
-                    .iter()
-                    .zip(&corpus.dev)
-                    .filter(|(_, dev)| **dev)
-                    .filter_map(|(row, _)| signal.value(row))
-            })
-            .collect();
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        values.dedup();
-        candidates.insert(signal.short(), values);
-    }
+/// 八個輸入側訊號。
+const ALL_SIGNALS: [Signal; 8] = [
+    Signal::Gap,
+    Signal::Unknown,
+    Signal::Length,
+    Signal::MeanCandidates,
+    Signal::Ambiguous,
+    Signal::Kanji,
+    Signal::UnknownRun,
+    Signal::PathDiff,
+];
 
-    let mut scored: Vec<(Rule, Evaluation)> = Vec::new();
-    for signal in signals {
-        let values = &candidates[signal.short()];
-        // 每個相鄰值之間取中點，讓門檻落在兩個觀測值之間。
-        for window in values.windows(2) {
-            let rule = Rule::single(signal, (window[0] + window[1]) / 2.0);
-            let dev = evaluate(&rule, corpora, Some(true));
-            scored.push((rule, dev));
+/// 從 dev 半邊取候選門檻：相鄰觀測值的中點；值太多時等距抽樣。
+fn thresholds(signal: Signal, corpora: &[Corpus], max_points: usize) -> Vec<f64> {
+    let mut values: Vec<f64> = corpora
+        .iter()
+        .flat_map(|corpus| {
+            corpus
+                .items
+                .iter()
+                .zip(&corpus.dev)
+                .filter(|(_, dev)| **dev)
+                .filter_map(|(row, _)| signal.value(row))
+        })
+        .collect();
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    values.dedup();
+    let mut points: Vec<f64> = values.windows(2).map(|w| (w[0] + w[1]) / 2.0).collect();
+    if points.len() > max_points {
+        let step = (points.len() - 1) as f64 / (max_points - 1) as f64;
+        points = (0..max_points)
+            .map(|index| points[(index as f64 * step).round() as usize])
+            .collect();
+        points.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+    }
+    points
+}
+
+/// 掃描所有單一訊號與「統計邊界 + 另一訊號」的規則，再以其中較好的規則
+/// 為底加一層升級條件（改用 small）。全部只用 dev 半邊的資料挑選。
+fn search(corpora: &[Corpus], margin: f64) -> Vec<(Gate, Evaluation)> {
+    let mut scored: Vec<(Gate, Evaluation)> = Vec::new();
+    for signal in ALL_SIGNALS {
+        for threshold in thresholds(signal, corpora, 256) {
+            let gate = Gate::new(Rule::single(signal, threshold));
+            let dev = evaluate(&gate, corpora, Some(true));
+            scored.push((gate, dev));
         }
     }
 
-    // 兩個訊號的組合。只有統計邊界能單獨達標，所以拿它當第一條件，其餘
-    // 四個訊號當第二條件；AND 與 OR 都掃。
-    let mut bases: Vec<(f64, Score)> = scored
-        .iter()
-        .filter(|(rule, dev)| {
-            rule.parts[0].0 == Signal::Gap && dev.feasible_with(corpora, SAFETY_MARGIN)
-        })
-        .map(|(rule, dev)| (rule.parts[0].1, dev.aggregate()))
-        .collect();
-    bases.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    if bases.len() > 8 {
-        // 平均取 8 個，涵蓋整個可行區間，不偏向某一端。
-        let step = (bases.len() - 1) as f64 / 7.0;
-        bases = (0..8)
-            .map(|index| bases[(index as f64 * step).round() as usize])
-            .collect();
-    }
-    for (base, _) in &bases {
-        for signal in [
-            Signal::Unknown,
-            Signal::Length,
-            Signal::MeanCandidates,
-            Signal::Ambiguous,
-        ] {
-            for window in candidates[signal.short()].windows(2) {
-                let threshold = (window[0] + window[1]) / 2.0;
+    // 統計邊界當第一條件，其餘七個訊號當第二條件；AND 與 OR 都掃。
+    for base in thresholds(Signal::Gap, corpora, 48) {
+        for signal in ALL_SIGNALS {
+            if signal == Signal::Gap {
+                continue;
+            }
+            for threshold in thresholds(signal, corpora, 48) {
                 for and in [true, false] {
                     let rule = Rule {
-                        parts: vec![(Signal::Gap, *base), (signal, threshold)],
+                        parts: vec![(Signal::Gap, base), (signal, threshold)],
                         and,
                     };
-                    let dev = evaluate(&rule, corpora, Some(true));
-                    scored.push((rule, dev));
+                    let gate = Gate::new(rule);
+                    let dev = evaluate(&gate, corpora, Some(true));
+                    scored.push((gate, dev));
                 }
+            }
+        }
+    }
+
+    // 同一個門檻，但觸發時一律用 small；用來比較「要不要升級模型」。
+    let always_small: Vec<(Gate, Evaluation)> = scored
+        .iter()
+        .filter(|(gate, _)| gate.escalate.is_none())
+        .map(|(gate, _)| {
+            let upgraded = Gate {
+                rule: gate.rule.clone(),
+                escalate: Some((Signal::Gap, f64::INFINITY)),
+            };
+            let evaluated = evaluate(&upgraded, corpora, Some(true));
+            (upgraded, evaluated)
+        })
+        .collect();
+    scored.extend(always_small);
+
+    // 兩段式候選：取 dev 上最前面的幾條規則，加上「升級到 small」的第二個
+    // 條件。
+    let mut ranked: Vec<usize> = (0..scored.len()).collect();
+    ranked.sort_by(|a, b| {
+        scored[*b]
+            .1
+            .feasible_with(corpora, margin)
+            .cmp(&scored[*a].1.feasible_with(corpora, margin))
+            .then_with(|| {
+                scored[*b]
+                    .1
+                    .margin(corpora)
+                    .partial_cmp(&scored[*a].1.margin(corpora))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                scored[*a]
+                    .1
+                    .aggregate()
+                    .calls
+                    .cmp(&scored[*b].1.aggregate().calls)
+            })
+    });
+    let bases: Vec<Gate> = ranked
+        .iter()
+        .take(12)
+        .map(|index| scored[*index].0.clone())
+        .collect();
+    for base in bases {
+        for signal in ALL_SIGNALS {
+            for threshold in thresholds(signal, corpora, 64) {
+                let gate = Gate {
+                    rule: base.rule.clone(),
+                    escalate: Some((signal, threshold)),
+                };
+                let dev = evaluate(&gate, corpora, Some(true));
+                scored.push((gate, dev));
             }
         }
     }
@@ -825,6 +1094,7 @@ impl Evaluation {
             out.hits += part.hits;
             out.n += part.n;
             out.calls += part.calls;
+            out.small_calls += part.small_calls;
         }
         out
     }
@@ -851,28 +1121,36 @@ impl Evaluation {
     }
 }
 
-fn evaluate(rule: &Rule, corpora: &[Corpus], subset: Option<bool>) -> Evaluation {
+fn evaluate(gate: &Gate, corpora: &[Corpus], subset: Option<bool>) -> Evaluation {
     Evaluation {
         per: corpora
             .iter()
-            .map(|corpus| score(rule, corpus, subset))
+            .map(|corpus| score(gate, corpus, subset))
             .collect(),
     }
 }
 
-/// 延遲：統計一定會算，觸發時再等 Jinen；`subset` 同 [`score`]。
-fn latency_overall(rule: &Rule, corpora: &[Corpus], subset: Option<bool>) -> (f64, f64) {
+/// 延遲：統計一定會算，觸發時再加上所選後端的時間；`subset` 同 [`score`]。
+fn latency_overall(gate: &Gate, corpora: &[Corpus], subset: Option<bool>) -> (f64, f64) {
     let mut values = Vec::new();
     for corpus in corpora {
         for (row, is_dev_row) in corpus.items.iter().zip(&corpus.dev) {
             if subset.is_some_and(|want| *is_dev_row != want) {
                 continue;
             }
-            let fire = rule.fires(row);
-            values.push(row.stats_ms + if fire { row.jinen_ms } else { 0.0 });
+            let backend = gate.backend(row);
+            values.push(row.stats_ms + latency_of(row, backend));
         }
     }
     (percentile(&mut values, 50.0), percentile(&mut values, 95.0))
+}
+
+fn latency_of(row: &Row, backend: Backend) -> f64 {
+    match backend {
+        Backend::Stats => 0.0,
+        Backend::Jinen => row.jinen_ms,
+        Backend::Jinen2 => row.jinen2_ms,
+    }
 }
 
 fn sweep(args: &Args) -> Result<(), String> {
@@ -897,87 +1175,127 @@ fn sweep(args: &Args) -> Result<(), String> {
         let n = corpus.items.len() as f64;
         let stats_hits = corpus.items.iter().filter(|row| row.stats_hit).count();
         let jinen_hits = corpus.items.iter().filter(|row| row.jinen_hit).count();
+        let small_hits = corpus.items.iter().filter(|row| row.jinen2_hit).count();
         let oracle = corpus
             .items
             .iter()
-            .filter(|row| row.stats_hit || row.jinen_hit)
+            .filter(|row| row.stats_hit || row.jinen_hit || row.jinen2_hit)
             .count();
         let only_stats = corpus
             .items
             .iter()
-            .filter(|row| row.stats_hit && !row.jinen_hit)
+            .filter(|row| row.stats_hit && !row.jinen_hit && !row.jinen2_hit)
             .count();
         let only_jinen = corpus
             .items
             .iter()
             .filter(|row| !row.stats_hit && row.jinen_hit)
             .count();
+        let only_small = corpus
+            .items
+            .iter()
+            .filter(|row| !row.stats_hit && !row.jinen_hit && row.jinen2_hit)
+            .count();
         let rejected = corpus.items.iter().filter(|row| !row.checks.all()).count();
         println!(
-            "{}（n {}）統計 {:.1}%｜Jinen {:.1}%｜逐題上限參考 {:.1}%｜只統計對 {}｜只 Jinen 對 {}｜檢查退回 {}",
+            "{}（n {}）統計 {:.1}%｜xsmall {:.1}%｜small {:.1}%｜逐題上限參考 {:.1}%｜只統計對 {}｜只 xsmall 對 {}｜只 small 對 {}｜檢查退回 {}",
             corpus.name,
             corpus.items.len(),
             100.0 * stats_hits as f64 / n,
             100.0 * jinen_hits as f64 / n,
+            100.0 * small_hits as f64 / n,
             100.0 * oracle as f64 / n,
             only_stats,
             only_jinen,
+            only_small,
             rejected
         );
         baseline_rows.push(json!({
             "corpus": corpus.name,
             "n": corpus.items.len(),
             "stats_pct": 100.0 * stats_hits as f64 / n,
-            "jinen_pct": 100.0 * jinen_hits as f64 / n,
+            "xsmall_pct": 100.0 * jinen_hits as f64 / n,
+            "small_pct": 100.0 * small_hits as f64 / n,
             "oracle_upper_pct": 100.0 * oracle as f64 / n,
             "only_stats_correct": only_stats,
-            "only_jinen_correct": only_jinen,
+            "only_xsmall_correct": only_jinen,
+            "only_small_correct": only_small,
             "checks_rejected": rejected,
-            "both": corpus.items.iter().filter(|row| row.stats_hit && row.jinen_hit).count(),
         }));
     }
 
-    // 2. 只用 dev 挑門檻：可行優先，其次呼叫率最低，再其次安全邊際。
-    let scored = search(&corpora);
-    let mut chosen: Vec<(Rule, Evaluation, Evaluation)> = scored
+    // 延遲基線：三個後端各自的單題延遲（全題庫）。
+    for corpus in &corpora {
+        let mut stats: Vec<f64> = corpus.items.iter().map(|row| row.stats_ms).collect();
+        let mut xsmall: Vec<f64> = corpus.items.iter().map(|row| row.jinen_ms).collect();
+        let mut small: Vec<f64> = corpus
+            .items
+            .iter()
+            .map(|row| row.jinen2_ms)
+            .filter(|ms| *ms > 0.0)
+            .collect();
+        println!(
+            "{} 延遲｜統計 p50 {:.2}｜xsmall p50 {:.2} p95 {:.2}｜small p50 {:.2} p95 {:.2} ms",
+            corpus.name,
+            percentile(&mut stats, 50.0),
+            percentile(&mut xsmall, 50.0),
+            percentile(&mut xsmall, 95.0),
+            percentile(&mut small, 50.0),
+            percentile(&mut small, 95.0),
+        );
+    }
+
+    // 2. 只用 dev 挑門檻：可行優先，其次 p50 延遲最低。
+    let scored = search(&corpora, 0.0);
+    let mut chosen: Vec<(Gate, Evaluation, Evaluation)> = scored
         .into_iter()
-        .map(|(rule, dev)| {
-            let holdout = evaluate(&rule, &corpora, Some(false));
-            (rule, dev, holdout)
+        .map(|(gate, dev)| {
+            let holdout = evaluate(&gate, &corpora, Some(false));
+            (gate, dev, holdout)
         })
         .collect();
-    let use_buffer = chosen
-        .iter()
-        .any(|(_, dev, _)| dev.feasible_with(&corpora, SAFETY_MARGIN));
-    let buffer = if use_buffer { SAFETY_MARGIN } else { 0.0 };
+    let buffer = [SAFETY_MARGIN, 2.0, 0.0]
+        .into_iter()
+        .find(|margin| {
+            chosen
+                .iter()
+                .any(|(_, dev, _)| dev.feasible_with(&corpora, *margin))
+        })
+        .unwrap_or(0.0);
     chosen.sort_by(|a, b| {
         b.1.feasible_with(&corpora, buffer)
             .cmp(&a.1.feasible_with(&corpora, buffer))
             .then_with(|| a.1.aggregate().calls.cmp(&b.1.aggregate().calls))
+            .then_with(|| {
+                a.1.aggregate()
+                    .small_calls
+                    .cmp(&b.1.aggregate().small_calls)
+            })
             .then_with(|| {
                 b.1.margin(&corpora)
                     .partial_cmp(&a.1.margin(&corpora))
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
     });
-    if let Some((rule, dev, holdout)) = chosen.first() {
+    if let Some((gate, dev, holdout)) = chosen.first() {
         println!(
-            "\n選擇準則：dev 三組都要 ≥ 要求 + {:.0}pp，取呼叫率最低；選中「{}」",
+            "\n選擇準則：dev 三組都要 ≥ 要求 + {:.0}pp，取最差一組的超額最大；選中「{}」",
             buffer,
-            rule.label()
+            gate.label()
         );
-        let (p50, p95) = latency_overall(rule, &corpora, None);
-        let all = evaluate(rule, &corpora, None);
+        let (p50, p95) = latency_overall(gate, &corpora, None);
+        let all = evaluate(gate, &corpora, None);
         let cells: Vec<String> = all
             .per
             .iter()
             .zip(&corpora)
             .map(|(part, corpus)| {
                 format!(
-                    "{} {:.1}%（呼叫 {:.1}%）",
+                    "{} {:.1}%（呼叫 {:.1}%／small {:.1}%）",
                     corpus.name,
                     part.pct(),
-                    part.call_rate()
+                    part.call_rate(),
+                    100.0 * part.small_calls as f64 / part.n as f64
                 )
             })
             .collect();
@@ -991,97 +1309,376 @@ fn sweep(args: &Args) -> Result<(), String> {
 
     println!("\n## dev 挑選（前 10 名；holdout 只回報、未參與選擇）");
     println!(
-        "{:<44} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>6}",
+        "{:<52} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>6}",
         "規則", "dev-mod", "dev-hard", "dev-aji", "ho-mod", "ho-hard", "ho-aji", "呼叫率", "p50"
     );
-    for (rule, dev, holdout) in chosen.iter().take(10) {
-        print_rule_row(rule, dev, holdout, &corpora);
+    for (gate, dev, holdout) in chosen.iter().take(10) {
+        print_rule_row(gate, dev, holdout, &corpora);
     }
 
-    // 3. 單一訊號各自的最佳門檻（dev 可行、呼叫率最低），方便看哪個訊號有用。
-    println!("\n## 單一訊號最佳門檻（dev 可行、呼叫率最低）");
-    let mut per_signal: Vec<(Rule, Evaluation, Evaluation)> = chosen
+    // 3. 單一訊號最佳門檻（dev 可行、p50 最低），每一種訊號各一列。
+    println!("\n## 單一訊號最佳門檻（dev 可行、p50 最低）");
+    let mut signal_best: Vec<(Gate, Evaluation, Evaluation)> = Vec::new();
+    for signal in ALL_SIGNALS {
+        let best = chosen
+            .iter()
+            .filter(|(gate, _, _)| gate.rule.parts.len() == 1 && gate.rule.parts[0].0 == signal)
+            .min_by(|a, b| {
+                b.1.feasible(&corpora)
+                    .cmp(&a.1.feasible(&corpora))
+                    .then_with(|| a.1.aggregate().calls.cmp(&b.1.aggregate().calls))
+                    .then_with(|| {
+                        a.1.aggregate()
+                            .small_calls
+                            .cmp(&b.1.aggregate().small_calls)
+                    })
+                    .then_with(|| {
+                        b.1.margin(&corpora)
+                            .partial_cmp(&a.1.margin(&corpora))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+            });
+        if let Some(row) = best {
+            signal_best.push(row.clone());
+        }
+    }
+    for (gate, dev, holdout) in &signal_best {
+        print_rule_row(gate, dev, holdout, &corpora);
+    }
+
+    println!("\n## 單一訊號 maximin（只有一個門檻的規則；dev 最差一組超額最大）");
+    let mut maximin: Vec<&(Gate, Evaluation, Evaluation)> = chosen
         .iter()
-        .filter(|(rule, _, _)| rule.parts.len() == 1)
-        .map(|(rule, _dev, holdout)| {
-            (
-                rule.clone(),
-                evaluate(rule, &corpora, Some(true)),
-                holdout.clone(),
-            )
-        })
+        .filter(|(gate, _, _)| gate.rule.parts.len() == 1)
         .collect();
-    per_signal.sort_by(|a, b| {
-        b.1.feasible(&corpora)
-            .cmp(&a.1.feasible(&corpora))
+    maximin.sort_by(|a, b| {
+        b.1.margin(&corpora)
+            .partial_cmp(&a.1.margin(&corpora))
+            .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.1.aggregate().calls.cmp(&b.1.aggregate().calls))
     });
-    for (rule, dev, holdout) in per_signal.iter().take(6) {
-        print_rule_row(rule, dev, holdout, &corpora);
+    for (gate, dev, holdout) in maximin.iter().take(6) {
+        print_rule_row(gate, dev, holdout, &corpora);
+    }
+    drop(maximin);
+
+    // 只改用 small、統計邊界單一門檻：dev 達到「要求 + 4pp」後呼叫率最低的。
+    println!("\n## small 單一門檻（dev ≥ 要求 + 4pp、呼叫率最低）");
+    let mut small_gap: Vec<&(Gate, Evaluation, Evaluation)> = chosen
+        .iter()
+        .filter(|(gate, _, _)| {
+            gate.rule.parts.len() == 1
+                && gate.rule.parts[0].0 == Signal::Gap
+                && gate.escalate.is_some()
+        })
+        .filter(|(_, dev, _)| dev.feasible_with(&corpora, SAFETY_MARGIN))
+        .collect();
+    small_gap.sort_by(|a, b| a.1.aggregate().calls.cmp(&b.1.aggregate().calls));
+    for (gate, dev, holdout) in small_gap.iter().take(5) {
+        print_rule_row(gate, dev, holdout, &corpora);
     }
 
-    // 4. 各訊號單獨使用的表現（全題庫），用來說明為什麼只有統計邊界能用。
-    println!("\n## 各訊號單獨使用（全題庫）");
-    let probes: [(Signal, &[f64]); 5] = [
-        (Signal::Gap, &[150.0, 250.0, 400.0]),
-        (Signal::Unknown, &[0.028, 0.032, 0.04]),
-        (Signal::Length, &[15.0, 25.0, 40.0]),
-        (Signal::MeanCandidates, &[6.0, 8.0, 10.0]),
-        (Signal::Ambiguous, &[0.7, 0.8, 0.9]),
-    ];
-    let mut signal_rows = Vec::new();
-    for (signal, thresholds) in probes {
-        for threshold in thresholds {
-            let rule = Rule::single(signal, *threshold);
-            let all = evaluate(&rule, &corpora, None);
-            let cells: Vec<String> = all
+    // 4. 各訊號單維曲線（dev 取門檻，dev／holdout 都列出）。
+    println!("\n## 訊號曲線（每格為 dev／holdout 命中率，最後一欄為呼叫率）");
+    println!(
+        "{:<30} {:>13} {:>13} {:>13} {:>8}",
+        "訊號與門檻", "modern-500", "hard-cases", "ajimee-200", "呼叫"
+    );
+    let mut curve_rows = Vec::new();
+    for signal in ALL_SIGNALS {
+        for threshold in thresholds(signal, &corpora, 8) {
+            let gate = Gate::new(Rule::single(signal, threshold));
+            let dev = evaluate(&gate, &corpora, Some(true));
+            let holdout = evaluate(&gate, &corpora, Some(false));
+            let cells: Vec<String> = dev
                 .per
                 .iter()
-                .map(|part| format!("{:.1}", part.pct()))
+                .zip(holdout.per.iter())
+                .map(|(d, h)| format!("{:.1}／{:.1}", d.pct(), h.pct()))
                 .collect();
             println!(
-                "{:<28} {:>7} {:>7} {:>7} {:>7.1}%",
+                "{:<30} {:>13} {:>13} {:>13} {:>7.1}%",
                 format!("{} {:.4}", signal.short(), threshold),
                 cells[0],
                 cells[1],
                 cells[2],
-                all.aggregate().call_rate()
+                dev.aggregate().call_rate()
             );
-            signal_rows.push(json!({
+            curve_rows.push(json!({
                 "signal": signal.short(),
                 "threshold": threshold,
-                "all": eval_json(&all, &corpora),
+                "dev": eval_json(&dev, &corpora),
+                "holdout": eval_json(&holdout, &corpora),
             }));
         }
     }
 
-    // 5. 整數門檻的平台區：看同一條規則在不同門檻下穩不穩。
-    println!("\n## 整數門檻掃描（統計邊界）");
-    let mut plateau = Vec::new();
-    for threshold in [
-        100.0, 150.0, 200.0, 250.0, 300.0, 350.0, 400.0, 450.0, 500.0, 600.0,
-    ] {
-        let rule = Rule::single(Signal::Gap, threshold);
-        let dev = evaluate(&rule, &corpora, Some(true));
-        let holdout = evaluate(&rule, &corpora, Some(false));
-        let (p50, p95) = latency_overall(&rule, &corpora, None);
-        plateau.push(json!({
-            "threshold": threshold,
-            "dev": eval_json(&dev, &corpora),
-            "holdout": eval_json(&holdout, &corpora),
-            "all_p50_ms": p50,
-            "all_p95_ms": p95,
-        }));
-        print_rule_row(&rule, &dev, &holdout, &corpora);
+    // 4b. 同一批門檻，觸發後改用 small。
+    println!("\n## 訊號曲線（觸發一律改用 small，其餘同上一節）");
+    println!(
+        "{:<30} {:>13} {:>13} {:>13} {:>8}",
+        "訊號與門檻", "modern-500", "hard-cases", "ajimee-200", "呼叫"
+    );
+    for signal in ALL_SIGNALS {
+        for threshold in thresholds(signal, &corpora, 8) {
+            let gate = Gate {
+                rule: Rule::single(signal, threshold),
+                escalate: Some((Signal::Gap, f64::INFINITY)),
+            };
+            let dev = evaluate(&gate, &corpora, Some(true));
+            let holdout = evaluate(&gate, &corpora, Some(false));
+            let cells: Vec<String> = dev
+                .per
+                .iter()
+                .zip(holdout.per.iter())
+                .map(|(d, h)| format!("{:.1}／{:.1}", d.pct(), h.pct()))
+                .collect();
+            println!(
+                "{:<30} {:>13} {:>13} {:>13} {:>7.1}%",
+                format!("{} {:.4}", signal.short(), threshold),
+                cells[0],
+                cells[1],
+                cells[2],
+                dev.aggregate().call_rate()
+            );
+            curve_rows.push(json!({
+                "signal": signal.short(),
+                "threshold": threshold,
+                "backend": "small",
+                "dev": eval_json(&dev, &corpora),
+                "holdout": eval_json(&holdout, &corpora),
+            }));
+        }
     }
 
-    // 6. 上限參考：用答案在整個題庫挑單一門檻（含 holdout），只看趨勢。
-    let mut upper: Vec<(Rule, Evaluation)> = Vec::new();
-    for (rule, _, _) in &chosen {
-        if rule.parts.len() != 1 {
+    // 5. 統計邊界的平台區（xsmall 與 small 各一輪）。
+    println!("\n## 整數門檻掃描（統計邊界）");
+    let mut plateau = Vec::new();
+    for (backend, escalate) in [
+        ("xsmall", None),
+        ("small", Some((Signal::Gap, f64::INFINITY))),
+    ] {
+        for threshold in [
+            100.0, 150.0, 200.0, 250.0, 300.0, 350.0, 400.0, 450.0, 500.0, 600.0,
+        ] {
+            let gate = Gate {
+                rule: Rule::single(Signal::Gap, threshold),
+                escalate,
+            };
+            let dev = evaluate(&gate, &corpora, Some(true));
+            let holdout = evaluate(&gate, &corpora, Some(false));
+            let (p50, p95) = latency_overall(&gate, &corpora, None);
+            plateau.push(json!({
+                "backend": backend,
+                "threshold": threshold,
+                "dev": eval_json(&dev, &corpora),
+                "holdout": eval_json(&holdout, &corpora),
+                "all_p50_ms": p50,
+                "all_p95_ms": p95,
+            }));
+            print_rule_row(&gate, &dev, &holdout, &corpora);
+        }
+    }
+
+    // 6. 兩段式的升級條件：以第一名的單層規則為底，逐個訊號看門檻。
+    println!("\n## 兩段式：xsmall → small 升級條件（底為上一節選中的門檻）");
+    let base = chosen.first().map(|(gate, _, _)| gate.rule.clone());
+    let mut two_stage = Vec::new();
+    if let Some(base) = base {
+        println!("底規則：{}", base.label());
+        println!(
+            "{:<46} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>8} {:>8}",
+            "升級條件",
+            "dev-mod",
+            "dev-hard",
+            "dev-aji",
+            "ho-mod",
+            "ho-hard",
+            "ho-aji",
+            "small率",
+            "p50"
+        );
+        for signal in [Signal::Length, Signal::Kanji, Signal::PathDiff, Signal::Gap] {
+            for threshold in thresholds(signal, &corpora, 6) {
+                let gate = Gate {
+                    rule: base.clone(),
+                    escalate: Some((signal, threshold)),
+                };
+                let dev = evaluate(&gate, &corpora, Some(true));
+                let holdout = evaluate(&gate, &corpora, Some(false));
+                let p50 = latency_overall(&gate, &corpora, Some(true)).0;
+                let small_rate =
+                    100.0 * dev.aggregate().small_calls as f64 / dev.aggregate().n as f64;
+                let cells = |eval: &Evaluation| -> Vec<String> {
+                    eval.per
+                        .iter()
+                        .map(|part| format!("{:.1}", part.pct()))
+                        .collect()
+                };
+                let d = cells(&dev);
+                let h = cells(&holdout);
+                println!(
+                    "{:<46} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7.1}% {:>7.2}",
+                    format!("{} {:.4}", signal.short(), threshold),
+                    d[0],
+                    d[1],
+                    d[2],
+                    h[0],
+                    h[1],
+                    h[2],
+                    small_rate,
+                    p50
+                );
+                two_stage.push(json!({
+                    "base": base.label(),
+                    "escalate": { "signal": signal.short(), "threshold": threshold },
+                    "dev": eval_json(&dev, &corpora),
+                    "holdout": eval_json(&holdout, &corpora),
+                    "dev_p50_ms": p50,
+                }));
+            }
+        }
+    }
+
+    // 7. 具名對照。
+    println!("\n## 具名對照（全題庫）");
+    let never = Rule {
+        parts: Vec::new(),
+        and: false,
+    };
+    let always_small = Gate {
+        rule: Rule::single(Signal::Gap, 400.0),
+        escalate: Some((Signal::Gap, f64::INFINITY)),
+    };
+    let named: Vec<(&str, Gate)> = vec![
+        ("只用統計", Gate::new(never.clone())),
+        (
+            "xsmall 全用",
+            Gate {
+                rule: Rule::single(Signal::Gap, f64::INFINITY),
+                escalate: None,
+            },
+        ),
+        (
+            "small 全用",
+            Gate {
+                rule: Rule::single(Signal::Gap, f64::INFINITY),
+                escalate: Some((Signal::Gap, f64::INFINITY)),
+            },
+        ),
+        (
+            "gap < 400（xsmall）",
+            Gate::new(Rule::single(Signal::Gap, 400.0)),
+        ),
+        ("gap < 400（small）", always_small.clone()),
+        (
+            "gap < 450（small）",
+            Gate {
+                rule: Rule::single(Signal::Gap, 450.0),
+                escalate: Some((Signal::Gap, f64::INFINITY)),
+            },
+        ),
+        (
+            "gap < 460（small）",
+            Gate {
+                rule: Rule::single(Signal::Gap, 460.0),
+                escalate: Some((Signal::Gap, f64::INFINITY)),
+            },
+        ),
+        (
+            "gap < 472.5 且 meancand > 6.0（small）",
+            Gate {
+                rule: Rule {
+                    parts: vec![(Signal::Gap, 472.5), (Signal::MeanCandidates, 6.0)],
+                    and: true,
+                },
+                escalate: Some((Signal::Gap, f64::INFINITY)),
+            },
+        ),
+        (
+            "gap < 500（small）",
+            Gate {
+                rule: Rule::single(Signal::Gap, 500.0),
+                escalate: Some((Signal::Gap, f64::INFINITY)),
+            },
+        ),
+        (
+            "舊 AND：gap < 400 且 meancand > 5.7（xsmall）",
+            Gate::new(Rule {
+                parts: vec![(Signal::Gap, 400.0), (Signal::MeanCandidates, 5.7)],
+                and: true,
+            }),
+        ),
+        (
+            "舊 AND（small）",
+            Gate {
+                rule: Rule {
+                    parts: vec![(Signal::Gap, 400.0), (Signal::MeanCandidates, 5.7)],
+                    and: true,
+                },
+                escalate: Some((Signal::Gap, f64::INFINITY)),
+            },
+        ),
+        (
+            "gap < 400，讀音 > 20 用 small",
+            Gate {
+                rule: Rule::single(Signal::Gap, 400.0),
+                escalate: Some((Signal::Length, 20.0)),
+            },
+        ),
+        (
+            "dev 自動選中",
+            chosen
+                .first()
+                .map(|(gate, _, _)| gate.clone())
+                .unwrap_or_else(|| Gate::new(never.clone())),
+        ),
+    ];
+    println!(
+        "{:<50} {:>7} {:>7} {:>7} {:>7} {:>7} {:>6} {:>6} {:>4}",
+        "規則", "modern", "hard", "ajimee", "呼叫率", "small率", "p50", "p95", "下限"
+    );
+    let mut named_rows = Vec::new();
+    for (label, gate) in &named {
+        let all = evaluate(gate, &corpora, None);
+        let (p50, p95) = latency_overall(gate, &corpora, None);
+        let cells: Vec<String> = all
+            .per
+            .iter()
+            .map(|part| format!("{:.1}", part.pct()))
+            .collect();
+        println!(
+            "{:<50} {:>7} {:>7} {:>7} {:>7.1}% {:>7.1}% {:>6.2} {:>6.2} {:>6}",
+            label,
+            cells[0],
+            cells[1],
+            cells[2],
+            all.aggregate().call_rate(),
+            100.0 * all.aggregate().small_calls as f64 / all.aggregate().n as f64,
+            p50,
+            p95,
+            if all.feasible(&corpora) {
+                "過"
+            } else {
+                "未達"
+            }
+        );
+        named_rows.push(json!({
+            "label": label,
+            "rule": gate.label(),
+            "all": eval_json(&all, &corpora),
+            "p50_ms": p50,
+            "p95_ms": p95,
+        }));
+    }
+
+    // 8. 上限參考：用答案在整個題庫（含 holdout）挑單層門檻，只看趨勢。
+    let mut upper: Vec<(Gate, Evaluation)> = Vec::new();
+    for (gate, _, _) in &chosen {
+        if gate.rule.parts.len() != 1 || gate.escalate.is_some() {
             continue;
         }
-        upper.push((rule.clone(), evaluate(rule, &corpora, None)));
+        upper.push((gate.clone(), evaluate(gate, &corpora, None)));
     }
     upper.sort_by(|a, b| {
         b.1.margin(&corpora)
@@ -1090,24 +1687,23 @@ fn sweep(args: &Args) -> Result<(), String> {
             .then_with(|| a.1.aggregate().calls.cmp(&b.1.aggregate().calls))
     });
     println!("\n## 上限參考：用答案挑的門檻（不可當出貨值）");
-    for (rule, all) in upper.iter().take(5) {
-        let calls = all.aggregate().call_rate();
+    for (gate, all) in upper.iter().take(5) {
         let cells: Vec<String> = all
             .per
             .iter()
             .map(|part| format!("{:.1}", part.pct()))
             .collect();
         println!(
-            "{:<44} {:>7} {:>7} {:>7} {:>7.1}%",
-            rule.label(),
+            "{:<50} {:>7} {:>7} {:>7} {:>7.1}%",
+            gate.label(),
             cells[0],
             cells[1],
             cells[2],
-            calls
+            all.aggregate().call_rate()
         );
     }
 
-    // 5. 輸出 JSON。
+    // 9. 輸出 JSON。
     let out = args
         .out
         .clone()
@@ -1115,14 +1711,18 @@ fn sweep(args: &Args) -> Result<(), String> {
     let detail: Vec<_> = chosen
         .iter()
         .take(10)
-        .map(|(rule, dev, holdout)| {
+        .map(|(gate, dev, holdout)| {
             json!({
-                "rule": rule.describe(),
-                "label": rule.label(),
+                "label": gate.label(),
+                "rule": gate.rule.describe(),
+                "escalate": gate.escalate.map(|(signal, threshold)| json!({
+                    "signal": signal.short(),
+                    "threshold": threshold,
+                })),
                 "dev": eval_json(dev, &corpora),
                 "holdout": eval_json(holdout, &corpora),
-                "dev_p50_ms": latency_overall(rule, &corpora, Some(true)).0,
-                "dev_p95_ms": latency_overall(rule, &corpora, Some(true)).1,
+                "dev_p50_ms": latency_overall(gate, &corpora, Some(true)).0,
+                "dev_p95_ms": latency_overall(gate, &corpora, Some(true)).1,
             })
         })
         .collect();
@@ -1131,11 +1731,17 @@ fn sweep(args: &Args) -> Result<(), String> {
         json!({
             "baseline": baseline_rows,
             "selected": detail,
-            "signal_scan": signal_rows,
+            "signal_best": signal_best.iter().map(|(gate, dev, holdout)| json!({
+                "label": gate.label(),
+                "dev": eval_json(dev, &corpora),
+                "holdout": eval_json(holdout, &corpora),
+            })).collect::<Vec<_>>(),
+            "curves": curve_rows,
             "plateau": plateau,
-            "upper_reference": upper.iter().take(5).map(|(rule, all)| json!({
-                "rule": rule.describe(),
-                "label": rule.label(),
+            "two_stage": two_stage,
+            "named": named_rows,
+            "upper_reference": upper.iter().take(5).map(|(gate, all)| json!({
+                "label": gate.label(),
                 "all": eval_json(all, &corpora),
             })).collect::<Vec<_>>(),
         }),
@@ -1144,7 +1750,7 @@ fn sweep(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-fn print_rule_row(rule: &Rule, dev: &Evaluation, holdout: &Evaluation, corpora: &[Corpus]) {
+fn print_rule_row(gate: &Gate, dev: &Evaluation, holdout: &Evaluation, corpora: &[Corpus]) {
     let calls = dev.aggregate().call_rate();
     let cell = |eval: &Evaluation| -> Vec<String> {
         eval.per
@@ -1155,10 +1761,10 @@ fn print_rule_row(rule: &Rule, dev: &Evaluation, holdout: &Evaluation, corpora: 
     };
     let d = cell(dev);
     let h = cell(holdout);
-    let (p50, _) = latency_overall(rule, corpora, Some(true));
+    let (p50, _) = latency_overall(gate, corpora, Some(true));
     println!(
-        "{:<44} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7.1}% {:>6.2}",
-        rule.label(),
+        "{:<52} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7.1}% {:>6.2}",
+        gate.label(),
         d[0],
         d[1],
         d[2],
@@ -1177,6 +1783,7 @@ fn eval_json(eval: &Evaluation, corpora: &[Corpus]) -> serde_json::Value {
             "n": part.n,
             "pct": part.pct(),
             "calls_pct": part.call_rate(),
+            "small_calls_pct": if part.n == 0 { 0.0 } else { 100.0 * part.small_calls as f64 / part.n as f64 },
         })).collect::<Vec<_>>(),
         "overall_calls_pct": eval.aggregate().call_rate(),
         "feasible": eval.feasible(corpora),
@@ -1200,6 +1807,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--testdata" => parsed.testdata = PathBuf::from(value("--testdata")?),
             "--gguf" => parsed.gguf = Some(PathBuf::from(value("--gguf")?)),
             "--tokenizer" => parsed.tokenizer = Some(PathBuf::from(value("--tokenizer")?)),
+            "--gguf2" => parsed.gguf2 = Some(PathBuf::from(value("--gguf2")?)),
+            "--tokenizer2" => parsed.tokenizer2 = Some(PathBuf::from(value("--tokenizer2")?)),
             "--out" => parsed.out = Some(PathBuf::from(value("--out")?)),
             "--dir" => parsed.dir = PathBuf::from(value("--dir")?),
             "--limit" => {
@@ -1259,6 +1868,8 @@ mod tests {
             jinen: "亜".into(),
             jinen_hit: true,
             jinen_nfkc_hit: true,
+            jinen2: None,
+            jinen2_hit: false,
             signals: Signals {
                 gap: Some(100),
                 unknown_ratio: 0.5,
@@ -1266,14 +1877,23 @@ mod tests {
                 mean_candidates: 2.0,
                 ambiguous_ratio: 0.5,
                 max_candidates: 3,
+                kanji_ratio: 0.5,
+                max_unknown_run: 0,
+                path_len_diff: 0,
             },
             checks: Checks {
                 length_ok: true,
                 echo_ok: true,
                 emoji_ok: true,
             },
+            checks2: Checks {
+                length_ok: true,
+                echo_ok: true,
+                emoji_ok: true,
+            },
             stats_ms: 1.0,
             jinen_ms: 20.0,
+            jinen2_ms: 0.0,
         }
     }
 
@@ -1328,5 +1948,50 @@ mod tests {
             .count();
         assert!((30..=70).contains(&dev), "dev 比例失衡：{dev}");
         assert_eq!(is_dev("modern-007"), is_dev("modern-007"));
+    }
+
+    #[test]
+    fn test_is_kanji_covers_cjk_ranges() {
+        assert!(is_kanji('漢'));
+        assert!(is_kanji('㐂'));
+        assert!(!is_kanji('あ'));
+        assert!(!is_kanji('。'));
+        assert!(!is_kanji('ｱ'));
+    }
+
+    #[test]
+    fn test_gate_escalates_to_second_model() {
+        let mut row = row("a", 25);
+        row.jinen2 = Some("亜".into());
+        row.jinen2_hit = true;
+        row.jinen_hit = false;
+        let gate = Gate {
+            rule: Rule::single(Signal::Gap, 400.0),
+            escalate: Some((Signal::Length, 20.0)),
+        };
+        assert_eq!(gate.backend(&row), Backend::Jinen2);
+        assert!(decide(&row, &gate, gate.backend(&row)));
+    }
+
+    #[test]
+    fn test_gate_without_second_model_uses_xsmall() {
+        let mut row = row("a", 25);
+        row.jinen_hit = true;
+        let gate = Gate {
+            rule: Rule::single(Signal::Gap, 400.0),
+            escalate: Some((Signal::Length, 20.0)),
+        };
+        assert_eq!(gate.backend(&row), Backend::Jinen);
+        assert!(decide(&row, &gate, gate.backend(&row)));
+    }
+
+    #[test]
+    fn test_gate_rejects_triggered_output_failing_checks() {
+        let mut row = row("a", 5);
+        row.jinen_hit = true;
+        row.stats_hit = false;
+        row.checks.length_ok = false;
+        let gate = Gate::new(Rule::single(Signal::Gap, 400.0));
+        assert!(!decide(&row, &gate, gate.backend(&row)));
     }
 }
