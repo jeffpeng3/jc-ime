@@ -1708,3 +1708,19 @@ gate：
 ### CI（push `dd0d835`，run 44809704573；activate-diagnose）
 
 - linux (core)：success；windows (msvc)：success。
+
+### CI（push `dffee88`，run 44815017478；segment-diff／real-corpus 與量測工具修正）
+
+- linux (core)：success；windows (msvc)：success。
+
+## 2026-11-21 05:10 workflow-modernize（`e688666` → `b5cf837`）
+
+- 所有 workflow 的 `actions/checkout@v4` → `v5`、`actions/upload-artifact@v4` → `v6`、
+  `actions/download-artifact@v4` → `v7`（都是第一個宣告 node24 的主要版本；upload-artifact v5 仍 node20 故略過）。
+  CI／release 的 Node 20 黃色 annotation 預期消失。`publish` 條件未改。
+- `docs/release.md`：新增「快取與發版流程」，記錄 tag scope 讓 Windows job 每次 `No cache found.`、
+  跑完存 967 MB，以及「打 tag 前先在 main 用 `workflow_dispatch` 暖機」的程序。
+- 驗證：三個 workflow YAML 有效；grep 確認沒有殘留 `@v4`。
+- gate：test exit 0（54 targets、1301 passed、0 failed）、clippy exit 0、fmt exit 0。
+- 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：`payload-warnings`（還在跑）、`unify-segment`（使用者自行處理）。
