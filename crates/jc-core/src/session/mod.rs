@@ -15,6 +15,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+mod backends;
+mod composition;
 mod core;
 mod input_style;
 pub mod misc;
@@ -35,6 +37,7 @@ pub use neural::{
 pub use segments::tone_mark_keys;
 
 use crate::candidate::{Candidate, CandidateSource};
+use crate::composition::Composition;
 use crate::decode::{Decoder, Hypothesis, Locks};
 use crate::emoji::{self, Stat};
 use crate::ja::decode::{JaClause, JaContext, JaDecoder, JaResult};
@@ -293,9 +296,13 @@ pub struct Session {
     /// 上下鍵進入後才為 `true`。打字、選字、關窗與送出都會離開這個模式。
     pub(super) navigating: bool,
     pub(super) segments: Vec<Segment>,
-    /// 使用者指定的片段鎖定：音節起點 → 鎖定的詞。
+    /// 語言無關的組字模型；`Auto`／`User` 所有權的唯一來源。
     ///
-    /// 只有 [`Session::lock_segment`] 會寫入；一般選字不走這條路。
+    /// 注音與日文都只透過 [`Composition`] 判斷哪一段被使用者固定；語言後端
+    /// 的原生表示由 [`Session::sync_zh_locks`] 與 [`Session::sync_ja_users`]
+    /// 推導，不再各自維護鎖定。
+    pub(super) composition: Composition,
+    /// 注音解碼器的片段鎖定；由 [`Session::composition`] 的 `User` 標記推導。
     pub(super) locks: Locks,
     /// 手動編輯過的片段副本；下一次按鍵後由組字狀態重新推導。
     pub(super) segment_manual: Option<Vec<Segment>>,
@@ -412,6 +419,7 @@ impl Session {
             candidate_window: false,
             navigating: false,
             segments: Vec::new(),
+            composition: Composition::new(),
             locks: Locks::new(),
             segment_manual: None,
             pending_tone: None,
@@ -713,6 +721,7 @@ impl Session {
                         live.lock_through(index);
                     }
                 }
+                self.capture_ja_users();
                 self.finish_ja_script_edit(index);
             }
         }
@@ -734,6 +743,7 @@ impl Session {
                         live.lock_through(index);
                     }
                 }
+                self.capture_ja_users();
                 self.finish_ja_script_edit(index);
             }
         }
@@ -750,6 +760,7 @@ impl Session {
                 .as_mut()
                 .is_some_and(|live| live.unconvert(span).is_some());
             if changed {
+                self.capture_ja_users();
                 self.refresh_ja_live();
                 let end = self
                     .segments()
@@ -769,7 +780,11 @@ impl Session {
         }
         let index = self.active_segment()?;
         let span = self.live.as_ref()?.clause_spans().get(index).cloned()?;
-        Some((index, crate::ja::decode::JaSpan::new(span.start, span.end)))
+        // `JaSpan` 的第二個參數是長度，不是結束位置。
+        Some((
+            index,
+            crate::ja::decode::JaSpan::new(span.start, span.end - span.start),
+        ))
     }
 
     /// 片段選字或變換後重畫，游標停在該片段結尾。
@@ -846,11 +861,14 @@ impl Session {
     pub fn snapshot(&self) -> Snapshot {
         let preedit = self.base_with_highlight();
         let byte = self.cursor_byte();
+        let segments = self.segments();
+        let owners = self.segment_owners(&preedit, &segments);
         Snapshot {
             cursor_utf16: utf16_offset(&preedit, byte),
             cursor_rune: rune_offset(&preedit, byte),
             preedit,
-            segments: self.segments(),
+            segments,
+            owners,
             candidates: self.candidates.clone(),
             highlighted: self.highlighted,
             suggestion: self.snapshot_suggestion(),
@@ -1946,6 +1964,65 @@ mod tests {
             "今日はいい てんきですね".replace(' ', ""),
             "手選片段保留率應為 100%"
         );
+    }
+
+    /// F7 切換假名後，停頓重轉不得改回漢字。
+    #[test]
+    fn test_ja_deferred_sentence_keeps_toggled_segment_on_reconvert() {
+        let source = LiveTestSource(vec![
+            ja_entry("東京", "とうきょう", 1_000),
+            ja_entry("に", "に", 500),
+        ]);
+        let mut config = SessionConfig::new(Mode::Ja);
+        config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_live = live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            idle_delay: std::time::Duration::ZERO,
+            deferred_sentence: true,
+            ..live::Config::default()
+        };
+        let mut s = Session::new(config);
+        type_ja(&mut s, "toukyou");
+        assert_eq!(s.ja_live_idle().preedit, "東京");
+
+        s.ja_toggle_script();
+        assert!(
+            s.user_marks()
+                .iter()
+                .any(|mark| mark.lang == crate::composition::Lang::Ja),
+            "切換假名要留下語言無關的 User 標記"
+        );
+
+        type_ja(&mut s, "ni");
+        let again = s.ja_live_idle();
+        assert_eq!(again.preedit, "とうきょうに", "F7 固定片段被重轉改寫");
+    }
+
+    /// 拆回讀音後，該片段仍是 User，重轉不會再變成漢字。
+    #[test]
+    fn test_ja_deferred_sentence_keeps_unconverted_segment() {
+        let source = LiveTestSource(vec![
+            ja_entry("東京", "とうきょう", 1_000),
+            ja_entry("に", "に", 500),
+        ]);
+        let mut config = SessionConfig::new(Mode::Ja);
+        config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_live = live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            idle_delay: std::time::Duration::ZERO,
+            deferred_sentence: true,
+            ..live::Config::default()
+        };
+        let mut s = Session::new(config);
+        type_ja(&mut s, "toukyou");
+        s.ja_live_idle();
+        s.ja_unconvert();
+
+        type_ja(&mut s, "ni");
+        let again = s.ja_live_idle();
+        assert_eq!(again.preedit, "とうきょうに", "拆回讀音後又被重轉成漢字");
     }
 
     /// 讀音 `とうきょう` 的候選含漢字、平假名、片假名與半角かな。

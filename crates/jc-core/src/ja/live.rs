@@ -572,12 +572,20 @@ struct PendingNeural {
 }
 
 /// 使用者手動選過或編輯過的片段；重轉時保持固定。
-#[derive(Debug, Clone)]
-struct UserSegment {
-    start: usize,
-    units: usize,
-    reading: String,
-    surface: String,
+///
+/// 控制器只把這份清單當成轉換快取：所有權由 `jc-core` 的
+/// [`crate::composition::Composition`] 決定，`Session` 每次重建都把
+/// `Composition` 的 `User` 標記推進來。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserSegment {
+    /// 讀音單位起點。
+    pub start: usize,
+    /// 讀音單位數。
+    pub units: usize,
+    /// 固定時的讀音。
+    pub reading: String,
+    /// 固定時的詞面。
+    pub surface: String,
 }
 
 /// 已轉換的讀音前綴與文字。
@@ -791,12 +799,10 @@ impl Controller {
             self.pending = false;
             self.due = None;
             let current: String = self.seq.iter().map(Unit::as_str).collect();
-            // 單純往後追加時保留已顯示的轉換與 User 片段；刪除或改中間才
-            // 讓編輯點之後的 Auto 片段失效。User 片段若被改到才退回 Auto。
+            // 單純往後追加時保留已顯示的轉換；刪除或改中間才讓編輯點之後的
+            // Auto 片段失效。哪些 User 片段還在由 `Composition` 決定，
+            // `Session` 會在每次重建前先裁好再推進來。
             if !self.sentence_reading.is_empty() && !current.starts_with(&self.sentence_reading) {
-                let common = common_prefix_units(&self.sentence_reading, &current);
-                self.user_segments
-                    .retain(|segment| segment.start + segment.units <= common);
                 self.invalidate_sentence();
             }
             self.idle_due = Some(self.now() + self.cfg.idle_delay);
@@ -958,6 +964,22 @@ impl Controller {
             start += units;
         }
         out
+    }
+
+    /// 目前固定的使用者片段。
+    ///
+    /// 這份清單是轉換快取，權威來源是 `jc-core` 的
+    /// [`crate::composition::Composition`]。
+    pub fn user_segments(&self) -> &[UserSegment] {
+        &self.user_segments
+    }
+
+    /// 以 `Composition` 推導出的清單覆寫固定片段。
+    ///
+    /// `Session` 每次重建組字時呼叫；控制器不再自行決定哪一段被鎖定。
+    pub fn set_user_segments(&mut self, segments: Vec<UserSegment>) {
+        self.user_segments = segments;
+        self.user_segments.sort_by_key(|segment| segment.start);
     }
 
     /// 把指定片段標成 User；重轉時保持固定。

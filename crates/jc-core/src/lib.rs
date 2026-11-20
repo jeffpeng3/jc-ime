@@ -7,6 +7,7 @@
 //! 移植 task 補上，後續不需要再改動這裡。
 
 pub mod candidate;
+pub mod composition;
 pub mod decode;
 pub mod emoji;
 pub mod inputstyle;
@@ -30,6 +31,10 @@ pub mod zh;
 pub mod zhconv;
 
 pub use candidate::{Candidate, CandidateSource};
+pub use composition::{
+    AutoRun, CompSegment, Composition, ConvertBackend, ConvertContext, ConvertError, Converted,
+    Lang as CompLang, Owner, UserMark,
+};
 pub use decode::{Conversion, EngineError};
 pub use key::{Key, KeyCode};
 pub use lang::Mode;

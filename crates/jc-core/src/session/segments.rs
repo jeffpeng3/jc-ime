@@ -275,16 +275,9 @@ impl Session {
             return false;
         };
         let word = word.to_string();
-        self.locks
-            .retain(|&at, lock| !(at < end && start < at.saturating_add(lock.len)));
-        self.locks.insert(
-            start,
-            crate::decode::Lock {
-                word,
-                len: end - start,
-                ..crate::decode::Lock::default()
-            },
-        );
+        if !self.mark_zh_user_syllables(start, end - start, &word) {
+            return false;
+        }
         self.segment_manual = None;
         self.rebuild();
         true
@@ -297,10 +290,7 @@ impl Session {
         let Some((start, end)) = self.segment_syllables(index) else {
             return false;
         };
-        let before = self.locks.len();
-        self.locks
-            .retain(|&at, lock| !(at < end && start < at.saturating_add(lock.len)));
-        let changed = self.locks.len() != before;
+        let changed = self.demote_zh_syllables(start, end - start);
         if changed {
             self.segment_manual = None;
             self.rebuild();

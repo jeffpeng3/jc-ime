@@ -575,6 +575,7 @@ impl Session {
 
     pub(super) fn rebuild_mixed(&mut self) {
         if self.ascii.is_empty() {
+            self.composition.clear();
             return;
         }
         self.base = self.mixed_surface();
@@ -606,6 +607,7 @@ impl Session {
             };
             self.segments.push(Segment::new(start, at, mode, script));
         }
+        self.sync_composition_mixed();
         // 待定按鍵是英文詞時，候選先放原按鍵，再放注音顯示與英文前綴補完。
         // 同一個拼法有學過的修正時，修正直接排第一，原按鍵留在第二項。
         let raw = self.ascii.pending().to_string();
