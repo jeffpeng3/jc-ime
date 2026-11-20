@@ -1335,3 +1335,7 @@ CI 耗時對照：
 gate：test exit 0（54 targets、1231 passed、0 failed）、clippy exit 0、fmt exit 0；
 題庫 zh-golden **45/45**、quality **93.6%**、off **86.0%**、fuzzy **44.5%**、mixed **6/6**；
 `git branch --no-merged main` 空。
+
+### CI（push `fbb76f0`，run 44689671075）
+
+- linux (core)：success；windows (msvc)：success。
