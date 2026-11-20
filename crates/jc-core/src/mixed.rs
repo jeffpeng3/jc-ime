@@ -3710,7 +3710,7 @@ mod tests {
         lex.push(LexEntry::new(
             "供",
             "ㄍㄨㄥ",
-            100,
+            0,
             crate::lattice::UNKNOWN_POS,
         ));
         let ctx = ScoreContext::default();
@@ -3737,13 +3737,13 @@ mod tests {
         lex.push(LexEntry::new(
             "供",
             "ㄍㄨㄥ",
-            100,
+            0,
             crate::lattice::UNKNOWN_POS,
         ));
         lex.push(LexEntry::new(
             "小",
             "ㄒㄧㄠˇ",
-            100,
+            0,
             crate::lattice::UNKNOWN_POS,
         ));
         let ctx = ScoreContext::default();
@@ -3771,13 +3771,13 @@ mod tests {
         lex.push(LexEntry::new(
             "供",
             "ㄍㄨㄥ",
-            100,
+            0,
             crate::lattice::UNKNOWN_POS,
         ));
         lex.push(LexEntry::new(
             "小",
             "ㄒㄧㄠˇ",
-            100,
+            0,
             crate::lattice::UNKNOWN_POS,
         ));
         let ctx = ScoreContext::default();
