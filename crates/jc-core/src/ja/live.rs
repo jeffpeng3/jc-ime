@@ -780,6 +780,9 @@ mod tests {
 
     type Split = Box<dyn Fn(&str) -> Vec<JaClause>>;
 
+    /// 覆寫 `statistical()` 的門檻訊號：次佳成本與平均候選數。
+    type Signals = Rc<Cell<Option<(Option<i32>, f32)>>>;
+
     /// 記錄呼叫內容的假轉換器；`split` 決定文節切法。
     struct FakeConverter {
         state: Rc<RefCell<FakeState>>,
@@ -787,7 +790,7 @@ mod tests {
         cost: Rc<Cell<Duration>>,
         fail: Rc<Cell<bool>>,
         /// 覆寫 `statistical()` 的門檻訊號；`None` 時等於沒有次佳路徑。
-        signals: Rc<Cell<Option<(Option<i32>, f32)>>>,
+        signals: Signals,
         split: Split,
     }
 
