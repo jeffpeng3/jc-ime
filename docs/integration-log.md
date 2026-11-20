@@ -1261,3 +1261,18 @@
 - linux (core)：**success**（clippy 與測試都過，含 `jc-settings-ui` 的連結與測試）。
 - windows (msvc)：**success**（build 與 test 都過）。
 - 沒有需要重試或回報的失敗測試。
+
+## 2026-11-20 13:45 補合 tsf-polish 與 engine-supervisor
+
+- `tsf-polish` `639dc66` → merge `ef1f493`：組字用 `ITfDisplayAttributeProvider` 畫虛線底線、候選窗滑鼠點選走
+  `ITfCandidateListUIElementBehavior`。協定未改；點選是模擬上／下鍵加 Space／Escape。
+- `engine-supervisor` `95b2484` → merge `164d9f2`：`jc-engine --supervise`（Local mutex 單一實例、崩潰重啟、退避、
+  健康檢查、環狀 log）。
+
+gate：`cargo test --workspace --no-fail-fast --exclude jc-settings-ui` **exit 0**（54 targets、**1211 passed、0 failed**）；
+clippy exit 0；fmt exit 0。題庫：zh-golden **45/45**、quality **93.6%**、off **86.0%**、fuzzy **44.5%**、mixed **6/6**。
+`git branch --no-merged main` 已無任何分支。
+
+待辦：
+- 協定 v3 沒有「指定索引選字」，之後可加；現在由模擬按鍵達成，不影響功能。
+- `pipe` 名稱 `jc-ime` 是機器級共用，多使用者同時登入會衝突；要改成含 SID 或 session id（jc-tsf／引擎後續）。
