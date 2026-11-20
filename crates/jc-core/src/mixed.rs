@@ -1366,6 +1366,19 @@ impl English {
         self.learned(text) || self.dict.has(text)
     }
 
+    /// 英文詞的權重：先找學習詞，再找詞表；查無時回傳 `None`。
+    pub fn weight(&self, text: &str) -> Option<f64> {
+        if let Some(word) = self.find(text) {
+            return Some(LEARNED_WEIGHT + f64::from(word.count));
+        }
+        let lower = text.to_lowercase();
+        let words = self.dict.words();
+        words
+            .binary_search_by(|word| word.text.as_str().cmp(&lower))
+            .ok()
+            .map(|index| words[index].weight)
+    }
+
     /// [`English::has`] 的別名。
     pub fn known(&self, text: &str) -> bool {
         self.has(text)
@@ -1701,6 +1714,12 @@ pub struct Config {
     pub prefer_kana: bool,
     /// 單次查詢的候選上限；0 代表 8。
     pub max_candidates: usize,
+    /// 拉丁字串的雙語言切分（研究原型）；預設關閉。
+    ///
+    /// 開啟時，全小寫的拉丁片段會先交給
+    /// [`crate::mixed_latin`] 找出羅馬字與注音的最佳切分；關閉時行為與
+    /// 原本完全相同。
+    pub mixed_latin_split: bool,
 }
 
 impl Default for Config {
@@ -1710,6 +1729,7 @@ impl Default for Config {
             min_english_len: 3,
             prefer_kana: false,
             max_candidates: 8,
+            mixed_latin_split: false,
         }
     }
 }
@@ -1764,6 +1784,10 @@ struct Atom {
     kind: AtomKind,
     /// 羅馬字已還原的かな；只有整段可完整かな化時才有值。
     kana: Option<String>,
+    /// 注音已還原的音節（以空白分隔）；只有切分器產生的片段才有值。
+    zh: Option<String>,
+    /// かな照原樣輸出，不送かな漢字変換。
+    verbatim: bool,
     /// 全小寫 ASCII 字母（片語合併用）。
     plain_lower: bool,
 }
@@ -1777,6 +1801,10 @@ struct Plan {
     script: Script,
     kana: String,
     kana_ok: bool,
+    /// かな照原樣輸出，不送かな漢字変換。
+    verbatim: bool,
+    /// 切分器已還原的注音音節（以空白分隔）。
+    zh: Option<String>,
 }
 
 /// 混合輸入的路由器。
@@ -1835,7 +1863,7 @@ impl<'a> Router<'a> {
 
     /// 把輸入切成語言片段；沒有轉換，只判定邊界與語言。
     pub fn segments(&self, input: &str) -> Vec<Segment> {
-        self.plan(input)
+        self.visible_plans(input)
             .into_iter()
             .map(|p| Segment::new(p.start, p.end, p.mode, p.script))
             .collect()
@@ -1860,7 +1888,7 @@ impl<'a> Router<'a> {
     /// 語言邊界不加分隔符；`segments` 的位移是**輸入**的 UTF-8 位元組位移，
     /// 輸出字面的游標位置另外用 UTF-16 表示。
     pub fn convert(&self, input: &str) -> Result<MixedResult, MixedError> {
-        let plans = self.plan(input);
+        let plans = self.visible_plans(input);
         let mut surface = String::new();
         let mut segments = Vec::with_capacity(plans.len());
         let mut cost = 0i32;
@@ -1922,7 +1950,12 @@ impl<'a> Router<'a> {
         match plan.mode {
             Mode::Zh => match &self.zh {
                 Some(route) => {
-                    let syllables = zhuyin_syllables(literal);
+                    let syllables = match &plan.zh {
+                        Some(reading) => {
+                            crate::mixed_latin::toned_syllables(reading, route.lexicon)
+                        }
+                        None => zhuyin_syllables(literal),
+                    };
                     if syllables.is_empty() {
                         return Ok((literal.to_string(), 0));
                     }
@@ -1939,6 +1972,10 @@ impl<'a> Router<'a> {
                 if !plan.kana_ok || plan.kana.is_empty() || plan.script == Script::Symbol {
                     return Ok((literal.to_string(), 0));
                 }
+                // 切分器產生的かな先照原樣輸出，かな漢字変換留給後續候選。
+                if plan.verbatim {
+                    return Ok((plan.kana.clone(), 0));
+                }
                 match self.ja {
                     Some(decoder) => match decoder.convert(&plan.kana, &JaContext::default()) {
                         Some(conversion) => Ok((conversion.surface, conversion.cost)),
@@ -1951,10 +1988,50 @@ impl<'a> Router<'a> {
         }
     }
 
+    /// 輸出用的片段規劃：切分器開啟時，兩個切分片段之間的空白不輸出。
+    fn visible_plans(&self, input: &str) -> Vec<Plan> {
+        let plans = self.plan(input);
+        if !self.config.normalized().mixed_latin_split {
+            return plans;
+        }
+        let is_split = |plan: &Plan| plan.zh.is_some() || plan.verbatim;
+        let mut keep = vec![true; plans.len()];
+        for (index, plan) in plans.iter().enumerate() {
+            let text = &input[plan.start..plan.end];
+            if text.is_empty() || !text.chars().all(char::is_whitespace) {
+                continue;
+            }
+            let previous = index.checked_sub(1).and_then(|i| plans.get(i));
+            let next = plans.get(index + 1);
+            let previous_split = previous.is_some_and(is_split);
+            let next_split = next.is_some_and(is_split);
+            // 注音片段結尾的空白是一聲，不輸出；切分片段之間的空白也一樣。
+            let previous_is_zh = previous.is_some_and(|plan| plan.zh.is_some());
+            if (previous_split && next_split) || (previous_is_zh && next.is_none()) {
+                keep[index] = false;
+            }
+        }
+        plans
+            .into_iter()
+            .zip(keep)
+            .filter_map(|(plan, keep)| keep.then_some(plan))
+            .collect()
+    }
+
     fn plan(&self, input: &str) -> Vec<Plan> {
         let cfg = self.config.normalized();
         let lookup: &dyn Lookup = self.lookup();
-        let mut atoms = build_atoms(input, lookup, &cfg);
+        let adapter = self
+            .zh
+            .as_ref()
+            .map(|route| crate::mixed_latin::LexiconAdapter {
+                zh: Some(route.lexicon),
+                english: Some(self.english()),
+            });
+        let split_lex = adapter
+            .as_ref()
+            .map(|a| a as &dyn crate::mixed_latin::SplitLexicon);
+        let mut atoms = build_atoms(input, lookup, &cfg, split_lex);
         group_words(&mut atoms, input);
         resolve_han(&mut atoms);
         resolve_symbols(&mut atoms);
@@ -2064,7 +2141,12 @@ fn zhuyin_syllables(text: &str) -> Vec<String> {
     out
 }
 
-fn build_atoms(input: &str, lookup: &dyn Lookup, cfg: &Config) -> Vec<Atom> {
+fn build_atoms(
+    input: &str,
+    lookup: &dyn Lookup,
+    cfg: &Config,
+    split_lex: Option<&dyn crate::mixed_latin::SplitLexicon>,
+) -> Vec<Atom> {
     let mut atoms = Vec::new();
     let mut i = 0usize;
     while i < input.len() {
@@ -2089,6 +2171,8 @@ fn build_atoms(input: &str, lookup: &dyn Lookup, cfg: &Config) -> Vec<Atom> {
                 mode: Some(Mode::Zh),
                 kind: AtomKind::Zhuyin,
                 kana: None,
+                zh: None,
+                verbatim: false,
                 plain_lower: false,
             });
             continue;
@@ -2121,6 +2205,8 @@ fn build_atoms(input: &str, lookup: &dyn Lookup, cfg: &Config) -> Vec<Atom> {
                     },
                     kind,
                     kana: None,
+                    zh: None,
+                    verbatim: false,
                     plain_lower: false,
                 });
             }
@@ -2140,7 +2226,7 @@ fn build_atoms(input: &str, lookup: &dyn Lookup, cfg: &Config) -> Vec<Atom> {
             let (core, rest) = split_token(&input[start..i]);
             if !core.is_empty() {
                 let offset = start;
-                push_latin_atoms(&mut atoms, core, offset, lookup, cfg);
+                push_latin_atoms(&mut atoms, core, offset, lookup, cfg, split_lex);
             }
             let mut at = start + core.len();
             for p in rest.chars() {
@@ -2152,6 +2238,8 @@ fn build_atoms(input: &str, lookup: &dyn Lookup, cfg: &Config) -> Vec<Atom> {
                     mode: None,
                     kind: AtomKind::Symbol,
                     kana: None,
+                    zh: None,
+                    verbatim: false,
                     plain_lower: false,
                 });
                 at += n;
@@ -2176,6 +2264,8 @@ fn build_atoms(input: &str, lookup: &dyn Lookup, cfg: &Config) -> Vec<Atom> {
             mode: None,
             kind: AtomKind::Symbol,
             kana: None,
+            zh: None,
+            verbatim: false,
             plain_lower: false,
         });
     }
@@ -2232,7 +2322,15 @@ fn push_latin_atoms(
     offset: usize,
     lookup: &dyn Lookup,
     cfg: &Config,
+    split_lex: Option<&dyn crate::mixed_latin::SplitLexicon>,
 ) {
+    if cfg.mixed_latin_split {
+        if let Some(pieces) = split_latin_atoms(atoms, core, offset, split_lex) {
+            if pieces {
+                return;
+            }
+        }
+    }
     let whole = latin_piece(core, lookup, cfg);
     if let Some((kana, plain_lower)) = whole {
         atoms.push(Atom {
@@ -2242,6 +2340,8 @@ fn push_latin_atoms(
             mode: Some(Mode::Ja),
             kind: AtomKind::Word,
             kana: Some(kana),
+            zh: None,
+            verbatim: false,
             plain_lower,
         });
         return;
@@ -2256,6 +2356,8 @@ fn push_latin_atoms(
             mode: Some(Mode::Ja),
             kind: AtomKind::Word,
             kana: Some(kana),
+            zh: None,
+            verbatim: false,
             plain_lower: is_plain_lower(prefix),
         });
         let suffix_at = offset + prefix.len();
@@ -2270,6 +2372,8 @@ fn push_latin_atoms(
             mode: Some(Mode::En),
             kind: AtomKind::Word,
             kana: None,
+            zh: None,
+            verbatim: false,
             plain_lower: false,
         });
         return;
@@ -2287,8 +2391,55 @@ fn push_latin_atoms(
         mode: Some(Mode::En),
         kind: AtomKind::Word,
         kana: None,
+        zh: None,
+        verbatim: false,
         plain_lower: is_plain_lower(core),
     });
+}
+
+/// 用雙語言切分器處理一段拉丁字串。
+///
+/// 只接受全小寫、由注音與羅馬字按鍵組成的字串；已知英文詞、大寫、全角與
+/// 識別字一律交給原本的路徑。回傳 `Some(false)` 表示切分器不適用，
+/// `Some(true)` 表示已產生片段。
+fn split_latin_atoms(
+    atoms: &mut Vec<Atom>,
+    core: &str,
+    offset: usize,
+    split_lex: Option<&dyn crate::mixed_latin::SplitLexicon>,
+) -> Option<bool> {
+    if core.is_empty()
+        || has_fullwidth_alnum(core)
+        || core.chars().any(|c| c.is_ascii_uppercase())
+        || !core
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || ",./;-".contains(c))
+    {
+        return None;
+    }
+    let lexicon: &dyn crate::mixed_latin::SplitLexicon =
+        split_lex.unwrap_or(&crate::mixed_latin::NoLexicon);
+    let opts = crate::mixed_latin::Options::default();
+    let split = crate::mixed_latin::split(core, &opts, lexicon)?;
+    if split.is_empty() {
+        return Some(false);
+    }
+    for piece in &split.pieces {
+        let lang = piece.lang;
+        atoms.push(Atom {
+            start: offset + piece.start,
+            end: offset + piece.end,
+            script: Script::Latin,
+            mode: Some(lang.mode()),
+            kind: AtomKind::Word,
+            kana: (lang == crate::mixed_latin::SplitLang::Ja).then(|| piece.reading.clone()),
+            zh: (lang == crate::mixed_latin::SplitLang::Zh).then(|| piece.reading.clone()),
+            verbatim: lang == crate::mixed_latin::SplitLang::Ja,
+            plain_lower: lang == crate::mixed_latin::SplitLang::En
+                || is_plain_lower(piece.text(core)),
+        });
+    }
+    Some(true)
 }
 
 /// 整段英數詞能不能當成一個完整的かな讀音。
@@ -2539,12 +2690,24 @@ fn merge_atoms(atoms: &[Atom], input: &str) -> Vec<Plan> {
         if let Some(last) = plans.last_mut() {
             if last.mode == mode && script_family(last.script) == script_family(atom.script) {
                 last.end = atom.end;
+                last.verbatim = last.verbatim && atom.verbatim;
                 match atom.kind {
                     AtomKind::Kana => last.kana.push_str(&input[atom.start..atom.end]),
                     AtomKind::Word if mode == Mode::Ja => match &atom.kana {
                         Some(kana) => last.kana.push_str(kana),
                         None => last.kana_ok = false,
                     },
+                    AtomKind::Word if mode == Mode::Zh => {
+                        if let Some(reading) = &atom.zh {
+                            match &mut last.zh {
+                                Some(zh) => {
+                                    zh.push(' ');
+                                    zh.push_str(reading);
+                                }
+                                None => last.zh = Some(reading.clone()),
+                            }
+                        }
+                    }
                     AtomKind::Zhuyin | AtomKind::Symbol => {}
                     AtomKind::Han => last.kana_ok = false,
                     AtomKind::Word => {}
@@ -2559,6 +2722,8 @@ fn merge_atoms(atoms: &[Atom], input: &str) -> Vec<Plan> {
             script: atom.script,
             kana: String::new(),
             kana_ok: true,
+            verbatim: atom.verbatim,
+            zh: None,
         };
         match atom.kind {
             AtomKind::Kana => plan.kana = input[atom.start..atom.end].to_string(),
@@ -2566,6 +2731,7 @@ fn merge_atoms(atoms: &[Atom], input: &str) -> Vec<Plan> {
                 Some(kana) => plan.kana = kana.clone(),
                 None => plan.kana_ok = false,
             },
+            AtomKind::Word if mode == Mode::Zh => plan.zh = atom.zh.clone(),
             AtomKind::Word | AtomKind::Zhuyin | AtomKind::Symbol => {}
             AtomKind::Han => plan.kana_ok = false,
         }
@@ -2579,7 +2745,7 @@ mod tests {
     use super::*;
     use crate::ja::decode::JaWordSource;
     use crate::ja::lexicon::{JaEntry, Split};
-    use crate::lattice::InMemoryLexicon;
+    use crate::lattice::{InMemoryLexicon, LexEntry};
     use std::sync::Arc;
 
     fn english() -> English {
@@ -3517,5 +3683,107 @@ mod tests {
             .collect();
         assert_eq!(surfaces, vec!["です", " ", "is a good sentence"]);
         assert_eq!(result.surface, "です is a good sentence");
+    }
+
+    #[test]
+    fn test_mixed_latin_split_keeps_kanji_japanese() {
+        let lex = InMemoryLexicon::new();
+        let ctx = ScoreContext::default();
+        // `kanji` 也是英文詞表裡的借詞；切分器要比英文更偏好完整羅馬字。
+        let dictionary = Dictionary::new(vec![Word::new("kanji", 1.0)]);
+        let e = English::new(Some(dictionary));
+        let r = Router::new()
+            .with_zh(&lex, &ctx)
+            .with_english(&e)
+            .with_config(Config {
+                mixed_latin_split: true,
+                ..Config::default()
+            });
+        let result = r.convert("kanji").expect("轉換");
+        assert_eq!(result.surface, "かんじ");
+        assert_eq!(result.languages(), vec![Mode::Ja]);
+    }
+
+    #[test]
+    fn test_mixed_latin_split_english_tail() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new(
+            "供",
+            "ㄍㄨㄥ",
+            100,
+            crate::lattice::UNKNOWN_POS,
+        ));
+        let ctx = ScoreContext::default();
+        let dictionary = Dictionary::new(vec![Word::new("small", 1.0)]);
+        let e = English::new(Some(dictionary));
+        let r = Router::new()
+            .with_zh(&lex, &ctx)
+            .with_english(&e)
+            .with_config(Config {
+                mixed_latin_split: true,
+                ..Config::default()
+            });
+        let result = r.convert("rishireej/ sasmall").expect("轉換");
+        assert_eq!(result.surface, "りしれ供さsmall");
+        assert_eq!(
+            result.languages(),
+            vec![Mode::Ja, Mode::Zh, Mode::Ja, Mode::En]
+        );
+    }
+
+    #[test]
+    fn test_mixed_latin_split_fixture() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new(
+            "供",
+            "ㄍㄨㄥ",
+            100,
+            crate::lattice::UNKNOWN_POS,
+        ));
+        lex.push(LexEntry::new(
+            "小",
+            "ㄒㄧㄠˇ",
+            100,
+            crate::lattice::UNKNOWN_POS,
+        ));
+        let ctx = ScoreContext::default();
+        let r = Router::new().with_zh(&lex, &ctx).with_config(Config {
+            mixed_latin_split: true,
+            ..Config::default()
+        });
+        let result = r.convert("rishireej/ savul3").expect("轉換");
+        assert_eq!(result.surface, "りしれ供さ小");
+        assert_eq!(
+            result.languages(),
+            vec![Mode::Ja, Mode::Zh, Mode::Ja, Mode::Zh]
+        );
+        let pieces: Vec<&str> = result
+            .segments
+            .iter()
+            .map(|segment| segment.surface.as_str())
+            .collect();
+        assert_eq!(pieces, vec!["りしれ", "供", "さ", "小"]);
+    }
+
+    #[test]
+    fn test_mixed_latin_split_off_keeps_literal() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new(
+            "供",
+            "ㄍㄨㄥ",
+            100,
+            crate::lattice::UNKNOWN_POS,
+        ));
+        lex.push(LexEntry::new(
+            "小",
+            "ㄒㄧㄠˇ",
+            100,
+            crate::lattice::UNKNOWN_POS,
+        ));
+        let ctx = ScoreContext::default();
+        let r = Router::new().with_zh(&lex, &ctx);
+        let result = r.convert("rishireej/ savul3").expect("轉換");
+        assert_eq!(result.surface, "rishireej/ savul3");
+        assert!(result.languages().iter().all(|&m| m == Mode::En));
     }
 }

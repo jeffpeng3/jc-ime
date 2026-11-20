@@ -102,6 +102,13 @@ impl Table {
     pub fn is_prefix(&self, keys: &str) -> bool {
         self.prefixes.contains(keys)
     }
+
+    /// 對照表的全部項目；供切分器等唯讀列舉使用。
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.entries
+            .iter()
+            .map(|(keys, kana)| (keys.as_str(), kana.as_str()))
+    }
 }
 
 /// 內建羅馬字對照表。
@@ -797,7 +804,7 @@ fn is_vowel_or_y(key: char) -> bool {
 /// 重複這個子音時是否形成促音。
 ///
 /// `n` 由專用規則處理，`y`、`w`、`x`、`l` 不使用促音寫法。
-fn can_sokuon(c: char) -> bool {
+pub(crate) fn can_sokuon(c: char) -> bool {
     matches!(
         c,
         'b' | 'c'
