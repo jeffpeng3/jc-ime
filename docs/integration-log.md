@@ -1520,3 +1520,7 @@ gate（固定工具鏈）：
 - gate：`cargo check --workspace --all-targets` exit 0、clippy exit 0、fmt exit 0；`release.yml`／`ci.yml` YAML 有效。
 - 依指示只改安裝器與文件，未重跑題庫。
 - `git branch --no-merged main`：空。
+
+### CI（push `3f2b343`，run 44771900689）
+
+- linux (core)：success；windows (msvc)：success。
