@@ -293,7 +293,6 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     match kind {
         "zh-golden" => {
             reject_ja_flags(rerank, gate, left, neural, "eval zh-golden")?;
-            reject_backend(backend, "eval zh-golden")?;
             reject_items(items, "eval zh-golden")?;
             Ok(Command::EvalZhGolden {
                 testdata,
