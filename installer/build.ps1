@@ -112,10 +112,19 @@ function Format-CargoCommand {
     return 'cargo ' + ($Arguments -join ' ')
 }
 
-# 靜態連結 CRT：TSF DLL 會被載入 explorer 與任意程式，不能依賴 vcruntime140.dll。
-# 這是 docs/history.md 記錄的出貨條件。
-$env:RUSTFLAGS = (@($env:RUSTFLAGS, '-C target-feature=+crt-static') |
-    Where-Object { $_ }) -join ' '
+# 找檔失敗時列出目錄裡真正存在的 DLL，命名不符時不必再翻 CI 的整份 log。
+function Get-DllNames {
+    param([Parameter(Mandatory)][string]$Directory)
+    $names = @(Get-ChildItem -Path $Directory -Filter '*.dll' -File -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty Name | Sort-Object)
+    if ($names.Count -eq 0) { return '（沒有 .dll）' }
+    return ($names -join ', ')
+}
+
+# 靜態連結 CRT 的 rustflags 放在 .cargo/config.toml 的兩個 windows-msvc
+# target，build.ps1 不再設定 RUSTFLAGS。CI 的 cargo run／cargo build 與這裡
+# 共用同一組指紋，避免因環境變數不同而全量重編。
+# 出貨條件見 docs/history.md：TSF DLL 不能依賴 vcruntime140.dll。
 
 # 先建置，再解析輸出目錄。Resolve-ReleaseDir 只驗證既有產物；若在建置前呼叫，
 # 乾淨的 runner 上必定找不到 target\<triple>\<profile>（RC1 在 build.ps1:107 失敗）。
@@ -188,8 +197,13 @@ Write-Host '==> 暫存 payload'
 if (Test-Path $Payload) { Remove-Item $Payload -Recurse -Force }
 New-Item -ItemType Directory -Path $Payload | Out-Null
 
+# jc-tsf 是 cdylib，Cargo 的 lib target 名稱是 jc_tsf（底線），產物因此是
+# jc_tsf.dll；payload 內才改成 WXS 使用的 jc-tsf.dll 與 jc-tsf-x86.dll。
+# 其餘 bin target 保留連字號：jc-engine.exe、jc-cli.exe、jc-settings-ui.exe、
+# jc-tsf-smoke.exe，已用 cargo metadata 確認。
+$tsfLibName = 'jc_tsf.dll'
 $programs = @(
-    'jc-tsf.dll', 'jc-engine.exe', 'jc-cli.exe', 'jc-settings-ui.exe', 'jc-tsf-smoke.exe'
+    'jc-engine.exe', 'jc-cli.exe', 'jc-settings-ui.exe', 'jc-tsf-smoke.exe'
 )
 foreach ($name in $programs) {
     $source = Join-Path $ReleaseDir $name
@@ -197,11 +211,17 @@ foreach ($name in $programs) {
     Copy-Item $source $Payload
 }
 
+$x64Dll = Join-Path $ReleaseDir $tsfLibName
+if (-not (Test-Path $x64Dll)) {
+    throw "建置輸出缺少預期的 $tsfLibName（$x64Dll）。目錄中實際存在的 .dll：$(Get-DllNames $ReleaseDir)"
+}
+Copy-Item $x64Dll (Join-Path $Payload 'jc-tsf.dll')
+
 # x86 的 DLL 改名進 payload：兩份都叫 jc-tsf.dll，安裝後放在同一個目錄，
 # 檔名必須分得出來，WXS 才引用得到兩個檔案。
-$x86Dll = Join-Path $ReleaseDirX86 'jc-tsf.dll'
+$x86Dll = Join-Path $ReleaseDirX86 $tsfLibName
 if (-not (Test-Path $x86Dll)) {
-    throw "建置輸出缺少 x86 jc-tsf.dll（$x86Dll）；請先 rustup target add $TargetX86"
+    throw "建置輸出缺少預期的 $tsfLibName（$x86Dll）。目錄中實際存在的 .dll：$(Get-DllNames $ReleaseDirX86)；請先 rustup target add $TargetX86"
 }
 Copy-Item $x86Dll (Join-Path $Payload 'jc-tsf-x86.dll')
 
