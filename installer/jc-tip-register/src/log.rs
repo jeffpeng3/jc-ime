@@ -8,6 +8,10 @@
 //! 位置：`%TEMP%\jc-ime-install.log`；取不到 `%TEMP%` 時寫在執行檔同目錄。
 //! 路徑會透過環境變數 `JC_INSTALL_LOG` 傳給 `jc-tsf.dll`，讓 DLL 內部的標記
 //! 附加到同一份檔案。
+//!
+//! 檔案是 UTF-8 with BOM：第一次建立（開啟後長度為 0）時先寫 BOM，之後附加的
+//! 內容不再重複。Windows PowerShell 5.1 的 `Get-Content` 因此不必加 `-Encoding`，
+//! 中文不會被當成 ANSI 讀成亂碼。
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -55,7 +59,14 @@ pub fn step(message: &str) {
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
-    let _ = file.write_all(line.as_bytes());
+    // 空檔案就是這次建立的：先寫 BOM。之後附加的內容不再重複。
+    let is_new = file.metadata().map(|meta| meta.len() == 0).unwrap_or(false);
+    let mut record = Vec::with_capacity(line.len() + 3);
+    if is_new {
+        record.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    }
+    record.extend_from_slice(line.as_bytes());
+    let _ = file.write_all(&record);
     let _ = file.flush();
     let _ = file.sync_all();
 }

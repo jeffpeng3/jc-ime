@@ -59,8 +59,11 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼，也沒有 Wind
    `RegisterCategory(CLSID, GUID_TFCAT_TIP_KEYBOARD)`，Windows 8 以後的輸入法
    設定頁才會列出這個 TIP。
 
-**刻意不呼叫** `ITfInputProcessorProfileMgr::ActivateProfile`：安裝完不會偷改
-使用者的預設輸入法，要自己到系統設定裡加。
+**刻意不呼叫** `ITfInputProcessorProfileMgr::ActivateProfile`：不會偷改使用者的
+系統預設輸入法。MSI 的 `machine-register` 用 `RegisterProfile` 並把
+`bEnabledByDefault` 傳 `true`，profile 註冊時就是 `Enable=1`，使用者把「jc 注音」
+加入鍵盤後就能切換；手動 `regsvr32` 走的 `AddLanguageProfile` 沒有這個參數，
+行為可能不同。
 
 `DllUnregisterServer` 反向做：`RemoveLanguageProfile`、`Unregister`、
 `UnregisterCategory`，最後 `RegDeleteTreeW` 刪掉整個 `CLSID\{...}`。機碼檢視一律由

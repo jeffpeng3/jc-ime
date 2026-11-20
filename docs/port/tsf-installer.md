@@ -288,6 +288,10 @@ reg query "HKCR\CLSID\{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}\InprocServer32" /ve
 動作以 SYSTEM 執行，`%TEMP%` 是 `C:\Windows\Temp`；一般使用者身分執行時則是該
 使用者的 `%TEMP%`。取不到 `%TEMP%` 時寫在 `jc-tip-register.exe` 同目錄。
 
+日誌是 **UTF-8 with BOM**：第一次建立檔案時先寫 BOM，之後附加的內容不重複。
+Windows PowerShell 5.1 的 `Get-Content` 預設用 ANSI 解讀，對這份日誌不用加
+`-Encoding`，中文才不會變亂碼。
+
 `jc-tip-register` 用環境變數 `JC_INSTALL_LOG` 把同一個路徑傳給 `jc-tsf.dll`，
 DLL 內的標記會附加到同一份檔案。手動重跑時也可以自己設這個變數（rc.7 之後
 `machine-register` 不吃參數）：
@@ -417,13 +421,18 @@ WriteRegistryValues（標準順序 5000）
   │    TsfDllX86    → HKCR\Wow6432Node\CLSID\{…}\InprocServer32 = …\jc-tsf-x86.dll
   └─ RegisterTip（deferred、SYSTEM）  machine-register
        CoCreateInstance(CLSID_TF_InputProcessorProfiles) → ITfInputProcessorProfileMgr
-       RegisterProfile(CLSID, 0x0404, PROFILE, "jc 注音", 無圖示, 0, HKL::default(), 0, false, 0)
+       RegisterProfile(CLSID, 0x0404, PROFILE, "jc 注音", 無圖示, 0, HKL::default(), 0, true, 0)
        CoCreateInstance(CLSID_TF_CategoryMgr) → ITfCategoryMgr
        RegisterCategory ×3（TIP_KEYBOARD、TIPCAP_UIELEMENTENABLED、DISPLAYATTRIBUTEPROVIDER）
        ensure_tip_key（只讀，驗證 64／32 位元檢視）
 InstallFinalize
 InstallTipLayout（immediate、使用者）  user-install → InstallLayoutOrTip(ILOT_INSTALL)
 ```
+
+`RegisterProfile` 的 `bEnabledByDefault` 傳 `true`，`LanguageProfile\0x0404\{PROFILE}`
+的 `Enable` 會寫成 `1`。使用者把「jc 注音」加入鍵盤（MSI 由 `InstallTipLayout`
+先加進語言清單）之後就能直接切換，不會像 `Enable=0` 時選了也切不過去。這裡仍然
+不呼叫 `ActivateProfile`，所以不會改掉使用者的系統預設輸入法。
 
 反安裝：
 
