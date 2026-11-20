@@ -235,13 +235,13 @@ jobs:
           Write-Host "資料根目錄：$dataRoot"
 
       - name: 建置 workspace（release）
-        run: cargo build --workspace --release
+        run: cargo build --workspace --release --target x86_64-pc-windows-msvc
 
       - name: 驗證資料包
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & .\target\release\jc-cli.exe data verify $env:JC_DATA_ROOT
+          & .\target\x86_64-pc-windows-msvc\release\jc-cli.exe data verify $env:JC_DATA_ROOT
           if ($LASTEXITCODE -ne 0) {
             throw "資料驗證失敗（exit $LASTEXITCODE）"
           }

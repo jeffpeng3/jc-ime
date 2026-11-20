@@ -85,8 +85,32 @@ $Root = Split-Path -Parent $PSScriptRoot
 $TargetRoot = Join-Path $Root 'target'
 $OutDir = Join-Path $TargetRoot 'installer'
 $Payload = Join-Path $OutDir 'payload'
-$ReleaseDir = Join-Path $TargetRoot "$Target\$Configuration"
-$ReleaseDirX86 = Join-Path $TargetRoot "$TargetX86\$Configuration"
+
+# 預期輸出在 target/<triple>/<profile>；找不到時退回 target/<profile>，並明確說出
+# 實際使用哪一個路徑，避免 CI 因 cargo build 沒帶 --target 而默默拿錯檔案。
+# 只讓 x64 退回：target/<profile> 的產物是 x64，拿來當 x86 DLL 會裝錯架構。
+function Resolve-ReleaseDir {
+    param(
+        [Parameter(Mandatory)][string]$Triple,
+        [Parameter(Mandatory)][string]$Hint,
+        [switch]$AllowFallback
+    )
+    $targeted = Join-Path $TargetRoot (Join-Path $Triple $Configuration)
+    if (Test-Path $targeted) { return $targeted }
+    if ($AllowFallback) {
+        $fallback = Join-Path $TargetRoot $Configuration
+        if (Test-Path $fallback) {
+            Write-Warning "找不到 $targeted，退回 $fallback。"
+            return $fallback
+        }
+    }
+    throw "找不到建置輸出 $targeted。$Hint"
+}
+
+$ReleaseDir = Resolve-ReleaseDir $Target '請先 cargo build --release --target x86_64-pc-windows-msvc。' -AllowFallback
+$ReleaseDirX86 = Resolve-ReleaseDir $TargetX86 "請先 rustup target add $TargetX86 並建置 i686 的 jc-tsf。"
+Write-Host "==> 使用 x64 建置輸出 $ReleaseDir"
+Write-Host "==> 使用 x86 建置輸出 $ReleaseDirX86"
 $HelperTarget = Join-Path $TargetRoot 'tip-register'
 $HelperRelease = Join-Path $HelperTarget "$Target\$Configuration"
 
