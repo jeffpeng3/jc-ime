@@ -5,7 +5,8 @@ name: Release
 #   workflow_dispatch   -> verify -> windows MSI + linux tar.gz（不建立 Release）
 #
 # 版本號唯一來源是 Cargo.toml 的 [workspace.package] version。標籤觸發時
-# 標籤必須是 v<version>，且與 Cargo.toml 相同。
+# 標籤必須是 v<version>，且與 Cargo.toml 相同。發佈版本可以有 pre-release
+# 後綴（v0.1.0-rc.1）；MSI ProductVersion 另取前三段數字（0.1.0）。
 on:
   push:
     tags: ["v*"]
@@ -37,6 +38,7 @@ jobs:
     timeout-minutes: 90
     outputs:
       version: ${{ steps.version.outputs.version }}
+      msi_version: ${{ steps.version.outputs.msi_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -89,15 +91,21 @@ jobs:
             version="${cargo_version}"
           fi
 
-          # build.ps1 與 MSI ProductVersion 只接受 x.y.z。
-          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::版本 ${version} 不是 x.y.z；MSI 不支援 pre-release 或 build metadata"
+          # 發佈版本允許 pre-release 後綴（0.1.0-rc.1）；MSI 的 ProductVersion
+          # 只接受三段數字，因此另外推導 msi_version 給 installer/build.ps1。
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::版本 ${version} 不是 x.y.z 或 x.y.z-<pre-release>"
             exit 1
           fi
+          msi_version="${version%%-*}"
 
           echo "Cargo.toml 版本：${cargo_version}"
           echo "本次發佈版本：${version}"
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "MSI ProductVersion：${msi_version}"
+          {
+            echo "version=${version}"
+            echo "msi_version=${msi_version}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: cargo test --release
         run: cargo test --workspace --release
@@ -110,7 +118,10 @@ jobs:
     outputs:
       signed: ${{ steps.signing.outputs.signed }}
     env:
+      # RELEASE_VERSION 是完整版本（含 -rc.1），用於檔名與 Release 標題；
+      # MSI_VERSION 只有三段數字，給 MSI ProductVersion。
       RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+      MSI_VERSION: ${{ needs.verify.outputs.msi_version }}
       # 手動輸入優先，其次 repo secret，最後 repo variable。
       DATA_BUNDLE_URL: ${{ github.event.inputs.data_bundle_url || secrets.JC_DATA_BUNDLE_URL || vars.JC_DATA_BUNDLE_URL }}
       DATA_BUNDLE_SHA256: ${{ github.event.inputs.data_bundle_sha256 || secrets.JC_DATA_BUNDLE_SHA256 || vars.JC_DATA_BUNDLE_SHA256 }}
@@ -292,8 +303,10 @@ jobs:
 
           # 資料包只帶 shipped 檔案，但 manifest 仍是對完整資料根目錄產生的；
           # -Manifest 讓安裝包保留 shipped: false 的下載項與 URL。
+          # -MsiVersion 給 MSI ProductVersion（x.y.z）；MSI 檔名用完整版本。
           .\installer\build.ps1 -DataRoot $env:JC_DATA_ROOT `
-            -Manifest (Join-Path $env:JC_DATA_ROOT 'manifest.json')
+            -Manifest (Join-Path $env:JC_DATA_ROOT 'manifest.json') `
+            -MsiVersion $env:MSI_VERSION
 
           $msi = Join-Path 'target\installer' "jc-ime-$env:RELEASE_VERSION-x64.msi"
           if (-not (Test-Path $msi)) {
@@ -409,11 +422,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+          MSI_VERSION: ${{ needs.verify.outputs.msi_version }}
           SIGNED: ${{ needs.windows.outputs.signed }}
         run: |
           set -euo pipefail
 
           version="${RELEASE_VERSION}"
+          msi_version="${MSI_VERSION}"
+          prerelease_args=()
+          if [[ "${version}" == *-* ]]; then
+            prerelease_args=(--prerelease)
+          fi
           date_utc=$(date -u +%Y-%m-%d)
           data_version=$(python3 - <<'PY'
           import json
@@ -448,6 +467,10 @@ jobs:
 
           {
             printf '## 版本\n\n`%s`（%s）\n\n' "${version}" "${date_utc}"
+            if [[ "${msi_version}" != "${version}" ]]; then
+              printf '這是 pre-release。MSI 的 ProductVersion 只有 `%s`，\n' "${msi_version}"
+              printf '因此 Windows 的「應用程式與功能」不會顯示 `%s` 後綴。\n\n' "${version}"
+            fi
             printf '## 模型與資料版本\n\n`%s`（安裝包內 `data/manifest.json`，涵蓋詞典與模型）\n\n' "${data_version}"
             printf '## 變更摘要\n\n'
             cat "${changelog}"
@@ -490,11 +513,12 @@ jobs:
 
           if gh release view "v${version}" >/dev/null 2>&1; then
             echo "Release v${version} 已存在；更新說明並覆蓋 assets。"
-            gh release edit "v${version}" --title "${version}" --notes-file "${notes}"
+            gh release edit "v${version}" --title "${version}" \
+              --notes-file "${notes}" "${prerelease_args[@]}"
             gh release upload "v${version}" "${assets[@]}" --clobber
           else
             gh release create "v${version}" "${assets[@]}" \
               --title "${version}" \
               --notes-file "${notes}" \
-              --verify-tag
+              --verify-tag "${prerelease_args[@]}"
           fi

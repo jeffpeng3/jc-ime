@@ -1,4 +1,3 @@
-#Requires -Version 5.1
 <#
 .SYNOPSIS
     建置 jc 注音的可攜 payload 與 WiX v5 MSI。
@@ -6,8 +5,11 @@
 .DESCRIPTION
     步驟：cargo build（x64 全部程式 + i686 的 jc-tsf，以及 jc-tip-register）→ 使用或
     產生資料 manifest → 暫存 payload（程式、資料、授權文件）→ wix build → 選用簽章。
-    版本號取自 workspace Cargo.toml 的 [workspace.package] version；MSI 只接受
-    x.y.z，pre-release 會被擋下。
+
+    版本號取自 workspace Cargo.toml 的 [workspace.package] version，可以是
+    pre-release（例如 0.1.0-rc.1）。MSI 的 ProductVersion 只接受 x.y.z，所以
+    另外用 -MsiVersion 指定；沒給時由完整版本去掉 -pre-release 推導。MSI 檔名
+    一律用完整版本，例如 jc-ime-0.1.0-rc.1-x64.msi。
 
     安裝包同時帶兩個架構的 TSF 文字服務：x64 的 jc-tsf.dll 與 i686 的
     jc-tsf-x86.dll。TSF 依宿主行程的位元數載入對應的那一份，兩份各自註冊一個
@@ -32,9 +34,23 @@
     `jc-cli data manifest` 重算；適合 CI 只帶 shipped: true 檔案、但仍要保留
     shipped: false 下載項 URL 的情況。預設讀 JC_DATA_MANIFEST。
 
+.PARAMETER MsiVersion
+    MSI 的 ProductVersion，必須是 x.y.z。預設讀 JC_MSI_VERSION；兩者都沒給時由
+    完整版本推導，也就是去掉 `-rc.1` 這類 pre-release 後綴。只用於 MSI 內部
+    版本與升級判斷，檔名與顯示版本仍是完整版本。
+
 .EXAMPLE
     .\installer\build.ps1 -DataRoot Z:\mnt\work\jc\jc-ime-data
+
+.EXAMPLE
+    # Cargo.toml 是 0.1.0-rc.1：MSI ProductVersion 0.1.0，檔名含 -rc.1。
+    .\installer\build.ps1 -DataRoot Z:\mnt\work\jc\jc-ime-data -MsiVersion 0.1.0
 #>
+
+# 說明區塊必須是檔案的第一個元素，Get-Help 才讀得到，所以 #Requires 放在它
+# 之後；PowerShell 允許 #Requires 出現在任何位置。
+#Requires -Version 5.1
+
 [CmdletBinding()]
 param(
     [string]$DataRoot = $env:JC_DATA_ROOT,
@@ -45,6 +61,7 @@ param(
     [string]$Certificate = $env:JC_SIGN_CERT,
     [string]$CertificatePassword = $env:JC_SIGN_PASSWORD,
     [string]$Manifest = $env:JC_DATA_MANIFEST,
+    [string]$MsiVersion = $env:JC_MSI_VERSION,
     [switch]$SkipSign
 )
 
@@ -80,13 +97,22 @@ if (-not (Test-Path $DataRoot)) {
     throw "資料根目錄不存在：$DataRoot"
 }
 
-# 版本：只認 workspace.package 的 version。
+# 版本：只認 workspace.package 的 version。完整版本可以有 pre-release 後綴，
+# 例如 0.1.0-rc.1；MSI ProductVersion 另外處理。
 $match = Select-String -Path (Join-Path $Root 'Cargo.toml') -Pattern '^version\s*=\s*"([^"]+)"' -List
 if (-not $match) { throw 'Cargo.toml 找不到 [workspace.package] version' }
 $Version = $match.Matches[0].Groups[1].Value
-if ($Version -notmatch '^\d+\.\d+\.\d+$') {
-    throw "MSI 版本必須是 x.y.z（Cargo.toml 是 $Version）；pre-release 請先改成三段數字。"
+if ($Version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+    throw "版本必須是 x.y.z 或 x.y.z-<pre-release>（Cargo.toml 是 $Version）。"
 }
+
+if (-not $MsiVersion) {
+    $MsiVersion = ($Version -split '-', 2)[0]
+}
+if ($MsiVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "MSI ProductVersion 必須是 x.y.z（目前是 $MsiVersion）；pre-release 後綴只留在檔名與顯示版本。"
+}
+Write-Host "==> 發佈版本 $Version（MSI ProductVersion $MsiVersion）"
 
 $profileArgs = @()
 if ($Configuration -eq 'release') {
@@ -224,7 +250,7 @@ New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 $msi = Join-Path $OutDir "jc-ime-$Version-x64.msi"
 Invoke-Checked '建置 MSI' {
     & $wix.Source build -arch x64 `
-        -d "Version=$Version" `
+        -d "Version=$MsiVersion" `
         -d "PayloadDir=$Payload" `
         -o $msi `
         (Join-Path $PSScriptRoot 'jc-ime.wxs')
@@ -240,6 +266,7 @@ if (-not $SkipSign -and $Certificate) {
 
 $size = [math]::Round((Get-Item $msi).Length / 1MB, 1)
 Write-Host ''
-Write-Host "完成：$msi（$size MiB，版本 $Version）"
+Write-Host "完成：$msi（$size MiB）"
+Write-Host "    發佈版本 $Version；MSI ProductVersion $MsiVersion"
 Write-Host '安裝：msiexec /i "jc-ime.msi" /l*v install.log'
 Write-Host '移除：msiexec /x "jc-ime.msi" /l*v uninstall.log'

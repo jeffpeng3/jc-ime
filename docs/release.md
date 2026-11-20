@@ -17,12 +17,45 @@ debug 測試與 clippy。兩邊刻意分開：發佈前唯一一次 release 測�
 
 - 唯一來源：`Cargo.toml` 的 `[workspace.package] version`。
 - 標籤必須是 `v<version>`，而且與 `Cargo.toml` 完全相同；不同就讓 `verify` 失敗。
-- 版本必須是 `x.y.z`。`build.ps1` 與 MSI `ProductVersion` 不接受 pre-release
-  或 build metadata，所以 `v0.1.0-rc.1` 會在 `verify` 就先擋下。
-- Release 標題、artifact 名稱、MSI 檔名都用同一個版本：
+- 版本格式是 `x.y.z` 或 `x.y.z-<pre-release>`，例如 `0.1.0`、`0.1.0-rc.1`。
+- Release 標題、artifact 名稱、MSI 檔名都用完整版本：
   - `jc-ime-<version>-x64.msi`
   - `jc-ime-<version>-linux-x86_64.tar.gz`
 - 手動觸發不會建立 Release；要發佈仍要 push 對應的 tag。
+- pre-release 版本的 GitHub Release 會標成 pre-release，不會蓋掉 Latest 版。
+
+### pre-release 版本規則
+
+MSI 的 `ProductVersion` 只接受三段數字，但發佈版本可以有 pre-release 後綴。
+兩者分開處理：
+
+| 用途 | 值 | 來源 |
+|---|---|---|
+| git tag | `v0.1.0-rc.1` | 人工建立 |
+| `Cargo.toml` version | `0.1.0-rc.1` | 必須與 tag 去掉 `v` 相同 |
+| Release 標題／artifact 名稱／MSI 檔名 | `0.1.0-rc.1` | 完整版本 |
+| MSI `ProductVersion` | `0.1.0` | `verify` 推導後傳給 `build.ps1 -MsiVersion` |
+
+規則：
+
+- `verify` 用 `^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$` 驗完整版本，接受 `-rc.1`。
+- `msi_version` 取完整版本 `-` 之前的三段數字；`verify` 輸出這個值，Windows
+  job 用 `-MsiVersion` 傳進 `installer/build.ps1`。
+- `build.ps1` 的 `-MsiVersion` 是選項。沒給時由 `Cargo.toml` 版本去掉
+  pre-release 自己推導，本機建置不必手動指定。
+- `wix build -d Version=` 只拿 MSI 版本；檔名、Release 標題與說明仍用完整版本。
+- MSI 升級判斷看 `ProductVersion`，所以 `0.1.0-rc.1` 與 `0.1.0-rc.2` 在
+  Windows 眼中是同一個版本，會走「同版本就地升級」。RC 之間不需要先移除舊版。
+- 正式版 `0.1.0` 的 `ProductVersion` 也是 `0.1.0`；從最後一個 RC 升到正式版
+  同樣是同版本升級，安裝後不會出現兩個項目。
+- 版本一致性檢查沒有放寬：tag 去掉 `v` 仍必須等於 `Cargo.toml` 的完整版本。
+
+發布 RC 的流程與正式版相同，只是 tag 帶後綴：
+
+```sh
+git tag v0.1.0-rc.1
+git push origin v0.1.0-rc.1
+```
 
 ## 前置設定
 
@@ -148,8 +181,8 @@ signtool verify /pa /v jc-ime-<version>-x64.msi
 
 | Job | 產出 |
 |---|---|
-| `verify` | 檢查 tag／`Cargo.toml` 版本一致且是 `x.y.z`；跑 `cargo test --workspace --release` |
-| `windows` | 下載資料包並比對 SHA-256 → `cargo build --workspace --release` → `jc-cli data verify` → 安裝 WiX v5 → `installer/build.ps1` → MSI、checksum、`data-manifest.json` |
+| `verify` | 檢查 tag／`Cargo.toml` 版本一致且符合 `x.y.z` 或 `x.y.z-<pre-release>`，輸出完整版本與 `msi_version`；跑 `cargo test --workspace --release` |
+| `windows` | 下載資料包並比對 SHA-256 → `cargo build --workspace --release` → `jc-cli data verify` → 安裝 WiX v5 → `installer/build.ps1 -MsiVersion <x.y.z>` → MSI、checksum、`data-manifest.json` |
 | `linux` | 安裝 GPUI 系統依賴 → `cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui` → 打包 tar.gz 與 checksum |
 | `publish` | 只在 tag push 執行；下載兩個 artifact，建立或更新 GitHub Release |
 
@@ -196,7 +229,8 @@ tar.gz 旁附 `.sha256`。Linux 版沒有 Fcitx5／IBus 整合，`jc-settings-ui
 
 `publish` 會產生並附上：
 
-- 版本與發佈日期（UTC）
+- 版本與發佈日期（UTC）；版本有 pre-release 後綴時，另外註明 MSI
+  `ProductVersion` 只有三段數字
 - 模型與資料版本：安裝包內 `manifest.json` 的 `version`（涵蓋詞典與模型）
 - `docs/CHANGELOG.md` 中 `## <version>` 的段落
 - 兩個平台的下載檔名與 `.sha256` 提示
@@ -205,12 +239,14 @@ tar.gz 旁附 `.sha256`。Linux 版沒有 Fcitx5／IBus 整合，`jc-settings-ui
   沒有桌面整合、設定變更需重啟引擎
 
 Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets，方便重跑失敗
-的發佈。Release 標題就是 `<version>`，tag 是 `v<version>`。
+的發佈。Release 標題就是 `<version>`，tag 是 `v<version>`。版本含 `-` 時一律
+建立成 pre-release，避免 RC 蓋掉 Latest 正式版。
 
 ## 發版步驟
 
 1. 更新 `docs/CHANGELOG.md`，確認有 `## <version>` 段落。
 2. 改 `Cargo.toml` 的 `[workspace.package] version`；必要時讓 `Cargo.lock` 跟著更新。
+   RC 就寫 `0.1.0-rc.1`，不用為了 MSI 改成三段數字。
 3. 跑 `cargo check --workspace --all-targets`，commit 到 `main` 並 push。
 4. 建立並 push 標籤：
 
@@ -218,6 +254,9 @@ Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets�
    git tag v0.1.0
    git push origin v0.1.0
    ```
+
+   RC 版本帶 pre-release 後綴，例如 `v0.1.0-rc.1`；MSI `ProductVersion` 仍是
+   `0.1.0`。
 
 5. 到 Actions → Release 看 `verify`、`windows`、`linux`、`publish` 四個 job。
 6. 檢查 Release assets、說明與 checksum；Windows 找一臺乾淨機器跑一次安裝、
@@ -238,7 +277,8 @@ release workflow 只能證明「建置與打包成功」，下面這些要在第
       出貨前要補進 `jc-data` 的 catalog／manifest；沒列就不會進 MSI。
 - [ ] `models/zh-select`、`models/zh-punct` 沒有出現在資料包、MSI 或 Release assets。
 - [ ] `LICENSE`、`NOTICE`、`legal/` 已打進 MSI（`installer-payload` 的缺口）。
-- [ ] `Cargo.toml` 版本是 `x.y.z`，`v<version>` 標籤與它一致。
+- [ ] `Cargo.toml` 版本符合 `x.y.z` 或 `x.y.z-<pre-release>`，`v<version>` 標籤
+      與它完全一致；RC 的 MSI `ProductVersion` 是去掉後綴的三段數字。
 - [ ] `docs/CHANGELOG.md` 有對應版本段落，內容沒有承諾未實作的功能。
 - [ ] 要簽章的話，`SIGNING_PFX_BASE64`、`SIGNING_PFX_PASSWORD` 已設定，而且
       憑證沒有過期；不簽章則接受 Release 標「未簽章」。
@@ -254,7 +294,24 @@ python3 -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml'))"
 bash -n scripts/data-bundle.sh
 bash installer/validate-linux.sh                # 需要 wix；沒有就跳過
 cargo build --release -p jc-engine -p jc-cli
+
+# 版本推導乾跑：完整版本可含 pre-release，MSI 版只取三段數字
+python3 - <<'PY'
+import re
+
+for full in ("0.1.0", "0.1.0-rc.1", "0.1.0-rc.2"):
+    assert re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?", full), full
+    print(full, "-> msi", full.split("-", 1)[0])
+PY
 ```
+
+PowerShell 的版本推導與 `wix build` 只能在 Windows 驗；本機 Linux 最多做到
+上面這些。`build.ps1` 的 `-MsiVersion` 若沒給，會自己從 `Cargo.toml` 版本推導。
+
+`installer/validate-linux.sh` 目前直接把 `Cargo.toml` 的完整版本傳給 WiX
+`-d Version=`；`Cargo.toml` 是 pre-release（例如 `0.1.0-rc.1`）時，這支腳本會
+被 WiX 拒絕。要本機驗 WiX 語法，先暫時把版本改成三段數字，或等它套用同樣的
+`-pre-release` 推導。
 
 MSI 的完整建置、ICE 驗證與實機安裝只能在 Windows 做；release workflow 的
 `windows` job 是第一個實際產出 MSI 的地方。
