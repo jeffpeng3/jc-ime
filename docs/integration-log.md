@@ -1276,3 +1276,8 @@ clippy exit 0；fmt exit 0。題庫：zh-golden **45/45**、quality **93.6%**、
 待辦：
 - 協定 v3 沒有「指定索引選字」，之後可加；現在由模擬按鍵達成，不影響功能。
 - `pipe` 名稱 `jc-ime` 是機器級共用，多使用者同時登入會衝突；要改成含 SID 或 session id（jc-tsf／引擎後續）。
+
+### CI（push `aa3dc6d`，run 44683332668）
+
+- linux (core)：success，06:13 總時長約 6 分 18 秒（05:47:31–05:53:49）。
+- windows (msvc)：success，約 13 分 12 秒（05:47:31–06:00:43）。
