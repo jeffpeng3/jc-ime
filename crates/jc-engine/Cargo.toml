@@ -23,6 +23,7 @@ jc-testdata = { path = "../jc-testdata" }
 
 # Windows named pipe 的 blocking Win32 API；只在 Windows 目標編譯。
 [target.'cfg(windows)'.dependencies]
+jc-windows = { path = "../jc-windows" }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

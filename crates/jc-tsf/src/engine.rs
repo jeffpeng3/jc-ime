@@ -10,14 +10,11 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use jc_proto::Request;
 use jc_windows::{Client, NamedPipe};
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::ERROR_SUCCESS;
-use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 use crate::logging;
@@ -27,13 +24,6 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// 斷線後重試連線的最短間隔。
 const RECONNECT_BACKOFF: Duration = Duration::from_secs(2);
-
-/// 註冊表裡指定引擎 pipe 名稱的位置。
-const PIPE_REGISTRY_KEY: &str = r"Software\jc-ime";
-/// 註冊表值的名稱。
-const PIPE_REGISTRY_VALUE: &str = "EnginePipe";
-/// 沒有設定時使用的 pipe 名稱。
-pub const DEFAULT_PIPE: &str = "jc-ime";
 
 /// 握手時送出的客戶端名稱。
 const CLIENT_NAME: &str = concat!("jc-tsf/", env!("CARGO_PKG_VERSION"));
@@ -232,46 +222,35 @@ fn connect(queue: &Queue) -> Option<Client<NamedPipe>> {
     }
 }
 
-/// 讀 `HKCU\Software\jc-ime\EnginePipe`；沒有設定就用 [`DEFAULT_PIPE`]。
+/// 解析引擎 pipe 名稱，同一個行程只解析一次。
+///
+/// 規則與 `jc-engine` 共用 [`jc_windows::resolve_pipe_name`]：`JC_IME_PIPE` >
+/// `HKCU\Software\jc-ime\EnginePipe` > `jc-ime-<SID 尾段>`，取不到 SID 才退回
+/// [`jc_windows::BASE_PIPE_NAME`] 並記一次警告。
 pub fn pipe_name() -> String {
-    let key = crate::wide(PIPE_REGISTRY_KEY);
-    let value = crate::wide(PIPE_REGISTRY_VALUE);
-    let mut buffer = [0u16; 256];
-    let mut size = (buffer.len() * std::mem::size_of::<u16>()) as u32;
+    static RESOLVED: OnceLock<String> = OnceLock::new();
 
-    // SAFETY: buffer 與 size 的長度一致，字串都以 NUL 結尾。
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            PCWSTR(key.as_ptr()),
-            PCWSTR(value.as_ptr()),
-            RRF_RT_REG_SZ,
-            None,
-            Some(buffer.as_mut_ptr() as *mut core::ffi::c_void),
-            Some(&mut size),
-        )
-    };
-    if status != ERROR_SUCCESS || size < 2 {
-        return DEFAULT_PIPE.to_string();
-    }
-
-    let units = (size as usize / 2).saturating_sub(1).min(buffer.len());
-    let text = String::from_utf16_lossy(&buffer[..units]);
-    let text = text.trim_matches('\0').trim();
-    if text.is_empty() {
-        DEFAULT_PIPE.to_string()
-    } else {
-        text.to_string()
-    }
+    RESOLVED
+        .get_or_init(|| {
+            let resolved = jc_windows::resolve_pipe_name();
+            if let Some(warning) = &resolved.warning {
+                logging::warn(warning.clone());
+            }
+            resolved.name
+        })
+        .clone()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 同一個行程內重複解析要拿到同一個名稱；解析結果會快取。
     #[test]
-    fn default_pipe_name_is_stable() {
-        assert_eq!(DEFAULT_PIPE, "jc-ime");
+    fn pipe_name_is_stable_within_process() {
+        let first = pipe_name();
+        assert_eq!(first, pipe_name());
+        assert!(!first.is_empty());
     }
 
     #[test]

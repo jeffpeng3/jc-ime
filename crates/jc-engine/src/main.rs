@@ -229,10 +229,17 @@ fn child_args(options: &Options, socket: &Path) -> Vec<OsString> {
     args
 }
 
-/// 監督模式的預設 socket。Windows 與 TSF 預設 pipe 名稱一致。
+/// 監督模式的預設 socket。Windows 用與 TSF 共用的 pipe 名稱規則。
+///
+/// 名稱由 `jc-windows` 解析：`JC_IME_PIPE` > `HKCU\Software\jc-ime\EnginePipe` >
+/// `jc-ime-<SID 尾段>`；取不到 SID 時退回 `jc-ime` 並記一次警告。
 #[cfg(windows)]
 fn default_supervisor_socket() -> PathBuf {
-    PathBuf::from("jc-ime")
+    let resolved = jc_windows::resolve_pipe_name();
+    if let Some(warning) = &resolved.warning {
+        log::warn!("{warning}");
+    }
+    PathBuf::from(resolved.name)
 }
 
 /// 監督模式的預設 socket；優先放 `XDG_RUNTIME_DIR`。
