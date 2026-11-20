@@ -150,12 +150,9 @@ pub fn run(opts: &CorpusOptions, out: &mut dyn Write) -> Result<(), CliError> {
         .ok()
         .map(|decoder| decoder.with_prefer_hiragana(true));
     let english = English::load_default();
-    let config = jc_core::mixed::Config {
-        mixed_latin_split: true,
-        ..jc_core::mixed::Config::default()
-    };
+    let config = jc_core::mixed::Config::default();
     let mut router = Router::new()
-        .with_config(config)
+        .with_config(config.clone())
         .with_zh(&resources.lexicon, &resources.ctx)
         .with_english(&english);
     if let Some(decoder) = &ja {
@@ -165,6 +162,7 @@ pub fn run(opts: &CorpusOptions, out: &mut dyn Write) -> Result<(), CliError> {
     let adapter = LexiconAdapter {
         zh: Some(&resources.lexicon),
         english: Some(&english),
+        config: config.clone(),
     };
     let split_opts = SplitOptions::default();
 

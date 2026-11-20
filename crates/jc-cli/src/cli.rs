@@ -299,6 +299,8 @@ pub enum Command {
         incremental: bool,
         /// 每個前綴重複次數。
         repeat: usize,
+        /// 另外印出 tokenize、DP 與後處理三個階段。
+        steps: bool,
         /// 輸出 JSON。
         json: bool,
     },
@@ -850,6 +852,7 @@ fn parse_mixed_split(args: &[String]) -> Result<Command, CliError> {
     let mut data = None;
     let mut incremental = false;
     let mut repeat = 1usize;
+    let mut steps = false;
     let mut json = false;
     let mut index = 0usize;
     while index < args.len() {
@@ -867,6 +870,7 @@ fn parse_mixed_split(args: &[String]) -> Result<Command, CliError> {
                 data = Some(PathBuf::from(value(args, index, "--data")?));
             }
             "--incremental" => incremental = true,
+            "--steps" => steps = true,
             "--repeat" => {
                 index += 1;
                 let text = value(args, index, "--repeat")?;
@@ -895,6 +899,7 @@ fn parse_mixed_split(args: &[String]) -> Result<Command, CliError> {
         data,
         incremental,
         repeat,
+        steps,
         json,
     })
 }
@@ -1277,6 +1282,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             data,
             incremental,
             repeat,
+            steps,
             json,
         } => crate::split_cmd::run(
             keys,
@@ -1284,6 +1290,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             data.clone(),
             *incremental,
             *repeat,
+            *steps,
             *json,
             out,
         ),
@@ -1504,7 +1511,7 @@ pub fn usage() -> String {
          [--live-correction-ratio <0..1>] [--live-keep-tail <n>] [--live-report] [--json] [--items]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
-         jc-cli mixed-split --keys <字串>... [--testdata <dir>] [--data <dir>] [--incremental] [--repeat 1] [--json]\n  \
+         jc-cli mixed-split --keys <字串>... [--testdata <dir>] [--data <dir>] [--incremental] [--repeat 1] [--steps] [--json]\n  \
          jc-cli mixed-diff [--seed 1] [--count 20000] [--top 3] [--testdata <dir>] [--data <dir>] [--json] [--cases <file>]\n  \
          jc-cli corpus-diff [--source <dir>] [--limit 0] [--top 5] [--json] [--cases <file>]\n  \
          jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--backend candle] [--user-data <dir>] [--pick <n>] [--json]\n  \
