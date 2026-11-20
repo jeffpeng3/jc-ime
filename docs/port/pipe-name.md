@@ -84,13 +84,16 @@ IME，必須把同樣的值寫進 `HKCU\Software\jc-ime\EnginePipe` 或 `JC_IME_
 ```sh
 cargo check -p jc-windows -p jc-engine -p jc-tsf --all-targets          # 通過
 cargo check --target x86_64-pc-windows-msvc -p jc-tsf -p jc-windows -p jc-engine --all-targets  # 通過
+cargo check --target x86_64-pc-windows-msvc -p jc-tsf-smoke --all-targets  # 通過
+RUST_FONTCONFIG_DLOPEN=1 cargo check --workspace --all-targets          # 通過
 cargo test -p jc-windows                                                # 21 passed
 ```
 
-`cargo check --workspace --all-targets` 在這台機器上失敗，原因是
-`yeslogic-fontconfig-sys` 的 build script 找不到 `fontconfig`（`pkg-config
---exists fontconfig` 失敗）。`cargo check -p jc-windows -p jc-engine -p jc-tsf`
-與 Windows 交叉檢查都通過，失敗與這個 task 的變更無關。
+`cargo check --workspace --all-targets` 直接跑會失敗，原因是
+`yeslogic-fontconfig-sys` 的 build script 找不到 `fontconfig`（這台機器沒有
+`fontconfig.pc`，`pkg-config --exists fontconfig` 失敗）。`jc-settings-ui` 的
+`gpui` 依賴它。加上 `RUST_FONTCONFIG_DLOPEN=1` 讓 build script 改用 dlopen
+後整個 workspace 通過；這個環境變數只影響驗證，不是程式碼變更。
 
 ## 需要 Windows 實機驗的項目
 
@@ -111,11 +114,5 @@ cargo test -p jc-windows                                                # 21 pas
 
 ## 待辦
 
-- `crates/jc-tsf-smoke/src/engine.rs` 仍有一份自己的 `pipe_name`（`JC_IME_PIPE`
-  → 註冊機碼 → `jc-ime`）。它不在這個 task 的 owned paths，沒有修改；預設名稱
-  改成 `jc-ime-<rid>` 後，冒煙程式會連不上引擎而只印 `[SKIP]`。後續應改成呼叫
-  `jc_windows::resolve_pipe_name`。
-- `docs/port/engine-supervisor.md` 的「與 IME 重連的互動」仍寫死「pipe／socket
-  名稱固定」，需要在下一個文件整理時更新。
 - SID 尾段（RID）在同一台機器上唯一，但本機帳號與網域帳號的 RID 可能相同，
   理論上會撞名。若要完全避免，可改用完整 SID，代價是名稱長度。

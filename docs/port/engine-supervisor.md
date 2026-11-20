@@ -31,9 +31,10 @@ jc-engine --supervise [--socket <name>] [--supervisor-log <path>]
 
 - 監督者用 `std::env::current_exe()` 啟動同一支執行檔，子行程參數是
   `jc-engine [原參數] --socket <name>`。
-- `--socket` 沒給時，Windows 用 `jc-ime`（與 `jc-tsf::engine::DEFAULT_PIPE`
-  一致），unix 用 `$XDG_RUNTIME_DIR/jc-ime-engine.sock`，沒有
-  `XDG_RUNTIME_DIR` 就用暫存目錄。
+- `--socket` 沒給時，Windows 用與 TSF 共用的名稱規則（`JC_IME_PIPE` >
+  `HKCU\Software\jc-ime\EnginePipe` > `jc-ime-<SID 尾段>`，取不到 SID 才退回
+  `jc-ime`；見 `docs/port/pipe-name.md`），unix 用
+  `$XDG_RUNTIME_DIR/jc-ime-engine.sock`，沒有 `XDG_RUNTIME_DIR` 就用暫存目錄。
 - 子行程的 stdout／stderr 由監督者接管，逐行寫進同一份 log（前綴
   `子行程 stdout:`／`子行程 stderr:`），不會因為 pipe 滿而卡住引擎。
 - `--print-settings` 與 `--supervise` 併用會直接報錯。
@@ -100,8 +101,9 @@ jc-engine --supervise [--socket <name>] [--supervisor-log <path>]
 
 ## 與 IME 重連的互動
 
-- pipe／socket 名稱固定，TSF 讀 `HKCU\Software\jc-ime\EnginePipe`（預設
-  `jc-ime`），因此引擎重啟後位址不變，不需要重設 IME。
+- pipe／socket 名稱帶使用者識別，規則見 `docs/port/pipe-name.md`：`JC_IME_PIPE` >
+  `HKCU\Software\jc-ime\EnginePipe` > `jc-ime-<SID 尾段>`，取不到 SID 才退回
+  `jc-ime` 並記一次警告。名稱在引擎重啟後不變，不需要重設 IME。
 - 重啟期間（1s 到 10s，最長暫停 5 分鐘）連線會失敗。`jc-tsf` 每次請求都
   會嘗試重連，回到可用狀態後下一個按鍵就恢復；使用者看到的是短暫的
   「連不上」，不是需要重開機的狀態。
@@ -138,10 +140,9 @@ Linux 上已實際跑過（`--allow-empty-data` 讓子行程不需要詞典）�
 ## 需要 Windows 才能驗的項目
 
 - `Local\jc-ime-engine-supervisor` 具名 mutex 的跨行程互斥。`Local\` 是 session
-  範圍，同一使用者的兩個 RDP session 會各有一個監督者；但 TSF 的 pipe 名稱
-  目前是機器共用的 `jc-ime`，兩個子行程只有一個能 bind，另一個會退避並在
-  5 次失敗後暫停。要支援多 session 得讓 pipe 名稱帶使用者或 session 識別，
-  屬於 `jc-tsf` 的後續工作。
+  範圍，同一使用者的兩個 RDP session 會各有一個監督者；pipe 名稱只帶使用者
+  （見 `docs/port/pipe-name.md`），兩個子行程會撞名，只有一個能 bind，另一個
+  會退避並在 5 次失敗後暫停。要支援多 session 得讓名稱再帶 session 識別。
 - `SetConsoleCtrlHandler` 對 Ctrl+C、關機、登出的實際事件順序。
 - 隱藏訊息視窗收到 `WM_ENDSESSION`，以及 Windows 關機時 5 秒收尾是否足夠。
 - `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT)` 對引擎子行程的效果。
