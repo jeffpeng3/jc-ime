@@ -15,6 +15,9 @@
 //! - 文節邊界一次最多變動 [`Config::max_boundary_changes`] 個；超過就先
 //!   保留前次結果，最多 [`Config::hold_limit`] 次，之後仍會接受新結果，
 //!   不會永久卡住。
+//! - 神經轉換開啟時，每次實際轉換都先把統計結果算好，再交給
+//!   [`NeuralGate`] 判斷是否替換；門檻、五條驗證與逾時回退都在共用層，
+//!   這裡只準備請求。[`Config::neural`] 為 `None` 時行為與原本完全相同。
 //! - 預設關閉。關閉時 [`Controller::input`] 不做任何事，外殼照一般変換
 //!   流程處理。
 
@@ -22,7 +25,9 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::ja::decode::{JaCandidate, JaClause, JaContext, JaDecoder, JaResult, JaSpan};
+use crate::ja::decode::{
+    mean_candidates, JaCandidate, JaClause, JaContext, JaDecoder, JaResult, JaSpan,
+};
 use crate::reading::{Sequence, Unit};
 
 /// ライブ変換的錯誤。
@@ -71,6 +76,73 @@ pub trait Converter {
         span: JaSpan,
         ctx: &JaContext,
     ) -> Result<Vec<JaCandidate>, ConvertError>;
+
+    /// 統計轉換加上神經門檻所需的訊號。
+    ///
+    /// 預設沿用 [`Converter::convert`]，沒有次佳路徑與候選數，等於門檻一定
+    /// 觸發。實作要提供真正的 top-2 成本差時才覆寫；逐字路徑只在神經轉換
+    /// 開啟時呼叫這個方法。
+    fn statistical(&self, reading: &str, ctx: &JaContext) -> Result<Statistical, ConvertError> {
+        Ok(Statistical::plain(self.convert(reading, ctx)?))
+    }
+}
+
+/// 統計轉換結果與門檻訊號。
+///
+/// `runner_up_cost` 與 `mean_candidates` 的語意與一般轉換的 gating 相同，
+/// 由同一次解碼產生，不在等候模型的路徑上補算。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Statistical {
+    /// 統計轉換結果。
+    pub result: JaResult,
+    /// 次佳路徑的原始成本；`None` 表示沒有備案，門檻一定觸發。
+    pub runner_up_cost: Option<i32>,
+    /// top-1 路徑上每個詞段的平均候選詞面數。
+    pub mean_candidates: f32,
+}
+
+impl Statistical {
+    /// 只有結果、沒有門檻訊號的版本。
+    pub fn plain(result: JaResult) -> Self {
+        Self {
+            result,
+            runner_up_cost: None,
+            mean_candidates: 1.0,
+        }
+    }
+}
+
+/// 逐字変換採用神經輸出的鉤子。
+///
+/// 統計結果與門檻訊號都由控制器先算好；實作只做門檻判斷與採用驗證，
+/// 不重新解碼，也不決定顯示方式。回傳 `Some` 代表整段尾端要換成該字串。
+pub trait NeuralGate {
+    /// 判斷是否採用神經輸出。
+    fn adopt(&self, request: &GateRequest<'_>) -> Option<String>;
+}
+
+/// 一次神經採用的請求。
+///
+/// 欄位與一般轉換的 [`NeuralInput`] 相同，只是逐字路徑由控制器提供；
+/// 門檻與五條驗證仍由共用層執行。
+///
+/// [`NeuralInput`]: crate::session::neural::NeuralInput
+#[derive(Debug, Clone, Copy)]
+pub struct GateRequest<'a> {
+    /// 目前要轉換的かな讀音。
+    pub reading: &'a str,
+    /// 左文脈，含已鎖定的詞面。
+    pub left: &'a str,
+    /// 右文脈；目前沒有來源，固定空字串。
+    pub right: &'a str,
+    /// 統計轉換的第一名。
+    pub statistical: &'a str,
+    /// 統計第一名的原始成本。
+    pub statistical_cost: i32,
+    /// 統計第二名的原始成本；`None` 代表沒有備案。
+    pub runner_up_cost: Option<i32>,
+    /// top-1 路徑的平均候選數。
+    pub mean_candidates: f32,
 }
 
 impl Converter for JaDecoder {
@@ -80,6 +152,22 @@ impl Converter for JaDecoder {
             .into_iter()
             .next()
             .ok_or_else(|| ConvertError::new("沒有轉換結果"))
+    }
+
+    fn statistical(&self, reading: &str, ctx: &JaContext) -> Result<Statistical, ConvertError> {
+        let units: Vec<char> = reading.chars().collect();
+        let (results, gap) = self.results_with_gap(&units, ctx, 2);
+        let Some(best) = results.first() else {
+            return Err(ConvertError::new("沒有轉換結果"));
+        };
+        let cost = best.conversion().cost;
+        let mean = mean_candidates(best, self.source().as_ref());
+        let result = best.clone();
+        Ok(Statistical {
+            result,
+            runner_up_cost: gap.map(|gap| cost.saturating_add(gap)),
+            mean_candidates: mean,
+        })
     }
 
     fn candidates(
@@ -112,6 +200,11 @@ pub struct Config {
     pub hold_limit: usize,
     /// 開始ライブ変換所需的最少讀音單位，預設 1。
     pub min_units: usize,
+    /// 神經採用器；`None` 時逐字路徑完全不呼叫模型，行為與關閉相同。
+    ///
+    /// 由 [`crate::session::neural::live_gate`] 依 `ja_neural` 建立；只有
+    /// 開啟神經轉換且模型已載入時才會有值。
+    pub neural: Option<Rc<dyn NeuralGate>>,
     /// 時間來源；`None` 使用 [`Instant::now`]。測試可注入虛擬時鐘。
     pub clock: Option<Rc<dyn Fn() -> Instant>>,
 }
@@ -139,6 +232,7 @@ impl Default for Config {
             max_boundary_changes: 1,
             hold_limit: 2,
             min_units: 1,
+            neural: None,
             clock: None,
         }
     }
@@ -206,6 +300,12 @@ pub struct Controller {
     pending: bool,
     due: Option<Instant>,
     held: usize,
+    /// 上一次接受的結果是神經輸出。
+    ///
+    /// 神經輸出沒有詞邊界，跟統計結果的文節切法不能直接比；下一次轉換
+    /// 跳過邊界變動比較，直接以新的統計結果重建基準，否則每次採用神經
+    /// 輸出都會被誤判成大幅變動而保留舊畫面。
+    tail_neural: bool,
 
     stats: Stats,
 }
@@ -229,6 +329,7 @@ impl Controller {
             pending: false,
             due: None,
             held: 0,
+            tail_neural: false,
             stats: Stats::default(),
         }
     }
@@ -368,6 +469,7 @@ impl Controller {
         self.pending = false;
         self.due = None;
         self.held = 0;
+        self.tail_neural = false;
     }
 
     fn now(&self) -> Instant {
@@ -419,22 +521,32 @@ impl Controller {
             return self.preview_plan();
         }
         let reading: String = suffix.iter().map(Unit::as_str).collect();
+        let ctx = self.convert_context();
         let start = self.now();
-        let converted = self.conv.convert(&reading, &self.convert_context());
+        // 神經開啟時用同一次 top-2 搜尋取得門檻訊號；關閉時仍是原本的
+        // 單一路徑轉換，行為與先前完全相同。
+        let converted = if self.cfg.neural.is_some() {
+            self.conv.statistical(&reading, &ctx)
+        } else {
+            self.conv.convert(&reading, &ctx).map(Statistical::plain)
+        };
         let elapsed = self.now().saturating_duration_since(start);
         self.stats.conversions += 1;
         self.stats.last_duration = elapsed;
 
+        // 時間預算只算統計轉換；神經呼叫有自己的 180 ms 上限，逾時會回統計
+        // 結果，不讓外層預算把已經算好的統計結果一起丟掉。
         let timed_out = self.cfg.budget > Duration::ZERO && elapsed > self.cfg.budget;
         if timed_out {
             self.stats.timeouts += 1;
         }
 
-        let result = match converted {
-            Ok(result)
-                if !result.clauses.is_empty() && clauses_units(&result.clauses) == suffix.len() =>
+        let statistical = match converted {
+            Ok(statistical)
+                if !statistical.result.clauses.is_empty()
+                    && clauses_units(&statistical.result.clauses) == suffix.len() =>
             {
-                result
+                statistical
             }
             _ => {
                 let mut plan = self.preview_plan();
@@ -448,7 +560,16 @@ impl Controller {
             return plan;
         }
 
-        let changes = boundary_changes(&self.tail, &result.clauses);
+        let (result, neural) = self.adopt_neural(statistical, &reading, &ctx);
+        self.stats.last_duration = self.now().saturating_duration_since(start);
+
+        // 神經輸出沒有詞邊界；上一次是神經結果時不比較邊界，直接以這次的
+        // 統計結果重建基準，否則每次採用神經輸出都會被誤判成大幅變動。
+        let changes = if self.tail_neural {
+            0
+        } else {
+            boundary_changes(&self.tail, &result.clauses)
+        };
         self.stats.last_boundary_changes = changes;
         if self.cfg.max_boundary_changes > 0
             && self.draft.is_some()
@@ -464,6 +585,7 @@ impl Controller {
 
         self.held = 0;
         self.tail = result.clauses.clone();
+        self.tail_neural = neural;
         self.advance_lock();
         let draft = JaResult {
             clauses: self.all_clauses(),
@@ -477,6 +599,48 @@ impl Controller {
             boundary_changes: changes,
             ..Plan::default()
         }
+    }
+
+    /// 呼叫神經採用器；只有通過門檻與五條驗證時才換掉整段尾端。
+    ///
+    /// 神經輸出沒有詞邊界，替換時整段當一個文節，與一般轉換相同。門檻與
+    /// 驗證都在共用層，這裡只負責準備請求與套用結果。
+    fn adopt_neural(
+        &self,
+        statistical: Statistical,
+        reading: &str,
+        ctx: &JaContext,
+    ) -> (JaResult, bool) {
+        let Some(gate) = &self.cfg.neural else {
+            return (statistical.result, false);
+        };
+        let baseline = statistical.result.surface();
+        let clause_cost = statistical
+            .result
+            .clauses
+            .iter()
+            .map(|clause| clause.cost)
+            .fold(0i32, i32::saturating_add);
+        let request = GateRequest {
+            reading,
+            left: &ctx.left,
+            right: &ctx.right,
+            statistical: &baseline,
+            statistical_cost: statistical.result.conversion().cost,
+            runner_up_cost: statistical.runner_up_cost,
+            mean_candidates: statistical.mean_candidates,
+        };
+        let Some(surface) = gate.adopt(&request) else {
+            return (statistical.result, false);
+        };
+        let mut result = statistical.result;
+        result.clauses = vec![JaClause {
+            reading: reading.to_string(),
+            surface,
+            segments: Vec::new(),
+            cost: clause_cost,
+        }];
+        (result, true)
     }
 
     /// 把尾端除了最後一個文節以外的部分鎖住。
@@ -622,12 +786,15 @@ mod tests {
         clock: Option<FakeClock>,
         cost: Rc<Cell<Duration>>,
         fail: Rc<Cell<bool>>,
+        /// 覆寫 `statistical()` 的門檻訊號；`None` 時等於沒有次佳路徑。
+        signals: Rc<Cell<Option<(Option<i32>, f32)>>>,
         split: Split,
     }
 
     #[derive(Default)]
     struct FakeState {
         calls: usize,
+        statistical_calls: usize,
         contexts: Vec<JaContext>,
         spans: Vec<JaSpan>,
         seen: Vec<String>,
@@ -640,12 +807,19 @@ mod tests {
                 clock: None,
                 cost: Rc::new(Cell::new(Duration::ZERO)),
                 fail: Rc::new(Cell::new(false)),
+                signals: Rc::new(Cell::new(None)),
                 split: Box::new(split),
             }
         }
 
         fn with_clock(mut self, clock: &FakeClock) -> Self {
             self.clock = Some(clock.clone());
+            self
+        }
+
+        /// 設定 `statistical()` 要回報的門檻訊號。
+        fn with_signals(self, runner_up_cost: Option<i32>, mean_candidates: f32) -> Self {
+            self.signals.set(Some((runner_up_cost, mean_candidates)));
             self
         }
 
@@ -681,6 +855,17 @@ mod tests {
                 clauses: (self.split)(reading),
                 cost: 0.0,
                 score: 0.0,
+            })
+        }
+
+        fn statistical(&self, reading: &str, ctx: &JaContext) -> Result<Statistical, ConvertError> {
+            self.state.borrow_mut().statistical_calls += 1;
+            let result = self.convert(reading, ctx)?;
+            let (runner_up_cost, mean_candidates) = self.signals.get().unwrap_or((None, 1.0));
+            Ok(Statistical {
+                result,
+                runner_up_cost,
+                mean_candidates,
             })
         }
 
@@ -1109,5 +1294,168 @@ mod tests {
         assert!(!controller.enabled(), "零值 Config 必須關閉");
         let plan = controller.input(&units("き"), &JaContext::default());
         assert!(!plan.convert && !plan.pending, "{plan:?}");
+    }
+
+    /// 一次採用請求的快照，方便斷言控制器送了什麼。
+    #[derive(Debug, Clone, PartialEq)]
+    struct SeenRequest {
+        reading: String,
+        left: String,
+        statistical: String,
+        runner_up_cost: Option<i32>,
+        mean_candidates: f32,
+    }
+
+    /// 固定回覆的神經採用器；回覆可事後調整。
+    struct StubGate {
+        reply: Rc<Cell<Option<&'static str>>>,
+        seen: Rc<RefCell<Vec<SeenRequest>>>,
+    }
+
+    impl StubGate {
+        fn new(reply: Option<&'static str>) -> Self {
+            Self {
+                reply: Rc::new(Cell::new(reply)),
+                seen: Rc::new(RefCell::new(Vec::new())),
+            }
+        }
+    }
+
+    impl NeuralGate for StubGate {
+        fn adopt(&self, request: &GateRequest<'_>) -> Option<String> {
+            self.seen.borrow_mut().push(SeenRequest {
+                reading: request.reading.to_string(),
+                left: request.left.to_string(),
+                statistical: request.statistical.to_string(),
+                runner_up_cost: request.runner_up_cost,
+                mean_candidates: request.mean_candidates,
+            });
+            self.reply.get().map(str::to_string)
+        }
+    }
+
+    /// 採用神經輸出時整段尾端換成一個文節，門檻訊號跟著同一次轉換送出。
+    #[test]
+    fn test_neural_gate_replaces_whole_tail() {
+        let clock = FakeClock::new();
+        let gate = Rc::new(StubGate::new(Some("京")));
+        let conv = FakeConverter::new(split_every(2)).with_signals(Some(1_472), 7.5);
+        let state = conv.state();
+        let mut cfg = test_config(&clock);
+        cfg.debounce = Duration::ZERO;
+        cfg.neural = Some(gate.clone());
+        let mut controller = Controller::new(conv, cfg);
+
+        let plan = controller.input(&units("きょう"), &JaContext::default());
+        assert!(plan.convert, "{plan:?}");
+        let result = plan.result.as_ref().expect("有結果");
+        assert_eq!(result_text(result), "京");
+        assert_eq!(result.clauses.len(), 1, "神經輸出整段當一個文節");
+        assert_eq!(result.clauses[0].reading, "きょう");
+        assert!(result.clauses[0].segments.is_empty());
+
+        let seen = gate.seen.borrow();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].reading, "きょう");
+        assert_eq!(seen[0].statistical, "[きょ][う]");
+        assert_eq!(seen[0].runner_up_cost, Some(1_472));
+        assert_eq!(seen[0].mean_candidates, 7.5);
+        drop(seen);
+        assert_eq!(
+            state.borrow().statistical_calls,
+            1,
+            "神經開啟時走同一次 top-2 搜尋"
+        );
+    }
+
+    /// 已鎖定的詞面會接進左文脈，與一般轉換的 context echo 判定一致。
+    #[test]
+    fn test_neural_gate_receives_locked_prefix_as_left() {
+        let clock = FakeClock::new();
+        let gate = Rc::new(StubGate::new(None));
+        let conv = FakeConverter::new(split_every(2));
+        let mut cfg = test_config(&clock);
+        cfg.debounce = Duration::ZERO;
+        cfg.neural = Some(gate.clone());
+        let mut controller = Controller::new(conv, cfg);
+
+        controller.input(&units("あいうえお"), &JaContext::default());
+        controller.input(&units("あいうえおか"), &JaContext::default());
+        let seen = gate.seen.borrow();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1].reading, "あいうえおか");
+        assert_eq!(seen[1].left, "[あい][うえ]", "左文脈要含已鎖定的詞面");
+    }
+
+    /// 採用器回 `None` 時保留統計結果，連文節切法都不變。
+    #[test]
+    fn test_neural_gate_rejection_keeps_statistical_result() {
+        let clock = FakeClock::new();
+        let gate = Rc::new(StubGate::new(None));
+        let conv = FakeConverter::new(split_every(2));
+        let mut cfg = test_config(&clock);
+        cfg.debounce = Duration::ZERO;
+        cfg.neural = Some(gate.clone());
+        let mut controller = Controller::new(conv, cfg);
+
+        let plan = controller.input(&units("きょう"), &JaContext::default());
+        let result = plan.result.as_ref().expect("有結果");
+        assert_eq!(result_text(result), "[きょ][う]");
+        assert_eq!(result.clauses.len(), 2);
+        assert_eq!(gate.seen.borrow().len(), 1);
+    }
+
+    /// 沒有採用器時不呼叫統計訊號，結果與原本完全相同。
+    #[test]
+    fn test_neural_gate_absent_keeps_statistical_result() {
+        let clock = FakeClock::new();
+        let conv = FakeConverter::new(split_every(2));
+        let state = conv.state();
+        let mut cfg = test_config(&clock);
+        cfg.debounce = Duration::ZERO;
+        let mut controller = Controller::new(conv, cfg);
+
+        let plan = controller.input(&units("きょう"), &JaContext::default());
+        assert_eq!(
+            result_text(plan.result.as_ref().expect("有結果")),
+            "[きょ][う]"
+        );
+        assert_eq!(state.borrow().calls, 1);
+        assert_eq!(
+            state.borrow().statistical_calls,
+            0,
+            "關閉時不得為了門檻多解一次"
+        );
+    }
+
+    /// 採用神經輸出後，下一次轉換不得被邊界變動誤判成大幅變動。
+    ///
+    /// 神經輸出整段只有一個文節，邊界集合是空的；若照統計結果的切法比較，
+    /// 下一個統計結果的每個邊界都會被算成變動，把畫面鎖在舊結果。
+    #[test]
+    fn test_neural_accept_does_not_trigger_boundary_hold() {
+        let clock = FakeClock::new();
+        let gate = Rc::new(StubGate::new(Some("京")));
+        let conv = FakeConverter::new(split_every(1));
+        let mut cfg = test_config(&clock);
+        cfg.debounce = Duration::ZERO;
+        cfg.max_boundary_changes = 1;
+        cfg.hold_limit = 1;
+        cfg.neural = Some(gate.clone());
+        let mut controller = Controller::new(conv, cfg);
+
+        let first = controller.input(&units("あいう"), &JaContext::default());
+        assert!(first.convert, "{first:?}");
+        assert_eq!(result_text(first.result.as_ref().expect("有結果")), "京");
+
+        gate.reply.set(None);
+        let second = controller.input(&units("あいうえお"), &JaContext::default());
+        assert!(second.convert, "神經採用後不得保留舊畫面：{second:?}");
+        assert_eq!(second.boundary_changes, 0);
+        assert_eq!(controller.stats().holds, 0);
+        assert_eq!(
+            result_text(second.result.as_ref().expect("有結果")),
+            "[あ][い][う][え][お]"
+        );
     }
 }

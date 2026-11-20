@@ -1,14 +1,20 @@
 //! 實體按鍵到 `jc_proto::Key` 的轉換。
 //!
-//! 注音鍵位表不另外抄一份，直接用 `jc_core::zh::Keyboard`（標準／大千排列）。
-//! 這裡只負責三件事：
+//! wrapper 只送「實體按鍵產生的字元」，不自己把字母翻成注音符號：`jc-core`
+//! 的 `Keyboard::standard()` 才是注音鍵位的唯一來源。這樣同一套按鍵在注音、
+//! 日文羅馬字與英文模式都能由引擎自己判定；數字鍵也才能同時是注音鍵與候選
+//! 選字鍵，由引擎決定。
+//!
+//! 這裡只負責四件事：
 //!
 //! 1. 判斷哪個鍵要攔（[`Modifiers::pass_through`] 先行放行 Ctrl／Alt／Win）。
 //! 2. 把虛擬鍵碼轉成實際字元（`ToUnicodeEx`，尊重鍵盤配置與 Shift）。
-//! 3. 把字元換成引擎看得懂的注音或全形標點。
+//! 3. 組字中把具名鍵（Enter、Esc、方向鍵…）換成 `KeyCode`。
+//! 4. 沒有組字時把 Enter、Space、Tab、Backspace 等放行給應用程式。
 //!
-//! 只有組字中才攔具名鍵（Enter、Esc、Backspace、方向鍵…）；沒有組字時這些鍵
-//! 一律放行，否則應用程式會收不到換行與退格。
+//! 字母一律轉小寫再送，Shift 只放在 `shift` 欄位；注音鍵位是大千排列的
+//! 小寫字母，Shift 不改變注音。Shift 過的符號（`<`、`?`、`^`…）照原字元
+//! 送，引擎會依標點風格決定全形輸出。
 
 use jc_core::zh::Keyboard;
 use jc_proto::{Key, KeyCode};
@@ -56,10 +62,10 @@ fn pressed(key: VIRTUAL_KEY) -> bool {
 
 /// 把按鍵事件轉成要送給引擎的按鍵序列。
 ///
-/// 回 `None` 代表這個鍵不歸我們處理，呼叫端必須放行。回 `Some` 且內容為多個
-/// 按鍵的情形成立於多字元標點（例如 `^` 對應刪節號 `……`）。
+/// 回 `None` 代表這個鍵不歸我們處理，呼叫端必須放行。回 `Some` 目前一定是
+/// 單一按鍵；多字元標點（例如 `^` 對應刪節號 `……`）由引擎展開。
 ///
-/// `composing` 是「引擎目前有組字或候選」；它決定具名鍵要不要攔。
+/// `composing` 是「引擎目前有組字或候選」；它決定具名鍵與空白鍵要不要攔。
 pub fn translate(vk: u16, scan: u32, composing: bool) -> Option<Vec<Key>> {
     let modifiers = Modifiers::current();
     if modifiers.pass_through() {
@@ -68,6 +74,12 @@ pub fn translate(vk: u16, scan: u32, composing: bool) -> Option<Vec<Key>> {
 
     if let Some(code) = named_key(vk, modifiers.shift, composing) {
         return Some(vec![Key::new(code, None, modifiers.shift)]);
+    }
+
+    // 空白只在組字中由 `named_key` 攔；沒組字時要留給應用程式，否則使用者
+    // 打不出空白。
+    if vk == VK_SPACE.0 {
+        return None;
     }
 
     let ch = char_of(vk, scan)?;
@@ -123,18 +135,23 @@ fn char_of(vk: u16, scan: u32) -> Option<char> {
 
 /// 把解出的字元換成引擎要的按鍵。
 ///
-/// 注音鍵位優先，其次是全形標點；都不是的時候，組字中當字面送，沒組字就放行
-/// （例如 `=` 與 `` ` `` 在沒有候選窗的第一版沒有用途）。
+/// 注音鍵位、日文羅馬字與英文都吃實體字元，所以這裡不查表轉成注音符號。
+/// 沒組字時只攔注音鍵、標點與 Shift 符號；`=`、`` ` `` 與其他字元留給
+/// 應用程式或之後的選單功能。
 fn map_char(ch: char, shift: bool, composing: bool) -> Option<Vec<Key>> {
+    if ch.is_control() || ch == ' ' {
+        return None;
+    }
+    let key = if ch.is_ascii_alphabetic() {
+        ch.to_ascii_lowercase()
+    } else {
+        ch
+    };
     let keyboard = Keyboard::standard();
-    if let Some(symbol) = keyboard.symbol(ch.to_ascii_lowercase()) {
-        return Some(vec![Key::char(symbol, shift)]);
-    }
-    if let Some(punct) = keyboard.punct(ch) {
-        return Some(punct.chars().map(|c| Key::char(c, shift)).collect());
-    }
-    if composing && !ch.is_control() {
-        return Some(vec![Key::char(ch, shift)]);
+    let phonetic = keyboard.symbol(key).is_some();
+    let punctuation = keyboard.punct(ch).is_some();
+    if composing || phonetic || punctuation {
+        return Some(vec![Key::new(KeyCode::Char(key), Some(key), shift)]);
     }
     None
 }
@@ -144,24 +161,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn letters_map_to_bopomofo() {
+    fn letters_keep_the_physical_key() {
         let keys = map_char('j', false, false).expect("j 是注音鍵");
-        assert_eq!(keys, vec![Key::char('ㄨ', false)]);
+        assert_eq!(keys, vec![Key::new(KeyCode::Char('j'), Some('j'), false)]);
 
         let keys = map_char('1', false, false).expect("1 是注音鍵");
-        assert_eq!(keys, vec![Key::char('ㄅ', false)]);
+        assert_eq!(keys, vec![Key::new(KeyCode::Char('1'), Some('1'), false)]);
     }
 
     #[test]
-    fn shift_digits_produce_fullwidth_punct() {
-        let keys = map_char('!', true, false).expect("! 是全形驚嘆號");
-        assert_eq!(keys, vec![Key::char('！', true)]);
+    fn uppercase_letters_are_lowercased_with_shift() {
+        let keys = map_char('J', true, false).expect("Shift+j 仍是注音鍵");
+        assert_eq!(keys, vec![Key::new(KeyCode::Char('j'), Some('j'), true)]);
     }
 
     #[test]
-    fn multi_character_punct_becomes_several_keys() {
-        let keys = map_char('^', true, false).expect("^ 是刪節號");
-        assert_eq!(keys, vec![Key::char('…', true), Key::char('…', true)]);
+    fn shift_digits_stay_shifted_punctuation() {
+        let keys = map_char('!', true, false).expect("! 是全形驚嘆號的鍵");
+        assert_eq!(keys, vec![Key::new(KeyCode::Char('!'), Some('!'), true)]);
+    }
+
+    #[test]
+    fn punctuation_is_left_to_the_engine() {
+        // 引擎的標點表才會決定 `^` 是兩個刪節號，wrapper 不先展開。
+        let keys = map_char('^', true, false).expect("^ 是刪節號的鍵");
+        assert_eq!(keys, vec![Key::new(KeyCode::Char('^'), Some('^'), true)]);
     }
 
     #[test]
@@ -169,8 +193,13 @@ mod tests {
         assert_eq!(map_char('=', false, false), None);
         assert_eq!(
             map_char('=', false, true),
-            Some(vec![Key::char('=', false)])
+            Some(vec![Key::new(KeyCode::Char('='), Some('='), false)])
         );
+    }
+
+    #[test]
+    fn space_is_not_a_printable_key() {
+        assert_eq!(map_char(' ', false, false), None);
     }
 
     #[test]

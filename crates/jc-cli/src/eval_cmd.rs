@@ -249,6 +249,8 @@ pub struct JaOptions {
     pub left: LeftMode,
     /// 是否啟用 Jinen 神經轉換：`auto`（預設）、`quality` 或 `off`。
     pub neural: crate::cli::NeuralMode,
+    /// 是否走逐字変換（ライブ変換）。
+    pub live: bool,
     /// 輸出聚合報告 JSON。
     pub json: bool,
     /// 輸出含逐題結果的 JSON。
@@ -269,6 +271,7 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
         gate,
         left,
         neural,
+        live,
         json,
         items,
     } = options;
@@ -317,6 +320,16 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
         _ => decoder,
     };
     let mut converter = JaConverter::new(decoder).with_neural(neural_config);
+    if live {
+        // 逐字変換模擬實際輸入：debounce 與時間預算都由評測的牆鐘負責，
+        // 控制器本身立刻轉換，延遲才看得到逐鍵成本。
+        converter = converter.with_live(jc_core::ja::live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            budget: std::time::Duration::ZERO,
+            ..jc_core::ja::live::Config::default()
+        });
+    }
     if left == LeftMode::Rolling {
         converter = converter.with_rolling_left();
     }
@@ -368,6 +381,20 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
             eprintln!("{}", stats.summary());
         } else {
             writeln!(out, "{}", stats.summary())?;
+        }
+    }
+    if live {
+        let latencies = converter.live_latency();
+        let line = format!(
+            "live：按鍵轉換 {} 次，p50 {:.2} ms，p95 {:.2} ms\n",
+            latencies.len(),
+            percentile(&latencies, 50.0),
+            percentile(&latencies, 95.0)
+        );
+        if json {
+            eprint!("{line}");
+        } else {
+            write!(out, "{line}")?;
         }
     }
     Ok(())

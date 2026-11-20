@@ -14,22 +14,24 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-use jc_proto::{Key, KeyCode, Request, Response};
+use jc_proto::{CandidateDetail, Key, KeyCode, Request, Response};
 use windows::core::{implement, IUnknownImpl, Interface, Ref, Result, PCWSTR};
 use windows::Win32::Foundation::{E_FAIL, FALSE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
     ITfEditSession, ITfEditSession_Impl, ITfInsertAtSelection, ITfKeyEventSink, ITfKeystrokeMgr,
-    ITfRange, ITfSource, ITfThreadMgr, ITfThreadMgrEventSink, INSERT_TEXT_AT_SELECTION_FLAGS,
-    TF_AE_END, TF_ANCHOR_END, TF_ANCHOR_START, TF_DEFAULT_SELECTION, TF_ES_READWRITE, TF_ES_SYNC,
-    TF_SELECTION, TF_SELECTIONSTYLE, TF_ST_CORRECTION,
+    ITfRange, ITfSource, ITfThreadMgr, ITfThreadMgrEventSink, ITfUIElementMgr,
+    INSERT_TEXT_AT_SELECTION_FLAGS, TF_AE_END, TF_ANCHOR_END, TF_ANCHOR_START,
+    TF_DEFAULT_SELECTION, TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION, TF_SELECTIONSTYLE,
+    TF_ST_CORRECTION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, RegisterClassW,
     SetWindowLongPtrW, GWLP_USERDATA, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
 };
 
+use crate::candidates::{CandidateHost, CandidateItem, CandidateSnapshot};
 use crate::engine::{self, Job, Queue};
 use crate::keys;
 use crate::logging;
@@ -39,14 +41,17 @@ const WINDOW_CLASS: &str = "jc-tsf-message-window";
 
 /// 上一次套用的引擎狀態。
 ///
-/// 只用來判斷「現在是不是在組字」以及需不需要補送 `Commit`（協定 v3 的選字
-/// 缺口：Space 選字後引擎回的是空 `State`，文字還在待提交區）。
+/// 只用來判斷「現在是不是在組字」、需不需要補送 `Commit`（協定 v3 的選字
+/// 缺口：Space 選字後引擎回的是空 `State`，文字還在待提交區），以及數字鍵
+/// 要不要先送一次 `Down` 進入選取模式。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct LastState {
     /// 上一次 `preedit` 的 rune 數。
     preedit: usize,
     /// 上一次候選數量。
     candidates: usize,
+    /// 上一次是否已在明確的候選選取模式。
+    navigating: bool,
 }
 
 impl LastState {
@@ -66,6 +71,20 @@ enum EditAction {
     Commit { text: String },
 }
 
+/// 一個 `Response::State` 的完整內容。
+///
+/// `drain` 先把欄位搬進來，套用流程就不用一路傳十幾個參數；候選窗也讀同一份。
+struct StateData {
+    preedit: String,
+    cursor: usize,
+    cursor_rune: usize,
+    candidates: Vec<String>,
+    details: Vec<CandidateDetail>,
+    highlighted: usize,
+    navigating: bool,
+    label: Option<String>,
+}
+
 /// 文字服務的執行期狀態（UI 執行緒專用）。
 pub struct Control {
     thread_mgr: ITfThreadMgr,
@@ -76,9 +95,13 @@ pub struct Control {
     composition: RefCell<Option<ITfComposition>>,
     last: Cell<LastState>,
     generation: Cell<u64>,
+    /// 已送出但還沒回覆的選取導覽鍵世代；用來避免快速連打時重複補 `Down`。
+    navigation_armed: Cell<Option<u64>>,
     hwnd: HWND,
     queue: Arc<Queue>,
     jobs: Sender<Job>,
+    /// 交給 Windows 畫的候選清單；只在 UI 執行緒使用。
+    candidate: RefCell<CandidateHost>,
     sink_state: Arc<SinkState>,
     /// 組字 sink 的 COM 引用；由 TSF 保管，這裡只負責存活。
     sink: ITfCompositionSink,
@@ -97,6 +120,16 @@ impl Control {
         let queue_for_worker = Arc::clone(&queue);
         engine::spawn(receiver, queue_for_worker);
 
+        // 候選清單一定要從 thread manager 取得；拿不到就只影響候選窗，
+        // 組字與提交照常運作。
+        let ui_manager: Option<ITfUIElementMgr> = match thread_mgr.cast() {
+            Ok(manager) => Some(manager),
+            Err(error) => {
+                logging::warn(format!("取得 ITfUIElementMgr 失敗，候選窗停用：{error}"));
+                None
+            }
+        };
+
         let sink_state = Arc::new(SinkState::new());
         let sink: ITfCompositionSink = CompositionSink {
             state: Arc::clone(&sink_state),
@@ -110,9 +143,11 @@ impl Control {
             composition: RefCell::new(None),
             last: Cell::new(LastState::default()),
             generation: Cell::new(0),
+            navigation_armed: Cell::new(None),
             hwnd: HWND::default(),
             queue,
             jobs,
+            candidate: RefCell::new(CandidateHost::new(ui_manager)),
             sink_state,
             sink,
             key_sink: None,
@@ -165,13 +200,28 @@ impl Control {
             self.context.replace(Some(context.clone()));
         }
 
-        let Some(batch) = keys::translate(wparam as u16, scan_code(lparam), self.composing())
+        let Some(mut batch) = keys::translate(wparam as u16, scan_code(lparam), self.composing())
         else {
             return false;
         };
 
+        // 候選清單已顯示但還沒進選取模式時，數字鍵先補一個 `Down`：引擎的
+        // 第一次 `Down` 只開候選窗、不動高亮，接著的數字才選得到當頁。
+        // 這是送按鍵，不是 wrapper 自己選字。
+        let prefix = needs_selection_prefix(
+            &batch,
+            self.last.get(),
+            self.navigation_armed.get().is_some(),
+        );
+        if prefix {
+            batch.insert(0, Key::new(KeyCode::Down, None, false));
+        }
+
         self.generation.set(self.generation.get() + 1);
         let generation = self.generation.get();
+        if prefix || batch.iter().any(enters_selection) {
+            self.navigation_armed.set(Some(generation));
+        }
         for key in batch {
             self.send(Job {
                 generation,
@@ -187,6 +237,8 @@ impl Control {
         self.composition.replace(None);
         self.context.replace(None);
         self.last.set(LastState::default());
+        self.navigation_armed.set(None);
+        self.candidate.borrow_mut().end();
         if was_composing {
             logging::debug("焦點改變，送出 Escape 清掉引擎組字");
             self.push_key(Key::new(KeyCode::Escape, None, false));
@@ -197,26 +249,49 @@ impl Control {
     pub fn on_composition_terminated(&self) {
         if self.composition.replace(None).is_some() {
             logging::debug("組字被外部終止");
-            self.last.set(LastState::default());
         }
+        // 外部終止代表 context 可能已經換掉，候選窗不能再留著。
+        self.last.set(LastState::default());
+        self.candidate.borrow_mut().end();
     }
 
     /// 套用所有待處理的引擎回應。
     pub fn drain(&self) {
         for item in self.queue.drain() {
+            // 這批按鍵的回應到了，之後可以重新依最新 State 決定要不要補 `Down`。
+            if self
+                .navigation_armed
+                .get()
+                .is_some_and(|armed| item.generation >= armed)
+            {
+                self.navigation_armed.set(None);
+            }
             match item.result {
                 Ok(Response::State {
                     preedit,
                     cursor,
                     cursor_rune,
                     candidates,
+                    details,
+                    highlighted,
+                    navigating,
+                    label,
                     ..
                 }) => {
                     if item.generation < self.generation.get() {
                         logging::debug("丟棄過期的 State");
                         continue;
                     }
-                    self.apply_state(&preedit, cursor, cursor_rune, &candidates);
+                    self.apply_state(StateData {
+                        preedit,
+                        cursor,
+                        cursor_rune,
+                        candidates,
+                        details,
+                        highlighted,
+                        navigating,
+                        label,
+                    });
                 }
                 Ok(Response::Committed { text }) => self.apply_committed(&text),
                 Ok(other) => logging::debug(format!("忽略非預期的回應：{other:?}")),
@@ -224,6 +299,7 @@ impl Control {
                     logging::warn(format!("引擎回應失敗：{message}"));
                     self.last.set(LastState::default());
                     self.end_composition();
+                    self.candidate.borrow_mut().end();
                 }
             }
         }
@@ -247,6 +323,7 @@ impl Control {
         self.composition.replace(None);
         self.context.replace(None);
         self.last.set(LastState::default());
+        self.candidate.borrow_mut().end();
         // 這兩個引用指回自己；不放手的話物件永遠不會被釋放。
         self.key_sink = None;
         self.thread_sink = None;
@@ -275,26 +352,29 @@ impl Control {
     }
 
     /// 套用一個 `State`。
-    fn apply_state(&self, preedit: &str, cursor: usize, cursor_rune: usize, candidates: &[String]) {
+    fn apply_state(&self, state: StateData) {
         let previous = self.last.get();
         let current = LastState {
-            preedit: preedit.chars().count(),
-            candidates: candidates.len(),
+            preedit: state.preedit.chars().count(),
+            candidates: state.candidates.len(),
+            navigating: state.navigating,
         };
         self.last.set(current);
 
-        if preedit.is_empty() {
+        self.update_candidates(&state);
+
+        if state.preedit.is_empty() {
             self.end_composition();
         } else {
             // `cursor_rune` 是權威值，但 0 會被省略成「沒有欄位」；核心目前
             // 游標都在結尾，所以 0 時退回 `cursor`。
-            let caret = if cursor_rune == 0 {
-                cursor
+            let caret = if state.cursor_rune == 0 {
+                state.cursor
             } else {
-                cursor_rune
+                state.cursor_rune
             };
             self.request(EditAction::Update {
-                preedit: preedit.to_string(),
+                preedit: state.preedit,
                 caret,
             });
         }
@@ -308,9 +388,47 @@ impl Control {
         }
     }
 
+    /// 把候選清單交給 Windows；空清單就關窗。
+    ///
+    /// `preedit` 空但候選非空是合法狀態（符號／表情選單），所以關窗條件看
+    /// 候選而不是看組字字串。
+    fn update_candidates(&self, state: &StateData) {
+        let document = match self.context.borrow().as_ref() {
+            // SAFETY: context 由 TSF 在呼叫期間保持有效。
+            Some(context) => unsafe { context.GetDocumentMgr().ok() },
+            None => None,
+        };
+        let items = state
+            .candidates
+            .iter()
+            .enumerate()
+            .map(|(index, text)| CandidateItem {
+                text: text.clone(),
+                reading: state
+                    .details
+                    .get(index)
+                    .map(|detail| detail.reading.clone())
+                    .unwrap_or_default(),
+                label: if index == state.highlighted {
+                    state.label.clone()
+                } else {
+                    None
+                },
+            })
+            .collect();
+        self.candidate.borrow_mut().update(
+            CandidateSnapshot {
+                items,
+                highlighted: state.highlighted,
+            },
+            document,
+        );
+    }
+
     /// 套用一次提交。
     fn apply_committed(&self, text: &str) {
         self.last.set(LastState::default());
+        self.candidate.borrow_mut().end();
         if text.is_empty() {
             self.end_composition();
             return;
@@ -516,6 +634,7 @@ impl Drop for Control {
     fn drop(&mut self) {
         self.sink_state.detach();
         self.queue.attach(0);
+        self.candidate.borrow_mut().end();
         if !self.hwnd.is_invalid() {
             // SAFETY: 視窗由這個執行緒建立，也在這個執行緒摧毀。
             unsafe {
@@ -555,6 +674,37 @@ fn utf16_offset(text: &str, rune_index: usize) -> i32 {
 /// 從 `lparam` 取掃描碼。
 fn scan_code(lparam: isize) -> u32 {
     ((lparam >> 16) & 0xff) as u32
+}
+
+/// 這個 `KeyCode` 是否會讓引擎進入候選選取模式。
+fn enters_selection(key: &Key) -> bool {
+    matches!(
+        key.code,
+        KeyCode::Down | KeyCode::Up | KeyCode::PageUp | KeyCode::PageDown
+    )
+}
+
+/// 是否要在這批按鍵前面補一個 `Down`。
+///
+/// 條件：候選清單已顯示（`candidates > 0`）、還沒進明確選取模式、沒有已經
+/// 送出但還沒回覆的導覽鍵，且按的是單一 `1`–`9`。引擎的第一次 `Down` 只開
+/// 候選窗、不動高亮，所以補這一下不會改變使用者看到的選取項目。
+///
+/// `armed` 是為了快速連打：使用者先按 `Down` 再立刻按 `1` 時，`Down` 的
+/// `State` 可能還沒回來；此時不能再補一次 `Down`，否則引擎會多移一格。
+fn needs_selection_prefix(batch: &[Key], last: LastState, armed: bool) -> bool {
+    if last.candidates == 0 || last.navigating || armed || batch.len() != 1 {
+        return false;
+    }
+    match batch[0] {
+        Key {
+            code: KeyCode::Char(ch),
+            shift: false,
+            ctrl: false,
+            ..
+        } => ch.is_ascii_digit() && ch != '0',
+        _ => false,
+    }
 }
 
 /// 組字 sink 共用的狀態；`Deactivate` 之後指標會被清成 null。
@@ -686,14 +836,59 @@ mod tests {
         assert!(!LastState::default().composing());
         assert!(LastState {
             preedit: 1,
-            candidates: 0
+            candidates: 0,
+            navigating: false,
         }
         .composing());
         assert!(LastState {
             preedit: 0,
-            candidates: 2
+            candidates: 2,
+            navigating: false,
         }
         .composing());
+    }
+
+    #[test]
+    fn digit_gets_a_down_prefix_only_before_selection_mode() {
+        let digit = [Key::char('3', false)];
+        let visible = LastState {
+            preedit: 1,
+            candidates: 2,
+            navigating: false,
+        };
+        assert!(needs_selection_prefix(&digit, visible, false));
+        assert!(!needs_selection_prefix(&digit, visible, true));
+        assert!(!needs_selection_prefix(
+            &digit,
+            LastState {
+                navigating: true,
+                ..visible
+            },
+            false
+        ));
+        assert!(!needs_selection_prefix(&digit, LastState::default(), false));
+        assert!(!needs_selection_prefix(
+            &[Key::char('0', false)],
+            visible,
+            false
+        ));
+        assert!(!needs_selection_prefix(
+            &[Key::new(KeyCode::Down, None, false)],
+            visible,
+            false
+        ));
+        assert!(!needs_selection_prefix(
+            &[Key::char('ㄅ', false)],
+            visible,
+            false
+        ));
+        assert!(!needs_selection_prefix(
+            &[Key::char('3', true)],
+            visible,
+            false
+        ));
+        assert!(enters_selection(&Key::new(KeyCode::PageDown, None, false)));
+        assert!(!enters_selection(&Key::new(KeyCode::Tab, None, false)));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! `DllRegisterServer`／`DllUnregisterServer` 的實作。
 //!
-//! 註冊三件事：
+//! 註冊四件事：
 //!
 //! 1. `HKCR\CLSID\{CLSID}\InprocServer32` 指到這個 DLL，`ThreadingModel`
 //!    為 `Apartment`。
@@ -8,6 +8,8 @@
 //!    （zh-TW `0x0404`、注音 profile）。
 //! 3. 把 CLSID 註冊到 `GUID_TFCAT_TIP_KEYBOARD` 分類，Windows 8 之後的輸入法
 //!    設定頁才會把它列出來。
+//! 4. 註冊 `GUID_TFCAT_TIPCAP_UIELEMENTENABLED`，允許 TIP 使用
+//!    `ITfUIElementMgr`（候選窗就是靠它交給 Windows 畫）。
 //!
 //! **不啟用 profile**：讓使用者在系統設定裡自己選，不偷改使用者的預設輸入法。
 
@@ -22,7 +24,7 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, ITfCategoryMgr,
-    ITfInputProcessorProfiles, GUID_TFCAT_TIP_KEYBOARD,
+    ITfInputProcessorProfiles, GUID_TFCAT_TIPCAP_UIELEMENTENABLED, GUID_TFCAT_TIP_KEYBOARD,
 };
 
 use crate::guids::{
@@ -56,6 +58,12 @@ pub fn register() -> Result<()> {
         let categories: ITfCategoryMgr =
             CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER)?;
         categories.RegisterCategory(&CLSID_JC_TSF, &GUID_TFCAT_TIP_KEYBOARD, &CLSID_JC_TSF)?;
+        // 沒有這個能力分類，Windows 不會接受 ITfUIElementMgr::BeginUIElement。
+        categories.RegisterCategory(
+            &CLSID_JC_TSF,
+            &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+            &CLSID_JC_TSF,
+        )?;
     }
 
     // 刻意不呼叫 ITfInputProcessorProfileMgr::ActivateProfile。
@@ -82,6 +90,11 @@ pub fn unregister() -> Result<()> {
             let _ = categories.UnregisterCategory(
                 &CLSID_JC_TSF,
                 &GUID_TFCAT_TIP_KEYBOARD,
+                &CLSID_JC_TSF,
+            );
+            let _ = categories.UnregisterCategory(
+                &CLSID_JC_TSF,
+                &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
                 &CLSID_JC_TSF,
             );
         }

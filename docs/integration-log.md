@@ -1169,3 +1169,32 @@
   「重新啟動引擎」要等安裝器提供。
 - **tsf-skeleton 的 14 項未實機驗證清單**在 `docs/port/tsf-skeleton.md`，不要當成已驗證。
 - deal with `jc-settings-ui` 的 Linux 連結依賴（`libxcb`、`libxkbcommon`、`fontconfig` 或 `RUST_FONTCONFIG_DLOPEN=1`）在 CI 映像補齊。
+
+## 2026-11-20 12:40 tsf-smoke、ja-live-neural、tsf-candidates 與 CI
+
+| Branch | Commit | Merge commit | 備註 |
+|---|---|---|---|
+| `ci-ui-deps` | `0504818` | `a3cddee` | CI 的 linux job 加裝 X11／Wayland／字型開發套件（已 push） |
+| `tsf-smoke` | `7a77e73` | `9bd36dd` | 新 crate `jc-tsf-smoke`（免管理員冒煙程式）與 `jc-tsf` 的 `test-export` feature |
+| `ja-live-neural` | `7438238` | `3d12ddf` | 逐字変換共用 Jinen 門檻；結論是逐字路徑**不建議預設開啟**：逐鍵 p95 < 200 ms，但每題累積 p95 313 ms、呼叫數 27 倍 |
+| `tsf-candidates` | `6bc0a99` | `6a99421` | `ITfCandidateListUIElement` 候選窗與按鍵轉換 |
+
+驗證：
+- `RUST_FONTCONFIG_DLOPEN=1 cargo check --workspace --all-targets` exit 0；`cargo check -p jc-tsf -p jc-tsf-smoke --target x86_64-pc-windows-msvc` exit 0。
+- Windows 目標一律改用 `--target x86_64-pc-windows-msvc`（本機已安裝該 target），不再退回 gnu。
+- `ja modern-500 --neural quality` **93.6%**、`--neural off` **86.0%**，預設路徑不變；`--live` 才走新的逐字路徑。
+- clippy 仍是紅的，兩個錯都來自既有 branch，需各自修：
+  - `crates/jc-core/src/session/core.rs:692` `clippy::collapsible_if`（composition-cursor）。
+  - `crates/jc-core/src/ja/live.rs:790` `clippy::type_complexity`（ja-live-neural，只在 lib test）。
+- `cargo test --workspace` 仍有 2 個既有失敗（english-personal、composition-cursor），與本輪無關。
+
+`tsf-candidates` 的已知缺陷（candidate-paging 會修，先不改）：
+- 引擎預設 `max_candidates` 與 Windows 候選窗每頁 `PAGE_SIZE = 9` 不一致（`jc-engine/src/config.rs` 走 `DEFAULT_MAX_CANDIDATES`，
+  `jc-core` 的預設是 5，設定檔的 `candidate_page_size` 預設 10；TSF 固定 9）。
+- `Session::select_by_digit` 只看 `selection_index(ch)`，沒有把目前頁碼加回去，所以第 2 頁以後用數字鍵選字會選到第 1 頁的候選。
+
+### CI（push `a3cddee`，run 44673374135）
+
+- linux (core)：**failure**，失敗步驟是 `Clippy`（就是上面 `collapsible_if`，當時的 HEAD 已含 composition-cursor）。
+- windows (msvc)：build 成功，`Test` 失敗，原因與本機相同：`test_manual_segments_expire_on_next_key`
+  與 `test_english_without_learning_keeps_existing_order`（628 passed、2 failed）。

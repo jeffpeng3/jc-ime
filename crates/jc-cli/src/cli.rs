@@ -107,6 +107,8 @@ pub enum Command {
         left: LeftMode,
         /// 是否啟用 Jinen 神經轉換：`auto`（預設）、`quality` 或 `off`。
         neural: NeuralMode,
+        /// 是否走逐字変換（ライブ変換）；與 `--neural` 的組合共用同一份門檻。
+        live: bool,
         /// 輸出 JSON。
         json: bool,
         /// 輸出含逐題結果的 JSON。
@@ -243,6 +245,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut backend = false;
     let mut left = LeftMode::Off;
     let mut neural = None;
+    let mut live = false;
     let mut json = false;
     let mut items = false;
     let mut select_model = None;
@@ -318,6 +321,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 index += 1;
                 neural = Some(parse_neural(value(rest, index, "--neural")?)?);
             }
+            "--live" => live = true,
             "--json" => json = true,
             "--items" => items = true,
             other => return Err(CliError::Usage(format!("eval 不認得的參數 {other}"))),
@@ -326,7 +330,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     }
     match kind {
         "zh-golden" => {
-            reject_ja_flags(rerank, gate, left, neural, "eval zh-golden")?;
+            reject_ja_flags(rerank, gate, left, neural, live, "eval zh-golden")?;
             reject_items(items, "eval zh-golden")?;
             Ok(Command::EvalZhGolden {
                 testdata,
@@ -348,19 +352,20 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 gate: gate.unwrap_or(DEFAULT_WORD_RERANK_GATE),
                 left,
                 neural: neural.unwrap_or(NeuralMode::Auto),
+                live,
                 json,
                 items,
             })
         }
         "fuzzy" => {
             reject_zh_flags(data, lm, mu, stats, "eval fuzzy")?;
-            reject_ja_flags(rerank, gate, left, neural, "eval fuzzy")?;
+            reject_ja_flags(rerank, gate, left, neural, live, "eval fuzzy")?;
             reject_backend(backend, "eval fuzzy")?;
             reject_items(items, "eval fuzzy")?;
             Ok(Command::EvalFuzzy { testdata, json })
         }
         "mixed" => {
-            reject_ja_flags(rerank, gate, left, neural, "eval mixed")?;
+            reject_ja_flags(rerank, gate, left, neural, live, "eval mixed")?;
             reject_backend(backend, "eval mixed")?;
             reject_items(items, "eval mixed")?;
             Ok(Command::EvalMixed {
@@ -409,12 +414,13 @@ fn parse_backend(value: &str) -> Result<(), CliError> {
     )))
 }
 
-/// 只有日文題庫接受 `--rerank`、`--gate` 與 `--left`。
+/// 只有日文題庫接受 `--rerank`、`--gate`、`--left`、`--neural` 與 `--live`。
 fn reject_ja_flags(
     rerank: Option<bool>,
     gate: Option<WordGate>,
     left: LeftMode,
     neural: Option<NeuralMode>,
+    live: bool,
     command: &str,
 ) -> Result<(), CliError> {
     if rerank.is_some() {
@@ -428,6 +434,9 @@ fn reject_ja_flags(
     }
     if neural.is_some() {
         return Err(CliError::Usage(format!("{command} 不接受 --neural")));
+    }
+    if live {
+        return Err(CliError::Usage(format!("{command} 不接受 --live")));
     }
     Ok(())
 }
@@ -814,6 +823,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             gate,
             left,
             neural,
+            live,
             json,
             items,
         } => crate::eval_cmd::ja(
@@ -825,6 +835,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 gate: rerank.then_some(*gate),
                 left: *left,
                 neural: *neural,
+                live: *live,
                 json: *json,
                 items: *items,
             },
@@ -914,7 +925,7 @@ pub fn usage() -> String {
          jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--select-model on|off] [--backend candle] [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] \
          [--rerank on|off] [--gate off|<成本差>|cand:<N>] [--backend candle] \
-         [--left off|rolling] [--json] [--items]\n  \
+         [--left off|rolling] [--neural auto|quality|off] [--live] [--json] [--items]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
          jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--backend candle] [--user-data <dir>] [--pick <n>] [--json]\n  \
@@ -929,6 +940,8 @@ pub fn usage() -> String {
          指定時注音走真實詞庫並自動載入同目錄的 lm.bin。\n\
          --lm 覆寫 bigram 語言模型；--mu 是 bigram 與 unigram 的內插權重（預設 0.7）。\n\
          --select-model on 需要 zh-select 的 candle 權重；預設 on，可用 off 關閉。\n\
+         --neural 選 Jinen 神經轉換：auto（預設，gap < 472.5 且平均候選數 > 5.98）、quality（只看 gap < 460）、off。\n\
+         --live 走逐字変換（ライブ変換）；可與 --neural 併用，共用同一份門檻與五條驗證。\n\
          --user-data 指定個人資料目錄；日文學習寫進同一個 personal.json，--pick 記下第幾個候選。\n\
          data manifest 會實際算大小與 SHA-256；下載項不存在就略過，隨附檔缺少則失敗。\n\
          data verify 逐檔檢查存在、大小與 SHA-256；缺少隨附檔或內容不符會回傳非零。\n",
@@ -979,6 +992,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
+                live: false,
                 json: false,
                 items: false,
             }
@@ -1007,6 +1021,32 @@ mod tests {
         assert!(parse(&args(&["eval", "fuzzy", "--neural", "off"])).is_err());
     }
 
+    /// `--live` 只給日文題庫，且可與 `--neural off` 併用。
+    #[test]
+    fn parses_ja_live_switch() {
+        let Command::EvalJa {
+            live, neural, json, ..
+        } = parse(&args(&["eval", "ja", "--live"])).unwrap()
+        else {
+            panic!("要解析成 eval ja");
+        };
+        assert!(live);
+        assert_eq!(neural, NeuralMode::Auto, "沒給 --neural 時是低呼叫版");
+        assert!(!json);
+
+        let Command::EvalJa { live, neural, .. } =
+            parse(&args(&["eval", "ja", "--live", "--neural", "off"])).unwrap()
+        else {
+            panic!("要解析成 eval ja");
+        };
+        assert!(live);
+        assert_eq!(neural, NeuralMode::Off);
+
+        assert!(parse(&args(&["eval", "fuzzy", "--live"])).is_err());
+        assert!(parse(&args(&["eval", "zh-golden", "--live"])).is_err());
+        assert!(parse(&args(&["eval", "mixed", "--live"])).is_err());
+    }
+
     #[test]
     fn parses_ja_pack_and_corpus_path() {
         assert_eq!(
@@ -1027,6 +1067,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
+                live: false,
                 json: false,
                 items: false,
             }
@@ -1045,6 +1086,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
+                live: false,
                 json: false,
                 items: false,
             }
@@ -1074,6 +1116,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
+                live: false,
                 json: false,
                 items: false,
             }
@@ -1100,6 +1143,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
+                live: false,
                 json: false,
                 items: true,
             }
@@ -1120,6 +1164,7 @@ mod tests {
                 gate: WordGate::Gap(200),
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
+                live: false,
                 json: false,
                 items: false,
             }
@@ -1134,6 +1179,7 @@ mod tests {
                 gate: WordGate::Candidates(3),
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
+                live: false,
                 json: false,
                 items: false,
             }
@@ -1148,6 +1194,7 @@ mod tests {
                 gate: WordGate::Off,
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
+                live: false,
                 json: false,
                 items: false,
             }
