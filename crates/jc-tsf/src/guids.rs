@@ -16,6 +16,12 @@ pub const CLSID_JC_TSF: GUID = GUID::from_u128(0x7b7d6e1a_3c1f_4b2e_9a55_6c1d2f3
 /// 不會出現在註冊機碼。
 pub const GUID_PROFILE_JC_TSF: GUID = GUID::from_u128(0x8f0a9b3c_2d4e_4f50_a1b2_c3d4e5f60718);
 
+/// 候選清單 UI 元素的 GUID。
+///
+/// `ITfUIElement::GetGUID` 用它識別「這是候選窗」。同一種 UI 元素共用一個
+/// GUID，不是每個實例不同；發佈後不可改。
+pub const GUID_CANDIDATE_UI_ELEMENT: GUID = GUID::from_u128(0x9c4e7a21_6b3d_4f08_b5a7_2e1d8c6f9034);
+
 /// 文字服務註冊的語言。第一版只有繁體中文（台灣）。
 pub const LANGID_ZH_TW: u16 = 0x0404;
 
