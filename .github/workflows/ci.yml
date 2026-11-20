@@ -23,6 +23,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: 系統依賴（GPUI Kit 的 X11／Wayland／字型）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev \
+            libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libasound2-dev
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
