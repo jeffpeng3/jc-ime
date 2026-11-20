@@ -1343,3 +1343,14 @@ gate：test exit 0（54 targets、1231 passed、0 failed）、clippy exit 0、fm
 ### CI（push `b2a1f87`，run 44691123049）
 
 - linux (core)：success；windows (msvc)：success（只有文件變更，作為最後一次確認）。
+
+## 2026-11-20 14:55 x86-tip（`a5583c9` → `d5c65a1`）
+
+內容：新增 i686 TSF 元件與雙架構註冊／反安裝；改成 x64／x86 共用 CLSID，兩個機碼檢視各指一份 DLL；
+冒煙程式同時檢查 64 與 32 位元機碼檢視。
+
+- `cargo check -p jc-tsf --target x86_64-pc-windows-msvc`：exit 0。
+- `cargo check -p jc-tsf --target i686-pc-windows-msvc`：exit 0（本機已裝 i686 target）。
+- `RUST_FONTCONFIG_DLOPEN=1 cargo check --workspace --all-targets`：exit 0。
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：exit 0（54 targets、1231 passed、0 failed）。
+- `git branch --no-merged main`：rc-prep（等它完成後再合）。
