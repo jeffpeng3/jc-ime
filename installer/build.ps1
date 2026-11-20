@@ -121,10 +121,10 @@ function Get-DllNames {
     return ($names -join ', ')
 }
 
-# 靜態連結 CRT：TSF DLL 會被載入 explorer 與任意程式，不能依賴 vcruntime140.dll。
-# 這是 docs/history.md 記錄的出貨條件。
-$env:RUSTFLAGS = (@($env:RUSTFLAGS, '-C target-feature=+crt-static') |
-    Where-Object { $_ }) -join ' '
+# 靜態連結 CRT 的 rustflags 放在 .cargo/config.toml 的兩個 windows-msvc
+# target，build.ps1 不再設定 RUSTFLAGS。CI 的 cargo run／cargo build 與這裡
+# 共用同一組指紋，避免因環境變數不同而全量重編。
+# 出貨條件見 docs/history.md：TSF DLL 不能依賴 vcruntime140.dll。
 
 # 先建置，再解析輸出目錄。Resolve-ReleaseDir 只驗證既有產物；若在建置前呼叫，
 # 乾淨的 runner 上必定找不到 target\<triple>\<profile>（RC1 在 build.ps1:107 失敗）。

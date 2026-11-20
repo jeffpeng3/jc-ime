@@ -182,11 +182,13 @@ signtool verify /pa /v jc-ime-<version>-x64.msi
 | Job | 產出 |
 |---|---|
 | `verify` | 檢查 tag／`Cargo.toml` 版本一致且符合 `x.y.z` 或 `x.y.z-<pre-release>`，輸出完整版本與 `msi_version`；跑 `cargo test --workspace --release` |
-| `windows` | 下載資料包並比對 SHA-256 → `cargo build --workspace --release --target x86_64-pc-windows-msvc` → `jc-cli data verify` → 安裝 WiX v5 → `installer/build.ps1 -MsiVersion <x.y.z>` → MSI、checksum、`data-manifest.json` |
+| `windows` | 下載資料包並比對 SHA-256 → `cargo run -p jc-cli -- data verify`（只建 `jc-cli`）→ 安裝 WiX v5 → `installer/build.ps1 -MsiVersion <x.y.z>`（建其餘 crate）→ MSI、checksum、`data-manifest.json` |
 | `linux` | 安裝 GPUI 系統依賴 → `cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui` → 打包 tar.gz 與 checksum |
 | `publish` | 只在 tag push 執行；下載兩個 artifact，建立或更新 GitHub Release |
 
 Windows 建置必須指定 target（`--target x86_64-pc-windows-msvc`），否則 `build.ps1` 的 payload 路徑會不符；x64 找不到 `target/<triple>/release` 時會退回 `target/release`，並印出警告與實際路徑。
+
+`+crt-static` 是 Windows 出貨條件，TSF DLL 不能依賴 `vcruntime140.dll`。旗標統一放在 `.cargo/config.toml` 的 `[target.x86_64-pc-windows-msvc]` 與 `[target.i686-pc-windows-msvc]`；workflow 的 `cargo run` 與 `build.ps1` 共用同一組 rustflags，不會因 `RUSTFLAGS` 變動而全量重編。
 
 `release.yml` 不跑 `cargo fmt`、clippy；那些由 `ci.yml` 在日常 push／PR 負責。
 

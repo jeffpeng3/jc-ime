@@ -50,7 +50,7 @@ Go 參考實作沒有 MSI，Windows 安裝過程分散在 `0c-update` 與 NSIS �
 | `settings.json` | MSI 不安裝 | 不覆蓋既有檔；第一次按「套用」由設定程式建立 |
 | 引擎啟動 | `HKLM\...\Run` 的 `REG_EXPAND_SZ` | `jc-tsf` 只連 pipe，不會拉起引擎；`%LOCALAPPDATA%` 由每位使用者各自展開 |
 | 版本 | `UpgradeCode` 固定、`Version` 取自 workspace `Cargo.toml` | 升級由 `MajorUpgrade` 處理，版本號不在 WXS 手抄 |
-| CRT | `-C target-feature=+crt-static` | TSF DLL 被載入 explorer，不能依賴 `vcruntime140.dll`（`docs/history.md`） |
+| CRT | `-C target-feature=+crt-static` 統一放在 `.cargo/config.toml` 的兩個 Windows target | TSF DLL 被載入 explorer，不能依賴 `vcruntime140.dll`（`docs/history.md`）；build.ps1 與 CI 共用同一組 rustflags，避免指紋失效重編 |
 
 ### 反安裝順序
 
@@ -145,7 +145,8 @@ RC1 的 Windows job 在 `installer/build.ps1:107` 失敗，訊息是找不到
 現在 `installer/build.ps1` 的順序固定如下：
 
 1. 解析參數，組出 `$cargoX64Args`、`$cargoX86Args`、`$cargoHelperArgs`。
-2. 設定 `RUSTFLAGS` 的 `-C target-feature=+crt-static`。
+2. 使用 `.cargo/config.toml` 的 `[target.x86_64-pc-windows-msvc]` 與
+   `[target.i686-pc-windows-msvc]` rustflags；`build.ps1` 不設定 `RUSTFLAGS`。
 3. 依序執行 x64 workspace、x86 `jc-tsf`、`jc-tip-register` 的 `cargo build`。
 4. 建置完成後才呼叫 `Resolve-ReleaseDir`，後續的 `Test-Path` 檢查也都在建置之後。
 
@@ -156,6 +157,14 @@ RC1 的 Windows job 在 `installer/build.ps1:107` 失敗，訊息是找不到
 不允許退回，避免把 x64 的 `jc-tsf.dll` 當成 x86 DLL 打包。
 
 `jc-tsf` 是 cdylib，Cargo 的 lib target 名稱是 `jc_tsf`，建置產物是 `jc_tsf.dll`；payload 內才改名為 x64 的 `jc-tsf.dll` 與 x86 的 `jc-tsf-x86.dll`，WXS 不用改。其餘 bin target（`jc-engine.exe`、`jc-cli.exe`、`jc-settings-ui.exe`、`jc-tsf-smoke.exe`）保留連字號，已用 `cargo metadata --no-deps` 確認。
+
+### crt-static 與建置指紋
+
+`-C target-feature=+crt-static` 是出貨條件：TSF DLL 會被 explorer 與任意程式載入，不能依賴 `vcruntime140.dll`。旗標統一放在 `.cargo/config.toml` 的 `[target.x86_64-pc-windows-msvc]` 與 `[target.i686-pc-windows-msvc]`，`build.ps1` 不再設定 `RUSTFLAGS`。
+
+Windows job 不再先跑 `cargo build --workspace`。「驗證資料包」只用 `cargo run -p jc-cli` 建驗證所需的 `jc-cli`，其餘 crate 由 `build.ps1` 建。兩邊讀同一份 config，cargo 指紋一致，`build.ps1` 會沿用已編譯的產物，不再因為 `RUSTFLAGS` 不同而全量重編。
+
+Windows target tree 的 `cc` 只用於 GPUI 的 `embed-resource` 前置處理 `.rc`，沒有自行編譯 C/C++ 靜態庫。`cargo check -p jc-settings-ui --target x86_64-pc-windows-msvc` 與 `cargo check -p jc-tsf --target i686-pc-windows-msvc` 都通過；MSVC 連結本身只能在 Windows CI 或實機驗證。
 
 ### MSI 檔名與 ProductVersion
 
@@ -202,6 +211,9 @@ workflow 的 `RELEASE_VERSION` 是完整版本，`MSI_VERSION` 是三段數字�
 - 三個 `cargo build` 都位在 `Resolve-ReleaseDir` 與所有執行期 `Test-Path` 之前。
 - 建置與錯誤訊息共用同一組參數陣列，錯誤中的 cargo 指令與實際執行一致。
 - `$cargoX86Args` 明確帶 `--target i686-pc-windows-msvc`，錯誤訊息會顯示同一個 triple。
+- `.cargo/config.toml` 的 x86_64 與 i686 Windows target 都設 `+crt-static`；`build.ps1` 已移除 `$env:RUSTFLAGS`。
+- `cargo check -p jc-settings-ui --target x86_64-pc-windows-msvc` 與 `cargo check -p jc-tsf --target i686-pc-windows-msvc` 通過；Linux 沒有 MSVC 連結器，連結留給 Windows CI。
+- `release.yml` 的 Windows job 已移除 `cargo build --workspace`，資料驗證只建 `jc-cli`。
 - `$msi` 用 `$Version`（完整版本）命名，`wix build` 的 `-d Version` 用 `$MsiVersion`（三段數字）。
 - `$Version`、`$MsiVersion`、`$ReleaseDir`、`$ReleaseDirX86` 都在第一次使用前賦值；`Set-StrictMode -Version Latest` 下沒有未定義變數。
 - `git diff --check` 通過。

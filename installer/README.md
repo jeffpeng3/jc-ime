@@ -46,10 +46,11 @@ TSF DLL）。
 
 腳本做這些事：
 
-1. 用 `-C target-feature=+crt-static` 建置 workspace 的六個執行檔／DLL 與
-   `jc-tip-register`，另外用 `i686-pc-windows-msvc` 再建一份 `jc-tsf`（暫存成
-   `jc-tsf-x86.dll`）。靜態 CRT 是必要條件：TSF DLL 會被載入 explorer 與任意
-   程式，不能依賴 `vcruntime140.dll`（`docs/history.md` 的既有決策）。
+1. 依 `.cargo/config.toml` 的 `-C target-feature=+crt-static` 建置 workspace
+   的六個執行檔／DLL 與 `jc-tip-register`，另外用 `i686-pc-windows-msvc` 再建
+   一份 `jc-tsf`（暫存成 `jc-tsf-x86.dll`）。靜態 CRT 是必要條件：TSF DLL 會被
+   載入 explorer 與任意程式，不能依賴 `vcruntime140.dll`（`docs/history.md` 的
+   既有決策）；兩個 Windows target 的 rustflags 都放在 `.cargo/config.toml`。
 2. 用建置出來的 `jc-cli.exe data manifest` 對資料根目錄產生 `manifest.json`，
    只複製 `shipped: true` 的檔案。Funmula 的 `zh-select`、`zh-punct` 依授權不隨
    產品散布。

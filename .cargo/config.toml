@@ -6,3 +6,13 @@
 # x86_64 與 Windows 不需要這個旗標，CI 也不受影響。
 [target.aarch64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=+fp16"]
+
+# Windows 出貨條件：TSF DLL 會被 explorer 與任意程式載入，不能依賴
+# vcruntime140.dll。兩個 Windows target 都必須靜態連結 CRT，而且要和 CI 的
+# cargo build／cargo run 共用同一組 rustflags，避免 RUSTFLAGS 變動讓 cargo
+# 指紋失效、每個 crate 重編。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

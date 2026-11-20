@@ -234,14 +234,15 @@ jobs:
           Add-GitHubEnv 'JC_DATA_ROOT' $dataRoot
           Write-Host "資料根目錄：$dataRoot"
 
-      - name: 建置 workspace（release）
-        run: cargo build --workspace --release --target x86_64-pc-windows-msvc
-
+      # 不先做 workspace 全量建置：build.ps1 會建它需要的 crate。
+      # 這裡只建 jc-cli 供資料驗證；crt-static 在 .cargo/config.toml，
+      # 兩邊 rustflags 一致，build.ps1 會沿用同一批編譯產物。
       - name: 驗證資料包
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & .\target\x86_64-pc-windows-msvc\release\jc-cli.exe data verify $env:JC_DATA_ROOT
+          cargo run --release --target x86_64-pc-windows-msvc -p jc-cli -- `
+            data verify $env:JC_DATA_ROOT
           if ($LASTEXITCODE -ne 0) {
             throw "資料驗證失敗（exit $LASTEXITCODE）"
           }
