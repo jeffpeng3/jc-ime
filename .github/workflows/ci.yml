@@ -13,6 +13,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 5
+  # 增量編譯對 CI 沒有好處，關掉可少寫很多暫存檔。
+  CARGO_INCREMENTAL: 0
+
 jobs:
   linux:
     name: linux (core)
@@ -30,6 +36,16 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev \
             libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
             libxcb-shape0-dev libxcb-xfixes0-dev libasound2-dev
+      # 只快取下載回來的 registry／git，不快取 target：
+      # target 太大，上傳下載的時間比重新編譯還久。
+      - name: Cargo registry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -44,7 +60,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --workspace --release
+      - name: Cargo registry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      # 只跑 test（debug）。原本先 build --release 再 test，等於同一份程式編兩次；
+      # release 建置改由 release workflow 在標籤上做。
       - name: Test
         run: cargo test --workspace
