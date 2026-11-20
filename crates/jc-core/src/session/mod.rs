@@ -226,6 +226,17 @@ pub(super) struct Menu {
     pub(super) tab: usize,
 }
 
+/// 正在編輯的片段視窗。
+///
+/// `start`、`len` 都是音節索引；候選清單只解碼這一段，選字也只鎖定這一段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EditWindow {
+    /// 視窗起點（音節索引）。
+    pub(super) start: usize,
+    /// 視窗長度（音節數）。
+    pub(super) len: usize,
+}
+
 /// 一次輸入的工作階段。
 ///
 /// 只保留組字所需的狀態；送出後立即清空，因此呼叫端每次都用快照重畫。
@@ -241,6 +252,10 @@ pub struct Session {
     ///
     /// 對外一律換算成 rune 位移；內部用音節格才能對應讀音與鎖定。
     pub(super) cursor: usize,
+    /// 游標所在片段的編輯視窗；有值時候選清單只算這一段。
+    pub(super) edit: Option<EditWindow>,
+    /// 換字後是否保留候選窗，直到 Esc 或游標離開目前片段。
+    pub(super) keep_candidates: bool,
     pub(super) romaji: RomajiInput,
     pub(super) lexicon: InMemoryLexicon,
     /// 不含自訂詞的原始詞典；自訂詞變動時由它重建 [`Session::lexicon`]。
@@ -363,6 +378,8 @@ impl Session {
             zh: ZhInput::standard(),
             syllables: Vec::new(),
             cursor: 0,
+            edit: None,
+            keep_candidates: false,
             romaji: RomajiInput::new(),
             lexicon,
             base_lexicon,
@@ -481,6 +498,8 @@ impl Session {
                             }
                         }
                     }
+                    KeyCode::ArrowRight if key.shift => self.resize_segment(1),
+                    KeyCode::ArrowLeft if key.shift => self.resize_segment(-1),
                     KeyCode::ArrowRight => self.navigate(1),
                     KeyCode::ArrowLeft => self.navigate(-1),
                     KeyCode::Char(ch) => self.press_char(ch),
