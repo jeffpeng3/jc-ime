@@ -1,0 +1,305 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  jc 注音：per-machine MSI（WiX v5）。
+
+  為什麼是 MSI 而不是 MSIX：`ITfInputProcessorProfiles::Register` 寫
+  `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}`，只有 Administrators 有寫入權；
+  MSIX 的 runFullTrust 不會提升權限。理由與出處見 plan/jc-ime/tsf-plan.md。
+
+  建置方式見 installer/README.md。這份檔案需要兩個前置變數：
+
+    -d Version=0.1.0
+    -d PayloadDir=<staging 目錄>
+
+  安裝順序（InstallExecuteSequence）：
+    InstallFiles
+      → RegisterTip（deferred、SYSTEM）      呼叫 jc-tsf.dll 的 DllRegisterServer
+    InstallFinalize
+      → InstallTipLayout（immediate、使用者）  InstallLayoutOrTip(ILOT_INSTALL)
+
+  反安裝順序：
+    UnregisterTip（deferred、SYSTEM）           DllUnregisterServer，失敗時內建清理
+    RemoveFiles
+    InstallFinalize
+      → RemoveTipLayout（immediate、使用者）    InstallLayoutOrTip(ILOT_UNINSTALL)
+                                                並刪除 %LOCALAPPDATA%\jc-ime
+
+  檔案與機碼都由 MSI 或上述自訂動作建立／移除；沒有 Permanent 元件。
+-->
+<?ifndef Version ?>
+  <?error 未指定 Version：wix build -d Version=<x.y.z> -d PayloadDir=<dir> installer/jc-ime.wxs ?>
+<?endif ?>
+<?ifndef PayloadDir ?>
+  <?error 未指定 PayloadDir：wix build -d Version=<x.y.z> -d PayloadDir=<dir> installer/jc-ime.wxs ?>
+<?endif ?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="jc 注音"
+      Manufacturer="jc-ime"
+      Version="$(var.Version)"
+      UpgradeCode="{6A97C593-1BE9-414D-B654-650FBDC98B66}"
+      Language="1028"
+      Codepage="950"
+      Scope="perMachine"
+      Compressed="yes">
+
+    <SummaryInformation
+        Description="jc 注音（TSF 輸入法）"
+        Manufacturer="jc-ime" />
+
+    <!-- AllowSameVersionUpgrades：開發期版本號常停在 0.1.0，重裝同一版時要
+         就地升級，不要留下兩個「jc 注音」項目。 -->
+    <MajorUpgrade
+        AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="已安裝較新版本的 jc 注音。請先從「應用程式與功能」移除目前版本，再安裝這一版。" />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- 反安裝時是否保留 %LOCALAPPDATA%\jc-ime（settings.json、personal.json）。
+         預設 0：完全清除，符合「移除後不留下檔案」的要求。
+         使用者資料是使用者自己的設定，想保留時在命令列加 KEEPUSERSETTINGS=1。 -->
+    <Property Id="KEEPUSERSETTINGS" Value="0" Secure="yes" />
+
+    <Feature Id="Main" Title="jc 注音" Level="1" AllowAbsent="no">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentGroupRef Id="DataFiles" />
+      <ComponentRef Id="EngineAutostart" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+    <InstallExecuteSequence>
+      <!-- 安裝／修復：先排 rollback，再註冊。 -->
+      <Custom Action="RollbackRegisterTip" Before="RegisterTip" Condition="NOT REMOVE" />
+      <Custom Action="RegisterTip" After="InstallFiles" Condition="NOT REMOVE" />
+
+      <!-- 反安裝：先移除 TIP，再刪檔案；順序反了會留下無法移除的機碼。 -->
+      <Custom Action="RollbackUnregisterTip" Before="UnregisterTip"
+              Condition='REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' />
+      <Custom Action="UnregisterTip" Before="RemoveFiles" Condition='REMOVE~="ALL"' />
+
+      <!-- 使用者語言清單：必須在 SYSTEM 的註冊完成之後、且以使用者身分執行。 -->
+      <Custom Action="InstallTipLayout" After="InstallFinalize" Condition="NOT REMOVE" />
+      <Custom Action="RemoveTipLayout" After="InstallFinalize"
+              Condition='REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' />
+    </InstallExecuteSequence>
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="jc-ime" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="SHAREDDIR" Name="jc-ime">
+        <Directory Id="DATADIR" Name="data">
+          <Directory Id="PACKSDIR" Name="packs" />
+          <Directory Id="BUILDZHDIR" Name="build-zh" />
+          <Directory Id="ENGLISHDIR" Name="english" />
+          <Directory Id="MODELSDIR" Name="models">
+            <Directory Id="EXTERNALDIR" Name="external">
+              <Directory Id="JINENDIR" Name="jinen-v2-small" />
+            </Directory>
+          </Directory>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ProgramMenuDir" Name="jc 注音" />
+    </StandardDirectory>
+  </Fragment>
+
+  <!--
+    程式檔案。jc-tip-register.exe 必須留到 RemoveFiles 之後才刪，因為反安裝的
+    UnregisterTip 會呼叫它。
+  -->
+  <Fragment>
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Component Id="TsfDll" Guid="{BA82E245-0AC8-4CE0-8350-48A1AA127BDE}">
+        <File Id="FileTsfDll"
+              Source="$(var.PayloadDir)/jc-tsf.dll"
+              KeyPath="yes"
+              Vital="yes" />
+      </Component>
+
+      <Component Id="EngineExe" Guid="{B47CE81B-061C-48BC-BF03-4BB96A5CDEFD}">
+        <File Id="FileEngine"
+              Source="$(var.PayloadDir)/jc-engine.exe"
+              KeyPath="yes"
+              Vital="yes" />
+      </Component>
+
+      <Component Id="CliExe" Guid="{161787AE-C16F-41F3-9661-232D7E6AF446}">
+        <File Id="FileCli"
+              Source="$(var.PayloadDir)/jc-cli.exe"
+              KeyPath="yes"
+              Vital="yes" />
+      </Component>
+
+      <Component Id="SettingsUiExe" Guid="{40AD23EB-884D-4284-9A5D-082579E0AFDB}">
+        <File Id="FileSettingsUi"
+              Source="$(var.PayloadDir)/jc-settings-ui.exe"
+              KeyPath="yes"
+              Vital="yes" />
+      </Component>
+
+      <Component Id="SmokeExe" Guid="{B3A54B49-E3B9-4DD8-AB91-A240E93959BE}">
+        <File Id="FileSmoke"
+              Source="$(var.PayloadDir)/jc-tsf-smoke.exe"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="TipRegisterExe" Guid="{4CCDFDDE-8BC0-4BB6-89CC-2D9FF5FD2550}">
+        <File Id="FileTipRegister"
+              Source="$(var.PayloadDir)/jc-tip-register.exe"
+              KeyPath="yes"
+              Vital="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <!--
+    隨產品散布的資料。清單來自資料根目錄的 manifest.json（shipped: true）；
+    下載項（Funmula 的 zh-select、zh-punct）依授權不可隨產品散布，因此不在這裡。
+    manifest.json 本身要一起裝，引擎啟動時用它比對存在與大小。
+  -->
+  <Fragment>
+    <ComponentGroup Id="DataFiles">
+      <Component Id="DataManifest" Directory="DATADIR"
+                 Guid="{D701FE40-1CBC-4E4E-B4EB-6B88075A8C62}">
+        <File Id="FileDataManifest"
+              Source="$(var.PayloadDir)/data/manifest.json"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="JaPack" Directory="PACKSDIR"
+                 Guid="{A0FCC959-A481-4F59-B72F-AED8054CE7BA}">
+        <File Id="FileJaPack"
+              Source="$(var.PayloadDir)/data/packs/ja-lexicon-mozc-v2.pack"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="ZhLexicon" Directory="BUILDZHDIR"
+                 Guid="{8C1F60C2-2F96-447E-BDF6-EE16466C8B9B}">
+        <File Id="FileZhLexicon"
+              Source="$(var.PayloadDir)/data/build-zh/lexicon.bin"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="ZhLm" Directory="BUILDZHDIR"
+                 Guid="{9D2A3407-77F8-45ED-BAFF-B73977339230}">
+        <File Id="FileZhLm"
+              Source="$(var.PayloadDir)/data/build-zh/lm.bin"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="EnglishWords" Directory="ENGLISHDIR"
+                 Guid="{FCF93FC8-9038-493C-9D69-FDE475E29CEF}">
+        <File Id="FileEnglishWords"
+              Source="$(var.PayloadDir)/data/english/words.bin"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="JaNeural" Directory="JINENDIR"
+                 Guid="{785BEA44-E4A3-4D31-BFD7-514F4180E8D1}">
+        <File Id="FileJaNeural"
+              Source="$(var.PayloadDir)/data/models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf"
+              KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <!--
+    引擎開機自動啟動。
+
+    tsf-skeleton 的 worker 只連 named pipe，不會自己拉起引擎；沒有這個 Run
+    項目，安裝完 Win+Space 看得到「jc 注音」，但輸入不會有反應。
+
+    值用 REG_EXPAND_SZ（Type="expandable"），`%LOCALAPPDATA%` 在每位使用者
+    登入時各自展開，所以同一條 HKLM 值對所有使用者都成立。settings.json 放在
+    使用者目錄，資料在 ProgramData。
+  -->
+  <Fragment>
+    <Component Id="EngineAutostart" Directory="INSTALLFOLDER"
+               Guid="{28B7FF4A-8D07-4C5F-AEE6-CCF43F7B717F}">
+      <RegistryKey Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run">
+        <RegistryValue
+            Name="jc-ime-engine"
+            Type="expandable"
+            KeyPath="yes"
+            Value="&quot;[INSTALLFOLDER]jc-engine.exe&quot; --data &quot;[DATADIR]&quot; --settings &quot;%LOCALAPPDATA%\jc-ime\settings.json&quot; --socket jc-ime" />
+      </RegistryKey>
+    </Component>
+  </Fragment>
+
+  <!--
+    開始功能表的設定程式捷徑。捷徑只帶 `settings`，由 jc-tip-register.exe
+    在執行時展開 %LOCALAPPDATA% 再啟動 jc-settings-ui.exe。
+
+    不在 Arguments 直接寫 `%LOCALAPPDATA%`：.lnk 的參數在啟動時不會展開環境
+    變數，per-machine 捷徑也不能寫死某個使用者的路徑。
+  -->
+  <Fragment>
+    <Component Id="StartMenuShortcut" Directory="ProgramMenuDir"
+               Guid="{1ED6CD3E-7703-43B1-AD2F-E9713ED20419}">
+      <Shortcut Id="SettingsShortcut"
+                Name="jc 注音設定"
+                Description="調整 jc 注音的輸入模式、選字與候選數量"
+                Target="[INSTALLFOLDER]jc-tip-register.exe"
+                Arguments="settings"
+                WorkingDirectory="INSTALLFOLDER" />
+      <RemoveFolder Id="RemoveProgramMenuDir" On="uninstall" />
+    </Component>
+  </Fragment>
+
+  <!--
+    自訂動作。ExeCommand 裡的 `[#File...]` 在排程時就解析成安裝後的完整路徑，
+    deferred 動作執行時不再讀 MSI 屬性。
+
+    machine-* 一定要 Impersonate="no"：CTF 機碼在 HKLM，需要 SYSTEM 權限。
+    user-* 一定要 Impersonate="yes"：InstallLayoutOrTip 寫的是呼叫者的 HKCU。
+  -->
+  <Fragment>
+    <CustomAction Id="RegisterTip"
+                  FileRef="FileTipRegister"
+                  ExeCommand="machine-register &quot;[#FileTsfDll]&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <CustomAction Id="RollbackRegisterTip"
+                  FileRef="FileTipRegister"
+                  ExeCommand="machine-unregister &quot;[#FileTsfDll]&quot;"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <CustomAction Id="UnregisterTip"
+                  FileRef="FileTipRegister"
+                  ExeCommand="machine-unregister &quot;[#FileTsfDll]&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <CustomAction Id="RollbackUnregisterTip"
+                  FileRef="FileTipRegister"
+                  ExeCommand="machine-register &quot;[#FileTsfDll]&quot;"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <CustomAction Id="InstallTipLayout"
+                  FileRef="FileTipRegister"
+                  ExeCommand="user-install"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="ignore" />
+
+    <CustomAction Id="RemoveTipLayout"
+                  FileRef="FileTipRegister"
+                  ExeCommand="user-uninstall [KEEPUSERSETTINGS]"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="ignore" />
+  </Fragment>
+</Wix>

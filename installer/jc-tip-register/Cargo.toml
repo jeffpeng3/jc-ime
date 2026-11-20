@@ -1,0 +1,31 @@
+[package]
+name = "jc-tip-register"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+rust-version = "1.90"
+publish = false
+description = "jc 注音的 MSI 自訂動作輔助程式：註冊／移除 TSF TIP 與使用者的語言清單項目"
+
+# 安裝器工具刻意獨立於 workspace：它不進 `cargo check --workspace`，也不依賴
+# jc-* crate。空白的 [workspace] 讓 Cargo 不把它當成上層 workspace 的成員。
+[workspace]
+
+[[bin]]
+name = "jc-tip-register"
+path = "src/main.rs"
+
+[dependencies]
+thiserror = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Registry",
+  "Win32_UI_TextServices",
+] }
