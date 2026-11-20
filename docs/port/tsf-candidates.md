@@ -55,13 +55,14 @@ TSF 的 UI 執行緒被呼叫，資料用 `Rc<RefCell<_>>` 與 `CandidateHost` �
 | `GetCount` | 候選總數，不是單頁數量 |
 | `GetSelection` | 引擎的絕對高亮索引 `highlighted`；超出範圍時收回最後一項 |
 | `GetString(i)` | `candidates[i]`；越界回 `E_INVALIDARG` |
-| `GetPageIndex` | 讀 `State.page_size` 分頁，回傳每頁起始索引；`pIndex == NULL` 時只回頁數 |
+| `GetPageIndex` | 依 `jc_core::output::CANDIDATE_PAGE_SIZE` 分頁，回傳每頁起始索引；`pIndex == NULL` 時只回頁數 |
 | `SetPageIndex` | 接受外部指定的頁首，下一次資料更新時重設回核心回報的頁面大小 |
 | `GetCurrentPage` | 由 `highlighted` 與頁首反推，不另外保存頁碼 |
 
-頁首由 `State.page_size` 決定，目前核心固定 9，所以是 `0, 9, 18, …`；
-`GetCount` 是全部候選數。wrapper 沒有自己的頁面大小常數，核心改頁面大小時
-這裡跟著變。Windows 用這兩個值加上 `GetCurrentPage` 決定目前要畫哪一頁。
+頁首由 `jc_core::output::CANDIDATE_PAGE_SIZE` 決定，目前是 9，所以是
+`0, 9, 18, …`；`GetCount` 是全部候選數。wrapper 沒有自己的頁面大小常數，
+核心改常數時這裡跟著變。Windows 用這兩個值加上 `GetCurrentPage` 決定目前
+要畫哪一頁。
 
 ## 更新旗標
 
@@ -134,17 +135,17 @@ GDI 分層視窗），不能靠這個介面；本 task 沒有改協定去硬塞�
 ## 分頁與引擎的頁面大小
 
 `ITfCandidateListUIElement` 由 TIP 提供每頁起始索引，Windows 沒有規定一頁
-幾項。頁面大小一律讀協定 v3 的 `State.page_size`（目前核心固定 9），
-`candidates.rs` 不保留本地常數。
+幾項。頁面大小一律讀核心的公開常數
+`jc_core::output::CANDIDATE_PAGE_SIZE`（目前 9），不佔協定欄位，也不在
+`candidates.rs` 留第二份數字。
 
 數字選字也在核心：`select_by_digit` 用 `page * page_size + 頁內位置`，候選
 不足一頁或超出候選數時忽略按鍵。wrapper 只送實體數字鍵，不自己從
 `candidates` 挑字。
 
-`State.page` 是核心認定的目前頁碼，可供診斷；`GetCurrentPage` 仍由
-`highlighted` 與頁首反推，兩者在預設分頁下一致。若 Windows 透過
-`SetPageIndex` 指定自訂頁首，`GetCurrentPage` 會跟著自訂頁首走，直到下一次
-資料更新重設。
+`GetCurrentPage` 由 `highlighted` 與頁首反推；預設分頁下與核心的頁碼一致。
+若 Windows 透過 `SetPageIndex` 指定自訂頁首，`GetCurrentPage` 會跟著自訂
+頁首走，直到下一次資料更新重設。
 
 ## 驗證
 
@@ -180,8 +181,8 @@ GDI 分層視窗），不能靠這個介面；本 task 沒有改協定去硬塞�
 
 - 沒有 `ITfCandidateListUIElementBehavior`：滑鼠點選候選不支援。
 - 讀音與 label 不顯示；需要自繪視窗。
-- 頁面大小跟著核心的 `State.page_size`（目前 9），wrapper 沒有本地常數。
-- 需要協定 v3 的 `State.page_size`；舊引擎沒有這個欄位時反序列化預設 9。
+- 頁面大小讀核心公開常數 `CANDIDATE_PAGE_SIZE`（目前 9），wrapper 沒有本地常數。
+- 沒有新增協定欄位；舊引擎與舊 fixture 不受影響。
 - 沒有 `Settings` 接線；顯示條件固定是「有候選就顯示」。
 - `docs/port/tsf-skeleton.md` 仍寫「沒有候選窗」；該檔不在本 task 的 owned
   paths，交給整合階段一起更新。

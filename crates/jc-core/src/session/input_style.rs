@@ -304,9 +304,10 @@ impl Session {
     /// 多排候選每排最多幾項。
     ///
     /// 對照上游 `selectionKeyColumns`：`1234qweras` 依鍵盤三排分成 4 欄，其餘
-    /// 維持 5 欄。
+    /// 維持 5 欄。判斷看原始設定字串；`selection_keys()` 會依頁面大小截斷，
+    /// 不能拿截斷後的字串比對。
     pub fn selection_key_columns(&self) -> usize {
-        if self.selection_keys() == "1234qweras" {
+        if self.style.selection_keys == "1234qweras" {
             4
         } else {
             5
