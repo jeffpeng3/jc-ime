@@ -102,8 +102,9 @@ const PROFILE_GUID: GUID = GUID::from_u128(0x8f0a9b3c_2d4e_4f50_a1b2_c3d4e5f6071
 
 /// 註冊文字服務的 profile 與三個分類。
 ///
-/// CLSID 的 `InprocServer32` 由 MSI 寫好才呼叫這裡；不啟用 profile，讓使用者在
-/// 系統設定裡自己選，不偷改預設輸入法。
+/// CLSID 的 `InprocServer32` 由 MSI 寫好才呼叫這裡。`bEnabledByDefault` 傳
+/// `true`：profile 預設啟用（`LanguageProfile` 機碼的 `Enable=1`），使用者在語言
+/// 設定加入鍵盤後就能切換；仍然不呼叫 `ActivateProfile`，不改系統預設輸入法。
 pub fn machine_register() -> Result<(), Error> {
     log::step("machine-register：開始");
     log::step("CLSID 的 InprocServer32 由 MSI 寫入（WXS 的 <Class>）；這裡只註冊 profile 與分類");
@@ -131,7 +132,8 @@ pub fn machine_register() -> Result<(), Error> {
             0,
             HKL::default(),
             0,
-            false,
+            // bEnabledByDefault：寫入 LanguageProfile 的 Enable=1，加入鍵盤即可切換。
+            true,
             0,
         );
         log_hr("ITfInputProcessorProfileMgr::RegisterProfile", &result);
