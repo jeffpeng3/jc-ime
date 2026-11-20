@@ -85,14 +85,62 @@ $Root = Split-Path -Parent $PSScriptRoot
 $TargetRoot = Join-Path $Root 'target'
 $OutDir = Join-Path $TargetRoot 'installer'
 $Payload = Join-Path $OutDir 'payload'
+$HelperTarget = Join-Path $TargetRoot 'tip-register'
+$HelperRelease = Join-Path $HelperTarget "$Target\$Configuration"
+
+$profileArgs = @()
+if ($Configuration -eq 'release') {
+    $profileArgs = @('--release')
+} else {
+    $profileArgs = @('--profile', $Configuration)
+}
+
+# 實際執行的 cargo 參數只定義一次，建置與錯誤訊息共用，避免兩者不一致。
+$cargoX64Args = @('build') + $profileArgs + @(
+    '--target', $Target,
+    '-p', 'jc-tsf', '-p', 'jc-engine', '-p', 'jc-cli', '-p', 'jc-settings-ui', '-p', 'jc-tsf-smoke'
+)
+$cargoX86Args = @('build') + $profileArgs + @('--target', $TargetX86, '-p', 'jc-tsf')
+$cargoHelperArgs = @('build') + $profileArgs + @(
+    '--target', $Target,
+    '--target-dir', $HelperTarget,
+    '--manifest-path', (Join-Path $PSScriptRoot 'jc-tip-register\Cargo.toml')
+)
+
+function Format-CargoCommand {
+    param([Parameter(Mandatory)][string[]]$Arguments)
+    return 'cargo ' + ($Arguments -join ' ')
+}
+
+# 靜態連結 CRT：TSF DLL 會被載入 explorer 與任意程式，不能依賴 vcruntime140.dll。
+# 這是 docs/history.md 記錄的出貨條件。
+$env:RUSTFLAGS = (@($env:RUSTFLAGS, '-C target-feature=+crt-static') |
+    Where-Object { $_ }) -join ' '
+
+# 先建置，再解析輸出目錄。Resolve-ReleaseDir 只驗證既有產物；若在建置前呼叫，
+# 乾淨的 runner 上必定找不到 target\<triple>\<profile>（RC1 在 build.ps1:107 失敗）。
+Invoke-Checked '建置 workspace 程式' {
+    & cargo @cargoX64Args
+}
+
+# 32 位元的 TSF DLL。TSF 依宿主行程的位元數載入 TIP，沒有這一份舊版 Office 等
+# 32 位元程式就看不到輸入法。引擎、CLI 與設定程式只有 x64 版。
+Invoke-Checked '建置 x86 jc-tsf' {
+    & cargo @cargoX86Args
+}
+
+Invoke-Checked '建置 jc-tip-register' {
+    & cargo @cargoHelperArgs
+}
 
 # 預期輸出在 target/<triple>/<profile>；找不到時退回 target/<profile>，並明確說出
 # 實際使用哪一個路徑，避免 CI 因 cargo build 沒帶 --target 而默默拿錯檔案。
 # 只讓 x64 退回：target/<profile> 的產物是 x64，拿來當 x86 DLL 會裝錯架構。
+# 錯誤訊息帶上剛才實際執行的 cargo 指令與 rustup target add，讓 CI log 能直接行動。
 function Resolve-ReleaseDir {
     param(
         [Parameter(Mandatory)][string]$Triple,
-        [Parameter(Mandatory)][string]$Hint,
+        [Parameter(Mandatory)][string]$CargoCommand,
         [switch]$AllowFallback
     )
     $targeted = Join-Path $TargetRoot (Join-Path $Triple $Configuration)
@@ -104,15 +152,13 @@ function Resolve-ReleaseDir {
             return $fallback
         }
     }
-    throw "找不到建置輸出 $targeted。$Hint"
+    throw "找不到建置輸出 $targeted。實際執行：$CargoCommand。請先 rustup target add $Triple，並確認指令有 --target $Triple。"
 }
 
-$ReleaseDir = Resolve-ReleaseDir $Target '請先 cargo build --release --target x86_64-pc-windows-msvc。' -AllowFallback
-$ReleaseDirX86 = Resolve-ReleaseDir $TargetX86 "請先 rustup target add $TargetX86 並建置 i686 的 jc-tsf。"
+$ReleaseDir = Resolve-ReleaseDir $Target (Format-CargoCommand $cargoX64Args) -AllowFallback
+$ReleaseDirX86 = Resolve-ReleaseDir $TargetX86 (Format-CargoCommand $cargoX86Args)
 Write-Host "==> 使用 x64 建置輸出 $ReleaseDir"
 Write-Host "==> 使用 x86 建置輸出 $ReleaseDirX86"
-$HelperTarget = Join-Path $TargetRoot 'tip-register'
-$HelperRelease = Join-Path $HelperTarget "$Target\$Configuration"
 
 if (-not $DataRoot) {
     throw '沒有資料根目錄：設定 JC_DATA_ROOT 或傳 -DataRoot。'
@@ -137,34 +183,6 @@ if ($MsiVersion -notmatch '^\d+\.\d+\.\d+$') {
     throw "MSI ProductVersion 必須是 x.y.z（目前是 $MsiVersion）；pre-release 後綴只留在檔名與顯示版本。"
 }
 Write-Host "==> 發佈版本 $Version（MSI ProductVersion $MsiVersion）"
-
-$profileArgs = @()
-if ($Configuration -eq 'release') {
-    $profileArgs = @('--release')
-} else {
-    $profileArgs = @('--profile', $Configuration)
-}
-
-# 靜態連結 CRT：TSF DLL 會被載入 explorer 與任意程式，不能依賴 vcruntime140.dll。
-# 這是 docs/history.md 記錄的出貨條件。
-$env:RUSTFLAGS = (@($env:RUSTFLAGS, '-C target-feature=+crt-static') |
-    Where-Object { $_ }) -join ' '
-
-Invoke-Checked '建置 workspace 程式' {
-    & cargo build @profileArgs --target $Target `
-        -p jc-tsf -p jc-engine -p jc-cli -p jc-settings-ui -p jc-tsf-smoke
-}
-
-# 32 位元的 TSF DLL。TSF 依宿主行程的位元數載入 TIP，沒有這一份舊版 Office 等
-# 32 位元程式就看不到輸入法。引擎、CLI 與設定程式只有 x64 版。
-Invoke-Checked '建置 x86 jc-tsf' {
-    & cargo build @profileArgs --target $TargetX86 -p jc-tsf
-}
-
-Invoke-Checked '建置 jc-tip-register' {
-    & cargo build @profileArgs --target $Target --target-dir $HelperTarget `
-        --manifest-path (Join-Path $PSScriptRoot 'jc-tip-register\Cargo.toml')
-}
 
 Write-Host '==> 暫存 payload'
 if (Test-Path $Payload) { Remove-Item $Payload -Recurse -Force }
