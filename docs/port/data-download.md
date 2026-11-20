@@ -2,6 +2,10 @@
 
 Worktree：`/mnt/work/jc/wt/data-download`（branch `data-download`，base 是 `data-pack` 合併後的 `main`）
 
+> **現況（2026-11-21）**：`zh_punct` 已從 catalog 移除，不再下載。manifest 從 10 筆
+> 改成 8 筆，下載項只剩 2 個 `zh_select`。本文的下載清單、狀態實測與測試數字是
+> 2026-11-20 的移植歷史，保留供回溯。
+
 ## 目標
 
 Funmula 的注音選字／標點模型不隨產品散布，只由使用者下載。這輪把「有哪些

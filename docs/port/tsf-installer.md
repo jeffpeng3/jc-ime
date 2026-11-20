@@ -47,7 +47,7 @@ Go 參考實作沒有 MSI，Windows 安裝過程分散在 `0c-update` 與 NSIS �
 | 註冊失敗 | `Return="check"` | 不留半套 TIP；rollback 動作會反向清除 |
 | 移除失敗 | `Return="ignore"`，且自訂動作不碰 DLL | 防毒隔離 `jc-tsf.dll` 不影響反安裝；CLSID 由 MSI 自己移除，profile 殘留只記日誌 |
 | 資料位置 | `%ProgramData%\jc-ime\data`（共用）、`%LOCALAPPDATA%\jc-ime`（使用者） | 程式與資料只裝一次；設定與個人化是使用者資料 |
-| 下載項 | 不進 MSI | Funmula 的 `zh-select`、`zh-punct` 授權只允許使用者下載 |
+| 下載項 | 不進 MSI | `zh-select` 是唯一的下載項，Funmula 授權只允許使用者下載；`zh-punct` 已於 2026-11-21 從 catalog 移除 |
 | `settings.json` | MSI 不安裝 | 不覆蓋既有檔；第一次按「套用」由設定程式建立 |
 | 引擎啟動 | `HKLM\...\Run` 的 `REG_EXPAND_SZ` | `jc-tsf` 只連 pipe，不會拉起引擎；`%LOCALAPPDATA%` 由每位使用者各自展開 |
 | 版本 | `UpgradeCode` 固定、`Version` 取自 workspace `Cargo.toml` | 升級由 `MajorUpgrade` 處理，版本號不在 WXS 手抄 |

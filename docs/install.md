@@ -105,8 +105,9 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%LOCALAPPDATA%\jc-ime\personal.json` | 個人化資料（引擎之後才會寫） |
 | `%LOCALAPPDATA%\jc-ime\tsf.log` | 只有 `JC_TSF_LOG=1` 時才寫 |
 
-Funmula 的 `models/zh-select`、`models/zh-punct` 依授權不可隨產品散布，MSI 不含
-這兩個模型。引擎在缺檔時只警告並退回統計選字；下載流程屬於 `data-download` 任務。
+Funmula 的 `models/zh-select` 依授權不可隨產品散布，MSI 不含它。它是目前唯一列在
+manifest 的下載項；`zh-punct` 已於 2026-11-21 從 catalog 移除，檔案保留供回溯，
+已不在 manifest。引擎在缺檔時只警告並退回統計選字；下載流程屬於 `data-download` 任務。
 
 ### 授權文件位置
 
