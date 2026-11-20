@@ -28,7 +28,7 @@ Go 參考實作沒有 MSI，Windows 安裝過程分散在 `0c-update` 與 NSIS �
 
 | 路徑 | 內容 |
 |---|---|
-| `installer/jc-ime.wxs` | MSI：目錄、12 個 `File`、`MajorUpgrade`、6 個自訂動作 |
+| `installer/jc-ime.wxs` | MSI：目錄、32 個 `File`（6 程式＋1 資料 manifest＋5 資料檔＋20 授權文件）、`MajorUpgrade`、6 個自訂動作 |
 | `installer/jc-tip-register/` | 輔助程式（獨立 crate，不進 workspace）：`machine-register`、`machine-unregister`、`user-install`、`user-uninstall`、`settings` |
 | `installer/build.ps1` | Windows 完整建置與選用簽章 |
 | `installer/check-payload.py` | WXS 引用與 manifest 的一致性檢查 |
@@ -103,5 +103,30 @@ WiX v5 官方只支援 Windows，Linux 上的 `wix build` 有兩個限制：
 6. 32 位元應用程式看不到 TIP（只建 x64 DLL，已知限制）。
 7. 引擎 Run 項目在多使用者、多工作階段下的行為：每個工作階段各一個引擎，pipe 同名，
    client 連到哪個實例由 Windows 決定。
-8. `LICENSE`、`NOTICE` 與 `legal/` 尚未打進 MSI；`data-pack` 文件已把這件事交給
-   `legal-notices` 任務，本任務沒有擴充 payload 清單。
+8. `installer-payload` 補進來的授權文件：`%ProgramFiles%\jc-ime\legal\` 的實際
+   內容、「jc 注音授權」捷徑開啟記事本的行為、反安裝移除整個 `legal\` 目錄。
+
+## 補充：授權文件（`installer-payload`）
+
+原本 MSI 只帶執行檔與資料，`LICENSE`、`NOTICE` 與 `legal/` 都沒進安裝包。這一輪
+補齊，做法與理由：
+
+| 主題 | 決定 | 理由 |
+|---|---|---|
+| 安裝位置 | `%ProgramFiles%\jc-ime\legal\`，`legal\licenses\` 放全文 | 授權全文跟著程式，不散落在資料目錄；`ProgramData` 是共用資料區，反安裝不保證清空 |
+| payload 路徑 | 與 repo 相同（`LICENSE`、`NOTICE`、`legal/...`） | `check-payload.py` 直接比對 repo 與 payload 的雜湊，不必另抄一份清單 |
+| WXS 結構 | `LegalFiles` 群組，一份檔案一個 `Component`，固定 GUID | 與既有 `AppFiles`／`DataFiles` 一致；修復安裝時逐檔可辨識 |
+| 反安裝 | 普通元件，不設 `Permanent` | 跟著 `RemoveFiles` 刪，不留孤兒檔 |
+| 捷徑 | 「jc 注音授權」→ `jc-tip-register legal` | `.md` 在乾淨的 Windows 沒有預設關聯，直接指向檔案會跳「選擇應用程式」；輔助程式組路徑並用記事本開啟 |
+| 漏檔防線 | `check-payload.py` 以 `legal/licenses/` 的實際內容為清單 | 新增授權全文卻忘了進 WXS 時直接失敗，`build.ps1` 也對缺檔 `throw` |
+
+驗證：
+
+| 指令 | 結果 |
+|---|---|
+| `cargo check --target x86_64-pc-windows-gnu --all-targets`（`installer/jc-tip-register`） | 通過，0 錯誤（新增 `legal` 子命令與 `open_legal`） |
+| `python3 installer/check-payload.py <payload>` | 通過：WXS 引用 32 個檔案、授權文件 20 份 |
+| 移除 payload 的 `legal/licenses/MIT.txt` | 失敗，回報「缺少 legal/licenses/MIT.txt」與「payload 缺少授權文件」，結束碼 1 |
+| 改動 payload 的 `legal/THIRD-PARTY-NOTICES.md` | 失敗，回報大小不符，結束碼 1 |
+| repo 多一份 `legal/licenses/EXTRA.txt` 而 WXS 沒引用 | 失敗，回報「沒有被 WiX 引用」，結束碼 1 |
+| `wix build`（完整 MSI） | 這台 Linux 沒有 WiX 與 `msi.dll`，未執行；實機驗證項目見 `docs/install.md` |

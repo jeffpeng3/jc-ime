@@ -4,9 +4,10 @@
     建置 jc 注音的可攜 payload 與 WiX v5 MSI。
 
 .DESCRIPTION
-    步驟：cargo build（含 jc-tip-register）→ 產生資料 manifest → 暫存 payload →
-    wix build → 選用簽章。版本號取自 workspace Cargo.toml 的
-    [workspace.package] version；MSI 只接受 x.y.z，pre-release 會被擋下。
+    步驟：cargo build（含 jc-tip-register）→ 產生資料 manifest → 暫存 payload
+    （程式、資料、授權文件）→ wix build → 選用簽章。版本號取自 workspace
+    Cargo.toml 的 [workspace.package] version；MSI 只接受 x.y.z，pre-release
+    會被擋下。
 
     需要：
       - Visual Studio 2022 的 MSVC 工具鏈（Rust 的 x86_64-pc-windows-msvc target）
@@ -133,6 +134,29 @@ foreach ($entry in $shipped) {
 Invoke-Checked '驗證暫存資料' {
     & $cli data verify $dataStage --manifest $manifestPath
 }
+
+# 授權文件：payload 內的路徑與 repo 相同（LICENSE、NOTICE、legal/...），
+# 這樣 check-payload.py 可以直接比對雜湊，MSI 也照同一組相對路徑引用。
+Write-Host '==> 暫存授權文件'
+$legalStage = Join-Path $Payload 'legal'
+$licenseStage = Join-Path $legalStage 'licenses'
+New-Item -ItemType Directory -Path $licenseStage -Force | Out-Null
+foreach ($name in @('LICENSE', 'NOTICE')) {
+    $source = Join-Path $Root $name
+    if (-not (Test-Path $source)) { throw "缺少授權文件 $name（$source）" }
+    Copy-Item $source $Payload
+}
+$notices = Join-Path $Root 'legal\THIRD-PARTY-NOTICES.md'
+if (-not (Test-Path $notices)) {
+    throw "缺少授權文件 legal\THIRD-PARTY-NOTICES.md（$notices）"
+}
+Copy-Item $notices $legalStage
+$licenseFiles = @(Get-ChildItem -Path (Join-Path $Root 'legal\licenses') -File)
+if ($licenseFiles.Count -eq 0) {
+    throw 'legal\licenses 沒有任何授權全文，拒絕產生安裝包'
+}
+foreach ($file in $licenseFiles) { Copy-Item $file.FullName $licenseStage }
+Write-Host "    授權全文 $($licenseFiles.Count) 份"
 
 $python = Get-Command python -ErrorAction SilentlyContinue
 if ($python) {

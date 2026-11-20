@@ -63,8 +63,10 @@
     <Feature Id="Main" Title="jc 注音" Level="1" AllowAbsent="no">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentGroupRef Id="DataFiles" />
+      <ComponentGroupRef Id="LegalFiles" />
       <ComponentRef Id="EngineAutostart" />
       <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="LegalShortcut" />
     </Feature>
 
     <InstallExecuteSequence>
@@ -86,7 +88,11 @@
 
   <Fragment>
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="jc-ime" />
+      <Directory Id="INSTALLFOLDER" Name="jc-ime">
+        <Directory Id="LEGALDIR" Name="legal">
+          <Directory Id="LICENSEDIR" Name="licenses" />
+        </Directory>
+      </Directory>
     </StandardDirectory>
 
     <StandardDirectory Id="CommonAppDataFolder">
@@ -210,6 +216,158 @@
   </Fragment>
 
   <!--
+    授權文件。全部集中在 %ProgramFiles%\jc-ime\legal\：AGPL 全文、專案 NOTICE、
+    第三方逐來源聲明與 legal/licenses\ 的授權全文。
+
+    payload 內的相對路徑與 repo 相同（LICENSE、NOTICE、legal/...），所以
+    check-payload.py 可以直接拿 repo 的檔案比對雜湊，少一份複本。
+
+    這些是普通元件，反安裝跟著 RemoveFiles 一起刪，不設 Permanent。
+    新增 legal/licenses/ 的檔案時，這裡與 build.ps1 的清單要同步；
+    check-payload.py 會因為「repo 有、WXS 沒引用」而失敗。
+  -->
+  <Fragment>
+    <ComponentGroup Id="LegalFiles" Directory="LEGALDIR">
+      <Component Id="LegalLicense" Guid="{D384D9B6-2FB5-4CDF-9C27-78117151C842}">
+        <File Id="FileLegalLicense"
+              Source="$(var.PayloadDir)/LICENSE"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalNotice" Guid="{0E67EF78-718B-4D8B-8AD5-7807BC8F8634}">
+        <File Id="FileLegalNotice"
+              Source="$(var.PayloadDir)/NOTICE"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalThirdParty" Guid="{A3CA19A0-74A1-4F50-AC7C-73EA551B814B}">
+        <File Id="FileLegalThirdParty"
+              Source="$(var.PayloadDir)/legal/THIRD-PARTY-NOTICES.md"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalLicensesReadme" Directory="LICENSEDIR"
+                 Guid="{DC3BA438-3911-4800-8252-4BDD5966CE27}">
+        <File Id="FileLegalLicensesReadme"
+              Source="$(var.PayloadDir)/legal/licenses/README.md"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalApache2" Directory="LICENSEDIR"
+                 Guid="{DD901767-11A7-4305-8A5E-27017F1CD709}">
+        <File Id="FileLegalApache2"
+              Source="$(var.PayloadDir)/legal/licenses/Apache-2.0.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalCcBy4" Directory="LICENSEDIR"
+                 Guid="{C69B6ED6-E7B2-4634-AD7C-EBC8D7C3C177}">
+        <File Id="FileLegalCcBy4"
+              Source="$(var.PayloadDir)/legal/licenses/CC-BY-4.0.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalCcBySa3" Directory="LICENSEDIR"
+                 Guid="{A8E8F900-932F-4934-8AA6-A0393F02580B}">
+        <File Id="FileLegalCcBySa3"
+              Source="$(var.PayloadDir)/legal/licenses/CC-BY-SA-3.0.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalCcBySa4" Directory="LICENSEDIR"
+                 Guid="{B12DB657-6D8A-47EF-B982-B8C7B0249EA8}">
+        <File Id="FileLegalCcBySa4"
+              Source="$(var.PayloadDir)/legal/licenses/CC-BY-SA-4.0.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalEnglishDataNotice" Directory="LICENSEDIR"
+                 Guid="{3DD33FDE-37AA-4DCF-AB94-657B0F58B71E}">
+        <File Id="FileLegalEnglishDataNotice"
+              Source="$(var.PayloadDir)/legal/licenses/ENGLISH-DATA-NOTICE.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalEsdbScolw" Directory="LICENSEDIR"
+                 Guid="{4E8C2E39-3483-47A0-A540-0A1E9BC1DE80}">
+        <File Id="FileLegalEsdbScolw"
+              Source="$(var.PayloadDir)/legal/licenses/ESDB-SCOWL-LICENSE.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalIpadic" Directory="LICENSEDIR"
+                 Guid="{73FC11EC-9099-4E45-9F31-2F4D83AFED6E}">
+        <File Id="FileLegalIpadic"
+              Source="$(var.PayloadDir)/legal/licenses/IPADIC-COPYING.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalMit" Directory="LICENSEDIR"
+                 Guid="{94303EA6-80B7-4519-971E-2B7A4D000D82}">
+        <File Id="FileLegalMit"
+              Source="$(var.PayloadDir)/legal/licenses/MIT.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalMitFunmula" Directory="LICENSEDIR"
+                 Guid="{0D11AB9C-7E7F-497A-B401-26B653B9FE20}">
+        <File Id="FileLegalMitFunmula"
+              Source="$(var.PayloadDir)/legal/licenses/MIT-Funmula.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalMozcLicense" Directory="LICENSEDIR"
+                 Guid="{5008BFFB-D857-474D-9234-2B44ACC05481}">
+        <File Id="FileLegalMozcLicense"
+              Source="$(var.PayloadDir)/legal/licenses/Mozc-LICENSE.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalMozcReadme" Directory="LICENSEDIR"
+                 Guid="{9568EA88-095C-4B65-8762-C88082D3138D}">
+        <File Id="FileLegalMozcReadme"
+              Source="$(var.PayloadDir)/legal/licenses/Mozc-README.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalUnidicArtifact" Directory="LICENSEDIR"
+                 Guid="{20F13D42-37D5-4A95-ACDF-38F4BA7D0E39}">
+        <File Id="FileLegalUnidicArtifact"
+              Source="$(var.PayloadDir)/legal/licenses/UNIDIC-BSD-2025.12-artifact.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalUnidicConsortium" Directory="LICENSEDIR"
+                 Guid="{4BB076A5-641B-45AA-A960-BDD11C628A5C}">
+        <File Id="FileLegalUnidicConsortium"
+              Source="$(var.PayloadDir)/legal/licenses/UNIDIC-BSD-consortium.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalUnidicCopying" Directory="LICENSEDIR"
+                 Guid="{328A1492-8D7A-4D40-91DB-957B862CA70B}">
+        <File Id="FileLegalUnidicCopying"
+              Source="$(var.PayloadDir)/legal/licenses/UNIDIC-COPYING.txt"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalUnidicAuthors" Directory="LICENSEDIR"
+                 Guid="{1D66FBD0-3CF9-41C4-9AC4-CF033E5A9D20}">
+        <File Id="FileLegalUnidicAuthors"
+              Source="$(var.PayloadDir)/legal/licenses/UNIDIC-AUTHORS.md"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalZhDataNotice" Directory="LICENSEDIR"
+                 Guid="{AD6721DC-3110-4766-9A6E-5825575D635C}">
+        <File Id="FileLegalZhDataNotice"
+              Source="$(var.PayloadDir)/legal/licenses/ZH-DATA-NOTICE.txt"
+              KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <!--
     引擎開機自動啟動。
 
     tsf-skeleton 的 worker 只連 named pipe，不會自己拉起引擎；沒有這個 Run
@@ -249,6 +407,23 @@
                 Arguments="settings"
                 WorkingDirectory="INSTALLFOLDER" />
       <RemoveFolder Id="RemoveProgramMenuDir" On="uninstall" />
+    </Component>
+  </Fragment>
+
+  <!--
+    開始功能表的「授權」捷徑。目標是 legal\THIRD-PARTY-NOTICES.md，透過
+    `jc-tip-register legal` 開啟：乾淨的 Windows 對 .md 沒有預設關聯，讓 .lnk
+    直接指向檔案會跳出「選擇應用程式」，輔助程式在沒有關聯時退回記事本。
+  -->
+  <Fragment>
+    <Component Id="LegalShortcut" Directory="ProgramMenuDir"
+               Guid="{A36C5EB9-32D4-4C4B-81D5-1B1400A60B90}">
+      <Shortcut Id="LicenseShortcut"
+                Name="jc 注音授權"
+                Description="授權條款與第三方聲明（AGPL-3.0-only、CC-BY-SA-4.0、Apache-2.0 等）"
+                Target="[INSTALLFOLDER]jc-tip-register.exe"
+                Arguments="legal"
+                WorkingDirectory="INSTALLFOLDER" />
     </Component>
   </Fragment>
 
