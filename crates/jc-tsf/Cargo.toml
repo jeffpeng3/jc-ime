@@ -23,16 +23,17 @@ windows = { version = "0.62", features = [
   "Win32_System_Com",
   "Win32_System_Diagnostics_Debug",
   "Win32_System_LibraryLoader",
+  # VARIANT 被 cfg(all(Com, Ole)) 擋住；少了 Ole 會編不過。
   "Win32_System_Ole",
   "Win32_System_Registry",
-  # RegCreateKeyExW 要寫明機碼檢視（KEY_WOW64_64KEY／32KEY），這個函式掛在
-  # Win32_Security 之下。
+  # RegCreateKeyExW 與 VARIANT 都掛在 Win32_Security 之下；少了它會編不過。
   "Win32_Security",
   "Win32_System_Variant",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_TextServices",
   "Win32_UI_WindowsAndMessaging",
 ] }
+# `#[implement]` 展開後的程式碼直接引用 `windows_core`，必須是直接依賴。
 windows-core = "0.62"
 jc-core = { path = "../jc-core" }
 jc-proto = { path = "../jc-proto" }

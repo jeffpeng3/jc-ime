@@ -9,5 +9,4 @@ rust-version.workspace = true
 gpui-kit = "0.10"
 jc-settings = { path = "../jc-settings" }
 serde_json.workspace = true
-log.workspace = true
 env_logger.workspace = true

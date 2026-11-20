@@ -3795,7 +3795,6 @@ dependencies = [
  "jc-testdata",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror 2.0.21",
 ]
 
@@ -3890,7 +3889,6 @@ dependencies = [
  "env_logger",
  "gpui-kit",
  "jc-settings",
- "log",
  "serde_json",
 ]
 
