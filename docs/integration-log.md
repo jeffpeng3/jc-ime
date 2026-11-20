@@ -1490,3 +1490,9 @@ gate（固定工具鏈）：
   與先前 `+fp16` 設定放在同一份檔案，避免 RUSTFLAGS 變動造成重編。
 - 驗證：`ci.yml`／`release.yml` YAML 有效；`cargo check --workspace --all-targets` exit 0；
   `cargo test --workspace --no-fail-fast --exclude jc-settings-ui` exit 0（54 targets、1286 passed）。
+
+## 2026-11-20 18:15 0.1.0-rc.3（`71879e6` → `92186b0`）
+
+- `Cargo.toml` 版本 `0.1.0-rc.3`，CHANGELOG 補 MSI 檔名與建置時間修正；`Cargo.lock` 另以 `bed2967` 同步。
+- gate：test exit 0（54 targets、1286 passed）、clippy exit 0、fmt exit 0。
+- 題庫：zh-golden **45/45**、ja **92.2%**、fuzzy **44.5%**、mixed **6/6**。
