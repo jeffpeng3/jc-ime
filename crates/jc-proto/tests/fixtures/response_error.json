@@ -1,0 +1,5 @@
+{
+  "op": "error",
+  "code": "bad_frame",
+  "message": "JSON 解碼失敗"
+}
