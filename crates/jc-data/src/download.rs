@@ -237,8 +237,6 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    const HASH_DATA: &str = "3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7";
-
     fn temp_dir(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("jc-data-download-{name}-{}", std::process::id()));
@@ -256,15 +254,15 @@ mod tests {
         file.write_all(bytes).unwrap();
     }
 
-    fn manifest(path: &str, bytes: &[u8]) -> DataManifest {
+    fn manifest(path: &str, content: &[u8]) -> DataManifest {
         DataManifest {
             schema: crate::manifest::SCHEMA.to_string(),
             version: "test".to_string(),
             generated_at: "2026-11-20T00:00:00Z".to_string(),
             files: vec![DataFile {
                 path: path.to_string(),
-                bytes: bytes.len() as u64,
-                sha256: HASH_DATA.to_string(),
+                bytes: content.len() as u64,
+                sha256: sha256_hex(content),
                 role: DataRole::ZhSelect,
                 license: vec!["L-11".to_string()],
                 shipped: false,
@@ -273,11 +271,21 @@ mod tests {
         }
     }
 
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
     #[test]
     fn present_requires_size_and_hash() {
         let dir = temp_dir("present");
-        write(&dir, "models/zh-select/model.onnx", b"data");
-        let report = DownloadReport::inspect(&dir, &manifest("models/zh-select/model.onnx", b""));
+        let content = b"data";
+        write(&dir, "models/zh-select/model.onnx", content);
+        let report =
+            DownloadReport::inspect(&dir, &manifest("models/zh-select/model.onnx", content));
         assert_eq!(report.present(), 1);
         assert!(report.is_complete());
         assert_eq!(report.summary(), "已存在 1/1，缺少 0，不符 0");
@@ -288,7 +296,7 @@ mod tests {
     #[test]
     fn missing_and_partial_are_distinguished() {
         let dir = temp_dir("missing");
-        let manifest = manifest("models/zh-select/model.onnx", b"");
+        let manifest = manifest("models/zh-select/model.onnx", b"data");
         let report = DownloadReport::inspect(&dir, &manifest);
         assert_eq!(report.missing(), 1);
         assert_eq!(report.items[0].state, DownloadState::Missing);
@@ -305,8 +313,11 @@ mod tests {
     #[test]
     fn same_size_with_different_bytes_is_hash_mismatch() {
         let dir = temp_dir("hash");
+        let content = b"data";
+        // 大小相同、內容不同：分類要走到雜湊，不是大小。
         write(&dir, "models/zh-select/model.onnx", b"datb");
-        let report = DownloadReport::inspect(&dir, &manifest("models/zh-select/model.onnx", b""));
+        let report =
+            DownloadReport::inspect(&dir, &manifest("models/zh-select/model.onnx", content));
         assert_eq!(report.mismatched(), 1);
         assert_eq!(report.present(), 0);
         assert!(matches!(
@@ -320,8 +331,10 @@ mod tests {
     #[test]
     fn different_size_is_size_mismatch() {
         let dir = temp_dir("size");
+        let content = b"data";
         write(&dir, "models/zh-select/model.onnx", b"data!");
-        let report = DownloadReport::inspect(&dir, &manifest("models/zh-select/model.onnx", b""));
+        let report =
+            DownloadReport::inspect(&dir, &manifest("models/zh-select/model.onnx", content));
         assert!(matches!(
             report.items[0].state,
             DownloadState::SizeMismatch {
