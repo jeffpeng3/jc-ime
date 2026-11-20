@@ -15,7 +15,7 @@
 | 檔案 | 用途 |
 |---|---|
 | `jc-ime.wxs` | MSI 本體：目錄、檔案、元件、自訂動作、`MajorUpgrade` |
-| `jc-tip-register/` | MSI 呼叫的輔助程式：`DllRegisterServer`、`InstallLayoutOrTip`、退路清理；也是設定與授權捷徑的啟動器 |
+| `jc-tip-register/` | MSI 呼叫的輔助程式：TSF profile 與分類、`InstallLayoutOrTip`；也是設定與授權捷徑的啟動器 |
 | `build.ps1` | Windows 上的完整建置：cargo → 暫存 payload（含授權文件）→ `wix build` → 選用簽章 |
 | `check-payload.py` | 檢查 WXS 引用的檔案、manifest 的 `shipped` 條目、大小與 SHA-256，以及授權文件清單 |
 | `validate-linux.sh` | Linux 上的有限驗證：WiX 編譯與符號解析（不能綁定 MSI） |
@@ -92,15 +92,19 @@ TSF DLL）。
 
 | 動作 | 種類 | 身分 | 時機 | 內容 |
 |---|---|---|---|---|
-| `RegisterTip` | deferred | SYSTEM | `InstallFiles` 之後 | `machine-register <jc-tsf.dll> <jc-tsf-x86.dll>`；x64 由 DLL 自己註冊，x86 由安裝器寫 `Wow6432Node` |
-| `RollbackRegisterTip` | rollback | SYSTEM | `RegisterTip` 之前 | `machine-unregister <兩個 DLL>` |
-| `UnregisterTip` | deferred | SYSTEM | 反安裝、`RemoveFiles` 之前 | `machine-unregister <兩個 DLL>`，兩個檢視都清；DLL 不在時內建清理 |
-| `RollbackUnregisterTip` | rollback | SYSTEM | `UnregisterTip` 之前 | `machine-register <兩個 DLL>` |
-| `InstallTipLayout` | immediate | 使用者 | `InstallFinalize` 之後 | `user-install`（`InstallLayoutOrTip`，一組 profile） |
-| `RemoveTipLayout` | immediate | 使用者 | 反安裝的 `InstallFinalize` 之後 | `user-uninstall [KEEPUSERSETTINGS]` |
+| `RegisterTip` | deferred | SYSTEM | `WriteRegistryValues` 之後 | `machine-register`；`RegisterProfile` 與三個 `RegisterCategory`。CLSID 已由 `<Class>` 寫好 |
+| `RollbackRegisterTip` | rollback | SYSTEM | `RegisterTip` 之前 | `machine-unregister` |
+| `UnregisterTip` | deferred | SYSTEM | 反安裝、`RemoveFiles` 之前 | `machine-unregister`；清 profile 與分類，CLSID 機碼留給 MSI |
+| `RollbackUnregisterTip` | rollback | SYSTEM | `UnregisterTip` 之前 | `machine-register` |
+| `InstallTipLayout` | immediate | 使用者 | `InstallFinalize` 之後 | `user-install`（`InstallLayoutOrTip(ILOT_INSTALL)`） |
+| `RemoveTipLayout` | immediate | 使用者 | 反安裝的 `InstallFinalize` 之後 | `user-uninstall [KEEPUSERSETTINGS]`；只刪使用者資料，不呼叫 `ILOT_UNINSTALL` |
 
 `machine-*` 必須是 SYSTEM：CTF 機碼在 HKLM。`user-*` 必須是使用者：`InstallLayoutOrTip`
 只寫呼叫者的 HKCU，在 SYSTEM 執行會加到 SYSTEM 的語言清單。
+
+CLSID 由 WXS 的 `<Class>` 註冊，不是由 DLL 的 `DllRegisterServer`：Windows Installer
+在 `WriteRegistryValues` 把 `HKCR\CLSID\{...}\InprocServer32` 的兩個檢視都寫好，
+`RegisterCategory` 才不會拿到不存在的類別工廠（rc.5／rc.6 的 `0xC0000005`）。
 
 `RegisterTip` 用 `Return="check"`：註冊失敗就讓安裝失敗並回滾，不留半套 TIP。
 `UnregisterTip` 與兩個 `user-*` 用 `Return="ignore"`：反安裝不能被已隔離的 DLL 或
@@ -111,11 +115,10 @@ TSF DLL）。
 TSF 依宿主行程的位元數載入 DLL，所以 32 位元程式需要另一份：`jc-tsf-x86.dll`
 （`i686-pc-windows-msvc`）註冊在 `Wow6432Node`。兩份**共用同一個 CLSID 與
 profile**，只差註冊的機碼檢視，因此使用者的語言清單只有一項「jc 注音」。
-`jc-tip-register` 是 x64 程式，載入不了 32 位元 DLL，所以 x86 那個檢視由它自己用
-`KEY_WOW64_32KEY` 寫。`installer/jc-ime.wxs` 的 `TsfDllX86` 元件標了
-`Bitness="always32"`（WiX v5；v3 的 `Win64="no"` 已移除）。完整理由、GUID 對照、
-`reg query` 驗證步驟與反安裝流程見
-[`../docs/port/x86-tip.md`](../docs/port/x86-tip.md)。
+兩個檢視的 `InprocServer32` 都由 WXS 的 `<Class>` 寫：`TsfDll` 是 64 位元元件，
+`TsfDllX86` 標了 `Bitness="always32"`（WiX v5；v3 的 `Win64="no"` 已移除），WiX
+因此把它的機碼放進 `Wow6432Node`。完整理由、GUID 對照、`reg query` 驗證步驟與
+反安裝流程見 [`../docs/port/x86-tip.md`](../docs/port/x86-tip.md)。
 
 開始功能表有兩個捷徑：`jc 注音設定`（`jc-tip-register settings`）與
 `jc 注音授權`（`jc-tip-register legal`）。後者用記事本開啟

@@ -8,7 +8,7 @@
 | 項目 | 需求 |
 |---|---|
 | Windows | Windows 10 1809 以上或 Windows 11；x64 與 32 位元程式都支援（同一個輸入法項目） |
-| 語言 | 已安裝「中文（台灣）」語言。沒有這個語言時 `AddLanguageProfile` 可能失敗，安裝器會停下並回報 |
+| 語言 | 已安裝「中文（台灣）」語言。沒有這個語言時 `RegisterProfile` 可能失敗，安裝器會停下並回報 |
 | 權限 | 系統管理員（寫 HKLM 的 COM、CTF 機碼） |
 | 空間 | 程式數十 MiB（視建置而定），資料約 174 MiB，另加 MSI 快取 |
 
@@ -31,12 +31,11 @@ msiexec /i jc-ime-0.1.0-x64.msi /qn /l*v install.log
 1. 把程式放到 `%ProgramFiles%\jc-ime\`，授權文件放到 `%ProgramFiles%\jc-ime\legal\`，
    資料放到 `%ProgramData%\jc-ime\data\`。
 2. 以 SYSTEM 註冊 TSF 文字服務，一次兩個架構、共用同一個 CLSID：
-   - x64 的 `jc-tsf.dll` 自己跑 `DllRegisterServer`，寫
-     `HKCR\CLSID\{7B7D6E1A-...}\InprocServer32`；
-   - x86 的 `jc-tsf-x86.dll` 由安裝器以 `KEY_WOW64_32KEY` 寫
-     `HKCR\Wow6432Node\CLSID\{7B7D6E1A-...}\InprocServer32`；
-   - 「jc 注音」的 profile 與分類只註冊一次（`ITfInputProcessorProfiles::Register`
-     加 `AddLanguageProfile`、`ITfCategoryMgr::RegisterCategory`）。
+   - MSI 的 `<Class>` 寫 `HKCR\CLSID\{7B7D6E1A-...}\InprocServer32` 的兩個檢視：
+     64 位元檢視指到 `jc-tsf.dll`，`Wow6432Node` 指到 `jc-tsf-x86.dll`。這一步在
+     自訂動作之前完成，`RegisterCategory` 才找得到類別工廠。
+   - 「jc 注音」的 profile 與分類只註冊一次
+     （`ITfInputProcessorProfileMgr::RegisterProfile` 加 `ITfCategoryMgr::RegisterCategory`）。
    註冊失敗會讓整個安裝回滾。32 位元程式因此看得到同一項「jc 注音」，不必切換。
 3. 註冊引擎開機啟動：`HKLM\Software\Microsoft\Windows\CurrentVersion\Run\jc-ime-engine`。
 4. 以目前使用者身分呼叫 `InstallLayoutOrTip`，把「jc 注音」加進你的語言清單。
@@ -135,9 +134,9 @@ Funmula 兩個模型的授權說明在 `legal\licenses\MIT-Funmula.txt`，即使
 
 | 機碼 | 建立者 | 內容 |
 |---|---|---|
-| `HKLM\SOFTWARE\Classes\CLSID\{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}\InprocServer32` | `DllRegisterServer`（x64 檢視）、安裝器（`Wow6432Node`） | 預設值為該架構的 DLL 路徑，`ThreadingModel=Apartment` |
-| `HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-...}` | `ITfInputProcessorProfiles::Register` | TIP 註冊與分類；兩個架構共用 |
-| `HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-...}\LanguageProfile\0x0404\{8F0A9B3C-...}` | `AddLanguageProfile` | 顯示名稱「jc 注音」 |
+| `HKLM\SOFTWARE\Classes\CLSID\{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}\InprocServer32` | MSI（WXS 的 `<Class>`，兩個檢視） | 預設值為該架構的 DLL 路徑，`ThreadingModel=Apartment` |
+| `HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-...}` | `ITfInputProcessorProfileMgr::RegisterProfile` | TIP 註冊；兩個架構共用 |
+| `HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-...}\LanguageProfile\0x0404\{8F0A9B3C-...}` | `RegisterProfile` | 顯示名稱「jc 注音」 |
 | `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\jc-ime-engine` | MSI | `REG_EXPAND_SZ`，每位使用者登入時各啟動一個引擎 |
 | `HKCU\Software\Microsoft\CTF`、`HKCU\Control Panel\International\User Profile`、`HKCU\Keyboard Layout` | `InstallLayoutOrTip` | 目前使用者的語言與輸入法清單 |
 
@@ -145,8 +144,9 @@ Funmula 兩個模型的授權說明在 `legal\licenses\MIT-Funmula.txt`，即使
 `jc-tsf.dll`，`Wow6432Node` 指到 `jc-tsf-x86.dll`。TSF 依宿主行程的位元數挑一個，
 使用者的語言清單仍然只有一項。
 
-`HKCU` 那三處由 Windows 的 `InstallLayoutOrTip` 維護，安裝器不直接寫，也不在
-反安裝時手動刪除。移除由同一個 API 的 `ILOT_UNINSTALL` 完成。
+`HKCU` 那三處由 Windows 的 `InstallLayoutOrTip` 維護，安裝器不直接寫。反安裝時
+**不**呼叫 `ILOT_UNINSTALL`：移除語系的最後一個 layout 會讓 Windows 把系統地區改成
+英文（windows-chewing-tsf issue 553），語言清單的項目留給使用者自己移除。
 
 ## 反安裝
 
@@ -164,16 +164,17 @@ msiexec /x jc-ime-0.1.0-x64.msi KEEPUSERSETTINGS=1
 
 順序：
 
-1. 反安裝的 deferred 動作先跑 `machine-unregister`：`RemoveLanguageProfile`、
-   `Unregister`、`UnregisterCategory`，再刪 `HKCR\CLSID\{...}` **兩個機碼檢視**
-   （64 位元與 `Wow6432Node`）。這一步在刪檔案之前，所以 DLL 還載入得到。
-   DLL 已被隔離或刪除時，`jc-tip-register` 會用內建退路直接清 CTF 機碼，不讓 TIP
-   卡在系統裡。
+1. 反安裝的 deferred 動作先跑 `machine-unregister`：`UnregisterCategory` 三次與
+   `UnregisterProfile`。CLSID 機碼不歸它管，留給 MSI 的 `RemoveRegistryValues`
+   把兩個檢視（64 位元與 `Wow6432Node`）一起移除。這一步在刪檔案之前，執行時
+   完全不碰 DLL，被隔離也不影響。
 2. MSI 刪檔案與 `Run` 值，再移除空目錄。授權文件（`legal\` 整個目錄）也在這一步
    刪除。之後由 `data-download` 下載到 `%ProgramData%\jc-ime\data` 的模型不屬於
    MSI，不會被刪；要完全清空需手動刪該目錄。
-3. `InstallFinalize` 之後以目前使用者身分跑 `user-uninstall`：從你的語言清單移除
-   「jc 注音」，並刪 `%LOCALAPPDATA%\jc-ime`（`KEEPUSERSETTINGS=1` 時保留）。
+3. `InstallFinalize` 之後以目前使用者身分跑 `user-uninstall`：刪
+   `%LOCALAPPDATA%\jc-ime`（`KEEPUSERSETTINGS=1` 時保留）。**不從你的語言清單
+   移除「jc 注音」**：移除語系的最後一個 layout 會讓 Windows 把系統地區改成英文
+   （windows-chewing-tsf issue 553），請自己到「設定 → 時間與語言 → 語言」移除。
 
 如果 `jc-tsf.dll` 正被 explorer 或其他程式載入，MSI 可能要求關閉程式或安排重開機後
 才刪得掉檔案；這是 TSF DLL 的常態，重開機一次即可完成。
@@ -229,7 +230,7 @@ signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 ^
 | 安裝在「新增語言」前完成 | 先安裝 zh-TW 語言，再修復安裝：`msiexec /fa jc-ime-0.1.0-x64.msi` |
 | 想確認 DLL 與類廠 | `cd "%ProgramFiles%\jc-ime"` 後執行 `.\jc-tsf-smoke.exe` |
 | 想知道 TSF 內部發生什麼 | 設 `JC_TSF_LOG=1` 後重開應用程式，看 `%LOCALAPPDATA%\jc-ime\tsf.log` 與 DebugView |
-| 反安裝後還有機碼 | `reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-...}" /reg:32`（兩個檢視都查）；用 `jc-tip-register.exe machine-unregister "%ProgramFiles%\jc-ime\jc-tsf.dll" "%ProgramFiles%\jc-ime\jc-tsf-x86.dll"` 補清 |
+| 反安裝後還有機碼 | `reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-...}" /reg:32`（兩個檢視都查）；用 `jc-tip-register.exe machine-unregister` 補清 profile 與分類 |
 | 找不到授權文件或捷徑打不開 | 看 `%ProgramFiles%\jc-ime\legal\`；缺檔就修復安裝 `msiexec /fa jc-ime-0.1.0-x64.msi` |
 
 ## 必須在 Windows 驗證

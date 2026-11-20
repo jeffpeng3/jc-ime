@@ -16,7 +16,7 @@ Go 參考實作沒有 MSI，Windows 安裝過程分散在 `0c-update` 與 NSIS �
 
 | Go 檔案 | Rust 檔案 | 狀態 |
 |---|---|---|
-| `cmd/0c-update/platform_windows.go`（`regsvr32 /s`／`/u`、AppContainer ACE） | `installer/jc-tip-register/src/platform.rs`（`machine-register`／`machine-unregister`、`grant_app_container`） | rewritten：不叫 `regsvr32`，直接 `LoadLibraryW`＋`DllRegisterServer`，錯誤碼才拿得到；ACL 改用 `SetNamedSecurityInfoW` |
+| `cmd/0c-update/platform_windows.go`（`regsvr32 /s`／`/u`、AppContainer ACE） | `installer/jc-tip-register/src/platform.rs`（`machine-register`／`machine-unregister`、`grant_app_container`） | rewritten：不叫 `regsvr32`，直接呼叫 TSF 的 `ITfInputProcessorProfileMgr` 與 `ITfCategoryMgr`；CLSID 由 WXS 的 `<Class>` 寫，錯誤碼才拿得到；ACL 改用 `SetNamedSecurityInfoW` |
 | `cmd/0c-update/input_list_windows.go`（`InstallLayoutOrTip` 安裝／移除） | `installer/jc-tip-register/src/platform.rs`（`layout_or_tip`） | ported 行為：旗標 0 安裝、`0x1` 移除，不改預設輸入法 |
 | `cmd/0c-update/tsf_profiles_windows.go`（查 CTF profile 機碼） | `crates/jc-tsf-smoke/src/registry.rs`（既有）、`installer/jc-tip-register` 的 `ensure_tip_key` | rewritten：安裝器在註冊後立即驗證 `CTF\TIP\{CLSID}`，冒煙程式提供事後檢查 |
 | `platforms/windows/installer/setup.nsi`（NSIS、per-user、`Uninstall` section） | `installer/jc-ime.wxs`＋`installer/build.ps1` | rewritten：per-machine MSI、`MajorUpgrade`、deferred 自訂動作 |
@@ -28,8 +28,8 @@ Go 參考實作沒有 MSI，Windows 安裝過程分散在 `0c-update` 與 NSIS �
 
 | 路徑 | 內容 |
 |---|---|
-| `installer/jc-ime.wxs` | MSI：目錄、34 個 `File`（7 程式，含 x64 與 x86 兩份 TSF DLL、1 資料 manifest、5 資料檔、20 授權文件）、`MajorUpgrade`、6 個自訂動作 |
-| `installer/jc-tip-register/` | 輔助程式（獨立 crate，不進 workspace）：`machine-register`、`machine-unregister`、`user-install`、`user-uninstall`、`settings` |
+| `installer/jc-ime.wxs` | MSI：目錄、34 個 `File`（7 程式，含 x64 與 x86 兩份 TSF DLL、1 資料 manifest、5 資料檔、20 授權文件）、兩個 `<Class>`、`MajorUpgrade`、6 個自訂動作 |
+| `installer/jc-tip-register/` | 輔助程式（獨立 crate，不進 workspace）：`machine-register`、`machine-unregister`、`user-install`、`user-uninstall`、`settings`、`legal` |
 | `installer/build.ps1` | Windows 完整建置與選用簽章 |
 | `installer/check-payload.py` | WXS 引用與 manifest 的一致性檢查 |
 | `installer/validate-linux.sh` | Linux 上能做到的 WiX 編譯驗證 |
@@ -40,11 +40,12 @@ Go 參考實作沒有 MSI，Windows 安裝過程分散在 `0c-update` 與 NSIS �
 | 主題 | 決定 | 理由 |
 |---|---|---|
 | 打包 | WiX v5 MSI，`Scope="perMachine"` | CTF 機碼在 HKLM；MSIX 不提升權限 |
-| 註冊 | `machine-register` 優先呼叫 DLL 自己的 `DllRegisterServer`；跨架構（x64 安裝器 + x86 DLL）由安裝器直接寫機碼 | 註冊邏輯只有一份（`crates/jc-tsf/src/register.rs`），不在安裝器重抄；64 位元行程載入不了 32 位元 DLL，那條路徑不可避免 |
-| 雙架構 | 兩份 DLL 共用同一個 CLSID 與 profile，只註冊在不同機碼檢視 | 使用者的語言清單只有一項，32 位元程式不必手動切換；見 `docs/port/x86-tip.md` |
+| 註冊 | CLSID 由 WXS 的 `<Class>` 註冊；`machine-register` 只註冊 profile 與三個分類 | rc.7 之後的順序：`WriteRegistryValues` 先寫好兩個檢視的 `InprocServer32`，`RegisterTip` 才不會在 `RegisterCategory` 拿到不存在的類別工廠（rc.5／rc.6 的 `0xC0000005`）。參考專案 windows-chewing-tsf 也是這個分工 |
+| 反註冊 | `machine-unregister` 只清 profile 與分類；CLSID 機碼由 MSI 的 `RemoveRegistryValues` 移除 | 兩邊各清各的，不互相搶；DLL 被隔離時反安裝仍然乾淨 |
+| 雙架構 | 兩份 DLL 共用同一個 CLSID 與 profile，各自掛一個 `<Class>` | 使用者的語言清單只有一項，32 位元程式不必手動切換；x86 的 `<Class>` 在 `Bitness="always32"` 元件內，WiX 寫到 `Wow6432Node`；見 `docs/port/x86-tip.md` |
 | 權限拆分 | 註冊／移除 deferred＋`Impersonate="no"`；語言清單 immediate＋使用者身分 | `InstallLayoutOrTip` 寫呼叫者的 HKCU，SYSTEM 執行會加到 SYSTEM 的 hives |
 | 註冊失敗 | `Return="check"` | 不留半套 TIP；rollback 動作會反向清除 |
-| 移除失敗 | `Return="ignore"`＋內建退路 | DLL 被防毒隔離時仍能清掉 CTF 機碼，反安裝不會卡死 |
+| 移除失敗 | `Return="ignore"`，且自訂動作不碰 DLL | 防毒隔離 `jc-tsf.dll` 不影響反安裝；CLSID 由 MSI 自己移除，profile 殘留只記日誌 |
 | 資料位置 | `%ProgramData%\jc-ime\data`（共用）、`%LOCALAPPDATA%\jc-ime`（使用者） | 程式與資料只裝一次；設定與個人化是使用者資料 |
 | 下載項 | 不進 MSI | Funmula 的 `zh-select`、`zh-punct` 授權只允許使用者下載 |
 | `settings.json` | MSI 不安裝 | 不覆蓋既有檔；第一次按「套用」由設定程式建立 |
@@ -69,19 +70,22 @@ RC4 的錯誤是 `Component` 的 `Win64`：WiX v5 schema 沒有這個屬性，�
 ### 反安裝順序
 
 ```text
+RemoveRegistryValues（標準順序 2600）    由 <Class> 移除兩個檢視的 CLSID 機碼
 RollbackUnregisterTip（rollback，SYSTEM）
-UnregisterTip（deferred，SYSTEM）        RemoveLanguageProfile / Unregister /
-                                          UnregisterCategory / 刪兩個檢視的
-                                          HKCR\CLSID（64 位元與 Wow6432Node）
-RemoveFiles                              刪程式、資料、Run 值
+UnregisterTip（deferred，SYSTEM）        UnregisterCategory ×3 / UnregisterProfile
+RemoveFiles（3500）                      刪程式、資料、Run 值
 InstallFinalize
-RemoveTipLayout（immediate，使用者）      InstallLayoutOrTip(ILOT_UNINSTALL)
-                                          ＋ 刪 %LOCALAPPDATA%\jc-ime
+RemoveTipLayout（immediate，使用者）      只刪 %LOCALAPPDATA%\jc-ime
+                                          不呼叫 InstallLayoutOrTip(ILOT_UNINSTALL)
 ```
 
 先移除 profile 再刪檔案；反過來會留下刪不掉的 `CTF\TIP` 機碼。`jc-tip-register.exe`
-本身到 `RemoveFiles` 才刪，因為 `UnregisterTip` 要用它。兩個機碼檢視都要清，漏一個
-會讓 32 位元程式看到一個載入不了的輸入法。
+本身到 `RemoveFiles` 才刪，因為 `UnregisterTip` 要用它。CLSID 機碼由 MSI 的
+`<Class>` 登錄資料負責：`RemoveRegistryValues`（2600）與 `UnregisterClassInfo`
+（2700）都在 `UnregisterTip` 之前，Windows Installer 自己把 64 位元與
+`Wow6432Node` 兩份一起移除。`UnregisterProfile`／`UnregisterCategory` 只操作
+`HKLM\SOFTWARE\Microsoft\CTF`，不需要 CLSID；rc.5 的真機反安裝就是這個順序，
+結果正常。
 
 升級時 `RemoveTipLayout` 的條件排除 `UPGRADINGPRODUCTCODE`，使用者的語言清單項目
 不會在版本交替的空檔被移除。
@@ -248,6 +252,10 @@ workflow 的 `RELEASE_VERSION` 是完整版本，`MSI_VERSION` 是三段數字�
 
 ## RC5：RegisterTip 存取違規（0xC0000005）
 
+> 這一節記錄 rc.5 的觀察與當時的介面。`machine-register`／`machine-unregister` 在
+> RC7 已改成不吃 DLL 路徑，CLSID 也改由 MSI 寫；現行流程見文末「RC7：CLSID 交給
+> MSI」。崩點與 bisect 結論沒有變。
+
 RC5 的 MSI 在真機安裝時，`RegisterTip` 回 `-1073741819`（`0xC0000005`），耗時
 236 ms。同一個 exe、同一份 DLL 的 rollback `machine-unregister` 呼叫
 `DllUnregisterServer` 沒有崩，所以 `LoadLibraryW`、`CoCreateInstance` 與
@@ -278,14 +286,17 @@ reg query "HKCR\CLSID\{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}\InprocServer32" /ve
 使用者的 `%TEMP%`。取不到 `%TEMP%` 時寫在 `jc-tip-register.exe` 同目錄。
 
 `jc-tip-register` 用環境變數 `JC_INSTALL_LOG` 把同一個路徑傳給 `jc-tsf.dll`，
-DLL 內的標記會附加到同一份檔案。手動重跑時也可以自己設這個變數：
+DLL 內的標記會附加到同一份檔案。手動重跑時也可以自己設這個變數（rc.7 之後
+`machine-register` 不吃參數）：
 
 ```bat
 set JC_INSTALL_LOG=%TEMP%\jc-manual.log
-jc-tip-register.exe machine-register "%ProgramFiles%\jc-ime\jc-tsf.dll" "%ProgramFiles%\jc-ime\jc-tsf-x86.dll"
+jc-tip-register.exe machine-register
 ```
 
-格式是 `[time] [pid] step`，一行一個動作：
+格式是 `[time] [pid] step`，一行一個動作。下面是 rc.5 的日誌（當時還會載入 DLL；
+rc.7 起改為直接呼叫 TSF 介面，步驟名稱換成 `RegisterProfile` 與
+`RegisterCategory`）：
 
 ```text
 [1763700000123] [4321] 啟動參數：machine-register ...\jc-tsf.dll ...\jc-tsf-x86.dll
@@ -367,7 +378,118 @@ jc-tip-register.exe machine-register "%ProgramFiles%\jc-ime\jc-tsf.dll" "%Progra
 
 ```bat
 set JC_IME_APP_CONTAINER=1
-jc-tip-register.exe machine-register "%ProgramFiles%\jc-ime\jc-tsf.dll" "%ProgramFiles%\jc-ime\jc-tsf-x86.dll"
+jc-tip-register.exe machine-register
 ```
 
 開啟後用 `icacls "%ProgramFiles%\jc-ime"` 確認兩個 SID 的讀取／執行 ACE 存在。
+
+## RC7：CLSID 交給 MSI、反安裝不呼叫 `ILOT_UNINSTALL`
+
+rc.5／rc.6 的結論是：`Register`（當時）與 `AddLanguageProfile` 都寫入成功，
+`RegisterCategory` 沒寫入，ACL 也沒改，行程在 CategoryMgr 那一段以 `0xC0000005`
+結束。參考專案 windows-chewing-tsf 的分工提供了對照：**`InprocServer32` 由 MSI 的
+`<Class>` 寫，不是由 DLL 的 `DllRegisterServer` 寫**。我們的版本在
+`RegisterCategory` 執行時，64 位元檢視的 CLSID 根本不存在（或指到 exe），
+msctf 拿不到類別工廠，這就是崩因。
+
+### 新的分工
+
+| 機碼 | 誰寫 | 時機 |
+|---|---|---|
+| `HKCR\CLSID\{CLSID}` 與 `...\InprocServer32`（64 位元檢視） | WXS 的 `<Class>`（`TsfDll` 元件） | `WriteRegistryValues` |
+| 同一組機碼（`Wow6432Node`） | WXS 的 `<Class>`（`TsfDllX86`，`Bitness="always32"`） | `WriteRegistryValues` |
+| `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}` | `machine-register` 的 `RegisterProfile` | `RegisterTip`，在 `WriteRegistryValues` 之後 |
+| `HKLM\SOFTWARE\Microsoft\CTF\Category` | `machine-register` 的三次 `RegisterCategory` | 同上 |
+| 使用者語言清單 | `user-install` 的 `InstallLayoutOrTip(ILOT_INSTALL)` | `InstallFinalize` 之後，使用者身分 |
+
+```text
+InstallFiles
+WriteRegistryValues
+  ├─ <Class Id="7B7D6E1A-…" Context="InprocServer32" ThreadingModel="apartment">
+  │    TsfDll       → HKCR\CLSID\{…}\InprocServer32          = …\jc-tsf.dll
+  │    TsfDllX86    → HKCR\Wow6432Node\CLSID\{…}\InprocServer32 = …\jc-tsf-x86.dll
+  └─ RegisterTip（deferred、SYSTEM）  machine-register
+       CoCreateInstance(CLSID_TF_InputProcessorProfiles) → ITfInputProcessorProfileMgr
+       RegisterProfile(CLSID, 0x0404, PROFILE, "jc 注音", 無圖示, 0, HKL::default(), 0, false, 0)
+       CoCreateInstance(CLSID_TF_CategoryMgr) → ITfCategoryMgr
+       RegisterCategory ×3（TIP_KEYBOARD、TIPCAP_UIELEMENTENABLED、DISPLAYATTRIBUTEPROVIDER）
+       ensure_tip_key（只讀，驗證 64／32 位元檢視）
+InstallFinalize
+InstallTipLayout（immediate、使用者）  user-install → InstallLayoutOrTip(ILOT_INSTALL)
+```
+
+反安裝：
+
+```text
+RemoveRegistryValues（2600）與 UnregisterClassInfo（2700）  移除兩個檢視的 CLSID
+UnregisterTip（deferred、SYSTEM）  machine-unregister
+  UnregisterCategory ×3
+  UnregisterProfile(CLSID, 0x0404, PROFILE, 0)
+  （不刪 HKCR\CLSID，也不刪 Wow6432Node 那一份）
+RemoveFiles（3500）
+InstallFinalize
+RemoveTipLayout（immediate、使用者）  user-uninstall
+  只刪 %LOCALAPPDATA%\jc-ime；不呼叫 InstallLayoutOrTip(ILOT_UNINSTALL)
+```
+
+### 為什麼 CLSID 交給 MSI
+
+1. **順序保證**：`RegisterClassInfo` 讓 Windows Installer 在
+   `WriteRegistryValues` 把所有 `<Class>` 的機碼寫完，`RegisterTip` 排在它之後，
+   `RegisterCategory` 執行時兩個檢視都查得到類別工廠。
+2. **少一層 API 表面**：不用載入 DLL、不用判斷 PE 架構，也就不需要在安裝器裡重寫
+   `InprocServer32`。`machine-register` 因此沒有參數，`arch.rs`、
+   `write_com_registration`、`register_in_store`、`Target`、`delete_clsid_tree`
+   全部移除。
+3. **反安裝對稱**：`<Class>` 產生的是 MSI 自己的登錄資料，`RemoveRegistryValues`
+   會把 64 位元與 `Wow6432Node` 兩份一起刪。自訂動作若先刪，MSI 就找不到目標，
+   兩邊清理範圍也會不一致。
+4. **profile 用 profile 的 API**：`ITfInputProcessorProfileMgr::RegisterProfile`
+   一次寫完 TIP 機碼與 `LanguageProfile` 子鍵，不必再走
+   `ITfInputProcessorProfiles::Register` + `AddLanguageProfile` 兩個呼叫。這與參考
+   專案的 `crates/tsfreg` 相同。
+
+`crates/jc-tsf/src/register.rs` 的檔案頭已註明：MSI 安裝不走
+`DllRegisterServer`，那份程式只給手動 `regsvr32` 修復用。`module_path()` 的
+`GetModuleHandleExW` 修正保留，手動路徑仍然需要它。
+
+### 為什麼反安裝不呼叫 `ILOT_UNINSTALL`
+
+移除某個語系的最後一個 layout 時，Windows 會把系統地區（system locale）改成英文
+或其他可用語言，使用者的介面語言、日期格式與非 Unicode 程式的編碼全部跟著變。
+參考專案在 `disable()` 明確停用這一步並留下註解，追蹤見
+<https://codeberg.org/chewing/windows-chewing-tsf/issues/553>。
+
+我們的做法相同：
+
+- `user-uninstall` 只寫一行日誌說明原因，不再呼叫 `InstallLayoutOrTip`。
+- `RemoveTipLayout` 保留（`ExeCommand="user-uninstall [KEEPUSERSETTINGS]"`），
+  但只剩刪 `%LOCALAPPDATA%\jc-ime` 的功能；`KEEPUSERSETTINGS=1` 仍然有效。
+- `ILOT_UNINSTALL` 常數從 `guids.rs` 移除，避免有人又接回去。
+- MSI 移除 profile 之後，語言清單裡的「jc 注音」會變成無效項目，由使用者自己到
+  「設定 → 時間與語言 → 語言」移除。
+
+### 介面變化
+
+| 子命令 | rc.6 | rc.7 |
+|---|---|---|
+| `machine-register` | `<dll>...`、`--arch`；x64 交 DLL 註冊、x86 自己寫機碼 | 不吃參數；只註冊 profile 與三個分類 |
+| `machine-unregister` | `[<dll>...]`；可交 DLL 或自己清 | 不吃參數；只清 profile 與分類 |
+| `user-install` | `InstallLayoutOrTip(ILOT_INSTALL)` | 不變 |
+| `user-uninstall` | `InstallLayoutOrTip(ILOT_UNINSTALL)` + 刪使用者資料 | 只刪使用者資料 |
+
+參數若還是照舊帶進來，`parse_args` 直接回用法錯誤（結束碼 2），不會默默忽略。
+測試 `machine_register_takes_no_arguments`、`machine_unregister_takes_no_arguments`
+固定這個行為。
+
+### 驗證
+
+| 指令 | 結果 |
+|---|---|
+| `cargo check --workspace --all-targets` | 通過，0 錯誤 |
+| `cargo check --target x86_64-pc-windows-msvc -p jc-tip-register -p jc-tsf`（`installer/jc-tip-register` 與 repo 根目錄各跑一次） | 通過，0 錯誤、0 警告 |
+| `cargo test -p jc-tip-register` | 9 passed（Linux 可跑的部分：參數解析與 GUID） |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 通過，0 警告 |
+| `cargo fmt --all -- --check` | 通過 |
+| `installer/validate-linux.sh` | WiX 編譯與符號解析通過；IR 內有兩組 `CLSID\{…}\InprocServer32`，各指向自己的 DLL |
+| 真機安裝 MSI、`Win+Space`、兩個 `InprocServer32` | 未執行，需 Windows |

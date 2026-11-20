@@ -2,35 +2,27 @@
 //!
 //! 所有 `unsafe` 都集中在這裡；呼叫端（`main.rs`）只看到 [`Error`] 與六個動作。
 //!
-//! 兩個架構共用同一個 CLSID 與 profile，差別只有 `InprocServer32` 寫在哪一個
-//! 機碼檢視：
+//! 註冊分成兩層，各自負責不同機碼：
 //!
-//! | 目標 | 檢視 | 值 |
+//! | 機碼 | 誰寫 | 何時 |
 //! |---|---|---|
-//! | x64 `jc-tsf.dll` | `KEY_WOW64_64KEY` | `%ProgramFiles%\jc-ime\jc-tsf.dll` |
-//! | x86 `jc-tsf-x86.dll` | `KEY_WOW64_32KEY` | `%ProgramFiles%\jc-ime\jc-tsf-x86.dll` |
+//! | `HKCR\CLSID\{CLSID}\InprocServer32`（64 位元與 `Wow6432Node`） | MSI（WXS 的 `<Class>`） | `WriteRegistryValues` |
+//! | `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}` 與分類 | 這支程式 | `WriteRegistryValues` 之後 |
 //!
-//! 註冊分兩條路徑：
+//! CLSID 交給 MSI 是 rc.7 的修正：rc.5／rc.6 由 `DllRegisterServer` 自己寫，當時
+//! 64 位元檢視的 CLSID 在 `RegisterCategory` 執行時還不存在，msctf 直接存取違規
+//! （`0xC0000005`）。MSI 的 `RegisterClassInfo` 表保證自訂動作開跑前兩個檢視都
+//! 已經寫好，這支程式因此完全不需要 DLL 路徑與架構判斷。
 //!
-//! - **同架構**（x64 安裝器 + x64 DLL）：`LoadLibraryW` 之後呼叫 DLL 自己的
-//!   `DllRegisterServer`。
-//! - **跨架構**（x64 安裝器 + x86 DLL）：Windows 不允許 64 位元行程載入 32 位元
-//!   DLL，所以由這裡以 `KEY_WOW64_32KEY` 寫 `InprocServer32`。
-//!
-//! TSF 的 profile 與分類（`HKLM\SOFTWARE\Microsoft\CTF`）不是 WOW64 轉向機碼，
-//! 兩個架構讀寫同一份資料，所以整支程式只註冊、也只移除一次。
-//!
-//! 移除一律刪兩個檢視的 `CLSID` 機碼，不依賴 DLL 還在：`UnregisterTip` 在
-//! `RemoveFiles` 之前跑，但防毒可能早就把 DLL 隔離掉了。
+//! `HKLM\SOFTWARE\Microsoft\CTF` 不是 WOW64 轉向機碼，兩個架構讀寫同一份資料，
+//! 所以 profile 與分類只註冊一次、也只移除一次。
 
 use std::ffi::c_void;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use thiserror::Error;
-use windows::core::{GUID, HRESULT, PCSTR, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{
-    FreeLibrary, LocalFree, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HLOCAL,
-};
+use windows::core::{Interface, GUID, PCSTR, PCWSTR, PWSTR};
+use windows::Win32::Foundation::{FreeLibrary, LocalFree, ERROR_SUCCESS, HLOCAL};
 use windows::Win32::Security::Authorization::{
     ConvertStringSidToSidW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
     EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE, SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID,
@@ -46,29 +38,43 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Diagnostics::Debug::OutputDebugStringW;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW, RegSetValueExW, HKEY,
-    HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS, KEY_READ, KEY_WOW64_32KEY,
-    KEY_WOW64_64KEY, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS, REG_SZ,
+    RegCloseKey, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY,
+    KEY_WOW64_64KEY,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, ITfCategoryMgr,
-    ITfInputProcessorProfiles, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+    ITfInputProcessorProfileMgr, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
     GUID_TFCAT_TIPCAP_UIELEMENTENABLED, GUID_TFCAT_TIP_KEYBOARD,
 };
 
-use crate::arch::Arch;
 use crate::guids::{
-    tip_string, CLSID_JC_TSF, ILOT_INSTALL, ILOT_UNINSTALL, LANGID_ZH_TW, PROFILE_DESCRIPTION,
-    PROFILE_JC_TSF,
+    tip_string, CLSID_JC_TSF, ILOT_INSTALL, LANGID_ZH_TW, PROFILE_DESCRIPTION, PROFILE_JC_TSF,
 };
 use crate::log;
 
-/// `AddLanguageProfile` 的 `pchIconFile`：指向一個真正的 NUL，長度仍是 0。
+/// `RegisterProfile` 的 `pchiconfile`：指向一個真正的 NUL，長度仍是 0。
 ///
-/// 不能傳 `&[]`：空 slice 的 `as_ptr()` 是對齊用的非 NULL 位址，`windows` 0.62
-/// 會把它原樣交給 msctf，配上 `cchIconFile = 0`。msctf 若先讀指標再判斷長度就是
-/// 存取違規。這裡的指標有效可讀，長度 0，等於「沒有圖示」。
+/// `windows` 0.62 的 `RegisterProfile` 用 slice 長度當 `cchIconFile`，傳 `&[]` 會
+/// 拿到對齊用的非 NULL 位址；msctf 若先讀指標再判斷長度就是存取違規。這裡的指標
+/// 有效可讀、長度 0，等於「沒有圖示」。
 static NO_ICON: [u16; 1] = [0];
+
+/// 註冊的三個分類；順序與日誌名稱一起固定在這裡。
+const CATEGORIES: [(&str, GUID); 3] = [
+    // 沒有這個分類，Windows 8 之後的輸入法設定頁不會列出「jc 注音」。
+    ("GUID_TFCAT_TIP_KEYBOARD", GUID_TFCAT_TIP_KEYBOARD),
+    // 沒有這個能力分類，Windows 不會接受 ITfUIElementMgr::BeginUIElement。
+    (
+        "GUID_TFCAT_TIPCAP_UIELEMENTENABLED",
+        GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+    ),
+    // 組字底線：這個 CLSID 同時是 ITfDisplayAttributeProvider 的實作。
+    (
+        "GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER",
+        GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+    ),
+];
 
 /// 輔助程式可能回報的錯誤。
 #[derive(Debug, Error)]
@@ -93,124 +99,52 @@ const CLSID_GUID: GUID = GUID::from_u128(0x7b7d6e1a_3c1f_4b2e_9a55_6c1d2f3e4a01)
 /// 注音 profile 的 GUID；與 `guids.rs` 的字串版本相同。
 const PROFILE_GUID: GUID = GUID::from_u128(0x8f0a9b3c_2d4e_4f50_a1b2_c3d4e5f60718);
 
-/// 一個架構要寫入的機碼檢視與它的 DLL。
-#[derive(Debug, Clone, Copy)]
-struct Target {
-    /// x64 或 x86。
-    arch: Arch,
-    /// `HKCR\CLSID` 要開哪一個檢視。
-    view: REG_SAM_FLAGS,
-}
-
-impl Target {
-    /// 某個架構對應的機碼檢視。
-    fn new(arch: Arch) -> Self {
-        match arch {
-            Arch::X64 => Self {
-                arch,
-                view: KEY_WOW64_64KEY,
-            },
-            Arch::X86 => Self {
-                arch,
-                view: KEY_WOW64_32KEY,
-            },
-        }
-    }
-}
-
-/// 解析目標架構：`--arch` 優先，否則讀 PE 標頭。
-fn resolve_arch(dll: &Path, requested: Option<Arch>) -> Result<Arch, Error> {
-    match requested {
-        Some(requested) => {
-            // 明確指定卻與檔案不符時擋下來：寫錯檢視會留下一個永遠載入不了的 TIP。
-            if let Ok(detected) = Arch::detect(dll) {
-                if detected != requested {
-                    return Err(Error::Failure(format!(
-                        "{} 實際上是 {detected}，與 --arch {requested} 不符",
-                        dll.display()
-                    )));
-                }
-            }
-            Ok(requested)
-        }
-        None => Arch::detect(dll).map_err(Error::Failure),
-    }
-}
-
-/// 註冊文字服務：每個 DLL 寫自己的機碼檢視，profile 只註冊一次。
+/// 註冊文字服務的 profile 與三個分類。
 ///
-/// `dlls` 通常是 `[jc-tsf.dll, jc-tsf-x86.dll]`；也可以只給一個，用於手動修復。
-pub fn machine_register(dlls: &[PathBuf], requested: Option<Arch>) -> Result<(), Error> {
+/// CLSID 的 `InprocServer32` 由 MSI 寫好才呼叫這裡；不啟用 profile，讓使用者在
+/// 系統設定裡自己選，不偷改預設輸入法。
+pub fn machine_register() -> Result<(), Error> {
     log::step("machine-register：開始");
-    let mut need_store = false;
-    let mut directory = None;
+    log::step("CLSID 的 InprocServer32 由 MSI 寫入（WXS 的 <Class>）；這裡只註冊 profile 與分類");
 
-    for dll in dlls {
-        log::step(&format!("檢查 DLL：{}", dll.display()));
-        if !dll.is_file() {
-            log::step("DLL 不存在，中止");
-            return Err(Error::Failure(format!(
-                "找不到 {}；安裝套件不完整",
-                dll.display()
-            )));
-        }
-        let arch = match resolve_arch(dll, requested) {
-            Ok(arch) => arch,
-            Err(error) => {
-                log::step(&format!("架構解析失敗：{error}"));
-                return Err(error);
-            }
-        };
-        log::step(&format!("解析架構：{} → {arch}", dll.display()));
-        directory.get_or_insert_with(|| dll.parent().map(Path::to_path_buf));
+    // SAFETY: CoInitializeEx 對已初始化的執行緒是無害的。
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        log::step(&format!("CoInitializeEx = 0x{:08X}", hr.0 as u32));
 
-        if arch.is_current_process() {
-            log::step(&format!("交給 DLL 註冊：{}", dll.display()));
-            let hr = match call_export(dll, b"DllRegisterServer\0") {
-                Ok(hr) => hr,
-                Err(error) => {
-                    log::step(&format!("DllRegisterServer 呼叫失敗：{error}"));
-                    return Err(error);
-                }
-            };
-            if hr.is_err() {
-                log::step(&format!("DllRegisterServer 回傳 0x{:08X}", hr.0 as u32));
-                return Err(Error::Failure(format!(
-                    "{} 的 DllRegisterServer 回傳 {}。若系統還沒有安裝繁體中文（台灣）\
-                     語言，請先到「設定 → 時間與語言 → 語言」加入後再安裝。",
-                    dll.display(),
-                    hex(hr.0 as u32)
-                )));
-            }
-        } else {
-            // 32 位元的 DLL 不能在 64 位元的行程裡執行，只能自己寫同一組機碼。
-            log::step(&format!(
-                "{arch} DLL 跨架構，由安裝器直接寫機碼：{}",
-                dll.display()
-            ));
-            eprintln!(
-                "jc-tip-register：{} 是 {arch}，由安裝器直接註冊（跨架構不載入 DLL）",
-                dll.display()
-            );
-            let target = Target::new(arch);
-            if let Err(error) = write_com_registration(target, &dll.to_string_lossy()) {
-                log::step(&format!("寫入 {arch} 的 InprocServer32 失敗：{error}"));
-                return Err(error);
-            }
-            log::step(&format!("已寫入 {arch} 檢視的 InprocServer32"));
-            need_store = true;
+        let profiles: ITfInputProcessorProfileMgr = create(
+            "CLSID_TF_InputProcessorProfiles",
+            &CLSID_TF_InputProcessorProfiles,
+        )?;
+
+        // 去掉結尾的 NUL：windows 0.62 用 slice 長度當 cchDesc。
+        let description = wide(PROFILE_DESCRIPTION);
+        let description = &description[..description.len() - 1];
+        log::step("ITfInputProcessorProfileMgr::RegisterProfile：開始");
+        let result = profiles.RegisterProfile(
+            &CLSID_GUID,
+            LANGID_ZH_TW,
+            &PROFILE_GUID,
+            description,
+            &NO_ICON[..0],
+            0,
+            HKL::default(),
+            0,
+            false,
+            0,
+        );
+        log_hr("ITfInputProcessorProfileMgr::RegisterProfile", &result);
+        result?;
+
+        let categories: ITfCategoryMgr = create("CLSID_TF_CategoryMgr", &CLSID_TF_CategoryMgr)?;
+        for (label, category) in CATEGORIES {
+            log::step(&format!("RegisterCategory({label})：開始"));
+            let result = categories.RegisterCategory(&CLSID_GUID, &category, &CLSID_GUID);
+            log_hr(&format!("RegisterCategory({label})"), &result);
+            result?;
         }
     }
 
-    // 同架構的 DLL 註冊時已經寫過 profile；只有跨架構那條路徑需要補。
-    if need_store {
-        log::step("register_in_store：開始");
-        if let Err(error) = register_in_store() {
-            log::step(&format!("register_in_store：失敗（{error}）"));
-            return Err(error);
-        }
-        log::step("register_in_store：成功");
-    }
     log::step("ensure_tip_key：開始");
     if let Err(error) = ensure_tip_key() {
         log::step(&format!("ensure_tip_key：失敗（{error}）"));
@@ -218,24 +152,27 @@ pub fn machine_register(dlls: &[PathBuf], requested: Option<Arch>) -> Result<(),
     }
     log::step("ensure_tip_key：成功");
 
-    // AppContainer（UWP）要讀得到安裝目錄才能載入 TIP。兩個架構在同一個目錄，
-    // 但 ACL 是冪等的（`SET_ACCESS`），重跑不會堆疊重複的 ACE。
-    // 這是 UWP 才需要的權限，桌面程式不受影響；預設關閉，避免手工 ACL 操作
+    // AppContainer（UWP）要讀得到安裝目錄才能載入 TIP。目錄取自這支 exe 的位置，
+    // 不需要 MSI 再傳路徑進來。ACL 是冪等的（`SET_ACCESS`），重跑不會堆疊重複的
+    // ACE。這是 UWP 才需要的權限，桌面程式不受影響；預設關閉，避免手工 ACL 操作
     // 落在安裝關鍵路徑上（見 docs/port/tsf-installer.md 的 RC5 bisect）。
-    if let Some(Some(dir)) = directory {
-        if app_container_enabled() {
-            log::step(&format!("grant_app_container：{}", dir.display()));
-            if let Err(error) = grant_app_container(&dir) {
-                log::step(&format!("grant_app_container：失敗（{error}）"));
-                eprintln!(
-                    "jc-tip-register：設定 AppContainer 讀取權限失敗（桌面程式不受影響）：{error}"
-                );
-            } else {
-                log::step("grant_app_container：成功");
+    if app_container_enabled() {
+        match install_dir() {
+            Some(dir) => {
+                log::step(&format!("grant_app_container：{}", dir.display()));
+                if let Err(error) = grant_app_container(&dir) {
+                    log::step(&format!("grant_app_container：失敗（{error}）"));
+                    eprintln!(
+                        "jc-tip-register：設定 AppContainer 讀取權限失敗（桌面程式不受影響）：{error}"
+                    );
+                } else {
+                    log::step("grant_app_container：成功");
+                }
             }
-        } else {
-            log::step("grant_app_container：已跳過（未設定 JC_IME_APP_CONTAINER）");
+            None => log::step("grant_app_container：取不到安裝目錄，跳過"),
         }
+    } else {
+        log::step("grant_app_container：已跳過（未設定 JC_IME_APP_CONTAINER）");
     }
     log::step("machine-register：成功");
     Ok(())
@@ -249,158 +186,35 @@ fn app_container_enabled() -> bool {
         == Some("1")
 }
 
-/// 寫 `HKCR\CLSID\{...}\InprocServer32`；檢視由 `target.view` 決定。
-fn write_com_registration(target: Target, dll: &str) -> Result<(), Error> {
-    let base = format!("CLSID\\{CLSID_JC_TSF}");
-    let inproc = format!("{base}\\InprocServer32");
-    set_string(target, &inproc, None, dll)?;
-    set_string(target, &inproc, Some("ThreadingModel"), "Apartment")?;
-    Ok(())
+/// 這支 exe 所在的安裝目錄；`jc-tsf.dll` 與它在同一層。
+fn install_dir() -> Option<std::path::PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
 }
 
-/// 寫一個 `REG_SZ` 值；`name` 為 `None` 時寫預設值。
+/// `CoCreateInstance` 並在安裝日誌留下前後各一行。
 ///
-/// 用 `RegCreateKeyExW` 才能明確指定檢視；`RegCreateKeyW` 只有預設檢視。
-fn set_string(target: Target, path: &str, name: Option<&str>, value: &str) -> Result<(), Error> {
-    let path_wide = wide(path);
-    let mut key = HKEY::default();
-    // SAFETY: path_wide 以 NUL 結尾，key 由 RegCloseKey 釋放。
-    let status = unsafe {
-        RegCreateKeyExW(
-            HKEY_CLASSES_ROOT,
-            PCWSTR(path_wide.as_ptr()),
-            None,
-            PCWSTR::null(),
-            REG_OPTION_NON_VOLATILE,
-            KEY_WRITE | target.view,
-            None,
-            &mut key,
-            None,
-        )
-    };
-    if status != ERROR_SUCCESS {
-        return Err(Error::Failure(format!(
-            "建立 HKCR\\{path}（{}）失敗：{}",
-            target.arch,
-            hex(status.0)
-        )));
+/// 沒有這段日誌，想知道是哪一個物件建立失敗只能重跑；deferred 動作在 SYSTEM
+/// 身分執行，stderr 收不到。
+fn create<T: Interface>(label: &str, clsid: &GUID) -> Result<T, Error> {
+    log::step(&format!("CoCreateInstance({label})：開始"));
+    // SAFETY: clsid 指向有效的 GUID，None 表示不聚合外層物件。
+    match unsafe { CoCreateInstance(clsid, None, CLSCTX_INPROC_SERVER) } {
+        Ok(object) => {
+            log::step(&format!(
+                "CoCreateInstance({label})：成功（HRESULT 0x00000000）"
+            ));
+            Ok(object)
+        }
+        Err(error) => {
+            log::step(&format!(
+                "CoCreateInstance({label})：失敗（HRESULT 0x{:08X}：{error}）",
+                error.code().0 as u32
+            ));
+            Err(error.into())
+        }
     }
-
-    let name_wide = name.map(wide);
-    let value_wide = wide(value);
-    let bytes: Vec<u8> = value_wide
-        .iter()
-        .flat_map(|unit| unit.to_le_bytes())
-        .collect();
-    let pointer = name_wide
-        .as_ref()
-        .map_or(PCWSTR::null(), |text| PCWSTR(text.as_ptr()));
-
-    // SAFETY: bytes 是完整的 UTF-16LE 內容，含結尾 NUL。
-    let status = unsafe { RegSetValueExW(key, pointer, None, REG_SZ, Some(&bytes)) };
-    // SAFETY: key 是上面建立的有效 handle。
-    unsafe {
-        let _ = RegCloseKey(key);
-    }
-    if status == ERROR_SUCCESS {
-        Ok(())
-    } else {
-        Err(Error::Failure(format!(
-            "寫入 HKCR\\{path} 失敗：{}",
-            hex(status.0)
-        )))
-    }
-}
-
-/// 註冊 TSF profile 與三個分類；內容與 `crates/jc-tsf/src/register.rs` 相同。
-///
-/// `HKLM\SOFTWARE\Microsoft\CTF` 不是 WOW64 轉向機碼，兩個架構共用同一份，
-/// 所以只呼叫一次。
-fn register_in_store() -> Result<(), Error> {
-    // SAFETY: CoInitializeEx 對已初始化的執行緒是無害的。
-    unsafe {
-        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        log::step(&format!("CoInitializeEx = 0x{:08X}", hr.0 as u32));
-
-        log::step("CoCreateInstance(CLSID_TF_InputProcessorProfiles)：開始");
-        let profiles: ITfInputProcessorProfiles =
-            CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)
-                .map_err(|error| {
-                    log_hr::<()>(
-                        "CoCreateInstance(CLSID_TF_InputProcessorProfiles)",
-                        &Err(error.clone()),
-                    );
-                    Error::from(error)
-                })?;
-        log::step("CoCreateInstance(CLSID_TF_InputProcessorProfiles)：成功（HRESULT 0x00000000）");
-
-        log::step("ITfInputProcessorProfiles::Register：開始");
-        let result = profiles.Register(&CLSID_GUID);
-        log_hr("ITfInputProcessorProfiles::Register", &result);
-        result?;
-
-        let name = wide(PROFILE_DESCRIPTION);
-        // 去掉結尾的 NUL：cchDesc 是字元數，不是緩衝長度。
-        let name = &name[..name.len() - 1];
-        // `&[]` 的 as_ptr() 是非 NULL 的對齊位址，msctf 可能先讀再判斷長度；
-        // 指向真正的 NUL、長度 0 才是「沒有圖示」。
-        log::step("ITfInputProcessorProfiles::AddLanguageProfile：開始");
-        let result = profiles.AddLanguageProfile(
-            &CLSID_GUID,
-            LANGID_ZH_TW,
-            &PROFILE_GUID,
-            name,
-            &NO_ICON[..0],
-            0,
-        );
-        log_hr("ITfInputProcessorProfiles::AddLanguageProfile", &result);
-        result?;
-
-        log::step("CoCreateInstance(CLSID_TF_CategoryMgr)：開始");
-        let categories: ITfCategoryMgr =
-            CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER).map_err(
-                |error| {
-                    log_hr::<()>(
-                        "CoCreateInstance(CLSID_TF_CategoryMgr)",
-                        &Err(error.clone()),
-                    );
-                    Error::from(error)
-                },
-            )?;
-        log::step("CoCreateInstance(CLSID_TF_CategoryMgr)：成功（HRESULT 0x00000000）");
-
-        // 沒有 `GUID_TFCAT_TIP_KEYBOARD`，輸入法設定頁不會列出來。
-        log::step("RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)：開始");
-        let result =
-            categories.RegisterCategory(&CLSID_GUID, &GUID_TFCAT_TIP_KEYBOARD, &CLSID_GUID);
-        log_hr("RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)", &result);
-        result?;
-        // 沒有這個能力分類，Windows 不會接受 `ITfUIElementMgr::BeginUIElement`。
-        log::step("RegisterCategory(GUID_TFCAT_TIPCAP_UIELEMENTENABLED)：開始");
-        let result = categories.RegisterCategory(
-            &CLSID_GUID,
-            &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
-            &CLSID_GUID,
-        );
-        log_hr(
-            "RegisterCategory(GUID_TFCAT_TIPCAP_UIELEMENTENABLED)",
-            &result,
-        );
-        result?;
-        // 組字底線：這個 CLSID 同時是 `ITfDisplayAttributeProvider` 的實作。
-        log::step("RegisterCategory(GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER)：開始");
-        let result = categories.RegisterCategory(
-            &CLSID_GUID,
-            &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
-            &CLSID_GUID,
-        );
-        log_hr(
-            "RegisterCategory(GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER)",
-            &result,
-        );
-        result?;
-    }
-    Ok(())
 }
 
 /// 把 TSF 呼叫的 HRESULT 寫進安裝日誌。
@@ -414,148 +228,54 @@ fn log_hr<T>(label: &str, result: &windows::core::Result<T>) {
     }
 }
 
-/// 移除文字服務：profile 只清一次，兩個檢視的 CLSID 機碼都刪。
+/// 移除 TSF 的 profile 與三個分類。
 ///
-/// 給了 DLL 時，同架構的那一個優先交給它自己的 `DllUnregisterServer`（它只清
-/// 自己那個檢視），另一個檢視由這裡補。DLL 不在、讀不出架構或回報失敗都不影響
-/// 流程：反安裝一定要清乾淨。
-pub fn machine_unregister(dlls: &[PathBuf]) -> Result<(), Error> {
+/// 不刪 `HKCR\CLSID`：MSI 的 `RemoveRegistryValues` 會把兩個檢視的 CLSID 機碼
+/// 一起移除，這裡若先刪就會跟 MSI 搶，也會讓 `RemoveRegistryValues` 找不到目標。
+///
+/// 個別步驟失敗只記日誌、不中斷：反安裝不能被殘缺的 CTF 狀態卡住，MSI 這一端
+/// 也是 `Return="ignore"`。
+pub fn machine_unregister() -> Result<(), Error> {
     log::step("machine-unregister：開始");
-    let mut handled: Vec<Arch> = Vec::new();
-    for dll in dlls {
-        if !dll.is_file() {
-            log::step(&format!("{} 不存在，改用內建清理", dll.display()));
-            eprintln!("jc-tip-register：{} 不存在，改用內建清理", dll.display());
-            continue;
+    log::step("CLSID 機碼由 MSI 的 RemoveRegistryValues 移除；這裡只清 profile 與分類");
+
+    // SAFETY: 與註冊相同；COM 沒有初始化時 CoCreateInstance 會失敗，記錄後繼續。
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        log::step(&format!("CoInitializeEx = 0x{:08X}", hr.0 as u32));
+
+        match create::<ITfCategoryMgr>("CLSID_TF_CategoryMgr", &CLSID_TF_CategoryMgr) {
+            Ok(categories) => {
+                for (label, category) in CATEGORIES {
+                    log::step(&format!("UnregisterCategory({label})：開始"));
+                    let result = categories.UnregisterCategory(&CLSID_GUID, &category, &CLSID_GUID);
+                    log_hr(&format!("UnregisterCategory({label})"), &result);
+                }
+            }
+            Err(error) => log::step(&format!("略過分類移除：{error}")),
         }
-        let arch = match Arch::detect(dll) {
-            Ok(arch) => arch,
-            Err(error) => {
-                log::step(&format!("{error}；改用內建清理"));
-                eprintln!("jc-tip-register：{error}；改用內建清理");
-                continue;
+
+        match create::<ITfInputProcessorProfileMgr>(
+            "CLSID_TF_InputProcessorProfiles",
+            &CLSID_TF_InputProcessorProfiles,
+        ) {
+            Ok(profiles) => {
+                log::step("ITfInputProcessorProfileMgr::UnregisterProfile：開始");
+                let result =
+                    profiles.UnregisterProfile(&CLSID_GUID, LANGID_ZH_TW, &PROFILE_GUID, 0);
+                log_hr("ITfInputProcessorProfileMgr::UnregisterProfile", &result);
             }
-        };
-        if !arch.is_current_process() {
-            log::step(&format!(
-                "{} 是 {arch}，由安裝器直接移除（跨架構不載入 DLL）",
-                dll.display()
-            ));
-            eprintln!(
-                "jc-tip-register：{} 是 {arch}，由安裝器直接移除（跨架構不載入 DLL）",
-                dll.display()
-            );
-            continue;
-        }
-        match call_export(dll, b"DllUnregisterServer\0") {
-            Ok(hr) if hr.is_ok() => handled.push(arch),
-            Ok(hr) => {
-                log::step(&format!(
-                    "DllUnregisterServer 回傳 0x{:08X}，改用內建清理",
-                    hr.0 as u32
-                ));
-                eprintln!(
-                    "jc-tip-register：DllUnregisterServer 回傳 {}，改用內建清理",
-                    hex(hr.0 as u32)
-                );
-            }
-            Err(error) => {
-                log::step(&format!("{error}；改用內建清理"));
-                eprintln!("jc-tip-register：{error}；改用內建清理");
-            }
+            Err(error) => log::step(&format!("略過 profile 移除：{error}")),
         }
     }
 
-    unregister_in_store();
-    for arch in Arch::ALL {
-        if handled.contains(&arch) {
-            continue;
-        }
-        delete_clsid_tree(Target::new(arch))?;
-    }
     log::step("machine-unregister：成功");
     Ok(())
 }
 
-/// 移除 TSF 的 profile 與分類；個別步驟失敗不阻止其他步驟。
-fn unregister_in_store() {
-    // SAFETY: 與註冊相同，COM 沒有初始化時 CoCreateInstance 會失敗，忽略即可。
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        if let Ok(profiles) = CoCreateInstance::<_, ITfInputProcessorProfiles>(
-            &CLSID_TF_InputProcessorProfiles,
-            None,
-            CLSCTX_INPROC_SERVER,
-        ) {
-            let _ = profiles.RemoveLanguageProfile(&CLSID_GUID, LANGID_ZH_TW, &PROFILE_GUID);
-            let _ = profiles.Unregister(&CLSID_GUID);
-        }
-        if let Ok(categories) =
-            CoCreateInstance::<_, ITfCategoryMgr>(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER)
-        {
-            let _ =
-                categories.UnregisterCategory(&CLSID_GUID, &GUID_TFCAT_TIP_KEYBOARD, &CLSID_GUID);
-            let _ = categories.UnregisterCategory(
-                &CLSID_GUID,
-                &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
-                &CLSID_GUID,
-            );
-            let _ = categories.UnregisterCategory(
-                &CLSID_GUID,
-                &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
-                &CLSID_GUID,
-            );
-        }
-    }
-}
-
-/// 刪掉指定檢視的 `HKCR\CLSID\{...}` 整棵樹。
-///
-/// `RegDeleteTreeW` 沿用父機碼 handle 的檢視，所以先用 `target.view` 開
-/// `HKCR\CLSID`，再相對刪除子機碼。
-fn delete_clsid_tree(target: Target) -> Result<(), Error> {
-    let path = wide("CLSID");
-    let mut root = HKEY::default();
-    // SAFETY: path 以 NUL 結尾；root 成功時由 RegOpenKeyExW 寫入。
-    let status = unsafe {
-        RegOpenKeyExW(
-            HKEY_CLASSES_ROOT,
-            PCWSTR(path.as_ptr()),
-            None,
-            KEY_ALL_ACCESS | target.view,
-            &mut root,
-        )
-    };
-    if status == ERROR_FILE_NOT_FOUND {
-        return Ok(());
-    }
-    if status != ERROR_SUCCESS {
-        return Err(Error::Failure(format!(
-            "開啟 HKCR\\CLSID（{}）失敗：{}",
-            target.arch,
-            hex(status.0)
-        )));
-    }
-
-    let name = wide(CLSID_JC_TSF);
-    // SAFETY: name 以 NUL 結尾，root 是上面開啟的有效 handle。
-    let status = unsafe { RegDeleteTreeW(root, PCWSTR(name.as_ptr())) };
-    // SAFETY: root 由成功的 RegOpenKeyExW 取得。
-    unsafe {
-        let _ = RegCloseKey(root);
-    }
-    if status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND {
-        Ok(())
-    } else {
-        Err(Error::Failure(format!(
-            r"刪除 HKCR\CLSID\{CLSID_JC_TSF}（{}）失敗：{}",
-            target.arch,
-            hex(status.0)
-        )))
-    }
-}
-
 /// 把 profile 加進目前使用者的語言清單。
+///
+/// 不改預設輸入法：`InstallLayoutOrTip` 的旗標是 0，不帶 `ILOT_DEFPROFILE`。
 pub fn user_install() -> Result<(), Error> {
     if let Some(dir) = user_dir() {
         std::fs::create_dir_all(&dir)?;
@@ -563,23 +283,35 @@ pub fn user_install() -> Result<(), Error> {
     layout_or_tip(ILOT_INSTALL)
 }
 
-/// 從目前使用者的語言清單移除；`keep_user_data` 為 `false` 時一併刪除
-/// `%LOCALAPPDATA%\jc-ime`（settings.json、personal.json、tsf.log）。
+/// 刪除使用者資料；**不**移除語言清單裡的「jc 注音」。
+///
+/// 移除語系的最後一個 layout 時，Windows 會把系統地區改成英文或其他可用語言，
+/// 使用者的整個介面因此變調。參考專案在 `disable()` 明確停用
+/// `InstallLayoutOrTip(ILOT_UNINSTALL)`，理由與追蹤見
+/// <https://codeberg.org/chewing/windows-chewing-tsf/issues/553>。這裡照做，只留
+/// 一行日誌說明：MSI 移除 profile 之後，殘留的語言清單項目會自然變成無效項目，
+/// 由使用者自己在語言設定移除。
+///
+/// `keep_user_data` 為 `false` 時一併刪除 `%LOCALAPPDATA%\jc-ime`
+/// （settings.json、personal.json、tsf.log）。
 pub fn user_uninstall(keep_user_data: bool) -> Result<(), Error> {
-    let removed = layout_or_tip(ILOT_UNINSTALL);
+    log::step("user-uninstall：不呼叫 InstallLayoutOrTip(ILOT_UNINSTALL)");
+    log::step(
+        "user-uninstall：移除語系的最後一個 layout 會讓 Windows 把系統地區改成英文；\
+         語言清單項目留給使用者自己移除（windows-chewing-tsf issue 553）",
+    );
     if !keep_user_data {
         if let Some(dir) = user_dir() {
             match std::fs::remove_dir_all(&dir) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => eprintln!(
-                    "jc-tip-register：移除 {} 失敗（語言清單已處理）：{error}",
-                    dir.display()
-                ),
+                Ok(()) => log::step(&format!("已刪除 {}", dir.display())),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    log::step(&format!("{} 不存在，略過", dir.display()));
+                }
+                Err(error) => eprintln!("jc-tip-register：移除 {} 失敗：{error}", dir.display()),
             }
         }
     }
-    removed
+    Ok(())
 }
 
 /// 啟動 `jc-settings-ui.exe`。
@@ -654,53 +386,6 @@ fn user_dir() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(base).join("jc-ime"))
 }
 
-/// 載入 DLL、取出匯出函式、呼叫後釋放。回傳 DLL 的 `HRESULT`。
-fn call_export(dll: &Path, name: &[u8]) -> Result<HRESULT, Error> {
-    let entry = String::from_utf8_lossy(&name[..name.len().saturating_sub(1)]).to_string();
-    let path = wide(&dll.to_string_lossy());
-    log::step(&format!("LoadLibraryW：{}", dll.display()));
-    // SAFETY: path 以 NUL 結尾且呼叫期間保持存活。
-    let module = match unsafe { LoadLibraryW(PCWSTR(path.as_ptr())) } {
-        Ok(module) => {
-            log::step(&format!("LoadLibraryW：成功（{module:?}）"));
-            module
-        }
-        Err(error) => {
-            log::step(&format!("LoadLibraryW：失敗（{error}）"));
-            return Err(Error::Failure(format!(
-                "LoadLibraryW({}) 失敗：{error}",
-                dll.display()
-            )));
-        }
-    };
-
-    let result = (|| {
-        log::step(&format!("GetProcAddress：{entry}"));
-        // SAFETY: name 是以 NUL 結尾的 ASCII 名稱。
-        let proc = unsafe { GetProcAddress(module, PCSTR(name.as_ptr())) }.ok_or_else(|| {
-            Error::Failure(format!(
-                "{} 沒有匯出 {}",
-                dll.display(),
-                String::from_utf8_lossy(&name[..name.len() - 1])
-            ))
-        })?;
-        // SAFETY: 匯出符號的簽章是 `HRESULT WINAPI DllRegisterServer(void)`；
-        // 兩個函式都是 extern "system"。
-        let function: unsafe extern "system" fn() -> HRESULT = unsafe { std::mem::transmute(proc) };
-        log::step(&format!("呼叫 {entry}"));
-        // SAFETY: 由 DLL 自己保證簽章，這裡只呼叫一次。
-        let hr = unsafe { function() };
-        log::step(&format!("{entry} 回傳 0x{:08X}", hr.0 as u32));
-        Ok(hr)
-    })();
-
-    // SAFETY: module 由上面的 LoadLibraryW 取得。
-    unsafe {
-        let _ = FreeLibrary(module);
-    }
-    result
-}
-
 /// 確認 profile 已寫進 TSF 的 store，而且 32 位元檢視也讀得到。
 ///
 /// `HKLM\SOFTWARE\Microsoft\CTF` 不是 WOW64 轉向機碼，兩個架構讀的是同一份
@@ -738,14 +423,13 @@ fn ensure_tip_key() -> Result<(), Error> {
             return Err(Error::Failure(format!(
                 "註冊後仍找不到 HKLM\\SOFTWARE\\Microsoft\\CTF\\TIP\\{CLSID_JC_TSF}\
                  \\LanguageProfile\\{LANGID_ZH_TW:#06X}\\{PROFILE_JC_TSF}（{}）。\
-                 這通常表示 AddLanguageProfile 失敗；請確認已安裝繁體中文（台灣）語言。",
+                 這通常表示 RegisterProfile 失敗；請確認已安裝繁體中文（台灣）語言。",
                 hex(status.0)
             )));
         }
         debug_warning(&format!(
             "CTF\\TIP\\{CLSID_JC_TSF} 在{label}檢視讀不到（{}）；\
-             若 reg query /reg:32 也看不到，代表這台機器把 CTF 當成轉向機碼，\
-             需要改用 32 位元的註冊身分再寫一次。",
+             若 reg query /reg:32 也看不到，代表這台機器把 CTF 當成轉向機碼。",
             hex(status.0)
         ));
     }
@@ -762,7 +446,8 @@ fn debug_warning(text: &str) {
 /// 呼叫 `input.dll` 的 `InstallLayoutOrTip`。
 ///
 /// 使用者的語言清單是 (LangID, profile GUID, CLSID) 三元組；兩個架構共用同一個
-/// CLSID 與 profile，所以只有一組。
+/// CLSID 與 profile，所以只有一組。只用在安裝，移除刻意不做，理由見
+/// [`user_uninstall`]。
 fn layout_or_tip(flags: u32) -> Result<(), Error> {
     let module = wide("input.dll");
     // SAFETY: 模組名稱以 NUL 結尾。
@@ -779,7 +464,7 @@ fn layout_or_tip(flags: u32) -> Result<(), Error> {
             unsafe { std::mem::transmute(proc) };
         let text = tip_string();
         let tip = wide(&text);
-        // SAFETY: tip 以 NUL 結尾且呼叫期間保持存活。
+        // SAFETY: tip 以 NUL 結尾且在呼叫期間保持存活。
         let ok = unsafe { function(tip.as_ptr(), flags) };
         if ok == 0 {
             Err(Error::Failure(format!(
@@ -935,14 +620,28 @@ mod tests {
         assert_eq!(guid_text(&PROFILE_GUID), PROFILE_JC_TSF);
     }
 
-    /// 兩個架構只有機碼檢視不同，CLSID 與 profile 是同一組。
+    /// 三個分類都要有，而且互不相同；少一個就少一項 Windows 功能。
     #[test]
-    fn targets_differ_only_by_registry_view() {
-        let x64 = Target::new(Arch::X64);
-        let x86 = Target::new(Arch::X86);
-        assert_eq!(x64.view, KEY_WOW64_64KEY);
-        assert_eq!(x86.view, KEY_WOW64_32KEY);
-        assert_ne!(x64.view, x86.view);
+    fn categories_are_three_distinct_guids() {
+        assert_eq!(CATEGORIES.len(), 3);
+        for (index, (label, category)) in CATEGORIES.iter().enumerate() {
+            assert!(!label.is_empty());
+            assert_ne!(*category, GUID::zeroed());
+            assert!(
+                !CATEGORIES[..index]
+                    .iter()
+                    .any(|(_, earlier)| earlier == category),
+                "{label} 重複"
+            );
+        }
+        assert_eq!(
+            CATEGORIES.map(|(_, category)| category),
+            [
+                GUID_TFCAT_TIP_KEYBOARD,
+                GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+                GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+            ]
+        );
     }
 
     #[test]
