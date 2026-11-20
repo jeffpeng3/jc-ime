@@ -636,6 +636,72 @@ fn is_token_rune(r: char) -> bool {
     "._~:/?#[]@!$&'()*+,;=%\\-|{}".contains(r)
 }
 
+/// 拉丁 run 的尾端標點要不要留給注音。
+///
+/// `.` `,` `;` 在大千鍵盤是韻母 ㄡ ㄝ ㄤ，但 [`split_token`] 一律把它們當英文
+/// 標點剝掉。`5k42.` 因此只剩 `5k42`（ㄓㄜˋ 加上缺韻母的 ㄉ），切分器判定失敗，
+/// 整段退回英文。這裡先問切分器一次：整段含尾端標點能完整解析就整段留下，
+/// 否則照舊剝掉，讓 `hello.` 仍然是英文加句點。
+fn split_latin_run<'a>(
+    run: &'a str,
+    cfg: &Config,
+    split_lex: Option<&dyn crate::mixed_latin::SplitLexicon>,
+) -> (&'a str, &'a str) {
+    let (core, rest) = split_token(run);
+    if !cfg.mixed_latin_split || rest.is_empty() {
+        return (core, rest);
+    }
+    // `:` 不是注音鍵，尾端有它就沒有讓的必要。
+    if !rest.chars().all(|r| ".,;".contains(r)) {
+        return (core, rest);
+    }
+    if trailing_punctuation_is_zhuyin(run, core, split_lex) {
+        (run, "")
+    } else {
+        (core, rest)
+    }
+}
+
+/// 尾端標點是不是被前一個注音音節吃掉。
+///
+/// 只看「整段能解析」不夠：`hello.` 也能解析成英文 `hello` 加上獨立的 `ㄡ`，
+/// 那會把英文句點變成注音。條件收緊成「最後一個片段是注音，而且起點在標點
+/// 之前」，也就是標點確實是那個音節的韻母。
+fn trailing_punctuation_is_zhuyin(
+    run: &str,
+    core: &str,
+    split_lex: Option<&dyn crate::mixed_latin::SplitLexicon>,
+) -> bool {
+    if !is_latin_split_input(run) {
+        return false;
+    }
+    let lexicon: &dyn crate::mixed_latin::SplitLexicon =
+        split_lex.unwrap_or(&crate::mixed_latin::NoLexicon);
+    let Some(split) =
+        crate::mixed_latin::split(run, &crate::mixed_latin::Options::default(), lexicon)
+    else {
+        return false;
+    };
+    let Some(last) = split.pieces.last() else {
+        return false;
+    };
+    last.lang == crate::mixed_latin::SplitLang::Zh
+        && last.end == run.len()
+        && last.start < core.len()
+}
+
+/// 切分器接受的輸入：全小寫英數與 `, . / ; -`。
+///
+/// 大寫、全角與其他符號一律不交給切分器，避免它把 ASCII 大小寫混排當成注音。
+fn is_latin_split_input(text: &str) -> bool {
+    !text.is_empty()
+        && !has_fullwidth_alnum(text)
+        && !text.chars().any(|c| c.is_ascii_uppercase())
+        && text
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || ",./;-".contains(c))
+}
+
 /// 去掉詞尾不屬於詞的標點，回傳（本體, 尾端標點）。
 fn split_token(s: &str) -> (&str, &str) {
     let mut end = s.len();
@@ -2223,7 +2289,7 @@ fn build_atoms(
                 }
                 i += r.len_utf8();
             }
-            let (core, rest) = split_token(&input[start..i]);
+            let (core, rest) = split_latin_run(&input[start..i], cfg, split_lex);
             if !core.is_empty() {
                 let offset = start;
                 push_latin_atoms(&mut atoms, core, offset, lookup, cfg, split_lex);
@@ -2408,13 +2474,7 @@ fn split_latin_atoms(
     offset: usize,
     split_lex: Option<&dyn crate::mixed_latin::SplitLexicon>,
 ) -> Option<bool> {
-    if core.is_empty()
-        || has_fullwidth_alnum(core)
-        || core.chars().any(|c| c.is_ascii_uppercase())
-        || !core
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || ",./;-".contains(c))
-    {
+    if !is_latin_split_input(core) {
         return None;
     }
     let lexicon: &dyn crate::mixed_latin::SplitLexicon =
@@ -3763,6 +3823,64 @@ mod tests {
             .map(|segment| segment.surface.as_str())
             .collect();
         assert_eq!(pieces, vec!["りしれ", "供", "さ", "小"]);
+    }
+
+    #[test]
+    fn test_mixed_latin_split_trailing_zhu_yin_final() {
+        let mut lex = InMemoryLexicon::new();
+        for (word, reading) in [
+            ("這", "ㄓㄜˋ"),
+            ("都", "ㄉㄡ"),
+            ("是", "ㄕˋ"),
+            ("三", "ㄙㄢ"),
+            ("小", "ㄒㄧㄠˇ"),
+        ] {
+            lex.push(LexEntry::new(word, reading, 0, crate::lattice::UNKNOWN_POS));
+        }
+        let ctx = ScoreContext::default();
+        let r = Router::new().with_zh(&lex, &ctx).with_config(Config {
+            mixed_latin_split: true,
+            ..Config::default()
+        });
+        // `5k42.` 的句點是 ㄡ，空白是 ㄉㄡ 的一聲。切分器看得到句點才解得出來。
+        let result = r.convert("5k42. g4n0 vul3").expect("轉換");
+        assert_eq!(result.surface, "這都是三小");
+    }
+
+    #[test]
+    fn test_mixed_latin_split_trailing_period_stays_literal() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new(
+            "小",
+            "ㄒㄧㄠˇ",
+            0,
+            crate::lattice::UNKNOWN_POS,
+        ));
+        let ctx = ScoreContext::default();
+        let r = Router::new().with_zh(&lex, &ctx).with_config(Config {
+            mixed_latin_split: true,
+            ..Config::default()
+        });
+        // 英文句尾的句點不是注音，切分器解不出來時照舊剝掉。
+        let result = r.convert("hello.").expect("轉換");
+        assert_eq!(result.surface, "hello.");
+    }
+
+    #[test]
+    fn test_latin_run_keeps_trailing_final_only_when_split_completes() {
+        let off = Config::default();
+        assert_eq!(split_latin_run("5k42.", &off, None), ("5k42", "."));
+
+        let on = Config {
+            mixed_latin_split: true,
+            ..Config::default()
+        };
+        // 句點被注音音節吃掉，整段留下。
+        assert_eq!(split_latin_run("5k42.", &on, None), ("5k42.", ""));
+        // 解不出來的尾端標點照舊歸給 Symbol。
+        assert_eq!(split_latin_run("hello.", &on, None), ("hello", "."));
+        // 冒號不是注音鍵。
+        assert_eq!(split_latin_run("hello:", &on, None), ("hello", ":"));
     }
 
     #[test]
