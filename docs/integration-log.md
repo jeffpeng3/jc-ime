@@ -1198,3 +1198,8 @@
 - linux (core)：**failure**，失敗步驟是 `Clippy`（就是上面 `collapsible_if`，當時的 HEAD 已含 composition-cursor）。
 - windows (msvc)：build 成功，`Test` 失敗，原因與本機相同：`test_manual_segments_expire_on_next_key`
   與 `test_english_without_learning_keeps_existing_order`（628 passed、2 failed）。
+
+### 待辦：Jinen tokenizer 未列入 manifest
+
+`models/quant/jinen-v2-xsmall/tokenizer.json` 是 Jinen 執行時必要檔（小模型沿用 xsmall 的 tokenizer），
+但目前不在資料 manifest 內；出貨前要補 `shipped: true`，否則 `data verify` 不會涵蓋它。
