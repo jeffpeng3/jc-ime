@@ -423,8 +423,10 @@ struct Cell {
     prev_pos: u32,
     /// 前一個語言：0 是日文，1 是注音。
     prev_lang: u8,
-    /// 最後一個片段是不是詞表英文詞；用來限制單字母尾巴只接在英文詞後面。
+    /// 最後一個片段是不是英文片段；用來限制單字母尾巴只接在英文後面。
     en_word: bool,
+    /// 最後一個片段是「無詞表照字面」候選，只能接單字母尾巴，不能接其他音節。
+    fallback_en: bool,
 }
 
 const JA: usize = 0;
@@ -501,6 +503,23 @@ fn whole_romaji_word(keys: &[char]) -> bool {
         .is_some_and(|(_, pending)| pending.is_empty())
 }
 
+/// 小寫片段裡是否有任何詞表認得的英文詞。
+fn has_known_english_word(chars: &[char], lexicon: &dyn SplitLexicon) -> bool {
+    for start in 0..chars.len() {
+        let mut word = String::new();
+        for &ch in &chars[start..] {
+            if !ch.is_ascii_lowercase() {
+                break;
+            }
+            word.push(ch);
+            if word.chars().count() >= 3 && lexicon.english(&word) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// 計算位置 `j` 的最佳解；只讀 `j` 以前的格，因此可以逐鍵增量。
 fn compute_cell(
     cells: &mut [[Option<Cell>; LANGS]],
@@ -529,6 +548,17 @@ fn compute_cell(
     }
     // 英文詞：整串照字面。只接受 3 個字元以上、全小寫的詞表單字，
     // 單字母與未知字串不當英文，避免把羅馬字切壞。
+    // 目前位置往前最長的連續小寫片段。沒有任何詞表單字命中時，才允許
+    // 「未知英文照字面」候選，避免把 `kyouhahello` 這種有 `hello` 的 run
+    // 整段並成英文。
+    let mut suffix_start = j;
+    while suffix_start > 0 && chars[suffix_start - 1].is_ascii_lowercase() {
+        suffix_start -= 1;
+        if j - suffix_start > MAX_ENGLISH_CHARS {
+            break;
+        }
+    }
+    let suffix_has_known = has_known_english_word(&chars[suffix_start..j], lexicon);
     let low_en = j.saturating_sub(MAX_ENGLISH_CHARS);
     for start in (low_en..j).rev() {
         if !chars[start].is_ascii_lowercase() {
@@ -540,14 +570,41 @@ fn compute_cell(
             consider_en_tail(&mut best, cells, start, opts.en_word_cost, opts);
         }
         let word: String = chars[start..j].iter().collect();
-        if word.chars().count() < 3 || !lexicon.english(&word) {
+        let word_len = word.chars().count();
+        let known = lexicon.english(&word);
+        if word_len < 3 {
+            continue;
+        }
+        // 沒有英文詞表（`English::load_default` 退回原型）時，`hellp` 這種
+        // 全小寫、結尾只剩一個字母的 run 仍要照字面留給 autocomplete。給它
+        // 一個有懲罰的英文候選：真實詞表命中或合法羅馬字仍然優先勝出。
+        let fallback_word = opts.single_letter_en_tail
+            && word_len >= 4
+            && !known
+            && start == suffix_start
+            && !suffix_has_known;
+        if !known && !fallback_word {
             continue;
         }
         let mut piece = opts.en_word_cost;
-        if lexicon.english_weight(&word) >= opts.en_common_weight {
+        if known && lexicon.english_weight(&word) >= opts.en_common_weight {
             piece += opts.en_common_bonus;
         }
+        if fallback_word {
+            piece -= 5;
+        }
+        let base = best[EN];
         consider(&mut best, cells, start, EN, piece, opts, true);
+        if fallback_word {
+            if let Some(cell) = best[EN] {
+                if base.is_none_or(|old| cell.score > old.score) {
+                    best[EN] = Some(Cell {
+                        fallback_en: true,
+                        ..cell
+                    });
+                }
+            }
+        }
     }
     if chars[j - 1].is_whitespace() {
         // 停頓：空白不產生片段，語言不變。日文段尾的空白就是走這條。
@@ -560,6 +617,7 @@ fn compute_cell(
                     prev_pos: (j - 1) as u32,
                     prev_lang: lang as u8,
                     en_word: false,
+                    fallback_en: false,
                 };
                 if better(cell.score, pieces, lang, best[lang], opts) {
                     best[lang] = Some(cell);
@@ -614,6 +672,7 @@ fn consider_en_tail(
             prev_pos: start as u32,
             prev_lang: EN as u8,
             en_word: false,
+            fallback_en: false,
         });
     }
 }
@@ -632,6 +691,9 @@ fn consider(
         let Some(prev) = cells[start][prev_lang] else {
             continue;
         };
+        if prev.fallback_en {
+            continue;
+        }
         let mut score = prev.score + piece_score;
         if prev_lang != lang {
             score += opts.switch_cost;
@@ -650,6 +712,7 @@ fn consider(
                 prev_pos: start as u32,
                 prev_lang: prev_lang as u8,
                 en_word: en_word && lang == EN,
+                fallback_en: false,
             });
         }
     }
@@ -792,6 +855,7 @@ impl Dp {
             prev_pos: 0,
             prev_lang: JA as u8,
             en_word: false,
+            fallback_en: false,
         };
         let cells = match opts.initial_lang {
             None => vec![[Some(start), Some(start), Some(start)]],

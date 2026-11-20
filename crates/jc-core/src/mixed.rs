@@ -4341,4 +4341,27 @@ mod tests {
         assert_eq!(segs[1].script, Script::Symbol);
         assert_eq!(&"desu "[segs[1].start..segs[1].end], " ");
     }
+
+    #[test]
+    fn test_english_tail_without_word_pack() {
+        // 沒有詞表（`English::new(None)` 只有原型）時，`hell` 查不到；
+        // 結尾單字母仍要留在英文，交給 autocomplete。
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, crate::lattice::UNKNOWN_POS));
+        let ctx = ScoreContext::default();
+        let e = English::new(None);
+        let r = Router::new().with_zh(&lex, &ctx).with_english(&e);
+        assert_eq!(r.convert("ji3hellp").expect("轉換").surface, "我hellp");
+
+        // 無詞表也不能把合法羅馬字或「かな前綴＋英文詞」整段並成英文。
+        let segs = r.segments("rishire");
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].mode, Mode::Ja);
+        let segs = r.segments("kyouhahello");
+        let texts: Vec<&str> = segs
+            .iter()
+            .map(|seg| &"kyouhahello"[seg.start..seg.end])
+            .collect();
+        assert_eq!(texts, vec!["kyouha", "hello"]);
+    }
 }

@@ -18,7 +18,7 @@ Go 參考實作沒有對應的切分器；這個 task 只重組既有 Rust 程�
 | R2 空白是一聲 | run 加空白後，DP 的**最後一個片段**是注音、空白被它吃掉，且該音節原本沒有聲調鍵；前面的片段可以是英文或注音 | `space_is_first_tone`、`push_token_run`、`AsciiInput::space` |
 | R3 標點當韻母 | `. , ; / -` 在 run 開頭，或前面不是缺韻母的合法音節時，是符號 atom | `compute_cell` 的開頭標點限制、`split_at_symbol_punct`、`punct_is_final` |
 | R4 語言連貫 | `Options::initial_lang` 接住前一個 run 的語言，切換成本照算 | `Dp::new`、`build_atoms` 的 `last_lang` |
-| R5 後處理 | `group_words` 是唯一的片語合併；英文詞判定只用 `is_english_word` | `plan_input`、`LexiconAdapter::english` |
+| R5 後處理 | `group_words` 是唯一的片語合併；英文詞判定只用 `is_english_word`。沒有英文資料包（只有原型詞彙）時，未知的小寫 run 仍有帶懲罰的英文候選，避免 `hellp` 被 DP 拆成注音 | `plan_input`、`compute_cell` 的 `fallback_word`、`LexiconAdapter::english` |
 
 ## 前後對照
 
@@ -52,6 +52,7 @@ R2 的例外：整段按鍵剛好是一個完整羅馬字時（`desu `），空�
 | `test_initial_lang_carries_previous_run_language` | `Options::initial_lang` |
 | `test_punct_at_run_start_is_not_a_final` | run 開頭標點不產生注音 |
 | `test_first_tone_does_not_break_japanese_word` | `desu ` 不被拆成 `で`＋`尼` |
+| `test_english_tail_without_word_pack` | 原型詞彙（無資料包）下 `ji3hellp` 仍留英文，合法羅馬字不被吞噬 |
 | `test_incremental_matches_router` | 532 筆按鍵流，session 增量與路由逐位元組一致 |
 
 ## 既有期望值變更
