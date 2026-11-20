@@ -1,0 +1,15 @@
+{
+  "op": "state",
+  "preedit": "ㄨㄛˇ",
+  "cursor": 3,
+  "candidates": ["我", "窩"],
+  "details": [
+    { "reading": "ㄨㄛˇ", "source": "lexicon", "cost": 12 },
+    { "reading": "ㄨㄛ", "source": "personal", "cost": -3, "learned": true }
+  ],
+  "segments": [
+    { "start": 0, "end": 3, "mode": "zhuyin", "script": "bopomofo" }
+  ],
+  "highlighted": 1,
+  "cursor_rune": 3
+}

@@ -1,4 +1,4 @@
-//! 線格式凍結測試：用手寫 JSON fixture 鎖住 v2 協定的欄位名稱、型別與預設值。
+//! 線格式凍結測試：用手寫 JSON fixture 鎖住 v3 協定的欄位名稱、型別與預設值。
 //!
 //! 每個 fixture 都先反序列化成對應型別，再序列化回去，與原 fixture 做語意比較
 //! （`serde_json::Value` 相等，因此鍵順序與空白不計）。這樣欄位被改名、換型別
@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use jc_proto::{ErrorCode, Key, KeyCode, Request, Response, PROTOCOL_VERSION};
+use jc_proto::{CandidateSource, ErrorCode, Key, KeyCode, Request, Response, PROTOCOL_VERSION};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -151,6 +151,9 @@ fn response_state_minimal_accepts_version_one_shape() {
             cursor: 1,
             candidates: vec!["我".into()],
             // v1 沒有的欄位在 v2 型別下必須拿到預設值。
+            details: vec![],
+            segments: vec![],
+            highlighted: 0,
             cursor_rune: 0,
             suggestion: None,
             label: None,
@@ -168,6 +171,10 @@ fn response_state_v2_round_trips_all_new_fields() {
             preedit: "ㄨㄛˇ".into(),
             cursor: 3,
             candidates: vec!["我".into(), "窩".into()],
+            // v3 欄位在 v2 fixture 下取預設值。
+            details: vec![],
+            segments: vec![],
+            highlighted: 0,
             cursor_rune: 3,
             suggestion: Some("ˇ".into()),
             label: Some("常用字".into()),
@@ -181,9 +188,42 @@ fn response_state_v2_round_trips_all_new_fields() {
             candidates,
             ..
         } => {
-            // 文件承諾兩者同值，且候選目前只有字面。
+            // 文件承諾兩者同值；v2 沒有結構化候選欄位。
             assert_eq!(cursor_rune, cursor);
             assert_eq!(candidates, ["我", "窩"]);
+        }
+        other => panic!("應是 State，得到 {other:?}"),
+    }
+}
+
+#[test]
+fn response_state_v3_round_trips_structured_fields() {
+    let response: Response = round_trip("response_state_v3.json");
+    match response {
+        Response::State {
+            candidates,
+            details,
+            segments,
+            highlighted,
+            ..
+        } => {
+            // wrapper 唯一的假設：details 與 candidates 同長、同序。
+            assert_eq!(details.len(), candidates.len());
+            assert_eq!(details[0].reading, "ㄨㄛˇ");
+            assert_eq!(details[0].source, CandidateSource::Lexicon);
+            assert_eq!(details[0].cost, 12);
+            assert!(!details[0].learned, "lexicon 不帶 learned 鍵");
+
+            assert_eq!(details[1].reading, "ㄨㄛ");
+            assert_eq!(details[1].source, CandidateSource::Personal);
+            assert_eq!(details[1].cost, -3, "成本是帶號整數，越小越優先");
+            assert!(details[1].learned);
+
+            assert_eq!(segments.len(), 1);
+            assert_eq!((segments[0].start, segments[0].end), (0, 3));
+            assert_eq!(segments[0].mode, "zhuyin");
+            assert_eq!(segments[0].script, "bopomofo");
+            assert_eq!(highlighted, 1);
         }
         other => panic!("應是 State，得到 {other:?}"),
     }
