@@ -1496,3 +1496,11 @@ gate（固定工具鏈）：
 - `Cargo.toml` 版本 `0.1.0-rc.3`，CHANGELOG 補 MSI 檔名與建置時間修正；`Cargo.lock` 另以 `bed2967` 同步。
 - gate：test exit 0（54 targets、1286 passed）、clippy exit 0、fmt exit 0。
 - 題庫：zh-golden **45/45**、ja **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+
+## 2026-11-20 18:20 deps-audit（`ff39e10`）
+
+移除 2 個沒用的直接依賴（`log`、`sha2`）與 1 個 feature，其餘只是報告。
+
+- `cargo check --workspace --all-targets` exit 0；`cargo clippy --workspace --all-targets -- -D warnings` exit 0。
+- 沒有行為改動，依指示不重跑題庫。
+- `git branch --no-merged main`：空。
