@@ -1374,10 +1374,7 @@ impl Controller {
                         return true;
                     }
                 }
-                if trigger.boundary && self.is_boundary() {
-                    return true;
-                }
-                false
+                trigger.boundary && self.is_boundary()
             }
         }
     }

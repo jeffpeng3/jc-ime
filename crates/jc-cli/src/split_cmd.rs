@@ -93,8 +93,7 @@ pub fn run(
     }
 
     if json {
-        let cases: Vec<serde_json::Value> =
-            reports.iter().map(|report| report_json(report)).collect();
+        let cases: Vec<serde_json::Value> = reports.iter().map(report_json).collect();
         let value = serde_json::json!({ "suite": "mixed-split", "cases": cases });
         writeln!(
             out,
