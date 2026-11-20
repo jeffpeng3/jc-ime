@@ -87,6 +87,8 @@ pub enum DataRole {
     English,
     /// 日文神經轉換模型（Jinen GGUF）。
     JaNeural,
+    /// Jinen 的 tokenizer `tokenizer.json`；與 [`Self::JaNeural`] 同授權。
+    JaTokenizer,
     /// 注音選字模型（Funmula，僅下載）。
     ZhSelect,
     /// 注音標點模型（Funmula，僅下載；2026-11-20 起不再載入）。
@@ -102,6 +104,7 @@ impl DataRole {
             Self::ZhLm => "zh_lm",
             Self::English => "english",
             Self::JaNeural => "ja_neural",
+            Self::JaTokenizer => "ja_tokenizer",
             Self::ZhSelect => "zh_select",
             Self::ZhPunct => "zh_punct",
         }
@@ -532,6 +535,14 @@ pub const CATALOG: &[DataFileSpec] = &[
         url: None,
     },
     DataFileSpec {
+        role: DataRole::JaTokenizer,
+        // small 沿用 xsmall 的 tokenizer，授權與 Jinen 權重同一筆 L-21。
+        licenses: &["L-21"],
+        shipped: true,
+        candidates: &["models/quant/jinen-v2-xsmall/tokenizer.json"],
+        url: None,
+    },
+    DataFileSpec {
         role: DataRole::ZhSelect,
         licenses: &["L-11"],
         shipped: false,
@@ -748,6 +759,7 @@ mod tests {
         assert_eq!(DataRole::JaLexicon.as_str(), "ja_lexicon");
         assert_eq!(DataRole::ZhLm.as_str(), "zh_lm");
         assert_eq!(DataRole::JaNeural.as_str(), "ja_neural");
+        assert_eq!(DataRole::JaTokenizer.as_str(), "ja_tokenizer");
         assert_eq!(DataRole::ZhSelect.as_str(), "zh_select");
         assert_eq!(
             serde_json::to_string(&DataRole::ZhSelect).unwrap(),
@@ -765,7 +777,7 @@ mod tests {
         assert_eq!(manifest.schema, SCHEMA);
         assert_eq!(manifest.version, "2026-11-20");
         // 只列出存在的隨附檔；下載項不存在就略過。
-        assert_eq!(manifest.files.len(), 5);
+        assert_eq!(manifest.files.len(), 6);
         let lexicon = manifest
             .files
             .iter()
@@ -779,6 +791,17 @@ mod tests {
         );
         assert!(lexicon.license.contains(&"L-13".to_string()));
         assert!(lexicon.shipped);
+        let tokenizer = manifest
+            .files
+            .iter()
+            .find(|file| file.role == DataRole::JaTokenizer)
+            .expect("manifest 要收錄 Jinen tokenizer");
+        assert_eq!(
+            tokenizer.path,
+            "models/quant/jinen-v2-xsmall/tokenizer.json"
+        );
+        assert_eq!(tokenizer.license, vec!["L-21".to_string()]);
+        assert!(tokenizer.shipped);
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -99,6 +99,9 @@
             <Directory Id="EXTERNALDIR" Name="external">
               <Directory Id="JINENDIR" Name="jinen-v2-small" />
             </Directory>
+            <Directory Id="QUANTDIR" Name="quant">
+              <Directory Id="JINENXSMALLDIR" Name="jinen-v2-xsmall" />
+            </Directory>
           </Directory>
         </Directory>
       </Directory>
@@ -204,6 +207,13 @@
                  Guid="{785BEA44-E4A3-4D31-BFD7-514F4180E8D1}">
         <File Id="FileJaNeural"
               Source="$(var.PayloadDir)/data/models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="JaTokenizer" Directory="JINENXSMALLDIR"
+                 Guid="{B4C7A2D1-6E58-4F0B-9A3C-2D8E5F71C904}">
+        <File Id="FileJaTokenizer"
+              Source="$(var.PayloadDir)/data/models/quant/jinen-v2-xsmall/tokenizer.json"
               KeyPath="yes" />
       </Component>
     </ComponentGroup>

@@ -20,7 +20,7 @@ use jc_core::score::{BigramLm, ScoreContext, ZhLm};
 use jc_core::session::neural::{NeuralEngine, NeuralError, NeuralRequest, NeuralRuntime};
 use jc_core::session::SessionConfig;
 use jc_core::Mode;
-use jc_data::manifest::{CheckStatus, DataManifest, VerifyLevel, MANIFEST_FILE};
+use jc_data::manifest::{CheckStatus, DataManifest, DataRole, VerifyLevel, MANIFEST_FILE};
 use jc_model::candle::jinen::Jinen;
 
 /// 注音詞典資料包目錄（相對於資料根目錄）。
@@ -444,14 +444,18 @@ pub fn load_curated_decoder(words: &Path, connection: &Path) -> Result<JaDecoder
 
 /// 解析 Jinen 的 GGUF 與 tokenizer。
 ///
-/// GGUF 順序：`JC_JINEN_GGUF`、資料根目錄的 [`JA_NEURAL_GGUF`]。
-/// tokenizer 順序：`JC_JINEN_TOKENIZER`、GGUF 同目錄的 `tokenizer.json`、
-/// [`JA_NEURAL_TOKENIZERS`]。找不到時回傳帶所有候選路徑的錯誤。
+/// GGUF 順序：`JC_JINEN_GGUF`、資料 manifest 的 `ja_neural`、
+/// [`JA_NEURAL_GGUF`]。
+/// tokenizer 順序：`JC_JINEN_TOKENIZER`、資料 manifest 的 `ja_tokenizer`、
+/// GGUF 同目錄的 `tokenizer.json`、[`JA_NEURAL_TOKENIZERS`]。
+/// 找不到時回傳帶所有候選路徑的錯誤，呼叫端據此降級成統計轉換。
 pub fn resolve_ja_neural(root: &Path) -> Result<(PathBuf, PathBuf), LoadError> {
     let gguf = if let Some(value) = std::env::var_os(JA_NEURAL_GGUF_ENV) {
         PathBuf::from(value)
     } else {
-        root.join(JA_NEURAL_GGUF)
+        manifest_file(root, DataRole::JaNeural)
+            .filter(|path| path.is_file())
+            .unwrap_or_else(|| root.join(JA_NEURAL_GGUF))
     };
     if !gguf.is_file() {
         return Err(LoadError(format!(
@@ -470,6 +474,9 @@ pub fn resolve_ja_neural(root: &Path) -> Result<(PathBuf, PathBuf), LoadError> {
         return Ok((gguf, tokenizer));
     }
     let mut candidates = Vec::new();
+    if let Some(path) = manifest_file(root, DataRole::JaTokenizer) {
+        candidates.push(path);
+    }
     if let Some(dir) = gguf.parent() {
         candidates.push(dir.join("tokenizer.json"));
     }
@@ -487,6 +494,19 @@ pub fn resolve_ja_neural(root: &Path) -> Result<(PathBuf, PathBuf), LoadError> {
         "找不到 Jinen tokenizer，試過：{}；可用 {JA_NEURAL_TOKENIZER_ENV} 指定",
         listed.join("、")
     )))
+}
+
+/// 從資料根目錄 manifest 找某個角色的第一個檔案。
+///
+/// manifest 缺席、格式錯誤或沒有該角色時回傳 `None`，呼叫端改用寫死的
+/// 候選路徑。這裡只做路徑解析，不驗證檔案是否存在或雜湊。
+fn manifest_file(root: &Path, role: DataRole) -> Option<PathBuf> {
+    let manifest = DataManifest::load(root.join(MANIFEST_FILE)).ok()?;
+    manifest
+        .files
+        .iter()
+        .find(|file| file.role == role)
+        .map(|file| root.join(&file.path))
 }
 
 /// 載入 Jinen 並啟動推論 worker。
@@ -721,7 +741,8 @@ pub enum EngineDataError {
 /// 啟動時的 manifest 檢查：只讀 manifest、比對存在與大小。
 ///
 /// 沒有 `manifest.json` 只警告；manifest 格式錯誤、隨附檔缺少或大小不符
-/// 則拒絕啟動。下載項（`shipped: false`）缺席只警告，功能自然降級。
+/// 則拒絕啟動。下載項（`shipped: false`）與 Jinen tokenizer（`ja_tokenizer`）
+/// 缺席只警告：相關功能自然降級，不擋啟動。
 fn check_data_manifest(root: &Path) -> Result<(), EngineDataError> {
     let path = root.join(MANIFEST_FILE);
     if !path.is_file() {
@@ -733,14 +754,24 @@ fn check_data_manifest(root: &Path) -> Result<(), EngineDataError> {
     }
     let manifest = DataManifest::load(&path)?;
     let report = manifest.verify(root, VerifyLevel::Startup);
+    let mut fatal = 0;
+    let mut degraded = 0;
     for check in &report.checks {
         match &check.status {
             CheckStatus::Ok => {}
             CheckStatus::Missing if !check.shipped => {
+                degraded += 1;
                 log::warn!(
                     "下載項缺席：{}（{}），相關功能維持停用",
                     check.path,
                     check.role.as_str()
+                );
+            }
+            CheckStatus::Missing if check.role == DataRole::JaTokenizer => {
+                degraded += 1;
+                log::warn!(
+                    "Jinen tokenizer 缺席：{}，日文神經轉換停用，維持統計轉換",
+                    check.path
                 );
             }
             status => {
@@ -749,15 +780,22 @@ fn check_data_manifest(root: &Path) -> Result<(), EngineDataError> {
                     check.path,
                     check.role.as_str()
                 );
+                fatal += 1;
             }
         }
     }
-    if !report.is_ok() {
-        return Err(EngineDataError::ManifestFiles(report.summary()));
+    if fatal > 0 {
+        return Err(EngineDataError::ManifestFiles(format!(
+            "{fatal} 個致命錯誤，通過 {}/{}",
+            report.passed(),
+            report.checks.len()
+        )));
     }
     log::info!(
-        "資料 manifest 檢查通過（{}，資料版本 {}）",
-        report.summary(),
+        "資料 manifest 檢查通過（通過 {}/{}，降級 {}，資料版本 {}）",
+        report.passed(),
+        report.checks.len(),
+        degraded,
         manifest.version
     );
     Ok(())
@@ -990,6 +1028,93 @@ mod tests {
         assert!(
             err.to_string().contains("manifest"),
             "schema 不符應拒絕啟動：{err}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 寫一份只含指定角色路徑的 manifest；內容足以通過格式驗證。
+    fn write_manifest(dir: &Path, entries: &[(DataRole, &str)]) {
+        let files = entries
+            .iter()
+            .map(|(role, path)| jc_data::manifest::DataFile {
+                path: (*path).to_string(),
+                bytes: 1,
+                sha256: "0".repeat(64),
+                role: *role,
+                license: vec!["L-21".to_string()],
+                shipped: true,
+                url: None,
+            })
+            .collect();
+        let manifest = DataManifest {
+            schema: jc_data::manifest::SCHEMA.to_string(),
+            version: "test".to_string(),
+            generated_at: "2026-11-20T00:00:00Z".to_string(),
+            files,
+        };
+        std::fs::write(dir.join(MANIFEST_FILE), manifest.to_json_pretty().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn manifest_resolves_jinen_tokenizer_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "jc-engine-manifest-tokenizer-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let gguf_rel = "models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf";
+        let tokenizer_rel = "custom/jinen/tokenizer.json";
+        for rel in [gguf_rel, tokenizer_rel] {
+            let path = dir.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"x").unwrap();
+        }
+        write_manifest(
+            &dir,
+            &[
+                (DataRole::JaNeural, gguf_rel),
+                (DataRole::JaTokenizer, tokenizer_rel),
+            ],
+        );
+        let (gguf, tokenizer) = resolve_ja_neural(&dir).unwrap();
+        assert_eq!(gguf, dir.join(gguf_rel));
+        assert_eq!(
+            tokenizer,
+            dir.join(tokenizer_rel),
+            "tokenizer 路徑要從 manifest 解析，不走寫死的候選清單"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn missing_manifest_tokenizer_degrades_without_failing_startup() {
+        let dir = std::env::temp_dir().join(format!(
+            "jc-engine-missing-tokenizer-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gguf_rel = "models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf";
+        let tokenizer_rel = "models/quant/jinen-v2-xsmall/tokenizer.json";
+        let gguf = dir.join(gguf_rel);
+        std::fs::create_dir_all(gguf.parent().unwrap()).unwrap();
+        std::fs::write(&gguf, b"x").unwrap();
+        // manifest 收了 tokenizer，但檔案已被移除。
+        write_manifest(
+            &dir,
+            &[
+                (DataRole::JaNeural, gguf_rel),
+                (DataRole::JaTokenizer, tokenizer_rel),
+            ],
+        );
+        assert!(
+            check_data_manifest(&dir).is_ok(),
+            "tokenizer 缺席只警告，不擋引擎啟動"
+        );
+        let err = resolve_ja_neural(&dir).unwrap_err();
+        assert!(
+            err.to_string().contains("Jinen tokenizer"),
+            "解析失敗要回報缺 tokenizer：{err}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
