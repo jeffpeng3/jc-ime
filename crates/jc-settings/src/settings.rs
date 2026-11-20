@@ -68,6 +68,11 @@ pub const JA_INPUT_ROMAJI: &str = "romaji";
 /// 直接かな。
 pub const JA_INPUT_KANA: &str = "kana";
 
+/// 日文逐字変換（預設）：長度／邊界／停頓觸發，統計優先，停頓後補正。
+pub const JA_CONVERSION_LIVE: &str = "live";
+/// 日文整句変換：打完才轉，行為與舊版相同。
+pub const JA_CONVERSION_SENTENCE: &str = "sentence";
+
 /// かな／漢字與英文並列（預設）。
 pub const JA_AMBIGUOUS_BOTH: &str = "both";
 /// 詞典英文詞優先。
@@ -441,7 +446,9 @@ pub struct Settings {
     pub ja_input_method: String,
     /// 日英同形時的優先順序。
     pub ja_ambiguous: String,
-    /// ライブ変換。
+    /// 日文変換方式：`live`（預設，逐字変換）或 `sentence`（整句変換）。
+    pub ja_conversion: String,
+    /// 舊欄位投影：`ja_conversion == live`。讀舊檔與既有的 on/off 介面用。
     pub ja_live_conversion: bool,
     /// 日文轉換候選列出記号與顔文字。
     pub ja_symbols: bool,
@@ -502,7 +509,15 @@ const BOOL_FIELDS: [(&str, BoolSetter); 23] = [
     ("zhuyin_error_hint", |s, v| s.zhuyin_error_hint = v),
     ("caps_lock_english", |s, v| s.caps_lock_english = v),
     ("toneless", |s, v| s.toneless = v),
-    ("ja_live_conversion", |s, v| s.ja_live_conversion = v),
+    ("ja_live_conversion", |s, v| {
+        s.ja_live_conversion = v;
+        s.ja_conversion = if v {
+            JA_CONVERSION_LIVE
+        } else {
+            JA_CONVERSION_SENTENCE
+        }
+        .to_string();
+    }),
     ("ja_symbols", |s, v| s.ja_symbols = v),
     ("ja_learning", |s, v| s.ja_learning = v),
     ("ja_model", |s, v| s.ja_model = v),
@@ -510,7 +525,7 @@ const BOOL_FIELDS: [(&str, BoolSetter); 23] = [
     ("allow_placeholders", |s, v| s.allow_placeholders = v),
 ];
 
-const STRING_FIELDS: [(&str, StringSetter, &[&str]); 14] = [
+const STRING_FIELDS: [(&str, StringSetter, &[&str]); 15] = [
     (
         "candidate_cursor",
         |s, v| s.candidate_cursor = v.to_string(),
@@ -560,6 +575,11 @@ const STRING_FIELDS: [(&str, StringSetter, &[&str]); 14] = [
         "ja_ambiguous",
         |s, v| s.ja_ambiguous = v.to_string(),
         &[JA_AMBIGUOUS_BOTH, JA_AMBIGUOUS_ENGLISH, JA_AMBIGUOUS_KANA],
+    ),
+    (
+        "ja_conversion",
+        |s, v| s.ja_conversion = v.to_string(),
+        &[JA_CONVERSION_LIVE, JA_CONVERSION_SENTENCE],
     ),
     (
         "ja_neural_mode",
@@ -649,7 +669,8 @@ impl Settings {
             fuzzy: Fuzzy::default(),
             ja_input_method: JA_INPUT_ROMAJI.to_string(),
             ja_ambiguous: JA_AMBIGUOUS_BOTH.to_string(),
-            ja_live_conversion: false,
+            ja_conversion: JA_CONVERSION_LIVE.to_string(),
+            ja_live_conversion: true,
             ja_symbols: true,
             ja_learning: true,
             ja_model: true,
@@ -744,6 +765,8 @@ impl Settings {
             }
         }
         settings.selection = settings.selection_projection().to_string();
+        // 新欄位為準；舊檔只有 bool 時上面的 setter 已經投影成字串。
+        settings.ja_live_conversion = settings.ja_live_enabled();
         // 舊檔沒有 primary_language 時沿用既有的 language。
         if let Some(legacy) = members.remove("language") {
             if !has_primary_language
@@ -812,6 +835,19 @@ impl Settings {
             JA_AMBIGUOUS_ENGLISH | JA_AMBIGUOUS_KANA => &self.ja_ambiguous,
             _ => JA_AMBIGUOUS_BOTH,
         }
+    }
+
+    /// 收斂過的日文変換方式；不認得的值退回 `live`。
+    pub fn effective_ja_conversion(&self) -> &str {
+        match self.ja_conversion.as_str() {
+            JA_CONVERSION_SENTENCE => JA_CONVERSION_SENTENCE,
+            _ => JA_CONVERSION_LIVE,
+        }
+    }
+
+    /// 日文是否走逐字変換；舊欄位與新欄位的共用入口。
+    pub fn ja_live_enabled(&self) -> bool {
+        self.effective_ja_conversion() == JA_CONVERSION_LIVE
     }
 
     /// 收斂過的日文神經轉換模式；不認得的值退回 `auto`。
@@ -1000,7 +1036,7 @@ impl Settings {
 }
 
 /// 存檔時的固定欄位順序。
-const SAVE_ORDER: [&str; 40] = [
+const SAVE_ORDER: [&str; 41] = [
     "selection",
     "punctuation",
     "document_context",
@@ -1030,6 +1066,7 @@ const SAVE_ORDER: [&str; 40] = [
     "toneless",
     "ja_input_method",
     "ja_ambiguous",
+    "ja_conversion",
     "ja_live_conversion",
     "ja_symbols",
     "ja_learning",
@@ -1222,8 +1259,14 @@ impl Serialize for Settings {
         put_known(
             &mut map,
             &mut kept,
+            "ja_conversion",
+            text(&self.ja_conversion),
+        )?;
+        put_known(
+            &mut map,
+            &mut kept,
             "ja_live_conversion",
-            Value::Bool(self.ja_live_conversion),
+            Value::Bool(self.ja_conversion == JA_CONVERSION_LIVE),
         )?;
         put_known(
             &mut map,
@@ -1672,8 +1715,11 @@ pub(crate) fn language_specs() -> Vec<Spec> {
             &[JA_AMBIGUOUS_BOTH, JA_AMBIGUOUS_ENGLISH, JA_AMBIGUOUS_KANA],
             |s| s.effective_ja_ambiguous().to_string(),
         ),
+        spec("ja-conversion", &["live", "sentence"], |s| {
+            s.effective_ja_conversion().to_string()
+        }),
         spec("ja-live-conversion", &["on", "off"], |s| {
-            on_off(s.ja_live_conversion)
+            on_off(s.effective_ja_conversion() == JA_CONVERSION_LIVE)
         }),
         spec("ja-symbols", &["on", "off"], |s| on_off(s.ja_symbols)),
         spec("ja-learning", &["on", "off"], |s| on_off(s.ja_learning)),
@@ -1939,9 +1985,26 @@ impl Settings {
                 self.ja_ambiguous = value.to_string();
                 self.forget("ja_ambiguous");
             }
+            "ja-conversion" => {
+                self.ja_conversion = if value == JA_CONVERSION_SENTENCE {
+                    JA_CONVERSION_SENTENCE
+                } else {
+                    JA_CONVERSION_LIVE
+                }
+                .to_string();
+                self.ja_live_conversion = self.ja_conversion == JA_CONVERSION_LIVE;
+                self.forget("ja_conversion");
+            }
             "ja-live-conversion" => {
+                self.ja_conversion = if value == "on" {
+                    JA_CONVERSION_LIVE
+                } else {
+                    JA_CONVERSION_SENTENCE
+                }
+                .to_string();
                 self.ja_live_conversion = value == "on";
                 self.forget("ja_live_conversion");
+                self.forget("ja_conversion");
             }
             "ja-symbols" => {
                 self.ja_symbols = value == "on";

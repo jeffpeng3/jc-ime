@@ -116,20 +116,9 @@ impl Session {
     /// 完全在編輯點之前的鎖定不動；完全在之後的平移；被切到的解除。字面的
     /// 插入點也用同一條規則。對照上游 `shiftLocks`。
     pub(super) fn shift_locks(&mut self, at: usize, delta: isize) {
-        let mut next = Locks::new();
-        for (&start, lock) in &self.locks {
-            let end = start.saturating_add(lock.len);
-            if end <= at {
-                next.insert(start, lock.clone());
-                continue;
-            }
-            let after = if delta < 0 { start > at } else { start >= at };
-            if after {
-                let moved = start.saturating_add_signed(delta);
-                next.insert(moved, lock.clone());
-            }
-        }
-        self.locks = next;
+        // 所有權由 `Composition` 統一平移；注音的 `Locks` 只是推導結果。
+        self.shift_zh_ownership(at, delta);
+        self.sync_zh_locks();
         // 字面字串的插入點是音節索引；編輯點在它之前才平移。
         if at < self.literal_anchor {
             self.literal_anchor = self.literal_anchor.saturating_add_signed(delta);
@@ -360,16 +349,7 @@ impl Session {
             self.personal
                 .note_manual(&candidate.surface, &reading, edit.len);
         }
-        self.locks
-            .retain(|&at, lock| !(at < edit.start + edit.len && edit.start < at + lock.len));
-        self.locks.insert(
-            edit.start,
-            crate::decode::Lock {
-                word: candidate.surface.clone(),
-                len: edit.len,
-                ..crate::decode::Lock::default()
-            },
-        );
+        self.mark_zh_user_syllables(edit.start, edit.len, &candidate.surface);
         self.segment_manual = None;
         self.rebuild();
         self.highlighted = 0;
@@ -393,6 +373,17 @@ impl Session {
                 self.candidate_window = true;
                 self.navigating = false;
             }
+            Mode::Ja if self.live.is_some() => {
+                if self.candidate_window {
+                    if self.navigating && !self.candidates.is_empty() {
+                        self.move_highlight(1);
+                    } else {
+                        self.navigating = true;
+                    }
+                } else {
+                    self.open_ja_candidates();
+                }
+            }
             _ if self.candidate_window && !self.candidates.is_empty() => {
                 if self.edit.is_some() {
                     self.select_window_candidate(self.highlighted);
@@ -409,6 +400,134 @@ impl Session {
             Mode::Mixed => self.ascii.space(&self.lexicon),
             _ => {}
         }
+    }
+
+    /// 打開日文逐字変換片段的候選。
+    ///
+    /// 只針對游標所在片段，其他片段保持鎖定。清單由
+    /// [`crate::ja::live::Controller::candidates`] 產生，包含字典候選、
+    /// 目前詞面與原讀音的平假名／片假名版本。
+    pub(super) fn open_ja_candidates(&mut self) -> bool {
+        let Some(index) = self.active_segment() else {
+            return false;
+        };
+        let Some(live) = self.live.as_ref() else {
+            return false;
+        };
+        let spans = live.clause_spans();
+        let Some(span) = spans.get(index) else {
+            return false;
+        };
+        let Ok(candidates) = live.candidates(crate::ja::decode::JaSpan::new(
+            span.start,
+            span.end - span.start,
+        )) else {
+            return false;
+        };
+        if candidates.is_empty() {
+            return false;
+        }
+        let mut list: Vec<Candidate> = candidates
+            .into_iter()
+            .map(|candidate| {
+                Candidate::new(
+                    candidate.surface,
+                    candidate.reading,
+                    candidate.cost,
+                    CandidateSource::Lexicon,
+                )
+            })
+            .collect();
+        if let Some(at) = list
+            .iter()
+            .position(|candidate| candidate.surface == span.surface)
+        {
+            let current = list.remove(at);
+            list.insert(0, current);
+        }
+        self.candidates = list;
+        self.highlighted = 0;
+        self.candidate_window = true;
+        self.navigating = false;
+        self.keep_candidates = true;
+        true
+    }
+
+    /// 把候選套到游標所在片段，其他片段不變。
+    pub(super) fn apply_ja_candidate(&mut self, index: usize) -> bool {
+        let Some(segment) = self.active_segment() else {
+            return false;
+        };
+        let Some(candidate) = self.candidates.get(index).cloned() else {
+            return false;
+        };
+        let Some(live) = self.live.as_mut() else {
+            return false;
+        };
+        if !live.replace_clause(segment, candidate.surface.clone()) {
+            return false;
+        }
+        self.capture_ja_users();
+        self.refresh_ja_live();
+        if let Some(segment) = self.segments().get(segment) {
+            self.ja_cursor = segment.end.min(self.base.len());
+        }
+        self.candidate_window = false;
+        self.navigating = false;
+        self.keep_candidates = false;
+        true
+    }
+
+    /// 依控制器目前的結果重畫日文組字字串與片段，不動游標以外的狀態。
+    pub(super) fn refresh_ja_live(&mut self) {
+        let Some(result) = self.live.as_ref().and_then(|live| live.draft().cloned()) else {
+            return;
+        };
+        let units = self.romaji.units().to_vec();
+        let mut base = String::new();
+        let mut segments = Vec::new();
+        for clause in &result.clauses {
+            let start = base.len();
+            base.push_str(&clause.surface);
+            segments.push(Segment::new(start, base.len(), Mode::Ja, Script::Kana));
+        }
+        let covered: usize = result
+            .clauses
+            .iter()
+            .map(|clause| clause.reading.chars().count())
+            .sum();
+        if covered < units.len() {
+            let start = base.len();
+            base.extend(units[covered..].iter().map(Unit::as_str));
+            segments.push(Segment::new(start, base.len(), Mode::Ja, Script::Kana));
+        }
+        self.base = base;
+        self.segments = segments;
+        self.ja_cursor = self.ja_cursor.min(self.base.len());
+        self.sync_composition_ja();
+    }
+
+    /// 日文組字游標往左或往右移一個字元。
+    fn move_ja_cursor(&mut self, delta: isize) -> bool {
+        let text = self.base.clone();
+        if text.is_empty() {
+            return false;
+        }
+        let mut at = self.ja_cursor.min(text.len());
+        if delta < 0 {
+            at = text[..at]
+                .char_indices()
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+        } else if delta > 0 && at < text.len() {
+            at += text[at..].chars().next().map(char::len_utf8).unwrap_or(0);
+        }
+        if at == self.ja_cursor {
+            return false;
+        }
+        self.ja_cursor = at;
+        true
     }
 
     pub(super) fn backspace(&mut self) {
@@ -696,6 +815,32 @@ impl Session {
     }
 
     pub(super) fn finish_composition(&mut self) {
+        // 延遲整句模式：還在假名就同步轉換一次再提交，不默默送出假名。
+        if self.config.mode == Mode::Ja {
+            let pending = self
+                .live_plan
+                .as_ref()
+                .map_or(true, |plan| plan.result.is_none());
+            let has_units = !self.romaji.units().is_empty();
+            if pending && has_units {
+                if let Some(live) = self.live.as_mut() {
+                    if live.sentence_mode() {
+                        let plan = live.convert_now();
+                        let units = self.romaji.units().to_vec();
+                        let reading: String = units.iter().map(Unit::as_str).collect();
+                        self.apply_live_plan(&plan, &units, &reading);
+                    }
+                }
+            }
+        }
+        // 日文逐字変換：Enter 先把游標所在片段的候選套上去，不送出整段。
+        if self.config.mode == Mode::Ja
+            && self.candidate_window
+            && !self.candidates.is_empty()
+            && self.apply_ja_candidate(self.highlighted)
+        {
+            return;
+        }
         // 游標在片段中且候選窗開著：Enter 先把候選套到這一段，不送出整段。
         if self.config.mode == Mode::Zh
             && self.edit.is_some()
@@ -913,6 +1058,9 @@ impl Session {
     /// 組字游標；進入選取模式後才在候選間移動。游標移動後，候選清單改成
     /// 游標所在片段的候選。
     pub(super) fn navigate(&mut self, delta: isize) {
+        if self.config.mode == Mode::Ja && self.live.is_some() && self.move_ja_cursor(delta) {
+            return;
+        }
         if self.config.mode == Mode::Zh && self.candidate_window && !self.navigating {
             let target = self.cursor.saturating_add_signed(delta);
             if self.move_cursor_to(target) {
@@ -1200,6 +1348,7 @@ impl Session {
         self.zh.reset();
         self.syllables.clear();
         self.cursor = 0;
+        self.ja_cursor = 0;
         self.edit = None;
         self.keep_candidates = false;
         self.romaji.reset();
@@ -1213,6 +1362,7 @@ impl Session {
         self.candidate_window = false;
         self.navigating = false;
         self.segments.clear();
+        self.composition.clear();
         self.locks.clear();
         self.segment_manual = None;
         self.pending_tone = None;
@@ -1271,17 +1421,18 @@ impl Session {
         if self.edit.is_some() {
             return &self.base;
         }
-        match (
-            &self.accepted_completion,
-            self.candidates.get(self.highlighted),
-        ) {
-            (Some(text), _) => text.as_str(),
-            // 混合模式的候選只取代待定英數按鍵，`base` 已含前面的中文片段；
-            // 直接拿候選當整個組字字串會把中文吃掉。
-            (None, _) if self.config.mode == Mode::Mixed => &self.base,
-            (None, Some(candidate)) => candidate.surface.as_str(),
-            (None, None) => &self.base,
+        if let Some(text) = &self.accepted_completion {
+            return text.as_str();
         }
+        // 只有候選窗開著時才用高亮候選預覽；關窗後畫面回到實際轉換結果，
+        // 否則片段變換（F7、拆回讀音）的結果會被舊候選蓋住。
+        if !self.candidate_window || self.config.mode == Mode::Mixed {
+            return &self.base;
+        }
+        self.candidates
+            .get(self.highlighted)
+            .map(|candidate| candidate.surface.as_str())
+            .unwrap_or(&self.base)
     }
 
     /// 顯示用字串：高亮候選反映在組字區，未完成的注音插在游標位置。
@@ -1359,16 +1510,17 @@ impl Session {
         self.pending = self.zh.pending();
         let syllables = self.syllables.to_vec();
         if syllables.is_empty() {
+            self.sync_composition_zh(&[], &[]);
             return;
         }
         let readings = self.zh_readings(&syllables);
         let units: Vec<&str> = readings.iter().map(String::as_str).collect();
-        // 片段鎖定只涵蓋目前還在的音節；退格或送出後留下的過期鎖定直接丟掉。
-        let count = syllables.len();
-        self.locks
-            .retain(|&at, lock| at < count && at.saturating_add(lock.len) <= count);
+        // 片段鎖定只涵蓋目前還在的音節；由 `Composition` 的 User 標記推導，
+        // 過期的標記在推導時自然被丟掉。
+        self.sync_zh_locks();
         let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) else {
             self.base = units.join("");
+            self.sync_composition_zh(&readings, &[]);
             return;
         };
         let scorer = zh_scorer(&self.ctx, self.zh_lm.as_deref());
@@ -1473,6 +1625,8 @@ impl Session {
                 Script::Bopomofo,
             ));
         }
+        // 所有權寫回點：語言無關模型只在這一步承接新的顯示片段。
+        self.sync_composition_zh(&readings, &best_segments);
     }
 
     /// 游標所在片段的候選；整段解碼只負責顯示，選字由這份清單決定。
@@ -1691,6 +1845,7 @@ impl Session {
         let units = self.romaji.units().to_vec();
         let reading: String = units.iter().map(Unit::as_str).collect();
         if reading.is_empty() {
+            self.composition.clear();
             return;
         }
         if self.live.is_some() {
@@ -1699,6 +1854,7 @@ impl Session {
         }
         let Some(decoder) = self.config.ja.clone() else {
             self.base = reading;
+            self.sync_composition_ja();
             return;
         };
         let ctx = JaContext {
@@ -1717,6 +1873,7 @@ impl Session {
         self.rank_ja_learning(&mut results, &ctx.left);
         let Some(best) = results.first() else {
             self.base = reading;
+            self.sync_composition_ja();
             return;
         };
         let baseline = best.surface();
@@ -1783,6 +1940,7 @@ impl Session {
             candidate.clear_pos();
         }
         self.last_ja_results = results;
+        self.sync_composition_ja();
     }
 
     /// 弱負向訊號：選了非學習候選時，對前面被跳過的學習詞記一次跳過。
@@ -1828,12 +1986,23 @@ impl Session {
 
     /// 逐字変換開啟時的日文重建：把讀音送進控制器，依決定畫出結果。
     pub(super) fn rebuild_ja_live(&mut self, units: &[Unit]) {
+        let reading: String = units.iter().map(Unit::as_str).collect();
+        // 先讓 `Composition` 判定這次編輯保留了哪些 User 片段，再推給控制器；
+        // 控制器的清單只是快取，不自己決定所有權。
+        let previous = self.composition.reading(crate::composition::Lang::Ja);
+        let common = super::composition::common_prefix_units(&previous, &reading);
+        self.composition
+            .retain_units_through(crate::composition::Lang::Ja, common);
+        self.sync_ja_users();
         let plan = match &mut self.live {
             Some(live) => live.input(units, &JaContext::default()),
             None => return,
         };
-        let reading: String = units.iter().map(Unit::as_str).collect();
+        let reading_changed = previous != reading;
         self.apply_live_plan(&plan, units, &reading);
+        if reading_changed {
+            self.ja_cursor = self.base.len();
+        }
     }
 
     /// 套用逐字変換的決定。
@@ -1842,6 +2011,9 @@ impl Session {
     /// かな，讓畫面不會先退回かな。debounce 等待中的新かな因此仍可看見。
     pub(super) fn apply_live_plan(&mut self, plan: &LivePlan, units: &[Unit], reading: &str) {
         self.live_plan = Some(plan.clone());
+        // 只有讀音真的改變（打字、倒退）才把游標移到結尾；單純左右移動觸發
+        // 的重畫要保留游標，否則片段選字永遠選到最後一段。
+        let previous_cursor = self.ja_cursor;
         let mut base = String::new();
         let mut segments = Vec::new();
         let mut display = reading.to_string();
@@ -1865,6 +2037,7 @@ impl Session {
         }
         self.base = base;
         self.segments = segments;
+        self.ja_cursor = previous_cursor.min(self.base.len());
 
         let mut candidates = Vec::new();
         let mut results = Vec::new();
@@ -1906,6 +2079,7 @@ impl Session {
             );
         }
         self.candidates = candidates;
+        self.sync_composition_ja();
     }
 
     pub(super) fn rebuild_en(&mut self) {
@@ -1991,7 +2165,7 @@ impl Session {
 
 /// 有 bigram 時建立內插評分器；`lm.bin` 沒有 bigram 時回傳 `None`，
 /// 解碼完全走原本的 unigram 成本。
-fn zh_scorer<'a>(
+pub(super) fn zh_scorer<'a>(
     ctx: &'a ScoreContext,
     lm: Option<&'a crate::score::ZhLm>,
 ) -> Option<crate::score::LmScorer<'a>> {
@@ -2000,7 +2174,7 @@ fn zh_scorer<'a>(
 }
 
 /// 建立注音解碼器；有 bigram 時接上評分器並套用 beam 上限。
-fn zh_decoder<'a>(
+pub(super) fn zh_decoder<'a>(
     lex: &'a InMemoryLexicon,
     ctx: &'a ScoreContext,
     scorer: Option<&'a crate::score::LmScorer<'a>>,
@@ -2420,5 +2594,80 @@ mod tests {
         assert_eq!(closed.preedit, "我像吃", "Esc 不刪組字");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "我像吃");
+    }
+
+    /// 手選片段後繼續輸入，片段保持；在片段內刪字才退回 Auto。
+    #[test]
+    fn test_zh_user_segment_survives_more_input_and_demotes_on_edit() {
+        use crate::composition::Owner;
+
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        type_syllable(&mut s, "ㄒㄧㄤˇ");
+        s.press(Key::new(KeyCode::Space, None, false));
+        // 游標移到「想」的片段，換成同音字「像」。
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::char('k', false));
+        let changed = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(changed.preedit, "我像");
+        assert_eq!(s.user_marks().len(), 1, "選字要留下 User 標記");
+        assert_eq!(s.user_marks()[0].lang, crate::composition::Lang::Zh);
+        assert!(
+            changed.owners.iter().any(|owner| *owner == Owner::User),
+            "快照要標出 User 片段"
+        );
+
+        // 關掉候選窗後在游標位置（User 片段之前）再插一個音節；片段保持。
+        s.press(Key::new(KeyCode::Escape, None, false));
+        type_syllable(&mut s, "ㄈㄢˊ");
+        let kept = s.snapshot();
+        assert!(
+            kept.preedit.contains('像'),
+            "重轉洗掉手選片段：{}",
+            kept.preedit
+        );
+        assert_eq!(s.user_marks().len(), 1, "插入在前不影響 User 標記");
+        assert_eq!(s.user_marks()[0].start, 2, "User 標記隨插入平移");
+
+        // 刪掉 User 片段本身的音節：該片段退回 Auto。
+        let demoted = s.press(Key::new(KeyCode::Delete, None, false));
+        assert!(!demoted.preedit.contains('像'), "{:?}", demoted.preedit);
+        assert!(s.user_marks().is_empty(), "片段內編輯要解除 User 標記");
+    }
+
+    /// `auto_runs` 在 User 片段前後切開，並帶完整的左右文脈。
+    #[test]
+    fn test_auto_runs_split_around_user_segment_with_context() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        type_syllable(&mut s, "ㄒㄧㄤˇ");
+        type_syllable(&mut s, "ㄔ");
+        assert!(s.lock_segment(0));
+        let runs = s.auto_runs();
+        assert_eq!(runs.len(), 1, "User 片段把前後 Auto 切開");
+        assert_eq!(runs[0].reading, "ㄒㄧㄤˇ ㄔ");
+        let ctx = s.composition().context_for(&runs[0]);
+        assert_eq!(ctx.left, "我");
+        assert_eq!(ctx.right, "");
+
+        // 轉換只會送 Auto 區段，User 片段不在任何 run 裡。
+        let sent = s.convert_auto_runs();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].1.is_ok(), "{:?}", sent[0].1);
+    }
+
+    /// 提交後再輸入，已提交的文字不變。
+    #[test]
+    fn test_committed_text_stays_after_more_input() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "我");
+        type_syllable(&mut s, "ㄒㄧㄤˇ");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "想");
+        assert_eq!(s.committed(), "我想");
+        assert!(s.user_marks().is_empty(), "提交後不得留下所有權狀態");
     }
 }

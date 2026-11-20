@@ -108,6 +108,11 @@ pub struct NeuralConfig {
     pub timeout_ms: u64,
     /// 左右文脈長度上限。
     pub max_context_chars: ContextChars,
+    /// 停頓後補正的額外嚴格倍率；套用在 `gap_threshold` 上。
+    ///
+    /// 補正會改寫使用者已看過的尾巴，只接受比即時轉換更確定的片段。
+    /// `1.0` 表示與即時轉換同一門檻。
+    pub correction_gap_ratio: f32,
     /// 已載入的模型執行環境；`None` 時不呼叫模型。
     pub runtime: Option<Arc<NeuralRuntime>>,
 }
@@ -121,6 +126,7 @@ impl Default for NeuralConfig {
             model: NeuralModel::Small,
             timeout_ms: DEFAULT_TIMEOUT_MS,
             max_context_chars: ContextChars::default(),
+            correction_gap_ratio: 0.5,
             runtime: None,
         }
     }
@@ -157,6 +163,7 @@ impl fmt::Debug for NeuralConfig {
             .field("model", &self.model)
             .field("timeout_ms", &self.timeout_ms)
             .field("max_context_chars", &self.max_context_chars)
+            .field("correction_gap_ratio", &self.correction_gap_ratio)
             .field("runtime", &self.runtime.is_some())
             .finish()
     }
@@ -450,6 +457,8 @@ impl NeuralRuntime {
     /// 啟動 worker；模型已載入時才呼叫。
     pub fn spawn(engine: Box<dyn NeuralEngine>) -> Self {
         let (tx, rx) = mpsc::channel::<Job>();
+        let stats = Arc::new(Mutex::new(NeuralStatsSnapshot::default()));
+        let worker_stats = Arc::clone(&stats);
         let spawned = std::thread::Builder::new()
             .name("jc-jinen".to_string())
             .spawn(move || {
@@ -458,7 +467,12 @@ impl NeuralRuntime {
                     while let Ok(newer) = rx.try_recv() {
                         job = newer;
                     }
+                    let started = std::time::Instant::now();
                     let result = engine.convert(&job.request);
+                    if let Ok(mut stats) = worker_stats.lock() {
+                        stats.inferences += 1;
+                        stats.busy_ms += started.elapsed().as_millis() as u64;
+                    }
                     let _ = job.reply.send(result);
                 }
             });
@@ -467,7 +481,7 @@ impl NeuralRuntime {
         }
         Self {
             tx: Mutex::new(tx),
-            stats: Arc::new(Mutex::new(NeuralStatsSnapshot::default())),
+            stats,
         }
     }
 
@@ -494,6 +508,27 @@ impl NeuralRuntime {
                 Err(NeuralError::Unavailable("worker 已結束".to_string()))
             }
         }
+    }
+
+    /// 送出請求但不等結果；回傳的回應通道由呼叫端輪詢。
+    ///
+    /// worker 本身仍會丟掉佇列中較舊的請求；single-flight 模式由呼叫端保證
+    /// 同時最多一筆。
+    pub fn start(
+        &self,
+        request: &NeuralRequest,
+    ) -> Result<mpsc::Receiver<Result<String, NeuralError>>, NeuralError> {
+        let (reply, rx) = mpsc::channel();
+        let job = Job {
+            request: request.clone(),
+            reply,
+        };
+        self.tx
+            .lock()
+            .map_err(|_| NeuralError::Unavailable("worker 鎖壞掉".to_string()))?
+            .send(job)
+            .map_err(|_| NeuralError::Unavailable("worker 已結束".to_string()))?;
+        Ok(rx)
     }
 
     /// 目前的統計快照。
@@ -536,6 +571,10 @@ pub struct NeuralStatsSnapshot {
     pub accepted: u64,
     /// 各驗證原因的拒絕次數。
     pub rejected: BTreeMap<RejectReason, u64>,
+    /// 模型推論執行次數（含結果被丟棄的推論）。
+    pub inferences: u64,
+    /// 模型執行緒累計忙碌毫秒。
+    pub busy_ms: u64,
 }
 
 impl NeuralStatsSnapshot {
@@ -557,14 +596,16 @@ impl NeuralStatsSnapshot {
             .collect();
         format!(
             "neural：calls {}，accepted {}，unchanged {}，skipped {}，timeout {}，\
-             unavailable {}，rejected [{}]",
+             unavailable {}，rejected [{}]，inferences {}，busy {} ms",
             self.calls(),
             self.accepted,
             self.unchanged,
             self.skipped,
             self.timeouts,
             self.unavailable,
-            rejected.join("、")
+            rejected.join("、"),
+            self.inferences,
+            self.busy_ms
         )
     }
 }
@@ -680,8 +721,18 @@ impl fmt::Debug for LiveGate {
 
 impl crate::ja::live::NeuralGate for LiveGate {
     fn adopt(&self, request: &crate::ja::live::GateRequest<'_>) -> Option<String> {
+        // 停頓補正會改寫已看過的尾巴；用更嚴的成本差門檻，只接受統計
+        // 本身也高度歧義的片段。
+        let config = if request.phase == crate::ja::live::GatePhase::Correction {
+            NeuralConfig {
+                gap_threshold: self.config.gap_threshold * self.config.correction_gap_ratio,
+                ..self.config.clone()
+            }
+        } else {
+            self.config.clone()
+        };
         let decision = maybe_convert(
-            &self.config,
+            &config,
             &NeuralInput {
                 reading: request.reading,
                 left: request.left,
@@ -1033,6 +1084,8 @@ mod tests {
             statistical_cost: 1_000,
             runner_up_cost: Some(1_100),
             mean_candidates: 8.0,
+            phase: crate::ja::live::GatePhase::Live,
+            generation: 0,
         };
         assert_eq!(gate.adopt(&half), None);
         assert_eq!(calls.load(Ordering::SeqCst), 0);

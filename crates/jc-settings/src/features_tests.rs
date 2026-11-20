@@ -341,7 +341,8 @@ fn test_language_migration_and_projection() {
     assert_eq!(settings.language(), crate::LANGUAGE_ZH);
     assert!(!settings.japanese());
     assert_eq!(settings.ja_input_method, crate::JA_INPUT_ROMAJI);
-    assert!(!settings.ja_live_conversion);
+    assert!(settings.ja_live_conversion, "日文預設逐字変換");
+    assert_eq!(settings.ja_conversion, crate::JA_CONVERSION_LIVE);
     assert!(settings.ja_symbols && settings.ja_learning && settings.ja_model);
 
     let dir = tmpdir("language");
@@ -871,4 +872,58 @@ fn test_future_boolean_value_survives_until_explicit_set() {
     let text = serde_json::to_string(&settings).expect("序列化");
     assert!(!text.contains("later"), "{text}");
     assert!(text.contains("\"mixed_input\":true"), "{text}");
+}
+
+/// 舊設定檔沒有 `ja_conversion`：視為逐字変換。
+#[test]
+fn test_ja_conversion_defaults_to_live_for_old_settings() {
+    let dir = tmpdir("ja-conversion-live");
+    let path = dir.join("settings.json");
+    write_settings(&path, r#"{"ja_neural_mode":"auto"}"#);
+    let (settings, error) = load(&path, "linux");
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(
+        settings.effective_ja_conversion(),
+        crate::JA_CONVERSION_LIVE
+    );
+    assert!(settings.ja_live_enabled());
+}
+
+/// 舊設定檔只有 `ja_live_conversion: false`：尊重使用者選整句変換。
+#[test]
+fn test_ja_conversion_legacy_off_maps_to_sentence() {
+    let dir = tmpdir("ja-conversion-sentence");
+    let path = dir.join("settings.json");
+    write_settings(&path, r#"{"ja_live_conversion":false}"#);
+    let (settings, error) = load(&path, "linux");
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(
+        settings.effective_ja_conversion(),
+        crate::JA_CONVERSION_SENTENCE
+    );
+    assert!(!settings.ja_live_enabled());
+}
+
+/// 新欄位優先於舊 bool；存檔後可往返。
+#[test]
+fn test_ja_conversion_round_trip() {
+    let mut settings = Settings::default();
+    settings
+        .set("ja-conversion", "sentence", "linux")
+        .expect("ja-conversion");
+    assert_eq!(
+        settings.effective_ja_conversion(),
+        crate::JA_CONVERSION_SENTENCE
+    );
+    assert!(!settings.ja_live_conversion);
+
+    let dir = tmpdir("ja-conversion-roundtrip");
+    let path = dir.join("settings.json");
+    save(&path, &settings).expect("存檔");
+    let (back, error) = load(&path, "linux");
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(
+        back.effective_ja_conversion(),
+        crate::JA_CONVERSION_SENTENCE
+    );
 }

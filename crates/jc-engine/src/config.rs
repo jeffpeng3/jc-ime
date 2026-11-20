@@ -214,7 +214,7 @@ pub fn effective(settings: &Settings, overrides: &Overrides, goos: &str) -> Effe
         ctrl_punctuation: settings.effective_ctrl_punctuation(),
         cjk_latin_space: settings.cjk_latin_space,
         fuzzy_pairs: fuzzy_pairs(settings),
-        ja_live: settings.ja_live_conversion,
+        ja_live: settings.ja_live_enabled(),
         learning: settings.ja_learning,
         selection_keys: settings.selection_keys.clone(),
         emoji_shortcut: settings.emoji_shortcut.clone(),

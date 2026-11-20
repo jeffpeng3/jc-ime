@@ -26,9 +26,49 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::ja::decode::{
-    mean_candidates, JaCandidate, JaClause, JaContext, JaDecoder, JaResult, JaSpan,
+    mean_candidates, JaCandidate, JaCandidateSource, JaClause, JaContext, JaDecoder, JaResult,
+    JaSpan,
 };
 use crate::reading::{Sequence, Unit};
+
+/// 一個片段在目前結果中的位置。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClauseSpan {
+    /// 讀音起始單位。
+    pub start: usize,
+    /// 讀音結束單位（不含）。
+    pub end: usize,
+    /// 目前顯示的詞面。
+    pub surface: String,
+}
+
+/// 片段文字的轉換方式；純字串轉換，不呼叫模型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KanaTransform {
+    /// 平假名。
+    Hiragana,
+    /// 全角片假名。
+    Katakana,
+    /// 半角片假名。
+    HalfwidthKana,
+    /// 全角英數。
+    FullwidthLatin,
+    /// 半角英數。
+    HalfwidthLatin,
+}
+
+impl KanaTransform {
+    /// 套用到指定字串。
+    pub fn apply(self, text: &str) -> String {
+        match self {
+            Self::Hiragana => crate::ja::rewrite::to_hiragana(text),
+            Self::Katakana => crate::ja::rewrite::to_katakana(text),
+            Self::HalfwidthKana => crate::ja::rewrite::to_halfwidth_kana(text),
+            Self::FullwidthLatin => crate::ja::rewrite::to_fullwidth_latin(text),
+            Self::HalfwidthLatin => crate::ja::rewrite::to_halfwidth_latin(text),
+        }
+    }
+}
 
 /// ライブ変換的錯誤。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -85,6 +125,14 @@ pub trait Converter {
     fn statistical(&self, reading: &str, ctx: &JaContext) -> Result<Statistical, ConvertError> {
         Ok(Statistical::plain(self.convert(reading, ctx)?))
     }
+
+    /// 整段讀音是否剛好是一個詞典詞條。
+    ///
+    /// 逐字変換的「完整詞」邊界觸發用；預設沒有詞典，回傳 `false`。
+    /// 這是單次索引查詢，不是解碼，成本與長度無關。
+    fn is_complete_word(&self, _reading: &str) -> bool {
+        false
+    }
 }
 
 /// 統計轉換結果與門檻訊號。
@@ -119,6 +167,34 @@ impl Statistical {
 pub trait NeuralGate {
     /// 判斷是否採用神經輸出。
     fn adopt(&self, request: &GateRequest<'_>) -> Option<String>;
+
+    /// 非同步送出一次請求；已有推論在跑或不需要模型時回傳 `false`。
+    fn start(&self, _request: &GateRequest<'_>) -> bool {
+        false
+    }
+
+    /// 取出已完成的非同步結果；還沒完成時回傳 `None`。
+    fn take(&self) -> Option<FlightResult> {
+        None
+    }
+
+    /// 是否還有推論在跑。
+    fn busy(&self) -> bool {
+        false
+    }
+}
+
+/// 一次非同步推論的完成結果。
+#[derive(Debug, Clone)]
+pub struct FlightResult {
+    /// 送出時的 generation。
+    pub generation: u64,
+    /// 送出時的讀音前綴。
+    pub reading: String,
+    /// 通過驗證的輸出；`None` 代表跳過、逾時或拒絕。
+    pub surface: Option<String>,
+    /// 推論耗時。
+    pub elapsed: Duration,
 }
 
 /// 一次神經採用的請求。
@@ -143,6 +219,10 @@ pub struct GateRequest<'a> {
     pub runner_up_cost: Option<i32>,
     /// top-1 路徑的平均候選數。
     pub mean_candidates: f32,
+    /// 這次採用是即時轉換或停頓後補正。
+    pub phase: GatePhase,
+    /// 送出的輸入世代。
+    pub generation: u64,
 }
 
 impl Converter for JaDecoder {
@@ -179,6 +259,101 @@ impl Converter for JaDecoder {
         let units: Vec<char> = reading.chars().collect();
         Ok(JaDecoder::candidates(self, &units, span, ctx))
     }
+
+    fn is_complete_word(&self, reading: &str) -> bool {
+        let units: Vec<char> = reading.chars().collect();
+        if units.is_empty() {
+            return false;
+        }
+        let total = units.len();
+        let mut found = false;
+        self.source().matches(&units, 0, &mut |word| {
+            found |= word.end == total;
+        });
+        found
+    }
+}
+
+/// 神經結果的套用範圍。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NeuralScope {
+    /// 整段尚未鎖定的尾端（現況）。
+    #[default]
+    WholeTail,
+    /// 只處理最後一個尚未鎖定的文節。
+    ///
+    /// 統計結果仍是文節邊界的來源，已鎖定的前綴與較早的文節直接重用；
+    /// 模型只補最後一個還會變動的文節，不會把整段尾端併成一個文節而讓
+    /// 鎖定永遠無法前進。
+    Clause,
+}
+
+/// 神經結果的套用時機。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NeuralTiming {
+    /// 與統計轉換同一次呼叫（現況）。
+    #[default]
+    Inline,
+    /// 先顯示統計結果；停頓後再由外殼呼叫 [`Controller::poll_neural`] 補正。
+    Deferred,
+}
+
+/// 自動変換的觸發條件；三個條件可以組合。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoTrigger {
+    /// 未轉換的假名累積到幾個單位才轉換；`0` 關閉長度觸發。
+    pub min_units: usize,
+    /// 讀音結尾是助詞、標點或詞典完整詞時轉換。
+    pub boundary: bool,
+    /// 停頓後由 [`Controller::idle`] 轉換與補正。
+    pub idle: bool,
+}
+
+impl AutoTrigger {
+    /// 關閉所有自動觸發，等同每鍵轉換以外的保守設定。
+    pub fn off() -> Self {
+        Self {
+            min_units: 0,
+            boundary: false,
+            idle: false,
+        }
+    }
+}
+
+impl Default for AutoTrigger {
+    /// Microsoft IME 形狀的建議值：12 字元、邊界、停頓都開。
+    fn default() -> Self {
+        Self {
+            min_units: 12,
+            boundary: true,
+            idle: true,
+        }
+    }
+}
+
+/// 什麼時候真正執行轉換。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// 每次讀音更新都轉換（現況）。
+    EveryKey,
+    /// 自動変換：長度、邊界、停頓三種條件可組合。
+    Auto(AutoTrigger),
+}
+
+impl Default for Trigger {
+    fn default() -> Self {
+        Self::EveryKey
+    }
+}
+
+/// 神經採用的階段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GatePhase {
+    /// 逐鍵或自動変換的即時轉換。
+    #[default]
+    Live,
+    /// 停頓後的尾巴補正；門檻更嚴，避免改寫使用者已看過的片段。
+    Correction,
 }
 
 /// ライブ変換的行為開關。
@@ -191,6 +366,11 @@ pub struct Config {
     pub enabled: bool,
     /// 最後一次かな輸入後要等多久才轉換。0 表示立即轉換（測試用）。
     pub debounce: Duration,
+    /// 停頓多久算「一段打完」，預設 300 ms。
+    ///
+    /// 只在 [`Trigger::Auto`] 開啟 `idle` 時使用；外殼要在期限到了呼叫
+    /// [`Controller::tick`]。
+    pub idle_delay: Duration,
     /// 單次轉換的時間預算；超過就退回前次結果，不鎖定新結果。
     /// 0 表示不檢查。
     pub budget: Duration,
@@ -200,6 +380,39 @@ pub struct Config {
     pub hold_limit: usize,
     /// 開始ライブ変換所需的最少讀音單位，預設 1。
     pub min_units: usize,
+    /// 尾端保留幾個文節不鎖定，預設 1（現況）。
+    ///
+    /// 停頓補正要有內容可補時可以設 2，代價是每鍵會多轉一個文節。
+    pub keep_tail: usize,
+    /// 轉換時機；預設每鍵轉換。
+    pub trigger: Trigger,
+    /// 神經結果的套用範圍；預設整段尾端。
+    pub neural_scope: NeuralScope,
+    /// 神經結果的套用時機；預設與統計轉換同一次呼叫。
+    pub neural_timing: NeuralTiming,
+    /// 非同步補正的推論預算；模型超過這個時間就丟棄結果，維持統計輸出。
+    /// 0 表示不檢查，只用於 [`NeuralTiming::Deferred`]。
+    pub neural_budget: Duration,
+    /// single-flight：同時最多一個推論，完成後套用到送出的讀音前綴。
+    ///
+    /// 開啟時忽略長度／邊界／停頓觸發，每一鍵都會先顯示統計結果，模型在
+    /// 背景跑；期間的新輸入只增加尾巴，不排隊。
+    pub neural_flight: bool,
+    /// 延遲整句轉換：打字期間只顯示假名，停頓後才做一次完整轉換。
+    ///
+    /// 轉換後才顯示漢字；任何輸入讓目前轉換失效，回到假名。同一時間最多
+    /// 一次推論；停頓後又開始打字時，尚未完成的結果直接丟棄。
+    pub deferred_sentence: bool,
+    /// 用「前綴快取＋失效重算」取代鎖定片段。
+    ///
+    /// 快取存的是讀音前綴與已轉換文字；新按鍵只轉未快取的尾巴，左文脈用
+    /// 快取文字。前面被修改或刪除時，從共同前綴之後全部失效重算。
+    pub prefix_cache: bool,
+    /// 前綴快取保留幾個文節不進快取，預設 1。
+    pub cache_keep: usize,
+    /// 非同步回應只要求「目前讀音仍以送出前綴開頭」；`false` 時要求
+    /// generation 完全相同。
+    pub flight_append: bool,
     /// 神經採用器；`None` 時逐字路徑完全不呼叫模型，行為與關閉相同。
     ///
     /// 由 [`crate::session::neural::live_gate`] 依 `ja_neural` 建立；只有
@@ -214,10 +427,21 @@ impl std::fmt::Debug for Config {
         f.debug_struct("Config")
             .field("enabled", &self.enabled)
             .field("debounce", &self.debounce)
+            .field("idle_delay", &self.idle_delay)
             .field("budget", &self.budget)
             .field("max_boundary_changes", &self.max_boundary_changes)
             .field("hold_limit", &self.hold_limit)
             .field("min_units", &self.min_units)
+            .field("keep_tail", &self.keep_tail)
+            .field("trigger", &self.trigger)
+            .field("neural_scope", &self.neural_scope)
+            .field("neural_timing", &self.neural_timing)
+            .field("neural_budget", &self.neural_budget)
+            .field("neural_flight", &self.neural_flight)
+            .field("deferred_sentence", &self.deferred_sentence)
+            .field("prefix_cache", &self.prefix_cache)
+            .field("cache_keep", &self.cache_keep)
+            .field("flight_append", &self.flight_append)
             .finish_non_exhaustive()
     }
 }
@@ -226,12 +450,23 @@ impl Default for Config {
     /// 建議值。`enabled` 保持 `false`，符合「預設關閉」。
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             debounce: Duration::from_millis(120),
+            idle_delay: Duration::from_millis(300),
             budget: Duration::from_millis(100),
             max_boundary_changes: 1,
             hold_limit: 2,
             min_units: 1,
+            keep_tail: 1,
+            trigger: Trigger::Auto(AutoTrigger::default()),
+            neural_scope: NeuralScope::Clause,
+            neural_timing: NeuralTiming::Deferred,
+            neural_budget: Duration::from_millis(35),
+            neural_flight: false,
+            deferred_sentence: true,
+            prefix_cache: false,
+            cache_keep: 1,
+            flight_append: true,
             neural: None,
             clock: None,
         }
@@ -276,6 +511,142 @@ pub struct Stats {
     pub last_duration: Duration,
     /// 最近一次轉換的文節邊界變動數。
     pub last_boundary_changes: usize,
+    /// 送進神經採用器的請求數；模型是否真的被呼叫由執行環境統計。
+    pub neural_requests: usize,
+    /// 神經輸出實際替換統計結果的次數。
+    pub neural_adopted: usize,
+    /// 停頓後補正的嘗試次數。
+    pub corrections: usize,
+    /// 停頓後補正實際替換的次數。
+    pub correction_adopted: usize,
+    /// 因為使用者繼續輸入而丟棄的補正次數。
+    pub stale_discards: usize,
+    /// 因為超過 [`Config::neural_budget`] 而丟棄的補正次數。
+    pub late_discards: usize,
+    /// 已顯示片段總數（每次更新都重新計數）。
+    pub fragments_shown: usize,
+    /// 已顯示片段在後續更新中改變的次數。
+    pub fragments_changed: usize,
+    /// 已顯示片段中「不是當下尾巴」的數量；這些片段理論上不該再變。
+    pub settled_shown: usize,
+    /// 已穩定片段在後續更新中改變的次數。
+    pub settled_changed: usize,
+}
+
+/// 一次已顯示的片段；以讀音單位定位，方便跨次比對同一段文字。
+#[derive(Debug, Clone)]
+struct DisplayFragment {
+    /// 讀音起始單位。
+    start: usize,
+    /// 讀音結束單位（不含）。
+    end: usize,
+    /// 當時顯示的詞面。
+    surface: String,
+    /// 當時是否仍是かな（尚未轉成漢字）。
+    kana: bool,
+}
+
+/// 等待非同步補正的一次請求。
+#[derive(Debug, Clone)]
+struct PendingNeural {
+    /// 建立請求時的輸入世代；使用者一打字就作廢。
+    generation: u64,
+    /// 要補正的讀音。
+    reading: String,
+    /// 左文脈，含已鎖定與較早文節的詞面。
+    left: String,
+    /// 右文脈。
+    right: String,
+    /// 統計基線。
+    statistical: String,
+    /// 統計基線成本。
+    statistical_cost: i32,
+    /// 次佳成本。
+    runner_up_cost: Option<i32>,
+    /// 平均候選數。
+    mean_candidates: f32,
+    /// 統計基線的文節成本總和。
+    cost: i32,
+    /// 要補正的讀音單位數；尾端標點不在內。
+    units: usize,
+}
+
+/// 使用者手動選過或編輯過的片段；重轉時保持固定。
+///
+/// 控制器只把這份清單當成轉換快取：所有權由 `jc-core` 的
+/// [`crate::composition::Composition`] 決定，`Session` 每次重建都把
+/// `Composition` 的 `User` 標記推進來。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserSegment {
+    /// 讀音單位起點。
+    pub start: usize,
+    /// 讀音單位數。
+    pub units: usize,
+    /// 固定時的讀音。
+    pub reading: String,
+    /// 固定時的詞面。
+    pub surface: String,
+}
+
+/// 已轉換的讀音前綴與文字。
+#[derive(Debug, Clone, Default)]
+struct PrefixCache {
+    reading: String,
+    clauses: Vec<JaClause>,
+}
+
+impl PrefixCache {
+    fn text(&self) -> String {
+        self.clauses
+            .iter()
+            .map(|clause| clause.surface.as_str())
+            .collect()
+    }
+
+    fn units(&self) -> usize {
+        self.clauses.iter().map(clause_units).sum()
+    }
+}
+
+/// 一次 single-flight 推論的送出狀態。
+#[derive(Debug, Clone)]
+struct FlightRequest {
+    /// 送出時的完整前綴讀音（快取＋尾巴）。
+    prefix: String,
+    /// 送出的未快取尾巴讀音。
+    reading: String,
+    /// 尾巴的讀音單位數。
+    units: usize,
+    /// 尾巴的統計詞面。
+    statistical: String,
+    /// 尾巴的統計成本。
+    cost: i32,
+}
+
+/// 最後一個未鎖定文節的統計基線與文脈。
+#[derive(Debug, Clone)]
+struct ClauseRequest {
+    reading: String,
+    left: String,
+    right: String,
+    statistical: String,
+    statistical_cost: i32,
+    runner_up_cost: Option<i32>,
+    mean_candidates: f32,
+}
+
+/// 整段未鎖定尾巴的補正請求內容。
+#[derive(Debug, Clone)]
+struct PendingRequest {
+    reading: String,
+    left: String,
+    right: String,
+    statistical: String,
+    statistical_cost: i32,
+    runner_up_cost: Option<i32>,
+    mean_candidates: f32,
+    cost: i32,
+    units: usize,
 }
 
 /// ライブ変換的狀態機。零值不可用，請用 [`Controller::new`] 建立。
@@ -299,6 +670,7 @@ pub struct Controller {
     draft: Option<JaResult>,
     pending: bool,
     due: Option<Instant>,
+    idle_due: Option<Instant>,
     held: usize,
     /// 上一次接受的結果是神經輸出。
     ///
@@ -306,6 +678,28 @@ pub struct Controller {
     /// 跳過邊界變動比較，直接以新的統計結果重建基準，否則每次採用神經
     /// 輸出都會被誤判成大幅變動而保留舊畫面。
     tail_neural: bool,
+    /// 輸入世代；每次讀音更新遞增，用來丟棄過期補正。
+    generation: u64,
+    /// 最近一次真正轉換到的讀音長度；自動変換的長度觸發從這裡起算。
+    converted_upto: usize,
+    /// 上一次顯示的片段，用於計算已顯示片段的變動率。
+    prev_display: Vec<DisplayFragment>,
+    /// 等待停頓後補正的請求。
+    pending_neural: Option<PendingNeural>,
+    /// 這次轉換是停頓觸發；先不鎖定新的文節，留給補正。
+    provisional: bool,
+    /// 前綴快取：已轉換的讀音前綴與文字。
+    cache: PrefixCache,
+    /// 等待中的 single-flight 推論。
+    flight: Option<FlightRequest>,
+    /// 延遲整句模式上一次轉換的讀音；用來判斷是單純追加還是編輯。
+    sentence_reading: String,
+    /// 使用者固定的片段；重轉時不變。
+    user_segments: Vec<UserSegment>,
+    /// 最近一次統計結果的總成本。
+    last_cost: f64,
+    /// 最近一次統計結果的分數。
+    last_score: f64,
 
     stats: Stats,
 }
@@ -328,8 +722,20 @@ impl Controller {
             draft: None,
             pending: false,
             due: None,
+            idle_due: None,
             held: 0,
             tail_neural: false,
+            generation: 0,
+            converted_upto: 0,
+            prev_display: Vec::new(),
+            pending_neural: None,
+            provisional: false,
+            cache: PrefixCache::default(),
+            flight: None,
+            sentence_reading: String::new(),
+            user_segments: Vec::new(),
+            last_cost: 0.0,
+            last_score: 0.0,
             stats: Stats::default(),
         }
     }
@@ -379,14 +785,48 @@ impl Controller {
         if !self.enabled() {
             return Plan::default();
         }
-        if !self.prefix_intact(seq) {
+        if !self.cfg.prefix_cache && !self.prefix_intact(seq) {
             self.reset();
         }
         self.seq.clear();
         self.seq.extend_from_slice(seq);
         self.ctx = ctx.clone();
+        self.generation += 1;
+        if self.pending_neural.take().is_some() {
+            self.stats.stale_discards += 1;
+        }
+        if self.cfg.deferred_sentence {
+            self.pending = false;
+            self.due = None;
+            let current: String = self.seq.iter().map(Unit::as_str).collect();
+            // 單純往後追加時保留已顯示的轉換；刪除或改中間才讓編輯點之後的
+            // Auto 片段失效。哪些 User 片段還在由 `Composition` 決定，
+            // `Session` 會在每次重建前先裁好再推進來。
+            if !self.sentence_reading.is_empty() && !current.starts_with(&self.sentence_reading) {
+                self.invalidate_sentence();
+            }
+            self.idle_due = Some(self.now() + self.cfg.idle_delay);
+            return self.preview_plan();
+        }
+        if self.cfg.prefix_cache {
+            self.pending = false;
+            self.due = None;
+            self.idle_due = None;
+            self.sync_cache();
+            return self.convert_cache();
+        }
+        if matches!(self.cfg.trigger, Trigger::Auto(trigger) if trigger.idle) {
+            self.idle_due = Some(self.now() + self.cfg.idle_delay);
+        }
 
         if self.seq.len() < self.cfg.min_units {
+            self.pending = false;
+            self.due = None;
+            return self.preview_plan();
+        }
+        if !self.should_convert() {
+            // 自動変換還沒累積到觸發條件；保留已顯示的結果，新的かな由
+            // 外殼接在後面顯示。
             self.pending = false;
             self.due = None;
             return self.preview_plan();
@@ -410,30 +850,46 @@ impl Controller {
     /// 回傳的第二個值表示這次是否真的做了轉換（或逾時退回）；期限未到、
     /// 沒有待處理輸入或功能關閉時回傳 `false`。
     pub fn tick(&mut self) -> (Plan, bool) {
-        if !self.enabled() || !self.pending {
+        if !self.enabled() {
             return (Plan::default(), false);
         }
-        let Some(due) = self.due else {
-            return (Plan::default(), false);
-        };
-        if self.now() < due {
-            return (Plan::default(), false);
+        if self.pending {
+            if let Some(due) = self.due {
+                if self.now() >= due {
+                    self.pending = false;
+                    self.due = None;
+                    return (self.convert(), true);
+                }
+            }
         }
-        self.pending = false;
-        self.due = None;
-        (self.convert(), true)
+        if let Some(due) = self.idle_due {
+            if self.now() >= due {
+                self.idle_due = None;
+                return self.idle();
+            }
+        }
+        (Plan::default(), false)
     }
 
     /// 取消尚未執行的 debounce，保留目前已顯示的結果。
     ///
     /// 回傳是否有東西被取消。
     pub fn cancel_pending(&mut self) -> bool {
-        if !self.pending {
-            return false;
-        }
+        let had = self.pending || self.idle_due.is_some();
         self.pending = false;
         self.due = None;
-        true
+        self.idle_due = None;
+        had
+    }
+
+    /// 停頓計時器是否還在等待。
+    pub fn idle_pending(&self) -> bool {
+        self.idle_due.is_some()
+    }
+
+    /// 停頓期限；外殼用它安排計時器。
+    pub fn idle_deadline(&self) -> Option<Instant> {
+        self.idle_due
     }
 
     /// 清掉所有組字、鎖定與 draft 狀態，但保留累計統計。
@@ -446,7 +902,9 @@ impl Controller {
     /// 回傳目前讀音指定範圍的候選。
     ///
     /// 候選仍由原本的轉換器產生，只是把已鎖定的前綴放進 [`JaContext::left`]，
-    /// 讓尾端候選有正確的左文脈。功能關閉時回傳空清單，外殼走一般変換。
+    /// 讓尾端候選有正確的左文脈。除了字典候選，一定附上目前詞面、原讀音的
+    /// 平假名與片假名（以及半角かな），讓使用者不用記功能鍵也選得到。
+    /// 功能關閉時回傳空清單，外殼走一般変換。
     pub fn candidates(&self, span: JaSpan) -> Result<Vec<JaCandidate>, LiveError> {
         if !self.enabled() {
             return Ok(Vec::new());
@@ -455,9 +913,260 @@ impl Controller {
             return Err(LiveError::Span);
         }
         let reading: String = self.seq.iter().map(Unit::as_str).collect();
-        Ok(self
+        let mut out = self
             .conv
-            .candidates(&reading, span, &self.convert_context())?)
+            .candidates(&reading, span, &self.convert_context())?;
+        let target: String = self.seq[span.start..span.end()]
+            .iter()
+            .map(Unit::as_str)
+            .collect();
+        let mut seen: HashSet<String> = out.iter().map(|c| c.surface.clone()).collect();
+        let mut push = |surface: String, source: JaCandidateSource| {
+            if surface.is_empty() || !seen.insert(surface.clone()) {
+                return;
+            }
+            out.push(JaCandidate {
+                surface,
+                reading: target.clone(),
+                cost: i32::MAX / 2,
+                source,
+            });
+        };
+        if let Some(clause) = self.clause_at(span) {
+            push(clause.surface.clone(), JaCandidateSource::Convert);
+        }
+        push(
+            KanaTransform::Hiragana.apply(&target),
+            JaCandidateSource::Hiragana,
+        );
+        push(
+            KanaTransform::Katakana.apply(&target),
+            JaCandidateSource::Katakana,
+        );
+        push(
+            KanaTransform::HalfwidthKana.apply(&target),
+            JaCandidateSource::HalfwidthKana,
+        );
+        Ok(out)
+    }
+
+    /// 目前結果的片段位置與詞面。
+    pub fn clause_spans(&self) -> Vec<ClauseSpan> {
+        let mut out = Vec::new();
+        let mut start = 0;
+        for clause in self.all_clauses() {
+            let units = clause_units(&clause);
+            out.push(ClauseSpan {
+                start,
+                end: start + units,
+                surface: clause.surface,
+            });
+            start += units;
+        }
+        out
+    }
+
+    /// 目前固定的使用者片段。
+    ///
+    /// 這份清單是轉換快取，權威來源是 `jc-core` 的
+    /// [`crate::composition::Composition`]。
+    pub fn user_segments(&self) -> &[UserSegment] {
+        &self.user_segments
+    }
+
+    /// 以 `Composition` 推導出的清單覆寫固定片段。
+    ///
+    /// `Session` 每次重建組字時呼叫；控制器不再自行決定哪一段被鎖定。
+    pub fn set_user_segments(&mut self, segments: Vec<UserSegment>) {
+        self.user_segments = segments;
+        self.user_segments.sort_by_key(|segment| segment.start);
+    }
+
+    /// 把指定片段標成 User；重轉時保持固定。
+    fn mark_user(&mut self, index: usize) {
+        let Some(span) = self.clause_spans().get(index).cloned() else {
+            return;
+        };
+        let reading: String = self.seq[span.start..span.end]
+            .iter()
+            .map(Unit::as_str)
+            .collect();
+        self.user_segments.retain(|segment| {
+            segment.start + segment.units <= span.start || segment.start >= span.end
+        });
+        self.user_segments.push(UserSegment {
+            start: span.start,
+            units: span.end - span.start,
+            reading,
+            surface: span.surface,
+        });
+        self.user_segments.sort_by_key(|segment| segment.start);
+    }
+
+    /// 只換指定片段的詞面；讀音、鎖定範圍與其他片段都不變。
+    ///
+    /// 回傳是否真的換了。片段索引依 [`Controller::clause_spans`] 的順序。
+    pub fn replace_clause(&mut self, index: usize, surface: String) -> bool {
+        if surface.is_empty() {
+            return false;
+        }
+        let locked = self.locked.len();
+        let target = if index < locked {
+            &mut self.locked[index]
+        } else if index - locked < self.tail.len() {
+            &mut self.tail[index - locked]
+        } else {
+            return false;
+        };
+        if target.surface == surface {
+            return false;
+        }
+        target.surface = surface;
+        target.segments.clear();
+        self.tail_neural = false;
+        self.mark_user(index);
+        self.record_stability(&self.all_clauses());
+        let cost = self.last_cost;
+        let score = self.last_score;
+        self.draft = Some(JaResult {
+            clauses: self.all_clauses(),
+            cost,
+            score,
+        });
+        true
+    }
+
+    /// 對指定片段套用假名／英數轉換。
+    pub fn transform_clause(&mut self, index: usize, transform: KanaTransform) -> bool {
+        let Some(clause) = self.all_clauses().get(index).cloned() else {
+            return false;
+        };
+        // かな系變換鍵看讀音：選到「今日」按 F6 要得到「きょう」。
+        // 英數系變換看目前詞面。
+        let text = match transform {
+            KanaTransform::Hiragana | KanaTransform::Katakana | KanaTransform::HalfwidthKana => {
+                clause_reading(&clause)
+            }
+            KanaTransform::FullwidthLatin | KanaTransform::HalfwidthLatin => clause.surface.clone(),
+        };
+        let surface = transform.apply(&text);
+        self.replace_clause(index, surface)
+    }
+
+    /// 在平假名與全角片假名之間切換指定片段。
+    ///
+    /// 漢字片段先還原成讀音（平假名）；下一次呼叫才變片假名。回傳新的
+    /// 片段詞面。讀音與片段範圍不變。
+    pub fn toggle_script(&mut self, span: JaSpan) -> Option<String> {
+        let index = self.clause_index_at(span)?;
+        let clause = self.all_clauses().get(index)?.clone();
+        let reading = clause_reading(&clause);
+        let surface = if has_katakana(&clause.surface) {
+            crate::ja::rewrite::to_hiragana(&clause.surface)
+        } else if has_hiragana(&clause.surface) {
+            crate::ja::rewrite::to_katakana(&clause.surface)
+        } else {
+            // 漢字（或英數）先回到讀音，維持平假名。
+            crate::ja::rewrite::to_hiragana(&reading)
+        };
+        self.replace_clause(index, surface.clone())
+            .then_some(surface)
+    }
+
+    /// 把片段還原成讀音，並搬回未鎖定的尾巴。
+    ///
+    /// 已鎖定的前綴只保留到目標片段之前；目標與其後已鎖定的文節一起回到
+    /// `tail`，下一次轉換可以重新切分。回傳還原後的讀音。
+    pub fn unconvert(&mut self, span: JaSpan) -> Option<String> {
+        let index = self.clause_index_at(span)?;
+        let reading = clause_reading(self.all_clauses().get(index)?);
+        if reading.is_empty() {
+            return None;
+        }
+        if index < self.locked.len() {
+            let mut moved = self.locked.split_off(index);
+            let kept: usize = self.locked.iter().map(clause_units).sum();
+            moved[0].surface = reading.clone();
+            moved[0].segments.clear();
+            self.locked_seq.truncate(kept);
+            self.cut = kept;
+            moved.extend(self.tail.drain(..));
+            self.tail = moved;
+        } else {
+            let tail_index = index - self.locked.len();
+            let clause = &mut self.tail[tail_index];
+            clause.surface = reading.clone();
+            clause.segments.clear();
+        }
+        self.tail_neural = false;
+        if let Some(index) = self.clause_index_at(span) {
+            self.mark_user(index);
+        }
+        self.record_stability(&self.all_clauses());
+        let cost = self.last_cost;
+        let score = self.last_score;
+        self.draft = Some(JaResult {
+            clauses: self.all_clauses(),
+            cost,
+            score,
+        });
+        Some(reading)
+    }
+
+    /// 片段索引；`span` 必須剛好等於一個片段的讀音範圍。
+    pub fn clause_index_at(&self, span: JaSpan) -> Option<usize> {
+        let mut start = 0;
+        for (index, clause) in self.all_clauses().iter().enumerate() {
+            let end = start + clause_units(clause);
+            if start == span.start && end == span.end() {
+                return Some(index);
+            }
+            start = end;
+        }
+        None
+    }
+
+    /// 把指定片段（含之前尚未鎖定的文節）鎖定。
+    ///
+    /// 使用者明確選字或按假名變換鍵後呼叫；後續輸入只會轉換更後面的尾端，
+    /// 已選的片段不會因為下一個かな而變回去。
+    pub fn lock_through(&mut self, index: usize) -> bool {
+        if index < self.locked.len() {
+            return false;
+        }
+        let tail_index = index - self.locked.len();
+        if tail_index >= self.tail.len() {
+            return false;
+        }
+        let units: usize = self.tail[..=tail_index].iter().map(clause_units).sum();
+        if units == 0 || self.cut + units > self.seq.len() {
+            return false;
+        }
+        self.locked.extend(self.tail.drain(..=tail_index));
+        self.locked_seq
+            .extend_from_slice(&self.seq[self.cut..self.cut + units]);
+        self.cut += units;
+        self.tail_neural = false;
+        true
+    }
+
+    fn clause_at(&self, span: JaSpan) -> Option<&JaClause> {
+        let mut start = 0;
+        for clause in &self.locked {
+            let end = start + clause_units(clause);
+            if start == span.start && end == span.end() {
+                return Some(clause);
+            }
+            start = end;
+        }
+        for clause in &self.tail {
+            let end = start + clause_units(clause);
+            if start == span.start && end == span.end() {
+                return Some(clause);
+            }
+            start = end;
+        }
+        None
     }
 
     fn reset_state(&mut self) {
@@ -468,8 +1177,18 @@ impl Controller {
         self.draft = None;
         self.pending = false;
         self.due = None;
+        self.idle_due = None;
         self.held = 0;
         self.tail_neural = false;
+        self.generation += 1;
+        self.converted_upto = 0;
+        self.prev_display.clear();
+        self.pending_neural = None;
+        self.provisional = false;
+        self.cache = PrefixCache::default();
+        self.flight = None;
+        self.sentence_reading.clear();
+        self.user_segments.clear();
     }
 
     fn now(&self) -> Instant {
@@ -511,7 +1230,180 @@ impl Controller {
             .collect()
     }
 
+    /// 輸入結束時把尚未轉換的讀音補齊。
+    ///
+    /// 自動変換只在觸發條件成立時轉換；使用者停止輸入後外殼應呼叫這個
+    /// 方法，讓最後一段假名也得到統計結果。已轉換到最新讀音時不做任何事。
+    pub fn flush(&mut self) -> (Plan, bool) {
+        if !self.enabled() || self.seq.is_empty() {
+            return (Plan::default(), false);
+        }
+        if self.cfg.deferred_sentence {
+            // Enter 以外的結束不先轉；停頓到齊才轉換。
+            return (self.preview_plan(), false);
+        }
+        if self.cut >= self.seq.len() || self.seq.len() <= self.converted_upto {
+            return (self.preview_plan(), false);
+        }
+        self.pending = false;
+        self.due = None;
+        let plan = self.convert();
+        let converted = plan.convert;
+        (plan, converted)
+    }
+
+    /// 停頓後的自動変換與補正。
+    ///
+    /// 外殼在使用者閒置 250–400 ms 後呼叫。`Trigger::Auto` 且開啟 `idle`
+    /// 時，先把尚未轉換的讀音轉成統計結果；`NeuralTiming::Deferred` 時再
+    /// 把最後一個尚未鎖定的文節送模型補正。回傳的第二個值表示畫面是否有
+    /// 更新。
+    pub fn idle(&mut self) -> (Plan, bool) {
+        if !self.enabled() {
+            return (Plan::default(), false);
+        }
+        let mut updated = false;
+        if self.cfg.deferred_sentence {
+            self.idle_due = None;
+            let plan = self.convert_sentence();
+            let converted = plan.convert;
+            return (plan, converted);
+        }
+        let idle_convert = match self.cfg.trigger {
+            Trigger::Auto(trigger) => trigger.idle,
+            Trigger::EveryKey => false,
+        };
+        if idle_convert && self.cut < self.seq.len() && self.seq.len() > self.converted_upto {
+            self.pending = false;
+            self.due = None;
+            self.provisional = true;
+            let plan = self.convert();
+            self.provisional = false;
+            updated |= plan.convert;
+            if plan.timed_out {
+                return (plan, updated);
+            }
+        }
+        if let Some(plan) = self.poll_neural() {
+            return (plan, true);
+        }
+        (self.preview_plan(), updated)
+    }
+
+    /// 套用等待中的非同步補正。
+    ///
+    /// 使用者已經繼續輸入時直接丟棄；模型超過 [`Config::neural_budget`]
+    /// 也丟棄，維持統計結果。成功的補正只換最後一個尚未鎖定的文節。
+    pub fn poll_neural(&mut self) -> Option<Plan> {
+        if !self.enabled() {
+            return None;
+        }
+        let request = self.pending_neural.take()?;
+        if request.generation != self.generation {
+            self.stats.stale_discards += 1;
+            return None;
+        }
+        if self.seq.len() < self.cut + request.reading.chars().count() {
+            self.stats.stale_discards += 1;
+            return None;
+        }
+        let Some(gate) = self.cfg.neural.clone() else {
+            return None;
+        };
+        let started = self.now();
+        self.stats.neural_requests += 1;
+        let decision = gate.adopt(&GateRequest {
+            reading: &request.reading,
+            left: &request.left,
+            right: &request.right,
+            statistical: &request.statistical,
+            statistical_cost: request.statistical_cost,
+            runner_up_cost: request.runner_up_cost,
+            mean_candidates: request.mean_candidates,
+            phase: GatePhase::Correction,
+            generation: self.generation,
+        });
+        let elapsed = self.now().saturating_duration_since(started);
+        self.stats.corrections += 1;
+        if self.cfg.neural_budget > Duration::ZERO && elapsed > self.cfg.neural_budget {
+            self.stats.late_discards += 1;
+            return None;
+        }
+        let surface = decision?;
+        if surface == request.statistical {
+            return None;
+        }
+        let mut covered = 0;
+        let mut index = 0;
+        while index < self.tail.len() && covered < request.units {
+            covered += clause_units(&self.tail[index]);
+            index += 1;
+        }
+        if covered != request.units {
+            self.stats.stale_discards += 1;
+            return None;
+        }
+        let current: String = self.tail[..index].iter().map(clause_reading).collect();
+        if current != request.reading {
+            self.stats.stale_discards += 1;
+            return None;
+        }
+        let mut clauses = vec![JaClause {
+            reading: request.reading.clone(),
+            surface,
+            segments: Vec::new(),
+            cost: request.cost,
+        }];
+        clauses.extend(self.tail[index..].iter().cloned());
+        self.tail = clauses;
+        self.stats.correction_adopted += 1;
+        self.stats.neural_adopted += 1;
+        let cost = self.last_cost;
+        let score = self.last_score;
+        Some(self.publish(0, cost, score))
+    }
+
+    fn should_convert(&self) -> bool {
+        match self.cfg.trigger {
+            Trigger::EveryKey => true,
+            Trigger::Auto(trigger) => {
+                if trigger.min_units > 0 {
+                    let from = self.cut.max(self.converted_upto);
+                    if self.seq.len().saturating_sub(from) >= trigger.min_units {
+                        return true;
+                    }
+                }
+                if trigger.boundary && self.is_boundary() {
+                    return true;
+                }
+                false
+            }
+        }
+    }
+
+    /// 目前尚未鎖定的讀音是否到達一個自然的斷點。
+    fn is_boundary(&self) -> bool {
+        if self.cut >= self.seq.len() {
+            return false;
+        }
+        let reading: String = self.seq[self.cut..].iter().map(Unit::as_str).collect();
+        if ends_with_punctuation(&reading) || ends_with_particle(&reading) {
+            return true;
+        }
+        self.conv.is_complete_word(&reading)
+    }
+
     fn convert(&mut self) -> Plan {
+        let legacy = matches!(self.cfg.trigger, Trigger::EveryKey)
+            && self.cfg.neural_scope == NeuralScope::WholeTail
+            && self.cfg.neural_timing == NeuralTiming::Inline;
+        if legacy {
+            return self.convert_legacy();
+        }
+        self.convert_auto()
+    }
+
+    fn convert_legacy(&mut self) -> Plan {
         if self.cut > self.seq.len() {
             self.reset();
             return Plan::default();
@@ -587,18 +1479,361 @@ impl Controller {
         self.tail = result.clauses.clone();
         self.tail_neural = neural;
         self.advance_lock();
-        let draft = JaResult {
-            clauses: self.all_clauses(),
-            cost: result.cost,
-            score: result.score,
-        };
-        self.draft = Some(draft);
-        Plan {
-            convert: true,
-            result: self.draft.clone(),
-            boundary_changes: changes,
-            ..Plan::default()
+        self.converted_upto = self.seq.len();
+        self.last_cost = result.cost;
+        self.last_score = result.score;
+        let mut plan = self.publish(changes, result.cost, result.score);
+        plan.boundary_changes = changes;
+        plan
+    }
+
+    /// 讓目前的整句轉換失效，回到假名並記錄系統造成的變動。
+    fn invalidate_sentence(&mut self) {
+        if self.draft.is_some() {
+            let changed = self
+                .prev_display
+                .iter()
+                .filter(|fragment| !fragment.kana)
+                .count();
+            self.stats.fragments_shown += changed;
+            self.stats.fragments_changed += changed;
+            self.stats.settled_shown += changed;
+            self.stats.settled_changed += changed;
+            self.draft = None;
+            self.prev_display.clear();
         }
+        self.tail.clear();
+        self.cut = 0;
+        self.converted_upto = 0;
+        self.sentence_reading.clear();
+        self.user_segments.clear();
+    }
+
+    /// 停頓後做一次完整轉換；這是延遲整句模式的唯一轉換點。
+    fn convert_sentence(&mut self) -> Plan {
+        if self.seq.is_empty() {
+            return self.preview_plan();
+        }
+        let reading: String = self.seq.iter().map(Unit::as_str).collect();
+        let chars: Vec<char> = reading.chars().collect();
+        let total = self.seq.len();
+        let mut users = self.user_segments.clone();
+        users.sort_by_key(|segment| segment.start);
+        users.retain(|segment| segment.start + segment.units <= total);
+
+        let mut clauses: Vec<JaClause> = Vec::new();
+        let mut cost = 0.0;
+        let mut score = 0.0;
+        let mut cursor = 0usize;
+        let mut elapsed = Duration::ZERO;
+        for (index, segment) in users.iter().enumerate() {
+            let gap: String = chars[cursor..segment.start].iter().collect();
+            if !gap.is_empty() {
+                let left = format!("{}{}", self.ctx.left, surface_of(&clauses));
+                let mut right = self.ctx.right.clone();
+                for later in &users[index..] {
+                    right.push_str(&later.surface);
+                }
+                let started = self.now();
+                let Some((result, _)) = self.convert_range(&gap, &JaContext { left, right }) else {
+                    return self.preview_plan();
+                };
+                elapsed += self.now().saturating_duration_since(started);
+                cost += result.cost;
+                score += result.score;
+                clauses.extend(result.clauses);
+            }
+            clauses.push(JaClause {
+                reading: segment.reading.clone(),
+                surface: segment.surface.clone(),
+                segments: Vec::new(),
+                cost: 0,
+            });
+            cursor = segment.start + segment.units;
+        }
+        if cursor < reading.len() {
+            let gap: String = chars[cursor..].iter().collect();
+            let left = format!("{}{}", self.ctx.left, surface_of(&clauses));
+            let started = self.now();
+            let Some((result, _)) = self.convert_range(
+                &gap,
+                &JaContext {
+                    left,
+                    right: self.ctx.right.clone(),
+                },
+            ) else {
+                return self.preview_plan();
+            };
+            elapsed += self.now().saturating_duration_since(started);
+            cost += result.cost;
+            score += result.score;
+            clauses.extend(result.clauses);
+        }
+        if clauses.is_empty() || clauses_units(&clauses) != total {
+            return self.preview_plan();
+        }
+        self.stats.conversions += 1;
+        self.stats.last_duration = elapsed;
+        if self.cfg.budget > Duration::ZERO && elapsed > self.cfg.budget {
+            self.stats.timeouts += 1;
+            return self.preview_plan();
+        }
+        self.last_cost = cost;
+        self.last_score = score;
+        self.tail = clauses;
+        self.tail_neural = false;
+        self.cut = 0;
+        self.converted_upto = self.seq.len();
+        self.sentence_reading = reading;
+        self.publish(0, cost, score)
+    }
+
+    /// 轉換一段讀音；神經開啟時套用現有門檻與五條驗證。
+    fn convert_range(&self, reading: &str, ctx: &JaContext) -> Option<(JaResult, bool)> {
+        let converted = if self.cfg.neural.is_some() {
+            self.conv.statistical(reading, ctx)
+        } else {
+            self.conv.convert(reading, ctx).map(Statistical::plain)
+        };
+        let statistical = converted.ok()?;
+        if statistical.result.clauses.is_empty()
+            || clauses_units(&statistical.result.clauses) != reading.chars().count()
+        {
+            return None;
+        }
+        if self.cfg.neural.is_some() {
+            Some(self.adopt_neural(statistical, reading, ctx))
+        } else {
+            Some((statistical.result, false))
+        }
+    }
+
+    /// 是否為延遲整句模式；外殼的 Enter 需要先同步轉換。
+    pub fn sentence_mode(&self) -> bool {
+        self.cfg.deferred_sentence
+    }
+
+    /// 立即做一次整句轉換；Enter 在假名狀態下使用。
+    pub fn convert_now(&mut self) -> Plan {
+        if !self.cfg.deferred_sentence {
+            return self.convert();
+        }
+        self.idle_due = None;
+        self.convert_sentence()
+    }
+
+    /// 把前綴快取裁到與目前讀音的共同前綴。
+    fn sync_cache(&mut self) {
+        let current: String = self.seq.iter().map(Unit::as_str).collect();
+        let common = common_prefix_units(&self.cache.reading, &current);
+        let mut units = 0;
+        let mut keep = 0;
+        for clause in &self.cache.clauses {
+            let size = clause_units(clause);
+            if units + size > common {
+                break;
+            }
+            units += size;
+            keep += 1;
+        }
+        self.cache.clauses.truncate(keep);
+        self.cache.reading = self
+            .cache
+            .clauses
+            .iter()
+            .map(clause_reading)
+            .collect::<String>();
+    }
+
+    /// 前綴快取路徑：只轉未快取的尾巴，結果接在快取後面。
+    fn convert_cache(&mut self) -> Plan {
+        if self.cache.units() > self.seq.len() {
+            self.cache = PrefixCache::default();
+        }
+        let start = self.cache.units();
+        let suffix = &self.seq[start..];
+        if suffix.is_empty() {
+            return self.preview_plan();
+        }
+        let reading: String = suffix.iter().map(Unit::as_str).collect();
+        let mut ctx = self.ctx.clone();
+        ctx.left = format!("{}{}", self.cache.text(), ctx.left);
+        let started = self.now();
+        let converted = self.conv.convert(&reading, &ctx);
+        let elapsed = self.now().saturating_duration_since(started);
+        let timed_out = self.cfg.budget > Duration::ZERO && elapsed > self.cfg.budget;
+        self.stats.conversions += 1;
+        self.stats.last_duration = elapsed;
+        if timed_out {
+            self.stats.timeouts += 1;
+            let mut plan = self.preview_plan();
+            plan.timed_out = true;
+            return plan;
+        }
+        let result = match converted {
+            Ok(result)
+                if !result.clauses.is_empty() && clauses_units(&result.clauses) == suffix.len() =>
+            {
+                result
+            }
+            _ => return self.preview_plan(),
+        };
+        self.last_cost = result.cost;
+        self.last_score = result.score;
+        let mut clauses = result.clauses;
+        if self.flight.is_some() {
+            // 推論中：統計結果只當畫面，不快取，讓送出的前綴保持可套用。
+            self.tail = clauses;
+            let plan = self.publish(0, self.last_cost, self.last_score);
+            self.pump_flight(true);
+            return plan;
+        }
+        let keep = self.cfg.cache_keep.min(clauses.len());
+        let cache_n = clauses.len() - keep;
+        let tail = clauses.split_off(cache_n);
+        self.cache.clauses.extend(clauses);
+        self.cache.reading = self
+            .cache
+            .clauses
+            .iter()
+            .map(clause_reading)
+            .collect::<String>();
+        self.tail = tail;
+        let plan = self.publish(0, self.last_cost, self.last_score);
+        self.pump_flight(true);
+        plan
+    }
+
+    /// 輪詢 single-flight 結果；套用後回傳新的顯示計畫。
+    pub fn poll_flight(&mut self) -> Option<Plan> {
+        if !self.cfg.neural_flight {
+            return None;
+        }
+        self.pump_flight(true)
+    }
+
+    /// 取出結果、套用，並在需要時再送一次。
+    fn pump_flight(&mut self, start_new: bool) -> Option<Plan> {
+        let Some(gate) = self.cfg.neural.clone() else {
+            return None;
+        };
+        let mut plan = None;
+        if let Some(result) = gate.take() {
+            plan = self.apply_flight(result);
+        }
+        if start_new && !gate.busy() {
+            self.start_flight();
+        }
+        plan
+    }
+
+    /// 送出目前未快取尾巴的推論；已有請求時不做事。
+    fn start_flight(&mut self) {
+        let Some(gate) = self.cfg.neural.clone() else {
+            return;
+        };
+        if gate.busy() || self.tail.is_empty() {
+            return;
+        }
+        let reading: String = self.tail.iter().map(clause_reading).collect();
+        if reading.is_empty() {
+            return;
+        }
+        let mut ctx = self.ctx.clone();
+        ctx.left = format!("{}{}", self.cache.text(), ctx.left);
+        let Ok(statistical) = self.conv.statistical(&reading, &ctx) else {
+            return;
+        };
+        if statistical.result.clauses.is_empty() {
+            return;
+        }
+        let baseline = statistical.result.surface();
+        let units: usize = self.tail.iter().map(clause_units).sum();
+        let prefix = format!("{}{}", self.cache.reading, reading);
+        let request = GateRequest {
+            reading: &reading,
+            left: &ctx.left,
+            right: &ctx.right,
+            statistical: &baseline,
+            statistical_cost: statistical.result.conversion().cost,
+            runner_up_cost: statistical.runner_up_cost,
+            mean_candidates: statistical.mean_candidates,
+            phase: GatePhase::Live,
+            generation: self.generation,
+        };
+        self.stats.neural_requests += 1;
+        if gate.start(&request) {
+            self.flight = Some(FlightRequest {
+                prefix,
+                reading,
+                units,
+                statistical: baseline,
+                cost: statistical
+                    .result
+                    .clauses
+                    .iter()
+                    .map(|clause| clause.cost)
+                    .fold(0, i32::saturating_add),
+            });
+        }
+    }
+
+    /// 套用 single-flight 結果；只改尚未快取的尾巴。
+    fn apply_flight(&mut self, result: FlightResult) -> Option<Plan> {
+        let flight = self.flight.take()?;
+        if !self.cfg.flight_append && result.generation != self.generation {
+            self.stats.stale_discards += 1;
+            return None;
+        }
+        let current: String = self.seq.iter().map(Unit::as_str).collect();
+        let sent = format!("{}{}", flight.prefix, flight.reading);
+        if !current.starts_with(&sent) || self.cache.reading != flight.prefix {
+            self.stats.stale_discards += 1;
+            return None;
+        }
+        let Some(surface) = result.surface else {
+            return None;
+        };
+        if surface == flight.statistical {
+            return None;
+        }
+        let mut covered = 0;
+        let mut index = 0;
+        while index < self.tail.len() && covered < flight.units {
+            covered += clause_units(&self.tail[index]);
+            index += 1;
+        }
+        if covered != flight.units {
+            self.stats.stale_discards += 1;
+            return None;
+        }
+        let read: String = self.tail[..index].iter().map(clause_reading).collect();
+        if read != flight.reading {
+            self.stats.stale_discards += 1;
+            return None;
+        }
+        let neural = JaClause {
+            reading: flight.reading.clone(),
+            surface,
+            segments: Vec::new(),
+            cost: flight.cost,
+        };
+        let mut clauses = vec![neural];
+        clauses.extend(self.tail[index..].iter().cloned());
+        let keep = self.cfg.cache_keep.min(clauses.len());
+        let cache_n = clauses.len() - keep;
+        let tail = clauses.split_off(cache_n);
+        self.cache.clauses.extend(clauses);
+        self.cache.reading = self
+            .cache
+            .clauses
+            .iter()
+            .map(clause_reading)
+            .collect::<String>();
+        self.tail = tail;
+        self.stats.neural_adopted += 1;
+        self.last_cost = flight.cost as f64;
+        Some(self.publish(0, self.last_cost, self.last_score))
     }
 
     /// 呼叫神經採用器；只有通過門檻與五條驗證時才換掉整段尾端。
@@ -629,6 +1864,8 @@ impl Controller {
             statistical_cost: statistical.result.conversion().cost,
             runner_up_cost: statistical.runner_up_cost,
             mean_candidates: statistical.mean_candidates,
+            phase: GatePhase::Live,
+            generation: self.generation,
         };
         let Some(surface) = gate.adopt(&request) else {
             return (statistical.result, false);
@@ -643,6 +1880,311 @@ impl Controller {
         (result, true)
     }
 
+    /// 自動変換路徑：統計結果先顯示，神經只補最後一個未鎖定文節。
+    ///
+    /// 與 [`Controller::convert_legacy`] 的差異是神經輸出不再把整段尾端
+    /// 併成一個文節；統計文節邊界會保留，[`Controller::advance_lock`] 因此
+    /// 能繼續前進，已鎖定的前綴不會每一鍵重送。
+    fn convert_auto(&mut self) -> Plan {
+        if self.cut > self.seq.len() {
+            self.reset();
+            return Plan::default();
+        }
+        let suffix = &self.seq[self.cut..];
+        if suffix.is_empty() {
+            return self.preview_plan();
+        }
+        let reading: String = suffix.iter().map(Unit::as_str).collect();
+        let ctx = self.convert_context();
+        let start = self.now();
+        let whole_tail_neural = self.cfg.neural_scope == NeuralScope::WholeTail
+            && self.cfg.neural_timing == NeuralTiming::Inline
+            && self.cfg.neural.is_some();
+        let converted = if whole_tail_neural {
+            self.conv.statistical(&reading, &ctx)
+        } else {
+            self.conv.convert(&reading, &ctx).map(Statistical::plain)
+        };
+        let elapsed = self.now().saturating_duration_since(start);
+        self.stats.conversions += 1;
+        self.stats.last_duration = elapsed;
+        let timed_out = self.cfg.budget > Duration::ZERO && elapsed > self.cfg.budget;
+        if timed_out {
+            self.stats.timeouts += 1;
+        }
+        let statistical = match converted {
+            Ok(result)
+                if !result.result.clauses.is_empty()
+                    && clauses_units(&result.result.clauses) == suffix.len() =>
+            {
+                result
+            }
+            _ => {
+                let mut plan = self.preview_plan();
+                plan.timed_out = timed_out;
+                return plan;
+            }
+        };
+        if timed_out {
+            let mut plan = self.preview_plan();
+            plan.timed_out = true;
+            return plan;
+        }
+
+        let (statistical, neural) = if whole_tail_neural {
+            self.stats.neural_requests += 1;
+            self.adopt_neural(statistical, &reading, &ctx)
+        } else {
+            (statistical.result, false)
+        };
+        let changes = if self.tail_neural {
+            0
+        } else {
+            boundary_changes(&self.tail, &statistical.clauses)
+        };
+        self.stats.last_boundary_changes = changes;
+        if self.cfg.max_boundary_changes > 0
+            && self.draft.is_some()
+            && changes as isize > self.cfg.max_boundary_changes
+            && self.held < self.cfg.hold_limit
+        {
+            self.held += 1;
+            self.stats.holds += 1;
+            let mut plan = self.preview_plan();
+            plan.boundary_changes = changes;
+            return plan;
+        }
+
+        self.held = 0;
+        self.last_cost = statistical.cost;
+        self.last_score = statistical.score;
+        self.tail = statistical.clauses;
+        self.tail_neural = neural;
+        if !self.provisional {
+            self.advance_lock();
+        }
+        self.converted_upto = self.seq.len();
+        let plan = self.publish(changes, self.last_cost, self.last_score);
+
+        match self.cfg.neural_timing {
+            NeuralTiming::Inline => {
+                if self.apply_clause_neural(GatePhase::Live) {
+                    let cost = self.last_cost;
+                    let score = self.last_score;
+                    return self.publish(changes, cost, score);
+                }
+            }
+            NeuralTiming::Deferred => self.queue_neural(),
+        }
+        plan
+    }
+
+    /// 對最後一個未鎖定文節呼叫神經採用器；成功時只換該文節的詞面。
+    ///
+    /// 統計訊號由該文節自己的讀音重新解一次 top-2 取得，較早的文節與已
+    /// 鎖定前綴不重算。回傳是否真的換了詞面。
+    fn apply_clause_neural(&mut self, phase: GatePhase) -> bool {
+        if self.cfg.neural.is_none() {
+            return false;
+        }
+        let Some(request) = self.clause_request(phase) else {
+            return false;
+        };
+        let Some(gate) = &self.cfg.neural else {
+            return false;
+        };
+        self.stats.neural_requests += 1;
+        let started = self.now();
+        let decision = gate.adopt(&GateRequest {
+            reading: &request.reading,
+            left: &request.left,
+            right: &request.right,
+            statistical: &request.statistical,
+            statistical_cost: request.statistical_cost,
+            runner_up_cost: request.runner_up_cost,
+            mean_candidates: request.mean_candidates,
+            phase,
+            generation: self.generation,
+        });
+        let elapsed = self.now().saturating_duration_since(started);
+        if self.cfg.neural_budget > Duration::ZERO && elapsed > self.cfg.neural_budget {
+            if phase == GatePhase::Correction {
+                self.stats.late_discards += 1;
+            }
+            return false;
+        }
+        let Some(surface) = decision else {
+            return false;
+        };
+        if surface == request.statistical {
+            return false;
+        }
+        let Some(last) = self.tail.last_mut() else {
+            return false;
+        };
+        if clause_reading(last) != request.reading {
+            return false;
+        }
+        last.surface = surface;
+        last.segments.clear();
+        self.stats.neural_adopted += 1;
+        if phase == GatePhase::Correction {
+            self.stats.correction_adopted += 1;
+        }
+        true
+    }
+
+    /// 建立補正請求，等停頓後再送模型。
+    fn queue_neural(&mut self) {
+        let Some(request) = self.tail_request() else {
+            return;
+        };
+        self.pending_neural = Some(PendingNeural {
+            generation: self.generation,
+            reading: request.reading,
+            left: request.left,
+            right: request.right,
+            statistical: request.statistical,
+            statistical_cost: request.statistical_cost,
+            runner_up_cost: request.runner_up_cost,
+            mean_candidates: request.mean_candidates,
+            cost: request.cost,
+            units: request.units,
+        });
+    }
+
+    /// 尚未鎖定尾巴的補正請求。
+    ///
+    /// 停頓補正一次處理整段未鎖定尾巴，不動已鎖定前綴；最後一個文節若
+    /// 仍是かな，單獨送模型會被半截讀音規則跳過，因此這裡整段送。
+    fn tail_request(&mut self) -> Option<PendingRequest> {
+        // 尾端標點不是模型要補的內容；補正只送標點前的未鎖定片段。
+        let mut end = self.tail.len();
+        while end > 0 && is_punctuation_reading(&clause_reading(&self.tail[end - 1])) {
+            end -= 1;
+        }
+        if end == 0 {
+            return None;
+        }
+        let reading: String = self.tail[..end].iter().map(clause_reading).collect();
+        if reading.is_empty() {
+            return None;
+        }
+        let units = self.tail[..end].iter().map(clause_units).sum();
+        let mut left = self.ctx.left.clone();
+        left.push_str(&self.locked_text());
+        let right = self.ctx.right.clone();
+        let ctx = JaContext {
+            left: left.clone(),
+            right: right.clone(),
+        };
+        let statistical = self.conv.statistical(&reading, &ctx).ok()?;
+        if statistical.result.clauses.is_empty() {
+            return None;
+        }
+        let cost = statistical
+            .result
+            .clauses
+            .iter()
+            .map(|clause| clause.cost)
+            .fold(0i32, i32::saturating_add);
+        Some(PendingRequest {
+            reading,
+            left,
+            right,
+            statistical: statistical.result.surface(),
+            statistical_cost: statistical.result.conversion().cost,
+            runner_up_cost: statistical.runner_up_cost,
+            mean_candidates: statistical.mean_candidates,
+            cost,
+            units,
+        })
+    }
+
+    /// 最後一個未鎖定文節的採用請求；沒有可補的片段時回傳 `None`。
+    fn clause_request(&self, _phase: GatePhase) -> Option<ClauseRequest> {
+        let clause = self.tail.last()?;
+        let reading = clause_reading(clause);
+        if reading.is_empty() {
+            return None;
+        }
+        let mut left = self.ctx.left.clone();
+        left.push_str(&self.locked_text());
+        for earlier in &self.tail[..self.tail.len() - 1] {
+            left.push_str(&earlier.surface);
+        }
+        let right = self.ctx.right.clone();
+        let ctx = JaContext {
+            left: left.clone(),
+            right: right.clone(),
+        };
+        let statistical = self.conv.statistical(&reading, &ctx).ok()?;
+        if statistical.result.clauses.is_empty() {
+            return None;
+        }
+        Some(ClauseRequest {
+            reading,
+            left,
+            right,
+            statistical: statistical.result.surface(),
+            statistical_cost: statistical.result.conversion().cost,
+            runner_up_cost: statistical.runner_up_cost,
+            mean_candidates: statistical.mean_candidates,
+        })
+    }
+
+    /// 把目前的鎖定與文節組成結果，更新 draft 並記錄穩定度。
+    fn publish(&mut self, changes: usize, cost: f64, score: f64) -> Plan {
+        let clauses = self.all_clauses();
+        self.record_stability(&clauses);
+        self.draft = Some(JaResult {
+            clauses,
+            cost,
+            score,
+        });
+        Plan {
+            convert: true,
+            result: self.draft.clone(),
+            boundary_changes: changes,
+            ..Plan::default()
+        }
+    }
+
+    /// 比較這次顯示的片段與上次，累計「已顯示片段被改掉」的比例。
+    ///
+    /// 片段以讀音範圍定位。上次顯示的最後一個文節是即時尾巴，本來就會
+    /// 隨輸入變動；另外統計「已穩定片段」的變動次數，那才是使用者感受到
+    /// 「打完又變」的來源。
+    fn record_stability(&mut self, clauses: &[JaClause]) {
+        if self.prev_display.is_empty() {
+            self.prev_display = display_fragments(clauses);
+            return;
+        }
+        let next = display_fragments(clauses);
+        let total: usize = next.last().map(|f| f.end).unwrap_or(0);
+        for (index, prev) in self.prev_display.iter().enumerate() {
+            if prev.end > total || prev.kana {
+                // まだかなの片段本來就會被轉成漢字，不算「打完又變」。
+                continue;
+            }
+            self.stats.fragments_shown += 1;
+            let same = next
+                .iter()
+                .find(|f| f.start == prev.start && f.end == prev.end)
+                .is_some_and(|f| f.surface == prev.surface);
+            if !same {
+                self.stats.fragments_changed += 1;
+            }
+            if index + 1 < self.prev_display.len() {
+                self.stats.settled_shown += 1;
+                if !same {
+                    self.stats.settled_changed += 1;
+                }
+            }
+        }
+        self.prev_display = next;
+    }
+
     /// 把尾端除了最後一個文節以外的部分鎖住。
     ///
     /// 最後一個文節仍可能隨下一個かな改變，所以留在 `tail`；已鎖住的文節
@@ -651,10 +2193,11 @@ impl Controller {
     /// 真正的詞要等「う」進來才成立。若鎖住這種前綴，跨界的詞就永遠
     /// 找不到。
     fn advance_lock(&mut self) {
-        if self.tail.len() <= 1 {
+        let keep = self.cfg.keep_tail.max(1);
+        if self.tail.len() <= keep {
             return;
         }
-        let mut n = self.tail.len() - 1;
+        let mut n = self.tail.len() - keep;
         while n > 0 && is_kana_clause(&self.tail[n - 1]) {
             n -= 1;
         }
@@ -732,6 +2275,19 @@ fn is_kana_clause(clause: &JaClause) -> bool {
     clause.surface == clause_reading(clause)
 }
 
+/// 字串是否含平假名。
+fn has_hiragana(text: &str) -> bool {
+    text.chars()
+        .any(|ch| ('ぁ'..='ゖ').contains(&ch) || ch == 'ゝ' || ch == 'ゞ')
+}
+
+/// 字串是否含片假名（含半角）。
+fn has_katakana(text: &str) -> bool {
+    text.chars().any(|ch| {
+        ('ァ'..='ヺ').contains(&ch) || ch == 'ヽ' || ch == 'ヾ' || ('｡'..='ﾟ').contains(&ch)
+    })
+}
+
 /// 文節讀音；`reading` 為空時由內部分詞的讀音串接。
 fn clause_reading(clause: &JaClause) -> String {
     if !clause.reading.is_empty() {
@@ -742,6 +2298,95 @@ fn clause_reading(clause: &JaClause) -> String {
         .iter()
         .map(|seg| seg.reading.as_str())
         .collect()
+}
+
+/// 把文節換成以讀音單位定位的顯示片段。
+fn display_fragments(clauses: &[JaClause]) -> Vec<DisplayFragment> {
+    let mut out = Vec::with_capacity(clauses.len());
+    let mut pos = 0;
+    for clause in clauses {
+        let units = clause_units(clause);
+        out.push(DisplayFragment {
+            start: pos,
+            end: pos + units,
+            surface: clause.surface.clone(),
+            kana: is_kana_clause(clause),
+        });
+        pos += units;
+    }
+    out
+}
+
+/// 文節序列的詞面串接。
+fn surface_of(clauses: &[JaClause]) -> String {
+    clauses
+        .iter()
+        .map(|clause| clause.surface.as_str())
+        .collect()
+}
+
+/// 兩段讀音的共同前綴單位數。
+fn common_prefix_units(a: &str, b: &str) -> usize {
+    a.chars()
+        .zip(b.chars())
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+/// 讀音結尾是否為句讀或標點。
+fn ends_with_punctuation(reading: &str) -> bool {
+    matches!(
+        reading.chars().last(),
+        Some('、' | '。' | '，' | '．' | '！' | '？' | '!' | '?' | ',' | '.' | '…' | 'ー')
+    )
+}
+
+/// 整段讀音是否只有標點。
+fn is_punctuation_reading(reading: &str) -> bool {
+    !reading.is_empty()
+        && reading.chars().all(|ch| {
+            matches!(
+                ch,
+                '、' | '。' | '，' | '．' | '！' | '？' | '!' | '?' | ',' | '.' | '…'
+            )
+        })
+}
+
+/// 讀音結尾是否為常見助詞或助動詞。
+fn ends_with_particle(reading: &str) -> bool {
+    const TAILS: &[&str] = &[
+        "は",
+        "が",
+        "を",
+        "に",
+        "で",
+        "と",
+        "も",
+        "の",
+        "へ",
+        "や",
+        "か",
+        "ね",
+        "よ",
+        "な",
+        "ぞ",
+        "さ",
+        "わ",
+        "から",
+        "まで",
+        "より",
+        "ので",
+        "のに",
+        "けど",
+        "です",
+        "ます",
+        "でした",
+        "ました",
+        "ません",
+        "だろう",
+        "でしょう",
+    ];
+    TAILS.iter().any(|tail| reading.ends_with(tail))
 }
 
 #[cfg(test)]
@@ -961,26 +2606,33 @@ mod tests {
     fn test_config(clock: &FakeClock) -> Config {
         Config {
             enabled: true,
+            trigger: Trigger::EveryKey,
+            neural_scope: NeuralScope::WholeTail,
+            neural_timing: NeuralTiming::Inline,
+            deferred_sentence: false,
+            prefix_cache: false,
             clock: Some(clock.closure()),
             ..Config::default()
         }
     }
 
     #[test]
-    fn test_disabled_by_default() {
+    fn test_default_config_enables_auto_live() {
         let clock = FakeClock::new();
         let conv = FakeConverter::new(split_every(2)).with_clock(&clock);
         let state = conv.state();
-        let mut controller = Controller::new(conv, Config::default());
-        assert!(!controller.enabled(), "Config::default 必須預設關閉");
+        let cfg = test_config(&clock);
+        assert!(cfg.enabled, "測試設定要開啟");
+        let mut controller = Controller::new(conv, cfg);
+        // 預設設定是 120 ms debounce＋自動変換：短讀音不會每鍵轉換。
         let plan = controller.input(&units("きょう"), &JaContext::default());
-        assert!(!plan.convert && !plan.preview && !plan.pending, "{plan:?}");
-        assert!(!controller.tick().1, "關閉時 tick 不得轉換");
-        let cands = controller
-            .candidates(JaSpan::new(0, 1))
-            .expect("關閉時不得報錯");
-        assert!(cands.is_empty(), "關閉時不得產生候選");
-        assert_eq!(state.borrow().calls, 0, "關閉時呼叫了轉換器");
+        assert!(!plan.convert, "自動変換不應在短讀音每鍵轉換：{plan:?}");
+        assert_eq!(state.borrow().calls, 0, "未到觸發條件不得呼叫轉換器");
+        // 停頓到期後仍會補一次統計結果。
+        clock.advance(Duration::from_millis(400));
+        let (plan, converted) = controller.tick();
+        assert!(converted && plan.convert, "{plan:?}");
+        assert_eq!(state.borrow().calls, 1);
     }
 
     #[test]
@@ -1292,9 +2944,13 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_config_is_disabled() {
-        let mut controller = Controller::new(FakeConverter::new(split_every(2)), Config::default());
-        assert!(!controller.enabled(), "零值 Config 必須關閉");
+    fn test_disabled_config_is_noop() {
+        let config = Config {
+            enabled: false,
+            ..Config::default()
+        };
+        let mut controller = Controller::new(FakeConverter::new(split_every(2)), config);
+        assert!(!controller.enabled(), "enabled=false 必須關閉");
         let plan = controller.input(&units("き"), &JaContext::default());
         assert!(!plan.convert && !plan.pending, "{plan:?}");
     }
@@ -1464,5 +3120,83 @@ mod tests {
             result_text(second.result.as_ref().expect("有結果")),
             "[あ][い][う][え][お]"
         );
+    }
+
+    /// 片段候選包含目前詞面、原讀音平假名、片假名與半角かな。
+    #[test]
+    fn test_clause_candidates_include_kana_variants() {
+        let clock = FakeClock::new();
+        let conv = FakeConverter::new(split_every(2));
+        let mut cfg = test_config(&clock);
+        cfg.debounce = Duration::ZERO;
+        let mut controller = Controller::new(conv, cfg);
+        controller.input(&units("きょう"), &JaContext::default());
+        let candidates = controller.candidates(JaSpan::new(0, 2)).expect("合法範圍");
+        let surfaces: Vec<&str> = candidates
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        assert!(surfaces.contains(&"きょ"), "{surfaces:?}");
+        assert!(surfaces.contains(&"キョ"), "{surfaces:?}");
+        assert!(surfaces.contains(&"ｷｮ"), "{surfaces:?}");
+    }
+
+    /// 換片段只改那一段，其他片段、讀音與鎖定範圍都不變。
+    #[test]
+    fn test_replace_clause_keeps_other_clauses() {
+        let clock = FakeClock::new();
+        let conv = FakeConverter::new(split_every(2));
+        let mut cfg = test_config(&clock);
+        cfg.debounce = Duration::ZERO;
+        let mut controller = Controller::new(conv, cfg);
+        controller.input(&units("きょう"), &JaContext::default());
+        let before = controller.clause_spans();
+        assert_eq!(before.len(), 2);
+
+        assert!(controller.replace_clause(0, "京".to_string()));
+        let after = controller.clause_spans();
+        assert_eq!(after[0].surface, "京");
+        assert_eq!(after[1].surface, before[1].surface, "其他片段不得改變");
+        assert_eq!((after[1].start, after[1].end), (2, 3), "讀音範圍不變");
+        assert_eq!(result_text(controller.draft().expect("有結果")), "京[う]");
+    }
+
+    /// 假名變換鍵只換指定片段，回傳是否真的變了。
+    #[test]
+    fn test_transform_clause_kana_and_latin() {
+        let clock = FakeClock::new();
+        let conv = FakeConverter::new(|reading| {
+            vec![JaClause {
+                reading: reading.to_string(),
+                surface: "abc".to_string(),
+                segments: Vec::new(),
+                cost: 0,
+            }]
+        });
+        let mut cfg = test_config(&clock);
+        cfg.debounce = Duration::ZERO;
+        let mut controller = Controller::new(conv, cfg);
+        controller.input(&units("えー"), &JaContext::default());
+        assert!(controller.transform_clause(0, KanaTransform::FullwidthLatin));
+        assert_eq!(controller.clause_spans()[0].surface, "ａｂｃ");
+        assert!(controller.transform_clause(0, KanaTransform::HalfwidthLatin));
+        assert_eq!(controller.clause_spans()[0].surface, "abc");
+        assert!(!controller.transform_clause(0, KanaTransform::HalfwidthLatin));
+    }
+
+    /// 沒有鎖定時轉換整段；有鎖定時只動尾端片段。
+    #[test]
+    fn test_transform_clause_works_on_locked_prefix() {
+        let clock = FakeClock::new();
+        let conv = FakeConverter::new(split_every(2));
+        let mut cfg = test_config(&clock);
+        cfg.debounce = Duration::ZERO;
+        let mut controller = Controller::new(conv, cfg);
+        controller.input(&units("あいう"), &JaContext::default());
+        // 第一次轉換鎖住 [あい]，尾端是 [う]。
+        assert_eq!(controller.clause_spans()[0].surface, "[あい]");
+        assert!(controller.transform_clause(0, KanaTransform::Katakana));
+        assert_eq!(controller.clause_spans()[0].surface, "アイ");
+        assert_eq!(controller.clause_spans()[1].surface, "[う]");
     }
 }

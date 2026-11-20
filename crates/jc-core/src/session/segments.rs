@@ -101,6 +101,9 @@ impl Session {
     /// 組字游標在顯示字串中的 UTF-8 位元組位置。
     pub(super) fn cursor_byte(&self) -> usize {
         let text = self.base_with_highlight();
+        if self.config.mode == Mode::Ja {
+            return self.ja_cursor.min(text.len());
+        }
         if self.config.mode != Mode::Zh {
             return text.len();
         }
@@ -272,16 +275,9 @@ impl Session {
             return false;
         };
         let word = word.to_string();
-        self.locks
-            .retain(|&at, lock| !(at < end && start < at.saturating_add(lock.len)));
-        self.locks.insert(
-            start,
-            crate::decode::Lock {
-                word,
-                len: end - start,
-                ..crate::decode::Lock::default()
-            },
-        );
+        if !self.mark_zh_user_syllables(start, end - start, &word) {
+            return false;
+        }
         self.segment_manual = None;
         self.rebuild();
         true
@@ -294,10 +290,7 @@ impl Session {
         let Some((start, end)) = self.segment_syllables(index) else {
             return false;
         };
-        let before = self.locks.len();
-        self.locks
-            .retain(|&at, lock| !(at < end && start < at.saturating_add(lock.len)));
-        let changed = self.locks.len() != before;
+        let changed = self.demote_zh_syllables(start, end - start);
         if changed {
             self.segment_manual = None;
             self.rebuild();

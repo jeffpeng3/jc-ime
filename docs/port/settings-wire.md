@@ -19,6 +19,20 @@ Go 參考實作把設定接到引擎的程式碼集中在 server 啟動流程，
 | `cmd/0c-server/main.go`（`eng.SpaceInsertsSpace`、`eng.EscKeepComposition`、`eng.AdvanceAfterSelect`、切換鍵） | `crates/jc-core/src/session/input_style.rs`（`InputStyle`） | 部分 ported：`space_selects` 有對應，Esc／選字後游標／切換鍵在 Rust 屬於外殼，核心沒有欄位 |
 | `cmd/0c-server/main.go`（`-neural-*`、`-punct-*` 明確參數優先） | `crates/jc-engine/src/main.rs`（`--neural`、`--mode`） | rewritten；`--settings`、`--print-settings` 是新增的除錯入口 |
 
+## 日文轉換預設
+
+`ja_conversion` 預設 `live`：
+
+- `live`：打字期間顯示假名，停止輸入 300 ms 後做一次完整轉換（統計＋現有
+  門檻＋Jinen）。`modern-500` top-1 92.2%（與整句模式相同），每題推論 0.21 次，
+  停頓到轉換完成 p95 50 ms。
+- `sentence`：與舊版相同，空白／Enter 才轉；`modern-500` 92.2%、
+  `--neural quality` 93.6%。
+
+CLI 對照：`jc-cli eval ja --no-live` 走 `sentence`，其餘日文評測預設 `live`。
+舊 `settings.json` 沒有 `ja_conversion` 時視為 `live`；只有舊
+`ja_live_conversion: false` 時視為 `sentence`。
+
 ## 啟動流程
 
 1. `--settings <path>` 有給就讀它；否則用
@@ -60,7 +74,8 @@ Go 參考實作把設定接到引擎的程式碼集中在 server 啟動流程，
 | `zhuyin_error_hint` | `SessionConfig::zhuyin_error_hint` | 生效 |
 | `toneless` | `SessionConfig::toneless`（`effective_toneless`，所有符號半形時暫停） | 生效 |
 | `fuzzy` | `SessionConfig::fuzzy_pairs`；`off` 的配對不加入 | 生效 |
-| `ja_live_conversion` | `ja_live.enabled`（ライブ変換） | 生效 |
+| `ja_conversion` | `ja_live.enabled` 與轉換方式：`live`（預設，延遲整句轉換）／`sentence`（手動整句轉換） | 生效 |
+| `ja_live_conversion` | 舊欄位：`true` → `ja_conversion = live`、`false` → `sentence`；兩者都在時以 `ja_conversion` 為準 | 遷移用 |
 | `ja_learning` | `SessionConfig::learning`；本版只有一個學習開關 | 生效 |
 | `input_profile` | `style.rules = profile_rules(goos)`；風格的鍵位規則 | 生效 |
 | `mode_memory` | 切換視窗後的中英模式；引擎是單一行程 | 本版忽略（外殼） |

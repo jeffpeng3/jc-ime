@@ -42,6 +42,44 @@ impl NeuralMode {
     }
 }
 
+/// 逐字変換的觸發設定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveTriggerSpec {
+    /// 未轉換假名的長度門檻；0 關閉。
+    pub min_units: usize,
+    /// 助詞、標點或詞典完整詞觸發。
+    pub boundary: bool,
+    /// 停頓觸發；由評測在句尾與標點後模擬。
+    pub idle: bool,
+}
+
+impl Default for LiveTriggerSpec {
+    /// 預設每鍵轉換，三個自動觸發都關閉。
+    fn default() -> Self {
+        Self {
+            min_units: 0,
+            boundary: false,
+            idle: false,
+        }
+    }
+}
+
+impl LiveTriggerSpec {
+    /// 是否為每鍵轉換。
+    pub fn every_key(self) -> bool {
+        self.min_units == 0 && !self.boundary && !self.idle
+    }
+}
+
+/// 逐字変換的神經處理範圍。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveScope {
+    /// 整段未鎖定尾端。
+    Whole,
+    /// 只處理最後一個未鎖定文節。
+    Clause,
+}
+
 /// 命令列錯誤。
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
@@ -109,6 +147,34 @@ pub enum Command {
         neural: NeuralMode,
         /// 是否走逐字変換（ライブ変換）；與 `--neural` 的組合共用同一份門檻。
         live: bool,
+        /// 逐字変換的觸發條件；`None` 用預設自動変換。
+        live_trigger: Option<LiveTriggerSpec>,
+        /// 神經處理範圍；`None` 由觸發條件決定。
+        live_scope: Option<LiveScope>,
+        /// 停頓後才做神經補正。
+        live_deferred: bool,
+        /// 強制即時補正，不做停頓等待。
+        live_inline: bool,
+        /// 延遲整句轉換：打字只顯示假名，停頓後才轉。
+        live_sentence: bool,
+        /// 停頓毫秒數；只用於延遲整句。
+        live_idle_ms: u64,
+        /// 前綴快取模式（對照實驗）。
+        live_prefix_cache: bool,
+        /// 前綴快取保留幾個文節。
+        live_cache_keep: usize,
+        /// single-flight 非同步推論。
+        live_flight: bool,
+        /// single-flight 要求 generation 完全相同才套用。
+        live_flight_strict: bool,
+        /// 補正推論預算（毫秒）。
+        live_budget_ms: u64,
+        /// 補正的額外嚴格倍率；套用在成本差門檻上。
+        live_correction_ratio: f32,
+        /// 尾端保留幾個文節不鎖定。
+        live_keep_tail: usize,
+        /// 印出逐字変換的詳細量測。
+        live_report: bool,
         /// 輸出 JSON。
         json: bool,
         /// 輸出含逐題結果的 JSON。
@@ -264,6 +330,21 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut left = LeftMode::Off;
     let mut neural = None;
     let mut live = false;
+    let mut no_live = false;
+    let mut live_trigger: Option<LiveTriggerSpec> = None;
+    let mut live_scope = None;
+    let mut live_deferred = false;
+    let mut live_inline = false;
+    let mut live_sentence = false;
+    let mut live_idle_ms = 300u64;
+    let mut live_prefix_cache = false;
+    let mut live_cache_keep = 1usize;
+    let mut live_flight = false;
+    let mut live_flight_strict = false;
+    let mut live_budget_ms = 35u64;
+    let mut live_correction_ratio = 0.5f32;
+    let mut live_keep_tail = 1usize;
+    let mut live_report = false;
     let mut json = false;
     let mut items = false;
     let mut select_model = None;
@@ -340,15 +421,102 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 neural = Some(parse_neural(value(rest, index, "--neural")?)?);
             }
             "--live" => live = true,
+            "--no-live" => no_live = true,
+            "--live-trigger" => {
+                index += 1;
+                live_trigger = Some(parse_live_trigger(value(rest, index, "--live-trigger")?)?);
+            }
+            "--live-scope" => {
+                index += 1;
+                live_scope = Some(match value(rest, index, "--live-scope")? {
+                    "whole" => LiveScope::Whole,
+                    "clause" => LiveScope::Clause,
+                    other => {
+                        return Err(CliError::Usage(format!(
+                            "--live-scope 只接受 whole 或 clause，實際為 {other}"
+                        )));
+                    }
+                });
+            }
+            "--live-deferred" => live_deferred = true,
+            "--live-inline" => live_inline = true,
+            "--live-sentence" => live_sentence = true,
+            "--live-idle-ms" => {
+                index += 1;
+                live_idle_ms = value(rest, index, "--live-idle-ms")?
+                    .parse()
+                    .map_err(|_| CliError::Usage("--live-idle-ms 需要整數毫秒".to_string()))?;
+            }
+            "--live-prefix-cache" => live_prefix_cache = true,
+            "--live-cache-keep" => {
+                index += 1;
+                live_cache_keep = value(rest, index, "--live-cache-keep")?
+                    .parse()
+                    .map_err(|_| CliError::Usage("--live-cache-keep 需要整數".to_string()))?;
+            }
+            "--live-flight" => live_flight = true,
+            "--live-flight-strict" => live_flight_strict = true,
+            "--live-budget-ms" => {
+                index += 1;
+                live_budget_ms = value(rest, index, "--live-budget-ms")?
+                    .parse()
+                    .map_err(|_| CliError::Usage("--live-budget-ms 需要整數毫秒".to_string()))?;
+            }
+            "--live-correction-ratio" => {
+                index += 1;
+                live_correction_ratio = value(rest, index, "--live-correction-ratio")?
+                    .parse()
+                    .map_err(|_| {
+                        CliError::Usage("--live-correction-ratio 需要 0 到 1 的數字".to_string())
+                    })?;
+            }
+            "--live-keep-tail" => {
+                index += 1;
+                live_keep_tail = value(rest, index, "--live-keep-tail")?
+                    .parse()
+                    .map_err(|_| CliError::Usage("--live-keep-tail 需要正整數".to_string()))?;
+            }
+            "--live-report" => live_report = true,
             "--json" => json = true,
             "--items" => items = true,
             other => return Err(CliError::Usage(format!("eval 不認得的參數 {other}"))),
         }
         index += 1;
     }
+    let live_extra = live_trigger.is_some()
+        || live_scope.is_some()
+        || live_deferred
+        || live_inline
+        || live_sentence
+        || live_prefix_cache
+        || live_flight
+        || live_flight_strict
+        || live_idle_ms != 300
+        || live_cache_keep != 1
+        || live_report
+        || (live_correction_ratio - 0.5).abs() > f32::EPSILON
+        || live_keep_tail != 1;
+    if live_extra && no_live {
+        return Err(CliError::Usage(
+            "--no-live 不能與逐字変換的細部旗標併用".to_string(),
+        ));
+    }
+    if live && no_live {
+        return Err(CliError::Usage(
+            "--live 與 --no-live 不能同時指定".to_string(),
+        ));
+    }
     match kind {
         "zh-golden" => {
-            reject_ja_flags(rerank, gate, left, neural, live, "eval zh-golden")?;
+            reject_ja_flags(
+                rerank,
+                gate,
+                left,
+                neural,
+                live,
+                live_extra,
+                "eval zh-golden",
+            )?;
             reject_items(items, "eval zh-golden")?;
             Ok(Command::EvalZhGolden {
                 testdata,
@@ -370,20 +538,34 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 gate: gate.unwrap_or(DEFAULT_WORD_RERANK_GATE),
                 left,
                 neural: neural.unwrap_or(NeuralMode::Auto),
-                live,
+                live: !no_live,
+                live_trigger,
+                live_scope,
+                live_deferred,
+                live_inline,
+                live_sentence,
+                live_idle_ms,
+                live_prefix_cache,
+                live_cache_keep,
+                live_flight,
+                live_flight_strict,
+                live_budget_ms,
+                live_correction_ratio,
+                live_keep_tail,
+                live_report,
                 json,
                 items,
             })
         }
         "fuzzy" => {
             reject_zh_flags(data, lm, mu, stats, "eval fuzzy")?;
-            reject_ja_flags(rerank, gate, left, neural, live, "eval fuzzy")?;
+            reject_ja_flags(rerank, gate, left, neural, live, live_extra, "eval fuzzy")?;
             reject_backend(backend, "eval fuzzy")?;
             reject_items(items, "eval fuzzy")?;
             Ok(Command::EvalFuzzy { testdata, json })
         }
         "mixed" => {
-            reject_ja_flags(rerank, gate, left, neural, live, "eval mixed")?;
+            reject_ja_flags(rerank, gate, left, neural, live, live_extra, "eval mixed")?;
             reject_backend(backend, "eval mixed")?;
             reject_items(items, "eval mixed")?;
             Ok(Command::EvalMixed {
@@ -439,6 +621,7 @@ fn reject_ja_flags(
     left: LeftMode,
     neural: Option<NeuralMode>,
     live: bool,
+    live_extra: bool,
     command: &str,
 ) -> Result<(), CliError> {
     if rerank.is_some() {
@@ -453,8 +636,8 @@ fn reject_ja_flags(
     if neural.is_some() {
         return Err(CliError::Usage(format!("{command} 不接受 --neural")));
     }
-    if live {
-        return Err(CliError::Usage(format!("{command} 不接受 --live")));
+    if live || live_extra {
+        return Err(CliError::Usage(format!("{command} 不接受 --live 系列參數")));
     }
     Ok(())
 }
@@ -633,6 +816,37 @@ fn parse_neural(value: &str) -> Result<NeuralMode, CliError> {
             "--neural 只接受 auto、quality 或 off，收到 {other:?}"
         ))),
     }
+}
+
+/// 解析 `--live-trigger`：逗號分隔的 `length:N`、`boundary`、`idle`。
+///
+/// 空字串或 `key` 代表每鍵轉換。`length:0` 視為關閉長度觸發。
+fn parse_live_trigger(value: &str) -> Result<LiveTriggerSpec, CliError> {
+    let mut spec = LiveTriggerSpec::default();
+    if value.is_empty() || value == "key" {
+        return Ok(spec);
+    }
+    for part in value.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if part == "boundary" {
+            spec.boundary = true;
+        } else if part == "idle" {
+            spec.idle = true;
+        } else if let Some(units) = part.strip_prefix("length:") {
+            let units: usize = units
+                .parse()
+                .map_err(|_| CliError::Usage(format!("--live-trigger 的長度必須是整數：{part}")))?;
+            spec.min_units = units;
+        } else {
+            return Err(CliError::Usage(format!(
+                "--live-trigger 只接受 length:N、boundary、idle 或 key，收到 {part:?}"
+            )));
+        }
+    }
+    Ok(spec)
 }
 
 /// 解析 `tokenize ja`。
@@ -870,6 +1084,20 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             left,
             neural,
             live,
+            live_trigger,
+            live_scope,
+            live_deferred,
+            live_inline,
+            live_sentence,
+            live_idle_ms,
+            live_prefix_cache,
+            live_cache_keep,
+            live_flight,
+            live_flight_strict,
+            live_budget_ms,
+            live_correction_ratio,
+            live_keep_tail,
+            live_report,
             json,
             items,
         } => crate::eval_cmd::ja(
@@ -882,6 +1110,20 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 left: *left,
                 neural: *neural,
                 live: *live,
+                live_trigger: *live_trigger,
+                live_scope: *live_scope,
+                live_deferred: *live_deferred,
+                live_inline: *live_inline,
+                live_sentence: *live_sentence,
+                live_idle_ms: *live_idle_ms,
+                live_prefix_cache: *live_prefix_cache,
+                live_cache_keep: *live_cache_keep,
+                live_flight: *live_flight,
+                live_flight_strict: *live_flight_strict,
+                live_budget_ms: *live_budget_ms,
+                live_correction_ratio: *live_correction_ratio,
+                live_keep_tail: *live_keep_tail,
+                live_report: *live_report,
                 json: *json,
                 items: *items,
             },
@@ -981,7 +1223,9 @@ pub fn usage() -> String {
          jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--select-model on|off] [--backend candle] [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] \
          [--rerank on|off] [--gate off|<成本差>|cand:<N>] [--backend candle] \
-         [--left off|rolling] [--neural auto|quality|off] [--live] [--json] [--items]\n  \
+         [--left off|rolling] [--neural auto|quality|off] [--no-live] [--live] [--live-trigger <spec>] \
+         [--live-scope whole|clause] [--live-deferred] [--live-budget-ms <ms>] \
+         [--live-correction-ratio <0..1>] [--live-keep-tail <n>] [--live-report] [--json] [--items]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
          jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--backend candle] [--user-data <dir>] [--pick <n>] [--json]\n  \
@@ -999,7 +1243,13 @@ pub fn usage() -> String {
          --lm 覆寫 bigram 語言模型；--mu 是 bigram 與 unigram 的內插權重（預設 0.7）。\n\
          --select-model on 需要 zh-select 的 candle 權重；預設 on，可用 off 關閉。\n\
          --neural 選 Jinen 神經轉換：auto（預設，gap < 472.5 且平均候選數 > 5.98）、quality（只看 gap < 460）、off。\n\
-         --live 走逐字変換（ライブ変換）；可與 --neural 併用，共用同一份門檻與五條驗證。\n\
+         --no-live 回到整句変換；日文預設走逐字変換（ライブ変換），可與 --neural 併用。\n\
+         --live-trigger 以逗號組合 length:N、boundary、idle；省略等於每鍵轉換。\n\
+         --live-sentence 延遲整句轉換；--live-idle-ms 是停頓門檻（預設 300）。\n\
+         --live-deferred 停頓後才補正尾巴；--live-inline 強制即時補正；--live-budget-ms 是預算。\n\
+         --live-prefix-cache 用前綴快取（對照）；--live-flight 用 single-flight 非同步推論。\n\
+         --live-scope clause 只讓模型補最後一個片段；--live-keep-tail 保留幾個片段不鎖定。\n\
+         --live-report 印出每鍵延遲、呼叫次數、補正率與已顯示片段變動率。\n\
          --user-data 指定個人資料目錄；日文學習寫進同一個 personal.json，--pick 記下第幾個候選。\n\
          data manifest 會實際算大小與 SHA-256；下載項不存在就略過，隨附檔缺少則失敗。\n\
          data verify 逐檔檢查存在、大小與 SHA-256；缺少隨附檔或內容不符會回傳非零。\n\
@@ -1053,7 +1303,21 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
-                live: false,
+                live: true,
+                live_trigger: None,
+                live_scope: None,
+                live_deferred: false,
+                live_inline: false,
+                live_sentence: false,
+                live_idle_ms: 300,
+                live_prefix_cache: false,
+                live_cache_keep: 1,
+                live_flight: false,
+                live_flight_strict: false,
+                live_budget_ms: 35,
+                live_correction_ratio: 0.5,
+                live_keep_tail: 1,
+                live_report: false,
                 json: false,
                 items: false,
             }
@@ -1128,7 +1392,21 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
-                live: false,
+                live: true,
+                live_trigger: None,
+                live_scope: None,
+                live_deferred: false,
+                live_inline: false,
+                live_sentence: false,
+                live_idle_ms: 300,
+                live_prefix_cache: false,
+                live_cache_keep: 1,
+                live_flight: false,
+                live_flight_strict: false,
+                live_budget_ms: 35,
+                live_correction_ratio: 0.5,
+                live_keep_tail: 1,
+                live_report: false,
                 json: false,
                 items: false,
             }
@@ -1147,7 +1425,21 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
-                live: false,
+                live: true,
+                live_trigger: None,
+                live_scope: None,
+                live_deferred: false,
+                live_inline: false,
+                live_sentence: false,
+                live_idle_ms: 300,
+                live_prefix_cache: false,
+                live_cache_keep: 1,
+                live_flight: false,
+                live_flight_strict: false,
+                live_budget_ms: 35,
+                live_correction_ratio: 0.5,
+                live_keep_tail: 1,
+                live_report: false,
                 json: false,
                 items: false,
             }
@@ -1177,7 +1469,21 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
-                live: false,
+                live: true,
+                live_trigger: None,
+                live_scope: None,
+                live_deferred: false,
+                live_inline: false,
+                live_sentence: false,
+                live_idle_ms: 300,
+                live_prefix_cache: false,
+                live_cache_keep: 1,
+                live_flight: false,
+                live_flight_strict: false,
+                live_budget_ms: 35,
+                live_correction_ratio: 0.5,
+                live_keep_tail: 1,
+                live_report: false,
                 json: false,
                 items: false,
             }
@@ -1204,7 +1510,21 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
-                live: false,
+                live: true,
+                live_trigger: None,
+                live_scope: None,
+                live_deferred: false,
+                live_inline: false,
+                live_sentence: false,
+                live_idle_ms: 300,
+                live_prefix_cache: false,
+                live_cache_keep: 1,
+                live_flight: false,
+                live_flight_strict: false,
+                live_budget_ms: 35,
+                live_correction_ratio: 0.5,
+                live_keep_tail: 1,
+                live_report: false,
                 json: false,
                 items: true,
             }
@@ -1225,7 +1545,21 @@ mod tests {
                 gate: WordGate::Gap(200),
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
-                live: false,
+                live: true,
+                live_trigger: None,
+                live_scope: None,
+                live_deferred: false,
+                live_inline: false,
+                live_sentence: false,
+                live_idle_ms: 300,
+                live_prefix_cache: false,
+                live_cache_keep: 1,
+                live_flight: false,
+                live_flight_strict: false,
+                live_budget_ms: 35,
+                live_correction_ratio: 0.5,
+                live_keep_tail: 1,
+                live_report: false,
                 json: false,
                 items: false,
             }
@@ -1240,7 +1574,21 @@ mod tests {
                 gate: WordGate::Candidates(3),
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
-                live: false,
+                live: true,
+                live_trigger: None,
+                live_scope: None,
+                live_deferred: false,
+                live_inline: false,
+                live_sentence: false,
+                live_idle_ms: 300,
+                live_prefix_cache: false,
+                live_cache_keep: 1,
+                live_flight: false,
+                live_flight_strict: false,
+                live_budget_ms: 35,
+                live_correction_ratio: 0.5,
+                live_keep_tail: 1,
+                live_report: false,
                 json: false,
                 items: false,
             }
@@ -1255,7 +1603,21 @@ mod tests {
                 gate: WordGate::Off,
                 left: LeftMode::Off,
                 neural: NeuralMode::Auto,
-                live: false,
+                live: true,
+                live_trigger: None,
+                live_scope: None,
+                live_deferred: false,
+                live_inline: false,
+                live_sentence: false,
+                live_idle_ms: 300,
+                live_prefix_cache: false,
+                live_cache_keep: 1,
+                live_flight: false,
+                live_flight_strict: false,
+                live_budget_ms: 35,
+                live_correction_ratio: 0.5,
+                live_keep_tail: 1,
+                live_report: false,
                 json: false,
                 items: false,
             }

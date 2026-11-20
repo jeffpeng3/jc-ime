@@ -273,6 +273,12 @@ pub enum JaCandidateSource {
     Convert,
     /// 讀音前綴預測。
     Predict,
+    /// 原讀音的平假名。
+    Hiragana,
+    /// 全角片假名。
+    Katakana,
+    /// 半角片假名。
+    HalfwidthKana,
 }
 
 /// 候選視窗的一項。

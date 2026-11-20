@@ -237,16 +237,8 @@ impl Session {
         let system = self.system_has(&word, &reading);
         self.personal.add_vocab(&word, &reading);
         self.refresh_lexicon();
-        self.locks
-            .retain(|&at, lock| !(at < end && start < at.saturating_add(lock.len)));
-        self.locks.insert(
-            start,
-            crate::decode::Lock {
-                word: word.clone(),
-                len: end - start,
-                ..crate::decode::Lock::default()
-            },
-        );
+        self.mark_zh_user_syllables(start, end - start, &word);
+        self.sync_zh_locks();
         let notice = if system {
             format!("已設為優先：{word}")
         } else {

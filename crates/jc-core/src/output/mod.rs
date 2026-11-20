@@ -442,6 +442,11 @@ pub struct Snapshot {
     pub cursor_rune: usize,
     /// 組字字串的分段。
     pub segments: Vec<Segment>,
+    /// 每個片段的所有權，與 [`Snapshot::segments`] 一一對應。
+    ///
+    /// `User` 片段由使用者固定，外殼可以畫不同底色；核心保證重轉不會改寫
+    /// 這些片段。長度與 `segments` 對不上時視為全部 `Auto`。
+    pub owners: Vec<crate::composition::Owner>,
     /// 目前可選的候選。
     pub candidates: Vec<Candidate>,
     /// 目前高亮的候選索引；沒有候選時為 0。

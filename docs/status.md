@@ -13,7 +13,8 @@
 | M0 | 完成 |
 | M1 注音 | 完成，golden 45/45、fuzzy 44.5% |
 | M2 日文統計 | 完成，`modern-500` 86.0%／`hard-cases` 54.3%／`ajimee-200` 46.0% |
-| M2 日文神經 | 完成，Jinen small 門檻混合，`auto` 92.2%／`quality` 93.6% |
+| M2 日文神經 | 完成，Jinen small 門檻混合，`auto` 92.2%／`quality` 93.6%（`hard-cases` 80.0%／`ajimee-200` 71.0%） |
+| M2 日文預設 | 完成，延遲整句轉換（`ja_conversion = live`）；`modern-500` 92.2%、`--no-live` 92.2%／quality 93.6% |
 | M3 Mixed | 完成，6/6 |
 | M4 模型與個人化 | 完成，注音選字 Q8_0、reranker 棄用、個人化三個機制 |
 | M5 wrapper | 引擎端與 TSF 前端完成，實機驗證待做 |
@@ -28,6 +29,8 @@
 | 注音 golden | 45/45 | `docs/integration-log.md` 最終 gate |
 | 注音 fuzzy | 919 題 top-1 16.4%；注音 319 題 44.5%，日文 600 題 1.5% | `docs/port/eval-fuzzy.md` |
 | 日文 `modern-500`（統計） | top-1 86.0%、top-5 98.0%、boundary exact 88.2%、p50 3.072 ms | `docs/port/ajimee-eval.md` |
+| 日文預設（延遲整句） | `modern-500` 92.2%、0.21 推論／題、停頓 p95 50.4 ms、已穩定文字變動 0% | `docs/reports/live-default-2026-11-20.md` |
+| 日文 `--no-live` | `modern-500` 92.2%、`--neural quality` 93.6% | 同上 |
 | 日文 `hard-cases`（統計） | top-1 54.3%、top-5 97.1%、boundary exact 71.4%、p50 0.738 ms | `docs/port/ajimee-eval.md` |
 | 日文 `ajimee-200`（統計） | top-1 46.0%、top-5 65.0%、p50 6.521 ms、timeout 1.0% | `docs/port/ajimee-eval.md` |
 | 日文預設（`--neural auto`） | `modern-500` 92.2%（p95 57.5 ms）、`hard-cases` 77.1%、`ajimee-200` 69.0% | `docs/integration-log.md` gating-lowcall |
