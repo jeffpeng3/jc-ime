@@ -1438,3 +1438,20 @@ gate：
 - clippy exit 0；fmt exit 0。
 - 題庫：zh-golden **45/45**、`auto` **92.2%**、`quality` **93.6%**、off **86.0%**、fuzzy **44.5%**、mixed **6/6**。
 - `git branch --no-merged main`：空。
+
+## 2026-11-20 17:10 composition-model 收尾、toolchain-pin、release-msi-fix 與固定工具鏈 gate
+
+| Branch | Commit | Merge commit |
+|---|---|---|
+| `composition-model`（needless_bool 修正） | `669eda8` | `ab12342` |
+| `toolchain-pin` | `f16bacf` | `99e88d2` |
+| `release-msi-fix` | `2aa57b1` | `394bc3b`（先前已合，ancestor 已確認） |
+
+`toolchain-pin`：新增 `rust-toolchain.toml`（1.100.0、rustfmt／clippy），`ci.yml` 與 `release.yml` 的工具鏈都固定 1.100.0。
+本機 `rustc --version` 已是 `1.100.0`，與 CI 一致。
+
+gate（固定工具鏈）：
+- `RUST_FONTCONFIG_DLOPEN=1 cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、1265 passed、0 failed）。
+- clippy exit 0；fmt exit 0。
+- 題庫：zh-golden **45/45**、`auto` **92.2%**、`quality` **93.6%**、off **86.0%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：空。
