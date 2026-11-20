@@ -59,8 +59,8 @@ Go 版設定程式是 Tauri（`ref/0c-ime/platforms/settings`）：Rust 外殼�
 | 日文 | 寫入日文個人詞庫 | `ja-learning` | 開關（預設開） |
 | 日文 | 輸入方式 | `ja-input-method` | 下拉：羅馬字／直接かな |
 | 日文 | 日英同形 | `ja-ambiguous` | 下拉：並列／英文優先／かな優先 |
-| 日文 | 神經轉換模式 | n/a | 唯讀；說明 `--neural` 的 auto／quality／off 與目前引擎只收 on／off |
-| 日文 | 候選重排 | n/a | 唯讀，標「實驗」；`SessionConfig::ja_rerank` 仍固定關閉 |
+| 日文 | 神經轉換模式 | `ja-neural-mode` | 下拉：自動／品質優先／關閉（預設自動） |
+| 日文 | 候選重排（實驗） | `ja-rerank` | 開關（預設關） |
 | 輸入 | 中英切換鍵 | `toggle-key` | 下拉：右 Shift／左右 Shift／左 Shift／不使用 |
 | 輸入 | 啟動模式 | `start-mode` | 下拉：注音／英文 |
 | 輸入 | Esc 清除 | `esc-clear` | 開關 |
@@ -70,8 +70,9 @@ Go 版設定程式是 Tauri（`ref/0c-ime/platforms/settings`）：Rust 外殼�
 | 資料 | 資料根目錄、設定檔、manifest、模型 | n/a | 唯讀再加「重新檢查」按鈕 |
 
 日文的 `ja-model`、`ja-input-method`、`ja-ambiguous` 在 `settings-wire` 的對照
-表是「本版忽略」：引擎目前用 `selection` 決定神經轉換、只實作羅馬字、固定日英
+表是「本版忽略」：引擎用 `ja-neural-mode` 決定神經轉換、只實作羅馬字、固定日英
 並列。畫面照存這些值，說明文字直接寫明尚未生效，避免把保留值當成已生效。
+`ja-neural-mode` 與 `ja-rerank` 已接進 `SessionConfig`，可直接修改。
 
 輸入分頁的 14 個鍵位規則由 `input_profile` 管理。選用內建風格時
 `Settings::profile_locked` 會拒絕修改，畫面把該項反灰並說明原因；按「複製成
@@ -114,12 +115,9 @@ RUST_FONTCONFIG_DLOPEN=1 cargo fmt -p jc-settings-ui
 
 ## 未完成
 
-1. **`--neural` 三態**：`jc-engine` 目前只解析 `on`／`off`，三態在 `gating-lowcall`
-   任務。畫面先列出 auto／quality／off 的意義並標成唯讀，沒有寫入假鍵。
-2. **rerank 開關**：`SessionConfig::ja_rerank` 沒有 CLI 或設定檔入口，維持唯讀。
-3. **重新啟動引擎**：按鈕停用；需要安裝器提供服務控制（systemd／launchd／Windows 服務）。
-4. **輸入習慣管理**：只做「複製成自訂」，沒有改名、刪除與多風格預覽。
-5. **Windows／macOS 建置**：未交叉 check；GPUI 的 Windows linker 與 WebView 無關，
+1. **重新啟動引擎**：按鈕停用；需要安裝器提供服務控制（systemd／launchd／Windows 服務）。
+2. **輸入習慣管理**：只做「複製成自訂」，沒有改名、刪除與多風格預覽。
+3. **Windows／macOS 建置**：未交叉 check；GPUI 的 Windows linker 與 WebView 無關，
    CI 需要 Windows target。
-6. **顯示器實測**：本機沒有 DISPLAY，沒有做到真正開窗截圖與滑鼠操作。
-7. **其他 Go 頁面**：輸出設定、更新、問題排解、關於、我的詞彙、模型下載都没搬。
+4. **顯示器實測**：本機沒有 DISPLAY，沒有做到真正開窗截圖與滑鼠操作。
+5. **其他 Go 頁面**：輸出設定、更新、問題排解、關於、我的詞彙、模型下載都没搬。

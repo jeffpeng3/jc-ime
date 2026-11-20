@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use jc_core::inputstyle::Rules;
-use jc_core::session::{SessionConfig, DEFAULT_MAX_CANDIDATES};
+use jc_core::session::{NeuralConfig, SessionConfig, DEFAULT_MAX_CANDIDATES};
 use jc_core::zh::fuzzy;
 use jc_core::Mode;
 use jc_settings::settings::{self, FileState, Settings};
@@ -114,10 +114,15 @@ pub struct EffectiveSettings {
     pub mode: Mode,
     /// 一次轉換保留幾個候選。
     pub max_candidates: usize,
-    /// 選字方式：`neural` 或 `statistical`（已套用 `--neural`）。
+    /// 選字方式：`neural` 或 `statistical`（已套用 `--neural` 與
+    /// `ja_neural_mode`）。
     pub selection: String,
-    /// 是否啟用日文神經轉換。
+    /// 是否啟用日文神經轉換；`ja_neural_mode != off`。
     pub neural: bool,
+    /// 日文神經轉換模式：`auto`、`quality` 或 `off`。
+    pub ja_neural_mode: String,
+    /// 日文候選是否使用 reranker 重排。
+    pub ja_rerank: bool,
     /// 中英混打。
     pub mixed_input: bool,
     /// 英文模式自動補字。
@@ -172,9 +177,14 @@ pub fn effective(settings: &Settings, overrides: &Overrides, goos: &str) -> Effe
     let mode = overrides
         .mode
         .unwrap_or_else(|| mode_from_settings(settings, goos));
-    let neural = overrides
-        .neural
-        .unwrap_or(settings.selection == settings::NEURAL);
+    // CLI `--neural` 仍優先：on 對應 auto，off 對應 off。
+    let ja_neural_mode = match overrides.neural {
+        Some(true) => settings::JA_NEURAL_AUTO,
+        Some(false) => settings::JA_NEURAL_OFF,
+        None => settings.effective_ja_neural_mode(),
+    }
+    .to_string();
+    let neural = ja_neural_mode != settings::JA_NEURAL_OFF;
     let punct_mark = settings.punctuation.then_some('，');
     EffectiveSettings {
         mode,
@@ -186,6 +196,8 @@ pub fn effective(settings: &Settings, overrides: &Overrides, goos: &str) -> Effe
         }
         .to_string(),
         neural,
+        ja_neural_mode,
+        ja_rerank: settings.ja_rerank,
         mixed_input: settings.mixed_input,
         english_autocomplete: settings.english_autocomplete,
         esc_clear: settings.esc_clear,
@@ -257,7 +269,19 @@ pub fn session_config(mut base: SessionConfig, effective: &EffectiveSettings) ->
     base.punct_mark = effective.punct_mark;
     base.fuzzy_pairs = effective.fuzzy_pairs.clone();
     base.learning = effective.learning;
-    base.ja_neural.enabled = effective.neural;
+    // 門檻由模式決定；模型、逾時、文脈長度與 runtime 沿用載入器的值。
+    let runtime = base.ja_neural.runtime.clone();
+    let mut ja_neural = match effective.ja_neural_mode.as_str() {
+        settings::JA_NEURAL_QUALITY => NeuralConfig::quality(),
+        settings::JA_NEURAL_OFF => NeuralConfig::off(),
+        _ => NeuralConfig::default(),
+    };
+    ja_neural.model = base.ja_neural.model;
+    ja_neural.timeout_ms = base.ja_neural.timeout_ms;
+    ja_neural.max_context_chars = base.ja_neural.max_context_chars;
+    ja_neural.runtime = runtime;
+    base.ja_neural = ja_neural;
+    base.ja_rerank = effective.ja_rerank;
     base.ja_live.enabled = effective.ja_live;
     base.style.mixed_input = effective.mixed_input;
     base.style.space_inserts_space = !effective.space_selects;
@@ -373,6 +397,58 @@ mod tests {
         assert!(config.style.mixed_input);
         assert!(config.style.space_inserts_space);
         assert!(config.style.shift_symbol_halfwidth);
+        assert_eq!(effective.ja_neural_mode, "off", "statistical 遷移成 off");
+        assert!(!effective.ja_rerank, "rerank 預設關閉");
+        assert!(!config.ja_rerank);
+    }
+
+    /// 三個日文神經模式各自對應到門檻；rerank 獨立映射。
+    #[test]
+    fn ja_neural_modes_map_to_thresholds_and_rerank() {
+        for (mode, enabled, gap, min_mean) in [
+            ("auto", true, 472.5, 5.98),
+            ("quality", true, 460.0, 0.0),
+            ("off", false, 472.5, 5.98),
+        ] {
+            let settings = parsed(&format!(
+                r#"{{"ja_neural_mode": "{mode}", "ja_rerank": true}}"#
+            ));
+            let effective = effective(&settings, &Overrides::default(), "linux");
+            assert_eq!(effective.ja_neural_mode, mode);
+            assert_eq!(effective.neural, enabled, "{mode}");
+            assert!(effective.ja_rerank, "{mode}");
+            let config = session_config(SessionConfig::default(), &effective);
+            assert_eq!(config.ja_neural.enabled, enabled, "{mode}");
+            assert_eq!(config.ja_neural.gap_threshold, gap, "{mode}");
+            assert_eq!(config.ja_neural.min_mean_candidates, min_mean, "{mode}");
+            assert!(config.ja_rerank, "{mode}");
+        }
+    }
+
+    /// `--neural` 仍優先於設定檔的三態。
+    #[test]
+    fn cli_neural_overrides_three_state_setting() {
+        let settings = parsed(r#"{"ja_neural_mode": "quality"}"#);
+        let off = effective(
+            &settings,
+            &Overrides {
+                neural: Some(false),
+                ..Overrides::default()
+            },
+            "linux",
+        );
+        assert_eq!(off.ja_neural_mode, "off");
+        assert!(!off.neural);
+        let on = effective(
+            &settings,
+            &Overrides {
+                neural: Some(true),
+                ..Overrides::default()
+            },
+            "linux",
+        );
+        assert_eq!(on.ja_neural_mode, "auto", "--neural on 回到低呼叫門檻");
+        assert!(on.neural);
     }
 
     /// 缺檔：預設值，沒有警告。
@@ -441,6 +517,7 @@ mod tests {
         assert_eq!(effective.mode, Mode::Ja);
         assert!(effective.neural, "--neural on 蓋過 statistical");
         assert_eq!(effective.selection, "neural");
+        assert_eq!(effective.ja_neural_mode, "auto");
         assert_eq!(
             effective.start_mode, "english",
             "start_mode 是檔案值，但不影響 CLI 已指定的模式"
@@ -467,6 +544,7 @@ mod tests {
         assert_eq!(value["mode"], "mixed");
         assert_eq!(value["neural"], false);
         assert_eq!(value["selection"], "statistical");
+        assert_eq!(value["ja_neural_mode"], "off");
         assert_eq!(value["punct_mark"], "，");
         assert_eq!(value["max_candidates"], config.max_candidates);
         assert_eq!(value["document_context"], config.document_context);
