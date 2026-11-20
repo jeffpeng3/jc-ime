@@ -1,0 +1,24 @@
+{
+  "op": "state",
+  "preedit": "きょう",
+  "cursor": 3,
+  "candidates": ["今日", "京"],
+  "details": [
+    {
+      "reading": "きょう",
+      "source": "lexicon",
+      "cost": 15,
+      "pos": "名詞,普通名詞,一般,*"
+    },
+    {
+      "reading": "きょう",
+      "source": "lexicon",
+      "cost": 20,
+      "pos": "名詞,固有名詞,地域,一般"
+    }
+  ],
+  "segments": [
+    { "start": 0, "end": 3, "mode": "japanese", "script": "kana" }
+  ],
+  "cursor_rune": 3
+}

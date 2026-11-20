@@ -51,12 +51,14 @@ fn frame_round_trip_keeps_empty_and_non_ascii_text() {
                     source: CandidateSource::Lexicon,
                     cost: 18,
                     learned: false,
+                    pos: None,
                 },
                 CandidateDetail {
                     reading: "ㄇㄚˊㄆㄛˊ".into(),
                     source: CandidateSource::Personal,
                     cost: -2,
                     learned: true,
+                    pos: None,
                 },
             ],
             segments: vec![

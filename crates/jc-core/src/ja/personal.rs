@@ -2180,6 +2180,7 @@ mod tests {
                 segments: vec![JaClauseSegment {
                     reading: "くうき".to_string(),
                     surface: "空気".to_string(),
+                    pos: None,
                 }],
                 cost: 1_000,
             },
@@ -2189,6 +2190,7 @@ mod tests {
                 segments: vec![JaClauseSegment {
                     reading: "が".to_string(),
                     surface: "が".to_string(),
+                    pos: None,
                 }],
                 cost: 200,
             },

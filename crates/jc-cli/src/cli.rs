@@ -150,6 +150,8 @@ pub enum Command {
         n: usize,
         /// 輸出 JSON。
         json: bool,
+        /// 顯示候選詞性；不加時輸出與原本相同。
+        pos: bool,
         /// 啟用注音選字模型重排。
         select_model: bool,
         /// 推論後端：`ort` 或 `candle`；未指定時讀 `JC_RERANK_BACKEND`，
@@ -462,6 +464,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
     let mut stats = false;
     let mut n = 5usize;
     let mut json = false;
+    let mut pos = false;
     let mut select_model = true;
     let mut backend = None;
     let mut user_data = None;
@@ -506,6 +509,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
             }
             "--stats" => stats = true,
             "--json" => json = true,
+            "--pos" => pos = true,
             "--mode" => {
                 index += 1;
                 mode = Some(parse_convert_mode(value(args, index, "--mode")?)?);
@@ -546,6 +550,7 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
         stats,
         n,
         json,
+        pos,
         select_model,
         backend,
         user_data,
@@ -768,6 +773,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             stats,
             n,
             json,
+            pos,
             select_model,
             backend,
             user_data,
@@ -782,6 +788,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 stats: *stats,
                 n: *n,
                 json: *json,
+                pos: *pos,
                 select_model: *select_model,
                 backend: *backend,
                 user_data: user_data.clone(),
@@ -1080,6 +1087,30 @@ mod tests {
                 stats: false,
                 n: 3,
                 json: false,
+                pos: false,
+                select_model: true,
+                backend: None,
+                user_data: None,
+                mode: None,
+                pick: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_convert_pos_flag() {
+        assert_eq!(
+            parse(&args(&["convert", "きょう", "--pos"])).unwrap(),
+            Command::Convert {
+                reading: "きょう".to_string(),
+                testdata: None,
+                data: None,
+                lm: None,
+                mu: None,
+                stats: false,
+                n: 5,
+                json: false,
+                pos: true,
                 select_model: true,
                 backend: None,
                 user_data: None,
@@ -1111,6 +1142,7 @@ mod tests {
                 stats: false,
                 n: 5,
                 json: false,
+                pos: false,
                 select_model: true,
                 backend: None,
                 user_data: Some(PathBuf::from("/tmp/opencode/ja-user")),
@@ -1135,6 +1167,7 @@ mod tests {
                 stats: false,
                 n: 5,
                 json: false,
+                pos: false,
                 select_model: true,
                 backend: None,
                 user_data: None,
@@ -1194,6 +1227,7 @@ mod tests {
                 stats: false,
                 n: 5,
                 json: false,
+                pos: false,
                 select_model: true,
                 backend: None,
                 user_data: None,
