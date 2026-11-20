@@ -105,6 +105,7 @@
 | `session-g6-core` | `ffccac1` | `b7af358` | 通過（fmt／clippy／test／四個 eval） | 2026-11-20 07:37 |
 | `session-g4-mixed`（CI 修正） | `6b76ce1` | `fb4e7ab` | 通過（clippy＋全量 test） | 2026-11-20 07:58 |
 | `session-backfill` | `ade1479` | `610498c` | 通過（fmt／clippy／test／四個 eval） | 2026-11-20 08:07 |
+| `drop-punct` | `859f6d1` | `dacb52b` | 通過（fmt／clippy／test／兩個 eval；無殘留） | 2026-11-20 08:28 |
 
 ## 衝突與修正
 
@@ -997,3 +998,13 @@
   仍 n/a／部分：`displayed.go` 的失效模式在本埠不存在（`Lattice::build` 每個音節都有未知詞邊）；
   `phonetic_hint` 的同音替換排名需要 `decode.Window` 與 `SuggestionEdit`；`keepCandidates` 重開、候選格線與 `j`／`k` 換詞仍缺狀態；
   `related` label 需要 bigram，目前 `build-zh`／`build-zh-bigram` 的資料差異不影響測試。
+
+- `drop-punct`（合併 `dacb52b`，含 `859f6d1`）：無衝突。移除標點模型推論路徑：`punct.rs`、`punct_plan.rs`、`punct_zh.rs`、
+  `punctuation_model.rs`、`candle/punct.rs`、`probe.rs` 全數刪除或縮減（−2935 行），`manifest`／`role`／`runtime` 同步調整，
+  `candle/quant` 只留 reranker 需要的部分；保留 `ctrl_punct` 與 `punct_mark`。
+
+  gate：fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（43 targets、1046 passed、0 failed）。
+  實測：`eval zh-golden` **45/45**；`eval ja modern-500` **86.0%**、p50 3.097 ms。
+
+  殘留檢查：`grep -rn 'SharedPunctuator\|punctuate\|--punct' crates/ | grep -v ctrl_punct` 為 **0 筆**；
+  `ctrl_punct` 與 `punct_mark` 仍保留（`session/mod.rs:110`、`:116`）。
