@@ -1551,3 +1551,29 @@ gate：
 ### CI（push `ad9038d`，run 44791173536；`0.1.0-rc.6`）
 
 - linux (core)：success；windows (msvc)：success。
+
+## 2026-11-21 02:40 0.1.0-rc.7 與 TSF 註冊 v2（`c6c9729` → `d36700c`、`53f2664` → `4fe3dc4`）
+
+背景：rc.5／rc.6 真機 `RegisterTip` 的 `0xC0000005` 崩在 `RegisterCategory`——64 位元檢視的 CLSID 在
+自訂動作執行時還不存在。這輪改成分工：CLSID 由 MSI 寫，helper 只註冊 profile 與分類。
+
+| Branch | Commit | Merge commit |
+|---|---|---|
+| `tsf-reg-v2` | `c6c9729` | `d36700c` |
+| `rc7` | `53f2664` | `4fe3dc4` |
+
+- `installer/jc-ime.wxs`：兩個 TSF DLL 各掛一個 `<Class>`（由 `WriteRegistryValues` 寫 `InprocServer32`）；
+  `RegisterTip` 改排在其後（`After="WriteRegistryValues"`），custom action 不再帶 DLL 路徑。
+- `installer/jc-tip-register`：`machine-*` 不收參數、改用 `ITfInputProcessorProfileMgr`；刪除 `arch.rs`、
+  `write_com_registration`、`register_in_store`、`Target`、`delete_clsid_tree`（約 900 行跨架構註冊碼）。
+- `user-uninstall` 不再呼叫 `InstallLayoutOrTip(ILOT_UNINSTALL)`（避免 Windows 把系統地區改成英文，windows-chewing-tsf#553）。
+- 驗證：WXS XML 有效、`<Class>` 共 2 個；`RegisterTip` 位於 `WriteRegistryValues` 之後；
+  `ILOT_UNINSTALL` 只出現在註解，程式碼不再呼叫。
+- `Cargo.lock` 以 `3da9da9` 同步到 `0.1.0-rc.7`。
+
+gate：
+- `cargo check --workspace --all-targets` exit 0；clippy exit 0；fmt exit 0。
+- `cargo test`（`installer/jc-tip-register`，獨立 crate）：**9 passed、0 failed**（`arch.rs` 刪除後測試數由 15 降為 9）。
+- 補驗 Windows 目標：`cargo check -p jc-tsf -p jc-tsf-smoke --target x86_64-pc-windows-msvc` 與 tip-register 同 target 都 exit 0。
+- 依指示未重跑題庫；`rc.6` 跳過不發。
+- `git branch --no-merged main`：空。
