@@ -217,20 +217,20 @@ mod tests {
         assert!(UNITS.iter().all(|unit| contains(unit)));
     }
 
-    /// 對照 `TestSymbolMenuRecentTab` 的上限：最近只放一頁，第 11 個之後
+    /// 對照 `TestSymbolMenuRecentTab` 的上限：最近只放一頁，第 10 個之後
     /// 就擠掉舊的；重複選同一個不佔兩格。
     #[test]
     fn test_symbol_recent_is_one_page() {
         let mut s = session();
-        // 標點分頁前 10 項各選一次。
-        for digit in "1234567890".chars() {
+        // 標點分頁前 9 項各選一次；頁面固定 9 項，`0` 不是選字鍵。
+        for digit in "123456789".chars() {
             s.open_symbol_tab("標點");
             s.press(Key::char(digit, false));
             assert!(!s.commit().is_empty());
         }
         assert_eq!(s.symbol_recent().len(), PAGE_SIZE);
 
-        // 再選第 11、12 項：超過上限就淘汰。
+        // 再選第 10、11 項：超過上限就淘汰。
         for index in [PAGE_SIZE, PAGE_SIZE + 1] {
             s.open_symbol_tab("標點");
             s.page(1);

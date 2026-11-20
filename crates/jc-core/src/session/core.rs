@@ -205,14 +205,19 @@ impl Session {
                 _ => {}
             }
         }
+        // 選字鍵先處理：超出候選數時吃掉按鍵但完全不改狀態，不能退回注音鍵。
+        if self.candidate_window {
+            if let Some(selected) = self.select_by_digit(ch) {
+                if selected {
+                    self.candidate_window = false;
+                }
+                return;
+            }
+        }
         self.accepted_completion = None;
         self.suggestion = None;
         self.navigating = false;
         let window = self.candidate_window;
-        if window && self.select_by_digit(ch) {
-            self.candidate_window = false;
-            return;
-        }
         if self.menu.is_some() {
             let kind = self.menu.map(|menu| menu.kind);
             if ch == '=' && kind == Some(MenuKind::Emoji) {
@@ -282,26 +287,29 @@ impl Session {
         }
     }
 
-    /// 數字鍵在候選視窗開啟時選字；成功時把該候選放進待提交區。
-    pub(super) fn select_by_digit(&mut self, ch: char) -> bool {
+    /// 候選視窗開啟時，選字鍵選取目前頁的第幾項。
+    ///
+    /// 回傳 `None` 代表這個字元不是選字鍵，交回一般按鍵路徑；`Some(true)`
+    /// 代表已選取；`Some(false)` 代表是選字鍵但超出候選數，按鍵已被吃掉，
+    /// 狀態不變。
+    pub(super) fn select_by_digit(&mut self, ch: char) -> Option<bool> {
         if self.candidates.is_empty()
             || !self.candidate_window
             || (self.config.mode == Mode::Zh
                 && !self.zh.pending().is_empty()
                 && self.menu.is_none())
         {
-            return false;
+            return None;
         }
-        let index = match self.selection_index(ch) {
-            Some(index) => index,
-            None => return false,
-        };
+        let within = self.selection_index(ch)?;
+        // 頁位移由核心算：頁碼來自 `highlighted`，頁面大小固定。
+        let index = self.current_page() * self.page_size() + within;
         let Some(candidate) = self.candidates.get(index).cloned() else {
-            return false;
+            return Some(false);
         };
         // 游標移到中間或調過詞長時，選字只鎖定這一段，不送出整段組字。
         if self.edit.is_some() {
-            return self.select_window_candidate(index);
+            return Some(self.select_window_candidate(index));
         }
         // 混合模式的候選是英文補完或拼字建議，選了就取代待定按鍵。
         if self.config.mode == Mode::Mixed {
@@ -311,7 +319,7 @@ impl Session {
                 self.candidate_window = false;
                 self.navigating = false;
                 self.highlighted = 0;
-                return true;
+                return Some(true);
             }
         }
         self.remember_text(&candidate.surface);
@@ -323,7 +331,7 @@ impl Session {
         };
         self.pending_commit = Some(self.finalize(text));
         self.clear_composition();
-        true
+        Some(true)
     }
 
     /// 把候選套用到游標所在的片段，其他片段保持原樣。

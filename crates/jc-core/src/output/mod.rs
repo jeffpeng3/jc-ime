@@ -421,8 +421,9 @@ pub fn utf16_offset(s: &str, byte_index: usize) -> usize {
 
 /// 一次輸入手勢後的完整狀態。
 ///
-/// 外殼不需要保存狀態，每次都以這份快照重畫。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// 外殼不需要保存狀態，每次都以這份快照重畫。分頁狀態也在這裡：外殼直接
+/// 使用 [`Snapshot::page`] 與 [`Snapshot::page_size`]，不要自己再算頁邊界。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     /// 目前組字字串。
     pub preedit: String,
@@ -439,6 +440,10 @@ pub struct Snapshot {
     pub candidates: Vec<Candidate>,
     /// 目前高亮的候選索引；沒有候選時為 0。
     pub highlighted: usize,
+    /// 目前頁碼（0 起算），由 `highlighted / page_size` 推導。
+    pub page: usize,
+    /// 一頁幾項；固定 [`crate::candidate::PAGE_SIZE`]。
+    pub page_size: usize,
     /// Tab 會接受的補全尾綴；沒有建議時為 `None`。
     ///
     /// 這一輪只提供欄位，補全來源由後續任務接上。
@@ -451,6 +456,24 @@ pub struct Snapshot {
     ///
     /// 候選窗顯示中但還沒開始選取時是 `false`。
     pub navigating: bool,
+}
+
+impl Default for Snapshot {
+    fn default() -> Self {
+        Self {
+            preedit: String::new(),
+            cursor_utf16: 0,
+            cursor_rune: 0,
+            segments: Vec::new(),
+            candidates: Vec::new(),
+            highlighted: 0,
+            page: 0,
+            page_size: crate::candidate::PAGE_SIZE,
+            suggestion: None,
+            label: None,
+            navigating: false,
+        }
+    }
 }
 
 impl Snapshot {
