@@ -136,3 +136,69 @@ WiX v5 官方只支援 Windows，Linux 上的 `wix build` 有兩個限制：
 | 改動 payload 的 `legal/THIRD-PARTY-NOTICES.md` | 失敗，回報大小不符，結束碼 1 |
 | repo 多一份 `legal/licenses/EXTRA.txt` 而 WXS 沒引用 | 失敗，回報「沒有被 WiX 引用」，結束碼 1 |
 | `wix build`（完整 MSI） | 這台 Linux 沒有 WiX 與 `msi.dll`，未執行；實機驗證項目見 `docs/install.md` |
+
+## 建置順序與 throw 前置條件（RC1 修正）
+
+RC1 的 Windows job 在 `installer/build.ps1:107` 失敗，訊息是找不到
+`target\i686-pc-windows-msvc\release`。原因是 `Resolve-ReleaseDir` 在建置之前執行，
+乾淨的 runner 還沒有任何 cargo 產物；真正建 i686 `jc-tsf` 的指令原本在後面。
+現在 `installer/build.ps1` 的順序固定如下：
+
+1. 解析參數，組出 `$cargoX64Args`、`$cargoX86Args`、`$cargoHelperArgs`。
+2. 設定 `RUSTFLAGS` 的 `-C target-feature=+crt-static`。
+3. 依序執行 x64 workspace、x86 `jc-tsf`、`jc-tip-register` 的 `cargo build`。
+4. 建置完成後才呼叫 `Resolve-ReleaseDir`，後續的 `Test-Path` 檢查也都在建置之後。
+
+`Resolve-ReleaseDir` 的錯誤訊息會帶上剛才實際執行的 cargo 指令，以及對應的
+`rustup target add`。x86 的訊息因此包含
+`cargo build --release --target i686-pc-windows-msvc -p jc-tsf` 與
+`rustup target add i686-pc-windows-msvc`。x64 允許退回 `target\<profile>`；x86
+不允許退回，避免把 x64 的 `jc-tsf.dll` 當成 x86 DLL 打包。
+
+### MSI 檔名與 ProductVersion
+
+| 項目 | 來源 | RC1 的值 |
+|---|---|---|
+| MSI 檔名 | `$Version`，取自 workspace `Cargo.toml` 的完整版本 | `target\installer\jc-ime-0.1.0-rc.1-x64.msi` |
+| MSI ProductVersion | `-MsiVersion`；未給時由完整版本去掉 `-<pre-release>` | `0.1.0` |
+| WXS `Version` | `wix build -d Version=$MsiVersion` | `0.1.0` |
+
+workflow 的 `RELEASE_VERSION` 是完整版本，`MSI_VERSION` 是三段數字，兩者都取自
+同一份 `Cargo.toml`。`build.ps1` 的檔名用完整版本、ProductVersion 用三段數字，
+與 `.github/workflows/release.yml` 期望的
+`target\installer\jc-ime-0.1.0-rc.1-x64.msi` 一致。
+
+### 每個 throw 的前置條件
+
+行號以本版 `installer/build.ps1` 為準；條件成立才會走到該 `throw`。
+
+| 位置 | 訊息 | 前置條件與處理 |
+|---|---|---|
+| `Invoke-Checked`（80） | `<Label> 失敗（結束碼 N）` | 被包裹的原生命令回傳非 0。PowerShell 的 `$ErrorActionPreference = 'Stop'` 不會攔原生命令，所以由 `$LASTEXITCODE` 檢查；修正該 cargo、`check-payload.py` 或簽章指令。 |
+| `Resolve-ReleaseDir`（155） | 找不到建置輸出 ... | 三個 cargo build 都執行過，但 `target\<triple>\<profile>` 不存在。x64 可退回 `target\<profile>`；x86 不行。訊息含實際 cargo 指令與 `rustup target add`。 |
+| 資料根目錄（164） | 沒有資料根目錄 | `-DataRoot` 與 `JC_DATA_ROOT` 都是空值。 |
+| 資料根目錄（167） | 資料根目錄不存在 | `$DataRoot` 非空，但 `Test-Path $DataRoot` 為 false。 |
+| 版本（173） | Cargo.toml 找不到 [workspace.package] version | `Select-String` 在 repo 根目錄 `Cargo.toml` 找不到行首 `version = "..."`。確認 `[workspace.package]` 有 `version`。 |
+| 版本格式（176） | 版本必須是 x.y.z 或 x.y.z-<pre-release> | `$Version` 不符 `^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`。 |
+| MSI 版本（183） | MSI ProductVersion 必須是 x.y.z | `$MsiVersion` 沒給時由 `$Version` 去掉 `-` 後綴；結果仍不是三段數字，或使用者傳入的值格式錯誤。 |
+| payload 程式（196） | 建置輸出缺少 `<name>` | `$ReleaseDir` 內缺 `jc-tsf.dll`、`jc-engine.exe`、`jc-cli.exe`、`jc-settings-ui.exe`、`jc-tsf-smoke.exe` 其中之一。 |
+| x86 DLL（204） | 建置輸出缺少 x86 jc-tsf.dll | `$ReleaseDirX86\jc-tsf.dll` 不存在。通常是沒有 `rustup target add i686-pc-windows-msvc`，或 x86 cargo build 失敗。 |
+| 指定 manifest（216） | 指定的資料 manifest 不存在 | 有 `-Manifest` 或 `JC_DATA_MANIFEST`，但該路徑不存在。 |
+| manifest 內容（226） | manifest 沒有任何 shipped: true 的檔案 | `manifest.json` 可解析，但 `files[].shipped` 全是 false 或缺少欄位。 |
+| manifest 檔案（231） | manifest 列出的檔案不存在 | 某個 shipped entry 的 `path` 轉成 `\` 後，在 `$DataRoot` 下找不到對應檔案。 |
+| 授權文件（247） | 缺少授權文件 `<name>` | repo 根目錄缺 `LICENSE` 或 `NOTICE`。 |
+| 授權文件（252） | 缺少授權文件 legal\THIRD-PARTY-NOTICES.md | repo 缺 `legal\THIRD-PARTY-NOTICES.md`。 |
+| 授權全文（257） | legal\licenses 沒有任何授權全文 | `legal\licenses` 目錄存在但沒有任何檔案。若目錄本身不存在，前面的 `Get-ChildItem` 會先以 terminating error 失敗。 |
+| 簽章（274） | 指定了簽章憑證但找不到 signtool.exe | 有 `-Certificate` 或 `JC_SIGN_CERT`，且沒有 `-SkipSign`，但 PATH 找不到 `signtool.exe`。 |
+| WiX（288） | 找不到 wix.exe | PATH 找不到 `wix.exe`，通常是沒有安裝 WiX v5 或 dotnet tool 目錄不在 PATH。 |
+
+### 這輪的靜態檢查
+
+這台 Linux 沒有 `pwsh`，所以沒有實際執行 `build.ps1`。已逐段核對：
+
+- 三個 `cargo build` 都位在 `Resolve-ReleaseDir` 與所有執行期 `Test-Path` 之前。
+- 建置與錯誤訊息共用同一組參數陣列，錯誤中的 cargo 指令與實際執行一致。
+- `$cargoX86Args` 明確帶 `--target i686-pc-windows-msvc`，錯誤訊息會顯示同一個 triple。
+- `$msi` 用 `$Version`（完整版本）命名，`wix build` 的 `-d Version` 用 `$MsiVersion`（三段數字）。
+- `$Version`、`$MsiVersion`、`$ReleaseDir`、`$ReleaseDirX86` 都在第一次使用前賦值；`Set-StrictMode -Version Latest` 下沒有未定義變數。
+- `git diff --check` 通過。
