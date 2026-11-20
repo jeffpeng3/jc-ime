@@ -158,7 +158,8 @@ NFKC 把讀音裡的「（」轉成半角「(」，模型輸出也跟著用半�
   Adapted Material，衍生或散布需同授權**，不能改標 AGPL-3.0-only。
 - Shizuku judge 的權重來源 `rinna/japanese-gpt2-xsmall` 是 MIT；產生程式是 GPL-3.0-or-later，
   這次只取產物，沒有取用程式碼。
-- 這批全部標成「僅本機評估，暫不散布」，見 [`legal/README.md`](../../legal/README.md) L-20～L-25。
+- 這批原本全部標成僅本機留存、暫不散布。`legal-update`（2026-11-20）已把 L-21 Jinen small
+  改列隨附，其餘仍在 [`legal/README.md`](../../legal/README.md) L-20～L-25。
 
 ## 沒做與未確認
 

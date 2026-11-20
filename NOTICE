@@ -7,13 +7,23 @@ Copyright (C) 2026 Funmula Co., Limited 與 0C contributors。
 本專案的程式、建置腳本與文件依 GNU Affero General Public License version 3 only
 （AGPL-3.0-only）授權，完整條款見 [`LICENSE`](LICENSE)。
 
-本專案另散布第三方詞典、語言模型、英文詞表、轉換字典與模型。逐檔的散布帳本見
-[`legal/README.md`](legal/README.md)，逐來源的授權與署名見
+本專案另散布第三方詞典、語言模型、英文詞表、轉換字典、設定程式 UI 元件與模型。逐檔的
+散布帳本見 [`legal/README.md`](legal/README.md)，逐來源的授權與署名見
 [`legal/THIRD-PARTY-NOTICES.md`](legal/THIRD-PARTY-NOTICES.md)，完整授權全文放在
 [`legal/licenses/`](legal/licenses/)。第三方元件的授權不因本專案採用 AGPL-3.0-only 而改變。
 
+日文神經轉換模型 Jinen v2 small（CC-BY-SA-4.0）隨安裝包散布。模型由 Hitoshi Togasaki
+製作與發佈，訓練語料部分使用國立國會圖書館書誌資料；國立國會圖書館未製作、提供或保證
+本模型。署名、修訂版與散布條件見 [`legal/THIRD-PARTY-NOTICES.md`](legal/THIRD-PARTY-NOTICES.md)
+第 15 節。
+
+設定程式 `jc-settings-ui` 使用 GPUI Kit 與 GPUI（皆 Apache-2.0；Copyright 2024 - 2026
+Longbridge，Copyright 2022 - 2025 Zed Industries, Inc.）。聲明見
+[`legal/THIRD-PARTY-NOTICES.md`](legal/THIRD-PARTY-NOTICES.md) 第 14 節。
+
 注音選字與注音標點模型 `Funmula/0c-sequence-d512`、`Funmula/0c-punct-d512` 是
-**第三方模型、僅供使用者自行下載、不隨本專案散布**；下載 URL 與 revision 見
+**第三方模型、僅供使用者自行下載、不隨本專案散布**；注音標點模型自 2026-11-20 起不再
+被程式載入。下載 URL 與 revision 見
 [`legal/THIRD-PARTY-NOTICES.md`](legal/THIRD-PARTY-NOTICES.md) 第 11 節。
 
 專案說明與建置方式見 [`README.md`](README.md)。

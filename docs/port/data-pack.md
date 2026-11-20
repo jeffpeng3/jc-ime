@@ -274,9 +274,8 @@ jc-engine: 載入資料失敗：… 資料 manifest 檢查失敗：通過 4/5，
 | `english/words.bin` | `english` | L-08 | ESDB／SCOWL 為 MIT 類授權，附 NOTICE |
 | `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | `ja_neural` | L-21 | Jinen v2 small 為 CC-BY-SA-4.0，散布需附授權全文與 notice |
 
-`legal/README.md` 的 L-21 目前仍寫「僅本機評估，暫不散布」。本輪只建立
-manifest 與檢查工具，沒有改寫帳本；實際出貨前要由 legal-notices 任務確認
-CC-BY-SA-4.0 的 notice 與同授權條件，再把帳本改成可散布。
+`legal/README.md` 的 L-21 原本標成評估用、暫不散布。`legal-update`（2026-11-20）已把
+帳本改成可散布，補上 CC-BY-SA-4.0 的 notice，並逐項對照上面 5 筆隨附清單。
 
 ### 下載（`shipped: false`）
 

@@ -107,7 +107,8 @@ LICENSE 全文，不移除 COCA 段落。
   來源方未背書本專案。
 - 全文：[`licenses/CC-BY-SA-4.0.txt`](licenses/CC-BY-SA-4.0.txt)。
 
-模型權重不進 git，但屬日文模型包的一部分；散布模型包時必須附本節與 CC BY-SA 4.0 全文。
+模型權重不進 git；2026-11-20 起 reranker 不再預設使用，也不在資料 manifest 的隨附清單。
+若未來重新納入散布，必須附本節與 CC BY-SA 4.0 全文。
 
 ## 10. 日文標點（L-10）
 
@@ -117,6 +118,7 @@ LICENSE 全文，不移除 COCA 段落。
   `models/ja-tokenizer/public_core_ja.model`。
 - 授權：MIT。
 - 附帶聲明：模型卡含 UniDic 與 IPADic 的來源聲明；相關全文見第 3、4 節。
+- 狀態：2026-11-20 起不再使用，程式不載入，權重留在資料目錄供回溯；不隨安裝包散布。
 - 全文：[`licenses/MIT.txt`](licenses/MIT.txt)。
 
 ## 11. 注音模型：第三方、僅下載、不轉散布（L-11、L-12）
@@ -129,6 +131,8 @@ LICENSE 全文，不移除 COCA 段落。
 |---|---|---|---|
 | `zh-select` | `Funmula/0c-sequence-d512` | `3533e34ef25896afeacc928d136ba7f35783bba7`（`3533e34e`） | <https://huggingface.co/Funmula/0c-sequence-d512/tree/3533e34ef25896afeacc928d136ba7f35783bba7> |
 | `zh-punct` | `Funmula/0c-punct-d512` | `105c2770e0b7cf4ce44a792b3b186000dd1727d9`（`105c2770`） | <https://huggingface.co/Funmula/0c-punct-d512/tree/105c2770e0b7cf4ce44a792b3b186000dd1727d9> |
+
+`zh-punct` 自 2026-11-20 起不再被程式載入，下載與否由使用者決定；檔案仍標「不轉散布」。
 
 - 授權：MIT；Copyright (c) 2026 Funmula Corp Limited。
 - 全文：[`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt)。
@@ -163,7 +167,43 @@ LICENSE 全文，不移除 COCA 段落。
   `0c-testdata/ja/LICENSE-ajimee.txt`。
 - `golden`、`eval`、`fuzzy`：0c 自製或由上述題庫衍生；來源與授權見各目錄 README。
 
-## 14. 完整條款索引
+## 14. GPUI Kit 與 GPUI（L-26、L-27）
+
+- 來源：
+  - GPUI Kit：<https://github.com/longbridge/gpui-kit>，crates.io `gpui-kit` 0.10.0、
+    `gpui-base` 0.10.0、`gpui-component` 0.10.0、`gpui-kit-assets` 0.10.0、
+    `gpui-component-macros` 0.10.0。
+  - GPUI：<https://github.com/zed-industries/zed>，crates.io `gpui-pre` 0.3.12；GPUI Kit
+    以 `gpui` 名稱引入，另含 `gpui-pre-*` 系列。
+- 使用：`crates/jc-settings-ui/` 的視窗、繪圖與 UI 元件，連進設定程式執行檔散布。
+- 授權：Apache-2.0。
+- 著作權：
+  - Copyright 2024 - 2026 Longbridge <https://longbridge.com>（GPUI Kit 各 crate 的
+    `LICENSE-APACHE`）。
+  - Copyright 2022 - 2025 Zed Industries, Inc.（`gpui-pre` 的 `LICENSE-APACHE`）。
+- 上游 crate 沒有額外的 `NOTICE` 檔；散布時保留上述著作權行與 Apache-2.0 全文，
+  不得移除或改寫。
+- 全文：[`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt)。
+
+## 15. 日文神經轉換 Jinen v2 small（L-21）
+
+- 來源：訓練在 `jeffpeng3/0c-training`；權重發佈於
+  <https://huggingface.co/togatogah/jinen-v2-small.gguf>，rev
+  `3461d0573ab447985badde3174165b967d06076c`。
+- 使用：`models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf`，日文轉換的預設神經
+  後端；tokenizer 沿用 `models/quant/jinen-v2-xsmall/tokenizer.json`。
+- 授權：CC-BY-SA-4.0（上游模型卡與 `manifest.json` 都標這個授權）。
+- 訓練資料與署名：
+  - 訓練語料部分使用國立國會圖書館「全国書誌データ」（2026-07-09 取得）與國立國會
+    圖書館サーチ的書誌資料，經加工後使用。
+  - 加工與模型製作：Hitoshi Togasaki。國立國會圖書館未製作、提供或保證本模型。
+  - 其餘訓練語料組成上游未完整公開，模型卡只列上述書誌資料。
+- 散布條件：附本節與 CC-BY-SA-4.0 全文；標明模型名稱、作者與來源 revision。量化、
+  轉檔或微調會產生 Adapted Material，散布時必須同採 CC-BY-SA-4.0，不能改標成
+  AGPL-3.0-only。模型權重與本專案程式分開授權。
+- 全文：[`licenses/CC-BY-SA-4.0.txt`](licenses/CC-BY-SA-4.0.txt)。
+
+## 16. 完整條款索引
 
 | 檔案 | 用途 |
 |---|---|
@@ -177,7 +217,7 @@ LICENSE 全文，不移除 COCA 段落。
 | [`licenses/CC-BY-4.0.txt`](licenses/CC-BY-4.0.txt) | CC-BY-4.0 全文 |
 | [`licenses/CC-BY-SA-4.0.txt`](licenses/CC-BY-SA-4.0.txt) | CC-BY-SA-4.0 全文 |
 | [`licenses/CC-BY-SA-3.0.txt`](licenses/CC-BY-SA-3.0.txt) | CC-BY-SA-3.0 全文（題庫用） |
-| [`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt) | OpenCC／Apache-2.0 全文 |
+| [`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt) | OpenCC、GPUI Kit、GPUI 的 Apache-2.0 全文 |
 | [`licenses/MIT.txt`](licenses/MIT.txt) | 日文標點 MIT 全文 |
 | [`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt) | Funmula 注音模型 MIT 全文 |
 | [`licenses/ESDB-SCOWL-LICENSE.txt`](licenses/ESDB-SCOWL-LICENSE.txt) | ESDB／SCOWL 全文 |

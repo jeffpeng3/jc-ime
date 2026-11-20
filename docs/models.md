@@ -22,15 +22,17 @@
 | `zh-punct` | `models/zh-punct` | `Funmula/0c-punct-d512` | `105c2770e0b7cf4ce44a792b3b186000dd1727d9`（`105c2770`） | MIT | 否 | 已移除（2026-11-20） |
 | `ja-rerank` | `models/reranker-extra` | `jeffpeng3/0c-ja-reranker` | `7450e10fe8b673560044c5db08ad3006a06d7a6e`（`7450e10f`） | CC-BY-SA-4.0 | 否 | 棄用，僅保留模型與訓練碼 |
 | `ja-punct` | `models/punctuation-public-core` | `jeffpeng3/0c-ja-punct` | `ff9166abc620b6716ac7de73cfa67335e6b985d2`（`ff9166ab`） | MIT | 否 | 已移除（2026-11-20） |
-| `ja-neural` | `models/external/jinen-v2-small` | `togatogah/jinen-v2-small.gguf` | `3461d0573ab447985badde3174165b967d06076c` | CC-BY-SA-4.0 | 否，僅本機評測，暫不散布 | 使用中，預設 |
+| `ja-neural` | `models/external/jinen-v2-small` | `togatogah/jinen-v2-small.gguf`（訓練：`jeffpeng3/0c-training`） | `3461d0573ab447985badde3174165b967d06076c` | CC-BY-SA-4.0 | 是，隨附；資料 manifest 標 `shipped: true` | 使用中，預設 |
 
 `Funmula` 兩個模型是第三方模型，只隨下載腳本取得，不進 git，也不得放進本專案的
 release 或安裝包。日文 reranker 不再是預設路徑：`SessionConfig::ja_rerank`
 預設 `false`，由 Jinen small 的門檻混合取代。`ja-neural` 沒有 `Role` 列舉，
 `jc-engine` 直接依 `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf`
-載入；tokenizer 沿用 `models/quant/jinen-v2-xsmall/tokenizer.json`。
+載入；tokenizer 沿用 `models/quant/jinen-v2-xsmall/tokenizer.json`。資料根目錄
+`manifest.json` 以 `ja_neural` 角色收錄 Jinen GGUF，並標 `shipped: true`；tokenizer
+（`models/quant/jinen-v2-xsmall/tokenizer.json`）尚未列進 manifest，出貨前要補。
 
-標點模型的資料檔案保留在原目錄，方便回溯；程式與 manifest 不再引用它們。
+標點模型的資料檔案保留在原目錄，方便回溯；程式與資料 manifest 都不再引用它們。
 
 ## 推論 runtime
 
@@ -126,8 +128,9 @@ Q8_0 是量測與建議使用的注音選字權重：33.9 MiB、推論 p50 9.36 
 
 `zh-punct` 與 `ja-punct` 已於 2026-11-20 從程式移除；本專案的 manifest 範本
 不再列出。資料目錄的既有 `manifest.json` 仍可能保留這兩個鍵，載入時會忽略
-不支援的角色。Jinen 不在集合 manifest 內，路徑寫在 `jc-engine` 的
-`loader.rs`，可用 `JC_JINEN_GGUF` 覆寫。
+不支援的角色。Jinen 不在這個集合 manifest 內，路徑寫在 `jc-engine` 的
+`loader.rs`，可用 `JC_JINEN_GGUF` 覆寫；資料根目錄的 `manifest.json` 另有
+`ja_neural` 一筆，`shipped` 為 `true`。
 
 資料目錄現況的 SHA-256：`c069d44ff0aaa68fcec47f8030fe5075468dba0ef0c63ebc27a02a7acce0f56c`
 （387 bytes，仍含兩個標點鍵）。
@@ -135,9 +138,11 @@ Q8_0 是量測與建議使用的注音選字權重：33.9 MiB、推論 p50 9.36 
 ## 散布檢查
 
 1. `models/zh-select`、`models/zh-punct` 不得出現在 release、安裝包或 git。
-2. 日文模型目前不隨安裝包出貨：Jinen 與 reranker 都標成「僅本機評測」。要出貨
-   需先完成資料打包，並依 CC-BY-SA-4.0 附署名與同授權。
-3. 散布日文模型時，附上 `legal/licenses/CC-BY-SA-4.0.txt`、
-   `legal/THIRD-PARTY-NOTICES.md` 第 9、10 節。Jinen 的衍生或散布同樣受
-   CC-BY-SA-4.0 約束。
-4. 換 revision 時同步更新本表、下載腳本與帳本；不得只改 manifest 而留下舊雜湊。
+2. Jinen v2 small 隨安裝包出貨，資料 manifest 標 `shipped: true`。散布時附
+   `legal/licenses/CC-BY-SA-4.0.txt` 與 `legal/THIRD-PARTY-NOTICES.md` 第 15 節，
+   保留作者 Hitoshi Togasaki 與國立國會圖書館的署名；衍生權重同樣採 CC-BY-SA-4.0。
+3. 日文 reranker 與日文標點模型不隨安裝包出貨，權重留在資料目錄供回溯；若重新
+   納入散布，附 `legal/THIRD-PARTY-NOTICES.md` 第 9、10 節的署名與授權。
+4. Jinen 的 tokenizer 在 `models/quant/jinen-v2-xsmall/`，不在資料 manifest；出貨前
+   必須補上這一筆，否則安裝後預設路徑缺 tokenizer。
+5. 換 revision 時同步更新本表、下載腳本與帳本；不得只改 manifest 而留下舊雜湊。
