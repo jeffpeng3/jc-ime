@@ -1478,3 +1478,7 @@ gate（固定工具鏈）：
 - gate：test exit 0（54 targets、1286 passed、0 failed）、clippy exit 0、fmt exit 0。
 - 題庫（DP 切分預設關閉）：zh-golden **45/45**、ja **92.2%**、fuzzy **44.5%**、mixed **6/6**。
 - `git branch --no-merged main`：空。
+
+### CI（push `9cc570a`，run 44750225315）
+
+- linux (core)：success；windows (msvc)：success。
