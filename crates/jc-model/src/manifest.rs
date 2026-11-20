@@ -6,8 +6,7 @@
 //! {
 //!   "schema": "jc.model-set/1",
 //!   "models": {
-//!     "ja-rerank": { "dir": "reranker-extra" },
-//!     "ja-punct":  { "dir": "punctuation-public-core" }
+//!     "ja-rerank": { "dir": "reranker-extra" }
 //!   }
 //! }
 //! ```
@@ -223,6 +222,9 @@ impl ModelSet {
     ///
     /// 目錄或 `manifest.json` 缺席時回傳全部 `Unavailable` 的集合，
     /// 不視為錯誤；manifest 損壞才回傳 [`ModelError::Manifest`]。
+    ///
+    /// manifest 可能由較新或較舊的版本寫入，含有不支援的角色（例如已移除的
+    /// 標點模型）。這些條目只記警告並跳過，不讓整個集合載入失敗。
     pub fn load(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         let mut specs = BTreeMap::new();
@@ -239,8 +241,12 @@ impl ModelSet {
                     }
                 }
                 for (name, spec) in m.models {
-                    let role: Role = name.parse().map_err(|e: String| ModelError::manifest(e))?;
-                    specs.insert(role, spec);
+                    match name.parse::<Role>() {
+                        Ok(role) => {
+                            specs.insert(role, spec);
+                        }
+                        Err(err) => log::warn!("manifest 忽略不支援的模型角色：{err}"),
+                    }
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -412,7 +418,6 @@ mod tests {
             }
             other => panic!("未預期的狀態：{other:?}"),
         }
-        assert!(!set.availability(Role::JaPunct).is_loaded());
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -420,19 +425,15 @@ mod tests {
     fn manifest_resolves_files_and_reports_size() {
         let dir = tempdir("loaded");
         fs::create_dir_all(dir.join("rerank")).unwrap();
-        fs::create_dir_all(dir.join("punct")).unwrap();
         fs::write(dir.join("rerank/model.int8.onnx"), vec![0u8; 1234]).unwrap();
         fs::write(dir.join("rerank/vocab.json"), b"{}").unwrap();
-        fs::write(dir.join("punct/model.int8.onnx"), vec![0u8; 7]).unwrap();
-        fs::write(dir.join("punct/ja.bin"), b"{}").unwrap();
         fs::write(
             dir.join("manifest.json"),
             r#"{
               "schema": "jc.model-set/1",
               "models": {
-                "ja-rerank": {"dir": "rerank"},
-                "ja-punct": {"dir": "punct", "vocab": "ja.bin",
-                  "seq_len": 96, "candidate_slot": 48, "timeout_ms": 50}
+                "ja-rerank": {"dir": "rerank", "seq_len": 96,
+                  "candidate_slot": 48, "timeout_ms": 50}
               }
             }"#,
         )
@@ -441,12 +442,12 @@ mod tests {
         let set = ModelSet::load(&dir).unwrap();
         // 檔案解析與執行期能否推論無關，路徑一律要解析出來。
         assert_eq!(
-            set.model_path(Role::JaPunct).unwrap(),
-            dir.join("punct/model.int8.onnx")
+            set.model_path(Role::JaRerank).unwrap(),
+            dir.join("rerank/model.int8.onnx")
         );
         assert_eq!(
-            set.vocab_path(Role::JaPunct).unwrap(),
-            dir.join("punct/ja.bin")
+            set.vocab_path(Role::JaRerank).unwrap(),
+            dir.join("rerank/vocab.json")
         );
         match set.availability(Role::JaRerank) {
             Availability::Loaded { role, bytes } => {
@@ -458,17 +459,7 @@ mod tests {
                 assert!(reason.starts_with("ONNX Runtime 不可用："), "{reason}");
             }
         }
-        match set.availability(Role::JaPunct) {
-            Availability::Loaded { role, bytes } => {
-                assert_eq!(*role, Role::JaPunct);
-                assert_eq!(*bytes, 7);
-            }
-            Availability::Unavailable { role, reason } => {
-                assert_eq!(*role, Role::JaPunct);
-                assert!(reason.starts_with("ONNX Runtime 不可用："), "{reason}");
-            }
-        }
-        let spec = set.spec(Role::JaPunct).unwrap();
+        let spec = set.spec(Role::JaRerank).unwrap();
         assert_eq!(spec.seq_len(), 96);
         assert_eq!(spec.candidate_slot(), 48);
         assert_eq!(spec.timeout(), std::time::Duration::from_millis(50));
@@ -484,17 +475,26 @@ mod tests {
     }
 
     #[test]
-    fn unknown_role_is_an_error() {
+    fn unknown_role_is_ignored() {
         let dir = tempdir("role");
+        fs::create_dir_all(dir.join("rerank")).unwrap();
+        fs::write(dir.join("rerank/model.int8.onnx"), vec![0u8; 5]).unwrap();
+        fs::write(dir.join("rerank/vocab.json"), b"{}").unwrap();
         fs::write(
             dir.join("manifest.json"),
-            r#"{"schema":"jc.model-set/1","models":{"klingon":{"dir":"x"}}}"#,
+            r#"{"schema":"jc.model-set/1","models":{
+              "klingon":{"dir":"x"},
+              "ja-rerank":{"dir":"rerank"}
+            }}"#,
         )
         .unwrap();
-        match ModelSet::load(&dir) {
-            Err(ModelError::Manifest(msg)) => assert!(msg.contains("klingon"), "{msg}"),
-            other => panic!("未預期結果：{other:?}"),
-        }
+        // 不認得的角色只跳過，同一份 manifest 的已知角色仍要載入。
+        let set = ModelSet::load(&dir).unwrap();
+        assert!(set.spec(Role::JaRerank).is_some());
+        assert_eq!(
+            set.model_path(Role::JaRerank).unwrap(),
+            dir.join("rerank/model.int8.onnx")
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

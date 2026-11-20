@@ -12,7 +12,6 @@ use jc_core::ja::personal::{
     learn_unified, UnifiedLearning, UNIFIED_MANUAL_WEIGHT, UNIFIED_PASSIVE_WEIGHT,
 };
 use jc_core::lattice::{InMemoryLexicon, Lattice};
-use jc_core::output::ModelPunctuator;
 use jc_core::personal::PersonalStore;
 use jc_core::score::ScoreContext;
 use jc_core::zh::syllable::class_of;
@@ -299,9 +298,7 @@ pub struct ConvertOptions {
     pub json: bool,
     /// 啟用注音選字模型重排。
     pub select_model: bool,
-    /// 送出時用標點模型補標點。
-    pub punct: bool,
-    /// 標點推論後端；`None` 時照 `JC_PUNCT_BACKEND` 與預設 `ort`。
+    /// 推論後端；`None` 時讀 `JC_RERANK_BACKEND` 與預設 `ort`。
     pub backend: Option<jc_model::Backend>,
     /// 個人化學習資料目錄；未指定時不載入。
     pub user_data: Option<PathBuf>,
@@ -330,15 +327,13 @@ pub fn convert(
         n,
         json,
         select_model,
-        punct,
         backend,
         user_data,
         mode,
         pick,
     } = options;
-    let punct_testdata = testdata.clone();
     // 後端在載入任何模型前設定；沒有指定時讓 jc-model 讀
-    // `JC_PUNCT_BACKEND`，預設仍是 ort。
+    // `JC_RERANK_BACKEND`，預設仍是 ort。
     if let Some(backend) = backend {
         jc_model::set_default_backend(backend);
     }
@@ -444,34 +439,6 @@ pub fn convert(
             .collect();
         (candidates, LmQueryStats::default())
     };
-    let mode = if english {
-        jc_core::Mode::En
-    } else if is_zhuyin(reading) {
-        jc_core::Mode::Zh
-    } else {
-        jc_core::Mode::Ja
-    };
-    let punctuator = if punct && !english {
-        match data::load_punctuator(punct_testdata.as_deref(), mode) {
-            Ok(model) => Some(model),
-            Err(err) => {
-                eprintln!("警告：--punct on 無法載入標點模型，維持原文：{err}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-    let candidates: Vec<Candidate> = match &punctuator {
-        Some(model) => candidates
-            .into_iter()
-            .map(|mut candidate| {
-                candidate.surface = model.punctuate(&candidate.surface, mode);
-                candidate
-            })
-            .collect(),
-        None => candidates,
-    };
     if json {
         let rows: Vec<_> = candidates
             .iter()
@@ -528,14 +495,6 @@ pub fn convert(
     }
     if select_model {
         write_select_stats(out)?;
-    }
-    if let Some(model) = &punctuator {
-        let stats = model.stats();
-        writeln!(
-            out,
-            "punct：推論 {} 次，插入 {} 次，p50 {:.2} ms，p95 {:.2} ms",
-            stats.calls, stats.inserted, stats.p50_ms, stats.p95_ms
-        )?;
     }
     Ok(())
 }

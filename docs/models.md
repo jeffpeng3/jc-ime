@@ -1,6 +1,8 @@
 # 模型來源與雜湊
 
-本表列出 `jc-model` 四個角色的來源、固定 revision、授權與實際檔案雜湊。資料來源：
+本表列出 `jc-model` 的角色來源、固定 revision、授權與實際檔案雜湊。2026-11-20
+起標點模型已從程式移除，`zh-punct` 與 `ja-punct` 只保留歷史紀錄，模型檔仍在
+資料目錄，不再被載入。資料來源：
 
 - 注音：`jc-ime-data/models/zh-select/manifest.json`、`zh-punct/manifest.json`（下載時
   追加的 `download` 區塊）。
@@ -13,17 +15,21 @@
 
 ## 角色與來源
 
-| 角色 | 目錄 | repo | revision | 授權 | 是否散布 |
-|---|---|---|---|---|---|
-| `zh-select` | `models/zh-select` | `Funmula/0c-sequence-d512` | `3533e34ef25896afeacc928d136ba7f35783bba7`（`3533e34e`） | MIT | **否，第三方僅下載** |
-| `zh-punct` | `models/zh-punct` | `Funmula/0c-punct-d512` | `105c2770e0b7cf4ce44a792b3b186000dd1727d9`（`105c2770`） | MIT | **否，第三方僅下載** |
-| `ja-rerank` | `models/reranker-extra` | `jeffpeng3/0c-ja-reranker` | `7450e10fe8b673560044c5db08ad3006a06d7a6e`（`7450e10f`） | CC-BY-SA-4.0 | 是（日文模型包） |
-| `ja-punct` | `models/punctuation-public-core` | `jeffpeng3/0c-ja-punct` | `ff9166abc620b6716ac7de73cfa67335e6b985d2`（`ff9166ab`） | MIT | 是（日文模型包） |
+| 角色 | 目錄 | repo | revision | 授權 | 是否散布 | 狀態 |
+|---|---|---|---|---|---|---|
+| `zh-select` | `models/zh-select` | `Funmula/0c-sequence-d512` | `3533e34ef25896afeacc928d136ba7f35783bba7`（`3533e34e`） | MIT | **否，第三方僅下載** | 使用中 |
+| `zh-punct` | `models/zh-punct` | `Funmula/0c-punct-d512` | `105c2770e0b7cf4ce44a792b3b186000dd1727d9`（`105c2770`） | MIT | **否，第三方僅下載** | 已移除（2026-11-20） |
+| `ja-rerank` | `models/reranker-extra` | `jeffpeng3/0c-ja-reranker` | `7450e10fe8b673560044c5db08ad3006a06d7a6e`（`7450e10f`） | CC-BY-SA-4.0 | 是（日文模型包） | 使用中 |
+| `ja-punct` | `models/punctuation-public-core` | `jeffpeng3/0c-ja-punct` | `ff9166abc620b6716ac7de73cfa67335e6b985d2`（`ff9166ab`） | MIT | 是（日文模型包） | 已移除（2026-11-20） |
 
 `Funmula` 兩個模型是第三方模型，只隨下載腳本取得，不進 git，也不得放進本專案的
 release 或安裝包。日文兩個角色以同一個模型包散布，權重同樣不進 git。
 
+標點模型的資料檔案保留在原目錄，方便回溯；程式與 manifest 不再引用它們。
+
 ## 檔案雜湊
+
+以下雜湊是歷史紀錄。標點的檔案仍留在資料目錄，但程式不再使用。
 
 ### 注音模型
 
@@ -64,7 +70,7 @@ release 或安裝包。日文兩個角色以同一個模型包散布，權重同
 
 `ja-tokenizer/public_core_ja.model` 是 `ja-rerank` 與 `ja-punct` 共用的 SentencePiece
 模型；兩個模型包各自的 notice 都要附。`ja-rerank` 的權重依 CC-BY-SA-4.0 散布，
-`ja-punct` 依 MIT 散布。
+`ja-punct` 依 MIT 散布。`ja-punct` 已不再載入，分詞器仍由 `ja-rerank` 使用。
 
 ## 集合 manifest
 
@@ -75,15 +81,17 @@ release 或安裝包。日文兩個角色以同一個模型包散布，權重同
   "schema": "jc.model-set/1",
   "models": {
     "zh-select": { "dir": "zh-select", "model": "model.onnx", "vocab": "vocab.json" },
-    "zh-punct": { "dir": "zh-punct", "model": "model.onnx", "vocab": "vocab.json" },
-    "ja-rerank": { "dir": "reranker-extra" },
-    "ja-punct": { "dir": "punctuation-public-core" }
+    "ja-rerank": { "dir": "reranker-extra" }
   }
 }
 ```
 
-檔案 SHA-256：`c069d44ff0aaa68fcec47f8030fe5075468dba0ef0c63ebc27a02a7acce0f56c`
-（387 bytes）。
+`zh-punct` 與 `ja-punct` 已於 2026-11-20 從程式移除；本專案的 manifest 範本
+不再列出。資料目錄的既有 `manifest.json` 仍可能保留這兩個鍵，載入時會忽略
+不支援的角色。
+
+資料目錄現況的 SHA-256：`c069d44ff0aaa68fcec47f8030fe5075468dba0ef0c63ebc27a02a7acce0f56c`
+（387 bytes，仍含兩個標點鍵）。
 
 ## 散布檢查
 

@@ -1,7 +1,7 @@
 //! 提交時補標點的純資料契約。
 //!
-//! 評分器只回傳「在第幾個字元前插入哪個標點」，核心驗證後才套用；不改、不刪
-//! 使用者的任何原字。模型載入、時間與取消由宿主負責。
+//! 規則只在第幾個字元前插入哪個標點，核心驗證後才套用；不改、不刪使用者的
+//! 任何原字。模型載入、時間與取消由宿主負責。
 
 use crate::zh::han::is_han;
 
@@ -27,20 +27,6 @@ impl Edit {
     }
 }
 
-/// 補標點模型。
-pub trait Punctuator {
-    /// 回傳要插入的標點編輯；沒有建議時回傳空清單。
-    fn punctuate(&self, text: &str) -> Result<Vec<Edit>, PunctError>;
-}
-
-/// 補標點模型錯誤。
-#[derive(Debug, thiserror::Error)]
-pub enum PunctError {
-    /// 模型載入或執行失敗。
-    #[error("補標點模型失敗：{0}")]
-    Model(String),
-}
-
 fn allowed(mark: &str) -> bool {
     let mut chars = mark.chars();
     match (chars.next(), chars.next()) {
@@ -53,31 +39,16 @@ fn allowed(mark: &str) -> bool {
 ///
 /// 任一編輯不合規就整批不套用（回傳原文與 `false`），避免部分套用造成意外結果。
 pub fn apply(text: &str, edits: &[Edit]) -> (String, bool) {
-    apply_with(text, edits, false, true)
-}
-
-/// 日文模型的插入規則：標點可以接在假名、漢字或段落尾端，但仍然只在原字
-/// 之間插入，不刪除、不改寫任何原字。開頭不加、位置嚴格遞增、只接受
-/// [`MARKS`]。中文路徑維持 [`apply`] 的漢字邊界。
-pub fn apply_japanese(text: &str, edits: &[Edit]) -> (String, bool) {
-    apply_with(text, edits, true, false)
-}
-
-fn apply_with(text: &str, edits: &[Edit], allow_end: bool, han_only: bool) -> (String, bool) {
     if edits.is_empty() {
         return (text.to_string(), false);
     }
     let runes: Vec<char> = text.chars().collect();
     let mut last = 0;
     for edit in edits {
-        if edit.offset <= last
-            || !allowed(&edit.text)
-            || edit.offset > runes.len()
-            || (!allow_end && edit.offset == runes.len())
-        {
+        if edit.offset <= last || !allowed(&edit.text) || edit.offset >= runes.len() {
             return (text.to_string(), false);
         }
-        if han_only && (!is_han(runes[edit.offset - 1]) || !is_han(runes[edit.offset])) {
+        if !is_han(runes[edit.offset - 1]) || !is_han(runes[edit.offset]) {
             return (text.to_string(), false);
         }
         last = edit.offset;
@@ -91,37 +62,12 @@ fn apply_with(text: &str, edits: &[Edit], allow_end: bool, han_only: bool) -> (S
         }
         out.push(*ch);
     }
-    while at < edits.len() && edits[at].offset == runes.len() {
-        out.extend(edits[at].text.chars());
-        at += 1;
-    }
     (out.into_iter().collect(), true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_apply_japanese_inserts_after_kana_and_at_end() {
-        let text = "今日は天気です";
-        let (got, ok) = apply_japanese(text, &[Edit::new(3, "、"), Edit::new(7, "。")]);
-        assert!(ok);
-        assert_eq!(got, "今日は、天気です。");
-        // 只拿掉插入的標點就能完全還原原文。
-        assert_eq!(got.chars().count(), text.chars().count() + 2);
-
-        for bad in [
-            vec![Edit::new(0, "。")],
-            vec![Edit::new(9, "。")],
-            vec![Edit::new(2, ".")],
-            vec![Edit::new(4, "、")], // 超過較短輸入的長度
-        ] {
-            let (got, ok) = apply_japanese("今日は", &bad);
-            assert!(!ok, "不合規的日文編輯不套用：{bad:?}");
-            assert_eq!(got, "今日は");
-        }
-    }
 
     #[test]
     fn test_apply_inserts_only_between_han() {

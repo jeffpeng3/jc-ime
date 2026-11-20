@@ -1,5 +1,9 @@
 # candle-punct：日文標點模型的 candle 實作
 
+> **已移除（2026-11-20）**：標點模型不再使用，`candle/punct.rs`、
+> `candle-punct-check` 與 `candle-quant punct` 都已刪除。本文保留為歷史紀錄，
+> 移除清單見 [`drop-punct.md`](drop-punct.md)。
+
 同一個 checkpoint、同一組 token id，把日文標點模型的 forward 從 ONNX
 Runtime 換成 candle。encoder 直接複用 `candle-spike-ja` 的實作：pre-LN
 transformer、fused QKV、`gelu_erf`、以輸出維度切給 rayon 的 linear。這輪

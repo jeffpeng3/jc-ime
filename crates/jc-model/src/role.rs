@@ -8,12 +8,8 @@ use std::str::FromStr;
 pub enum Role {
     /// 注音選字模型。
     ZhSelect,
-    /// 注音標點模型。
-    ZhPunct,
     /// 日文候選重排模型。
     JaRerank,
-    /// 日文標點模型。
-    JaPunct,
 }
 
 impl Role {
@@ -21,15 +17,13 @@ impl Role {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ZhSelect => "zh-select",
-            Self::ZhPunct => "zh-punct",
             Self::JaRerank => "ja-rerank",
-            Self::JaPunct => "ja-punct",
         }
     }
 
     /// 所有角色，固定順序。
-    pub const fn all() -> [Role; 4] {
-        [Self::ZhSelect, Self::ZhPunct, Self::JaRerank, Self::JaPunct]
+    pub const fn all() -> [Role; 2] {
+        [Self::ZhSelect, Self::JaRerank]
     }
 }
 
@@ -45,9 +39,7 @@ impl FromStr for Role {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "zh-select" => Ok(Self::ZhSelect),
-            "zh-punct" => Ok(Self::ZhPunct),
             "ja-rerank" => Ok(Self::JaRerank),
-            "ja-punct" => Ok(Self::JaPunct),
             other => Err(format!("未知的模型角色：{other}")),
         }
     }

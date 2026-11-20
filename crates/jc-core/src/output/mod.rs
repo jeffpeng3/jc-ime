@@ -8,10 +8,6 @@ use crate::candidate::Candidate;
 use crate::lang::Mode;
 use crate::segment::Segment;
 
-pub mod punct;
-
-pub use punct::{ModelPunctuator, OnnxPunctuator, PunctLatencyStats, SharedPunctuator};
-
 /// 輸出變體。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Variant {
@@ -315,15 +311,15 @@ fn is_ascii_letter(c: char) -> bool {
 pub struct Options {
     /// CJK 與 Latin 片段之間插入一個半角空格。
     pub space_cjk_latin: bool,
-    /// 依片段語言補標點。
-    pub punctuate: bool,
+    /// 依片段語言把半形標點換成全形。
+    pub punct_fullwidth: bool,
 }
 
-/// 產品預設：加空格、補標點。
+/// 產品預設：加空格、全形標點。
 pub fn default_options() -> Options {
     Options {
         space_cjk_latin: true,
-        punctuate: true,
+        punct_fullwidth: true,
     }
 }
 
@@ -373,7 +369,7 @@ impl Assembler {
                     index: i,
                     source: Box::new(e),
                 })?;
-            if opts.punctuate && !text.is_empty() {
+            if opts.punct_fullwidth && !text.is_empty() {
                 text = self.punctuator.insert(&text, seg.mode);
             }
             if text.is_empty() {
@@ -717,7 +713,7 @@ mod tests {
                 &segs,
                 Options {
                     space_cjk_latin: true,
-                    punctuate: false,
+                    punct_fullwidth: false,
                 },
             )
             .expect("assemble");
@@ -740,7 +736,7 @@ mod tests {
                 &segs,
                 Options {
                     space_cjk_latin: true,
-                    punctuate: false,
+                    punct_fullwidth: false,
                 },
             )
             .expect("assemble");
@@ -751,7 +747,7 @@ mod tests {
                 &segs,
                 Options {
                     space_cjk_latin: false,
-                    punctuate: true,
+                    punct_fullwidth: true,
                 },
             )
             .expect("assemble");

@@ -14,7 +14,7 @@ thiserror = { workspace = true }
 log = { workspace = true }
 # `nmt_nfkc` 系列規則的字元折疊。
 unicode-normalization = "0.1"
-# candle：標點與 reranker 的推論後端。CPU 後端，不啟用 cuda/metal/mkl。
+# candle：reranker 的推論後端。CPU 後端，不啟用 cuda/metal/mkl。
 candle-core = { version = "0.11", default-features = false }
 candle-nn = { version = "0.11", default-features = false }
 # Jinen v2 是 Qwen3 架構的 GGUF；量化 forward 直接沿用 candle 的實作。
@@ -32,10 +32,6 @@ ort = { version = "=2.0.0-rc.15", default-features = false, features = [
 
 [dev-dependencies]
 jc-testdata = { path = "../jc-testdata" }
-
-[[bin]]
-name = "probe"
-path = "src/bin/probe.rs"
 
 [[bin]]
 name = "candle-quant"

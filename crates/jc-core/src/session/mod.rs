@@ -38,7 +38,7 @@ use crate::key::{Key, KeyCode};
 use crate::lang::Mode;
 use crate::lattice::{InMemoryLexicon, Lattice};
 use crate::mixed::{space_text, Spacing};
-use crate::output::{rune_offset, utf16_offset, HansConverter, SharedPunctuator, Snapshot};
+use crate::output::{rune_offset, utf16_offset, HansConverter, Snapshot};
 use crate::personal::PersonalStore;
 use crate::punct::{self, Edit};
 use crate::reading::Unit;
@@ -120,8 +120,6 @@ pub struct SessionConfig {
     pub cjk_latin_space: bool,
     /// 繁體轉簡體的轉換器；`None` 時原樣送出。
     pub simplified: Option<Arc<crate::zhconv::Converter>>,
-    /// 送出時呼叫的標點模型；`None` 時完全不補標點。
-    pub punct: Option<SharedPunctuator>,
     /// 個人化學習資料；預設為空。搭配 [`SessionConfig::learning`] 生效。
     pub personal: PersonalStore,
     /// 個人化學習是否啟用；預設啟用，關閉時只讀不寫。
@@ -169,7 +167,6 @@ impl Default for SessionConfig {
             english_autocomplete: false,
             cjk_latin_space: false,
             simplified: None,
-            punct: None,
             personal: PersonalStore::new(),
             learning: true,
             document_context: true,
@@ -562,7 +559,6 @@ impl Session {
     /// 字串。沒有組字內容時回傳空字串。
     pub fn commit(&mut self) -> String {
         if let Some(text) = self.pending_commit.take() {
-            let text = self.model_punctuated(text);
             self.clear_composition();
             self.remember_committed(&text);
             return text;
@@ -571,7 +567,7 @@ impl Session {
         if self.config.mode == Mode::Mixed {
             self.ascii.flush();
         }
-        let text = self.model_punctuated(self.finalize(self.current_text()));
+        let text = self.finalize(self.current_text());
         self.clear_composition();
         self.remember_committed(&text);
         text
@@ -867,48 +863,8 @@ mod tests {
         assert_eq!(s.commit(), "風，景");
     }
 
-    /// 測試用標點模型：只在注音模式補句尾句點。
-    #[derive(Debug)]
-    struct SentencePeriod;
-
-    impl crate::output::ModelPunctuator for SentencePeriod {
-        fn punctuate(&self, text: &str, mode: Mode) -> String {
-            if mode == Mode::Zh && !text.ends_with('。') {
-                format!("{text}。")
-            } else {
-                text.to_string()
-            }
-        }
-    }
-
     #[test]
-    fn test_commit_calls_model_punctuator_on_enter() {
-        let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
-        config.punct = Some(std::sync::Arc::new(SentencePeriod));
-        let mut s = Session::new(config);
-        type_syllable(&mut s, "ㄈㄥ");
-        type_syllable(&mut s, "ㄐㄧㄥˇ");
-        s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(s.commit(), "風景。");
-    }
-
-    #[test]
-    fn test_commit_punctuates_pending_result_once() {
-        let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
-        config.punct = Some(std::sync::Arc::new(SentencePeriod));
-        let mut s = Session::new(config);
-        type_syllable(&mut s, "ㄈㄥ");
-        type_syllable(&mut s, "ㄐㄧㄥˇ");
-        s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(s.commit(), "風景。");
-        // 已清空，下一次提交不會再補一次。
-        assert_eq!(s.commit(), "");
-    }
-
-    #[test]
-    fn test_commit_without_model_keeps_text_verbatim() {
+    fn test_commit_keeps_text_verbatim() {
         let mut s = session();
         type_syllable(&mut s, "ㄈㄥ");
         type_syllable(&mut s, "ㄐㄧㄥˇ");
