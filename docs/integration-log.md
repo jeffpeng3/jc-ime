@@ -1427,3 +1427,14 @@ gate：
 
 題庫（本機）：`zh-golden` **45/45**、`ja auto` **92.2%**、`quality` **93.6%**、`--neural off` **86.0%**、
 `fuzzy` **44.5%**、`mixed` **6/6**。
+
+## 2026-11-20 16:45 composition-model 收尾（`60ef215` → `55923ec`）
+
+`ja-live-conversion` 預設改成 `on`，`jc-settings` 測試期望同步。
+
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、1265 passed、0 failed）。
+  第一次跑有 1 個 flake：`jc-engine` 的 `supervise::tests::second_supervisor_is_rejected_by_lock`（`supervise.rs:941`，
+  `釋放後應能再取得: AlreadyRunning { name: "jc-ime-test-lock-…" }`），單獨重跑與第二次全量都通過，判定為鎖檔時序 flake，已記錄。
+- clippy exit 0；fmt exit 0。
+- 題庫：zh-golden **45/45**、`auto` **92.2%**、`quality` **93.6%**、off **86.0%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：空。
