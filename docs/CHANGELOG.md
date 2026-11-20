@@ -4,6 +4,13 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.4 - 2026-11-20
+
+### 修正
+
+- Windows 安裝器：`check-payload.py` 在 cp1252 主控台輸出中文會失敗，導致 MSI
+  建置中斷。腳本、`build.ps1` 與 workflow 都改為強制 UTF-8 輸出。
+
 ## 0.1.0-rc.3 - 2026-11-20
 
 ### 修正
