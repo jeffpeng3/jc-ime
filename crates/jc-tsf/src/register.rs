@@ -24,12 +24,18 @@
 //!
 //! **不啟用 profile**：讓使用者在系統設定裡自己選，不偷改使用者的預設輸入法。
 
+use std::io::Write;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use windows::core::{Result, PCWSTR};
-use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, WIN32_ERROR};
+use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HMODULE, WIN32_ERROR};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
-use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
+use windows::Win32::System::LibraryLoader::{
+    GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+};
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW, RegSetValueExW, HKEY,
     HKEY_CLASSES_ROOT, KEY_ALL_ACCESS, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS, REG_SZ,
@@ -44,6 +50,16 @@ use crate::guids::{
     registry_key, CLSID_JC_TSF, GUID_PROFILE_JC_TSF, LANGID_ZH_TW, PROFILE_DESCRIPTION,
 };
 
+/// `AddLanguageProfile` 的 `pchIconFile`：指向一個真正的 NUL，長度仍是 0。
+///
+/// 不能傳 `&[]`：空 slice 的 `as_ptr()` 是對齊用的非 NULL 位址，`windows` 0.62
+/// 會把它原樣交給 msctf，配上 `cchIconFile = 0`。msctf 若先讀指標再判斷長度就是
+/// 存取違規。這裡的指標有效可讀，長度 0，等於「沒有圖示」。
+static NO_ICON: [u16; 1] = [0];
+
+/// `jc-tip-register` 傳進來的安裝日誌路徑。
+const INSTALL_LOG_ENV: &str = "JC_INSTALL_LOG";
+
 /// 這份 DLL 寫入的機碼檢視。
 ///
 /// 明確指定，不靠「行程位元數決定預設檢視」：x64 DLL 寫 64 位元檢視，i686 DLL
@@ -57,51 +73,105 @@ const REGISTRY_VIEW: REG_SAM_FLAGS = windows::Win32::System::Registry::KEY_WOW64
 
 /// 註冊文字服務。
 pub fn register() -> Result<()> {
-    let dll = module_path()?;
-    write_com_registration(&dll)?;
+    install_log("jc-tsf register：開始");
+    let dll = match module_path() {
+        Ok(dll) => {
+            install_log(&format!("module_path：{dll}"));
+            dll
+        }
+        Err(error) => {
+            install_log(&format!("module_path：失敗（{error}）"));
+            return Err(error);
+        }
+    };
+    if let Err(error) = write_com_registration(&dll) {
+        install_log(&format!("寫入 InprocServer32：失敗（{error}）"));
+        return Err(error);
+    }
+    install_log("寫入 InprocServer32：成功");
 
     // SAFETY: CoInitializeEx 對已初始化的執行緒是無害的；regsvr32 通常已經做過。
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        install_log(&format!("CoInitializeEx = 0x{:08X}", hr.0 as u32));
+
         let profiles: ITfInputProcessorProfiles =
-            CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)?;
-        profiles.Register(&CLSID_JC_TSF)?;
+            CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)
+                .map_err(|error| {
+                    install_log(&format!(
+                        "CoCreateInstance(CLSID_TF_InputProcessorProfiles)：失敗（{error}）"
+                    ));
+                    error
+                })?;
+        install_log("CoCreateInstance(CLSID_TF_InputProcessorProfiles)：成功");
+
+        let result = profiles.Register(&CLSID_JC_TSF);
+        log_result("ITfInputProcessorProfiles::Register", &result);
+        result?;
 
         let description = crate::wide(PROFILE_DESCRIPTION);
         // 去掉結尾的 NUL：cchDesc 是字元數，不是緩衝長度。
         let description = &description[..description.len() - 1];
-        profiles.AddLanguageProfile(
+        // `&[]` 的 as_ptr() 是非 NULL 的對齊位址，msctf 可能先讀再判斷長度；
+        // 指向真正的 NUL、長度 0 才是「沒有圖示」。
+        let result = profiles.AddLanguageProfile(
             &CLSID_JC_TSF,
             LANGID_ZH_TW,
             &GUID_PROFILE_JC_TSF,
             description,
-            &[],
+            &NO_ICON[..0],
             0,
-        )?;
+        );
+        log_result("ITfInputProcessorProfiles::AddLanguageProfile", &result);
+        result?;
 
         let categories: ITfCategoryMgr =
-            CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER)?;
-        categories.RegisterCategory(&CLSID_JC_TSF, &GUID_TFCAT_TIP_KEYBOARD, &CLSID_JC_TSF)?;
+            CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER).map_err(
+                |error| {
+                    install_log(&format!(
+                        "CoCreateInstance(CLSID_TF_CategoryMgr)：失敗（{error}）"
+                    ));
+                    error
+                },
+            )?;
+        install_log("CoCreateInstance(CLSID_TF_CategoryMgr)：成功");
+
+        let result =
+            categories.RegisterCategory(&CLSID_JC_TSF, &GUID_TFCAT_TIP_KEYBOARD, &CLSID_JC_TSF);
+        log_result("RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)", &result);
+        result?;
         // 沒有這個能力分類，Windows 不會接受 ITfUIElementMgr::BeginUIElement。
-        categories.RegisterCategory(
+        let result = categories.RegisterCategory(
             &CLSID_JC_TSF,
             &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
             &CLSID_JC_TSF,
-        )?;
+        );
+        log_result(
+            "RegisterCategory(GUID_TFCAT_TIPCAP_UIELEMENTENABLED)",
+            &result,
+        );
+        result?;
         // 組字底線：這個 CLSID 同時是 ITfDisplayAttributeProvider 的實作。
-        categories.RegisterCategory(
+        let result = categories.RegisterCategory(
             &CLSID_JC_TSF,
             &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
             &CLSID_JC_TSF,
-        )?;
+        );
+        log_result(
+            "RegisterCategory(GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER)",
+            &result,
+        );
+        result?;
     }
 
     // 刻意不呼叫 ITfInputProcessorProfileMgr::ActivateProfile。
+    install_log("jc-tsf register：成功");
     Ok(())
 }
 
 /// 反註冊文字服務；個別步驟失敗不阻止其他步驟。
 pub fn unregister() -> Result<()> {
+    install_log("jc-tsf unregister：開始");
     // SAFETY: 與註冊相同，COM 沒有初始化時 CoCreateInstance 會失敗，忽略即可。
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -136,7 +206,12 @@ pub fn unregister() -> Result<()> {
     }
 
     // 只刪這份 DLL 自己那個檢視；另一個檢視由另一個架構的 DLL（或安裝器）負責。
-    delete_clsid_tree()
+    let result = delete_clsid_tree();
+    match &result {
+        Ok(()) => install_log("jc-tsf unregister：成功"),
+        Err(error) => install_log(&format!("delete_clsid_tree：失敗（{error}）")),
+    }
+    result
 }
 
 /// 刪掉這個檢視的 `HKCR\CLSID\{...}` 整棵樹。
@@ -230,12 +305,28 @@ fn set_string(path: &str, name: Option<&str>, value: &str) -> Result<()> {
     }
 }
 
-/// 取得這個 DLL 的完整路徑。
+/// 取得這份 DLL 的完整路徑。
+///
+/// 不能用 `GetModuleFileNameW(None, ...)`：`hModule = NULL` 拿到的是**行程的
+/// exe**。`DllRegisterServer` 由 `jc-tip-register.exe` 載入後呼叫，寫進
+/// `InprocServer32` 的就會是那支 exe，TSF 之後載不到輸入法。這裡用本模組內的
+/// 函式位址當錨點，取得真正裝著這段程式碼的 DLL。
 fn module_path() -> Result<String> {
+    let mut module = HMODULE::default();
+    // SAFETY: anchor 是本模組內的函式位址；UNCHANGED_REFCOUNT 不增加參考計數，
+    // 所以不需要（也不能）對 module 呼叫 FreeLibrary。
+    unsafe {
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            PCWSTR(module_path as *const () as *const u16),
+            &mut module,
+        )?;
+    }
+
     let mut buffer = vec![0u16; 512];
     loop {
-        // SAFETY: buffer 的長度就是傳進去的 nSize。
-        let written = unsafe { GetModuleFileNameW(None, &mut buffer) } as usize;
+        // SAFETY: buffer 的長度就是傳進去的 nSize；module 是上面取得的 DLL。
+        let written = unsafe { GetModuleFileNameW(Some(module), &mut buffer) } as usize;
         if written == 0 {
             return Err(windows::core::Error::from_thread());
         }
@@ -248,6 +339,47 @@ fn module_path() -> Result<String> {
         }
         buffer.resize(buffer.len() * 2, 0);
     }
+}
+
+/// 寫一行安裝日誌；沒有 `JC_INSTALL_LOG` 時什麼都不做。
+///
+/// 每次呼叫都獨立開檔、寫入、`flush`、`sync_all`：崩潰後最後一行仍在磁碟上。
+fn install_log(message: &str) {
+    let Some(path) = std::env::var_os(INSTALL_LOG_ENV).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let line = format!(
+        "[{}] [{}] {}\n",
+        timestamp_millis(),
+        std::process::id(),
+        message.replace('\n', " ")
+    );
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    let _ = file.write_all(line.as_bytes());
+    let _ = file.flush();
+    let _ = file.sync_all();
+}
+
+/// 把 TSF 呼叫的結果寫成一行。
+fn log_result<T>(label: &str, result: &Result<T>) {
+    match result {
+        Ok(_) => install_log(&format!("{label}：成功")),
+        Err(error) => install_log(&format!("{label}：失敗（{error}）")),
+    }
+}
+
+/// 目前時間的 Unix epoch 毫秒；系統時鐘早於 epoch 時回 0。
+fn timestamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0)
 }
 
 /// `WIN32_ERROR` 轉成 `windows::core::Error`。
