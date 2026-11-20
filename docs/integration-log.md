@@ -1577,3 +1577,26 @@ gate：
 - 補驗 Windows 目標：`cargo check -p jc-tsf -p jc-tsf-smoke --target x86_64-pc-windows-msvc` 與 tip-register 同 target 都 exit 0。
 - 依指示未重跑題庫；`rc.6` 跳過不發。
 - `git branch --no-merged main`：空。
+
+### CI（push `f20b5ab`，run 44794084291；`0.1.0-rc.7`）
+
+- linux (core)：success；windows (msvc)：success。
+
+## 2026-11-21 02:50 tsf-reg-v2 後續：`UnregisterTip` 排序修正（`a153e95` → `add9f10`）
+
+`<Class Advertise="no">` 由 WiX 展開成 Registry table 的資料列，CLSID 機碼是
+`WriteRegistryValues`（2500）寫、`RemoveRegistryValues`（2600）刪；`RegisterClassInfo`／
+`UnregisterClassInfo`（2700）只處理 Class table，不參與 TSF 的 CLSID 機碼。
+
+- 原本 `UnregisterTip` 排 `Before="RemoveFiles"`（3500），執行時 CLSID 已被 2600 刪掉；
+  rc.5 未出事是因為當時 CLSID 由 helper 自己寫、MSI 不擁有。
+- 改為 `Before="RemoveRegistryValues"`，`RollbackUnregisterTip` 仍排在其前。
+- 同步修正 WXS／`installer/README.md`／`docs/port/tsf-installer.md`／`docs/port/x86-tip.md`／helper 文件裡
+  「CLSID 由 `RegisterClassInfo` 寫」的說法（已用 WiX IR 確認）。
+
+gate（版本不變，仍 `0.1.0-rc.7`）：
+- `cargo check --workspace --all-targets` exit 0；clippy exit 0；fmt exit 0。
+- `cargo test`（`installer/jc-tip-register`）：**9 passed、0 failed**。
+- WXS XML 有效；Windows 目標 `cargo check -p jc-tsf -p jc-tsf-smoke --target x86_64-pc-windows-msvc`
+  與 tip-register 同 target 都 exit 0。
+- `git branch --no-merged main`：空。
