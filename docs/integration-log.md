@@ -1745,3 +1745,23 @@ gate：
 - clippy exit 0；fmt exit 0；`cargo check -p jc-data -p jc-cli --all-targets` exit 0。
 - 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
 - `git branch --no-merged main`：`cache-prune-fix`、`docs-consistency`、`unify-segment`（待處理）。
+
+### CI（push `a91224d`，run 44818247747；payload-warnings）
+
+- linux (core)：success；windows (msvc)：success。
+
+## 2026-11-21 05:40 cache-prune-fix（`17b0c26` → `67d328f`）
+
+分支 tip `17b0c26`，parent 是 `cf49224`（payload-warnings 合併點），與 main 的文件改動自動合併無衝突。
+
+- `scripts/cache-prune.sh`：新增 `--max-total-gb`（預設 8）與 `--protected-hours`（預設 1）；
+  原有 family／閒置規則跑完後，若預估總量仍超標，就依舊到新追加刪除，保護未滿 1 小時的項目。
+- `ci.yml` 清理由 `--skip-recent-hours 6` 改 1；`cache-prune.yml` 改 `KEEP_PER_FAMILY=1`、
+  `SKIP_RECENT_HOURS=1`、`MAX_TOTAL_GB=8`，排程改每天。
+- 新增兩個 fixture 與 `scripts/test-cache-prune.sh`（五案例全過）；`docs/port/cache-prune.md`、
+  `docs/release.md` 補新規則。目標：目前 9.58 GB / 10 GB、九筆中六筆卡在 6 小時保護窗，
+  新規則清完預估約 4.9 GB。
+- gate：test exit 0（54 targets、1303 passed、0 failed）、clippy exit 0、fmt exit 0；
+  `bash scripts/test-cache-prune.sh` 全部通過、兩個 workflow YAML 有效。
+- 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：`docs-consistency`、`unify-segment`（都還在跑／待處理）。
