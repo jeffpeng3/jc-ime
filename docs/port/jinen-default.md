@@ -145,6 +145,18 @@ cargo run -p jc-cli --release -- eval ja --corpus modern-500 --neural off
 | `src/session/session.cc`（180 ms 預算） | `crates/jc-core/src/session/neural.rs` | rewritten：`recv_timeout` 加舊請求丟棄 |
 | `scripts/eval_jinen_ajimee.py`（離線評測） | `crates/jc-cli/src/bin/jinen-eval.rs` | ported（jinen-integrate 既有） |
 
+## 測試階段修正
+
+| 項目 | 判斷 | 修正 |
+|---|---|---|
+| `test_emoji_cluster_keeps_zwj_and_skin_tone` | 實作錯：ZWJ 被當成一般修飾字元，先被吃掉才看到下一個本體 | cluster 迴圈先處理 ZWJ，再把下一個 emoji 本體一起納入 |
+| `test_validate_rejects_context_echo` | 測試錯：左文脈只有 3 字元，永遠達不到 4 字元重疊下限 | 改成 5 字元的左文脈，輸出真的回吐尾端 4 字元 |
+| `test_validate_allows_short_overlap` | 測試錯：候選剛好是 baseline 的後綴，先被截斷規則擋下 | 改成不在首尾被截斷的候選，只驗證重疊不足 4 字元 |
+| `test_validate_rejects_emoji_changes` | 測試錯：拿等於 baseline 的字串卻期望 `Accepted`，實際是 `Unchanged` | 改成真正改變絵文字序列的案例，並保留序列相同可換位置的案例 |
+| `test_ja_neural_replaces_when_gap_below_threshold` | 實作錯：半截讀音「きょ」的未知詞 fallback 也被送進模型，完整讀音又送一次 | Session 在統計結果等於讀音時跳過神經轉換，等完整讀音再送 |
+| `test_ja_neural_skips_when_gap_above_threshold` | 同上：唯一一次呼叫來自半截讀音，不是完整讀音的門檻 | 同上，呼叫次數回到 0 |
+| `test_ja_neural_timeout_keeps_statistical_result` | 同上：半截讀音與完整讀音各逾時一次 | 同上，只保留完整讀音的一次逾時 |
+
 ## 未完成與注意
 
 - 只接一般日文轉換；`ja_live`（逐字変換）仍走自己的路徑，預設也是關閉。

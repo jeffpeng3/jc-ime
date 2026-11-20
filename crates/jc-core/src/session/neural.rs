@@ -343,12 +343,17 @@ pub fn emoji_clusters(text: &str) -> Vec<String> {
                 break;
             }
             let ch = chars[index];
+            // ZWJ 必須先把下一個本體一起吃進來，不能當成一般修飾字元，
+            // 否則 👨‍👩‍👧 會被拆成三個 cluster。
+            if ch == '\u{200d}' {
+                if index + 1 < chars.len() && is_emoji_base(chars[index + 1]) {
+                    index += 2;
+                    continue;
+                }
+                break;
+            }
             if is_emoji_modifier(ch) {
                 index += 1;
-                continue;
-            }
-            if ch == '\u{200d}' && index + 1 < chars.len() && is_emoji_base(chars[index + 1]) {
-                index += 2;
                 continue;
             }
             break;
@@ -374,7 +379,7 @@ fn is_emoji_base(ch: char) -> bool {
 /// 絵文字修飾：膚色、variation selector、keycap 與 ZWJ 本身。
 fn is_emoji_modifier(ch: char) -> bool {
     let code = ch as u32;
-    ch == '\u{fe0f}' || ch == '\u{200d}' || code == 0x20e3 || (0x1f3fb..=0x1f3ff).contains(&code)
+    ch == '\u{fe0f}' || code == 0x20e3 || (0x1f3fb..=0x1f3ff).contains(&code)
 }
 
 /// 執行緒內的請求；回應走自己的 channel，逾時就丟掉。
@@ -633,34 +638,33 @@ mod tests {
     #[test]
     fn test_validate_rejects_context_echo() {
         let baseline = "天気がいい";
-        let candidate = "今日は天気がいいですね";
+        // 左文脈尾端「日は天気」正好是輸出的開頭，重疊 4 字元；輸出長度
+        // 10 也超過「重疊 4 ＋ baseline 5」的門檻。
+        let candidate = "日は天気がいいですね";
         assert_eq!(
-            validate(candidate, &input("てんきがいい", "今日は", baseline)),
+            validate(candidate, &input("てんきがいい", "今日は天気", baseline)),
             Err(RejectReason::ReadingEcho)
         );
     }
 
-    /// 重疊 4 個字元但沒有超過門檻時允許。
+    /// 重疊不足 4 個字元時允許，即使輸出比統計結果短也不得踩到截斷規則。
     #[test]
     fn test_validate_allows_short_overlap() {
         let baseline = "東京都に行く";
-        let candidate = "京都に行く";
-        // 左文脈尾端「東京」與輸出開頭「京都」重疊只有 1 字元。
+        // 左文脈尾端「東京」與輸出開頭「京の」只重疊 1 字元；輸出不是
+        // baseline 的前綴或後綴，不會被截斷規則擋下。
         assert_eq!(
-            validate(candidate, &input("とうきょうにいく", "東京", baseline)),
+            validate("京の都へ", &input("とうきょうにいく", "東京", baseline)),
             Ok(Validation::Accepted)
         );
         // 「京都」重疊 2 字元，仍低於 4。
         assert_eq!(
-            validate(
-                "京都に行く",
-                &input("とうきょうにいく", "東京京都", baseline)
-            ),
+            validate("京都へ行く", &input("とうきょうにいく", "京都", baseline)),
             Ok(Validation::Accepted)
         );
     }
 
-    /// 絵文字：cluster 序列必須完全相同；換膚色也算改變。
+    /// 絵文字：cluster 序列改變就拒絕；序列相同時位置可以換。
     #[test]
     fn test_validate_rejects_emoji_changes() {
         let baseline = "天気😀";
@@ -669,8 +673,8 @@ mod tests {
             Err(RejectReason::EmojiChanged)
         );
         assert_eq!(
-            validate("天気😀", &input("てんき", "", baseline)),
-            Ok(Validation::Accepted)
+            validate("天気😃", &input("てんき", "", baseline)),
+            Err(RejectReason::EmojiChanged)
         );
         // 位置可以換，序列相同即可。
         assert_eq!(
