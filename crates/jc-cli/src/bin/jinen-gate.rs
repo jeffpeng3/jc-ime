@@ -1373,7 +1373,7 @@ fn sweep(args: &Args) -> Result<(), String> {
         })
         .filter(|(_, dev, _)| dev.feasible_with(&corpora, SAFETY_MARGIN))
         .collect();
-    small_gap.sort_by(|a, b| a.1.aggregate().calls.cmp(&b.1.aggregate().calls));
+    small_gap.sort_by_key(|a| a.1.aggregate().calls);
     for (gate, dev, holdout) in small_gap.iter().take(5) {
         print_rule_row(gate, dev, holdout, &corpora);
     }

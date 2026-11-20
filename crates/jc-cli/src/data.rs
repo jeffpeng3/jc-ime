@@ -204,6 +204,13 @@ pub fn zh_session_config(
     loader::zh_session_config(mode, resources)
 }
 
+/// 載入 Jinen small 並啟動推論 worker。
+pub fn load_ja_neural(
+    root: &Path,
+) -> Result<std::sync::Arc<jc_core::session::NeuralRuntime>, CliError> {
+    loader::load_ja_neural(root).map_err(to_cli)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

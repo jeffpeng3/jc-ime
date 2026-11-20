@@ -1225,8 +1225,45 @@ impl Session {
             self.base = reading;
             return;
         };
-        self.base = best.surface();
-        self.segments = best.conversion().segments;
+        let baseline = best.surface();
+        // 門檻沿用 gating 實驗的訊號：只取兩條統計路徑，同詞面去重後
+        // 只剩一條就視為沒有備案、一定觸發。這與候選清單的 N-best 分開算。
+        let (statistical_cost, runner_up_cost) =
+            if self.config.ja_neural.enabled && self.config.ja_neural.runtime.is_some() {
+                let gate = decoder.results(&chars, &ctx, 2);
+                match gate.first() {
+                    Some(first) => (
+                        first.conversion().cost,
+                        gate.get(1).map(|result| result.conversion().cost),
+                    ),
+                    None => (best.conversion().cost, None),
+                }
+            } else {
+                (
+                    best.conversion().cost,
+                    results.get(1).map(|result| result.conversion().cost),
+                )
+            };
+        // 統計結果先算好；只有門檻命中且通過驗證才換成神經輸出。
+        let decision = neural::maybe_convert(
+            &self.config.ja_neural,
+            &NeuralInput {
+                reading: &reading,
+                left: &ctx.left,
+                right: &ctx.right,
+                statistical: &baseline,
+                statistical_cost,
+                runner_up_cost,
+            },
+        );
+        let replaced = decision.accepted_surface().map(str::to_string);
+        self.base = replaced.clone().unwrap_or(baseline);
+        self.segments = if replaced.is_some() {
+            // 神經輸出沒有詞邊界；整段當一個文節，避免片段範圍對不上。
+            vec![Segment::new(0, self.base.len(), Mode::Ja, Script::Kana)]
+        } else {
+            best.conversion().segments
+        };
         self.candidates = results
             .iter()
             .map(|result| {
@@ -1239,6 +1276,10 @@ impl Session {
                 )
             })
             .collect();
+        if let (Some(surface), Some(candidate)) = (replaced, self.candidates.first_mut()) {
+            // 顯示與提交都走候選清單，第一名必須跟著換。
+            candidate.surface = surface;
+        }
         self.last_ja_results = results;
     }
 

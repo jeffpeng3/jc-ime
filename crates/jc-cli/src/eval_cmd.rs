@@ -249,6 +249,8 @@ pub struct JaOptions {
     pub backend: jc_model::Backend,
     /// 左文來源。
     pub left: LeftMode,
+    /// 是否啟用 Jinen 神經轉換；預設開啟，模型缺席時自動回退。
+    pub neural: bool,
     /// 輸出聚合報告 JSON。
     pub json: bool,
     /// 輸出含逐題結果的 JSON。
@@ -269,6 +271,7 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
         gate,
         backend,
         left,
+        neural,
         json,
         items,
     } = options;
@@ -276,6 +279,21 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
     let (rules, selected) = select_ja_corpora(&dir, &corpus)?;
     let root = data::data_root(&dir);
     let decoder = data::load_ja_decoder_with_pack(&root, pack.as_deref())?;
+    let mut neural_config = jc_core::session::NeuralConfig::default();
+    if neural {
+        match data::load_ja_neural(&root) {
+            Ok(runtime) => {
+                neural_config.runtime = Some(runtime);
+            }
+            Err(err) => {
+                eprintln!("警告：--neural on 無法載入 Jinen，沿用統計轉換：{err}");
+                neural_config.enabled = false;
+            }
+        }
+    } else {
+        // 完全回到舊路徑：不載入模型，也不做門檻判斷。
+        neural_config.enabled = false;
+    }
     let reranker = if rerank {
         // 後端是行程層級設定，必須在載入模型前指定。
         jc_model::set_default_backend(backend);
@@ -296,12 +314,13 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
         }
         _ => decoder,
     };
-    let mut converter = JaConverter::new(decoder);
+    let mut converter = JaConverter::new(decoder).with_neural(neural_config);
     if left == LeftMode::Rolling {
         converter = converter.with_rolling_left();
     }
     let options = RunOptions::from_rules(&rules);
     let run = run_ja(&converter, &rules, &selected, engine_info(&dir), &options);
+    let neural_stats = converter.neural_stats();
     if items {
         writeln!(
             out,
@@ -340,6 +359,13 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
             eprint!("{line}");
         } else {
             write!(out, "{line}")?;
+        }
+    }
+    if let Some(stats) = neural_stats.filter(|_| neural) {
+        if json {
+            eprintln!("{}", stats.summary());
+        } else {
+            writeln!(out, "{}", stats.summary())?;
         }
     }
     Ok(())

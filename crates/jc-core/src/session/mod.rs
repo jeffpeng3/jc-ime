@@ -19,11 +19,18 @@ mod core;
 mod input_style;
 pub mod misc;
 mod mixed;
+pub mod neural;
 mod segments;
 pub mod symbols;
 
 pub use input_style::{
     full_width_idle_keys, halfwidth_shift_keys, idle_keys, zhuyin_key_action, InputStyle, KeyAction,
+};
+pub use neural::{
+    ContextChars, NeuralConfig, NeuralDecision, NeuralEngine, NeuralError, NeuralInput,
+    NeuralModel, NeuralRequest, NeuralRuntime, NeuralStatsSnapshot, RejectReason, Validation,
+    DEFAULT_GAP_THRESHOLD, DEFAULT_LEFT_CONTEXT_CHARS, DEFAULT_RIGHT_CONTEXT_CHARS,
+    DEFAULT_TIMEOUT_MS,
 };
 pub use segments::tone_mark_keys;
 
@@ -97,6 +104,12 @@ pub struct SessionConfig {
     /// （[`crate::ja::decode::DEFAULT_WORD_RERANK_GATE`]）預設只送統計
     /// 不確定的詞群，但這裡仍保守關閉。
     pub ja_rerank: bool,
+    /// 日文神經轉換（Jinen）設定；預設開啟，但沒有注入模型時完全不呼叫。
+    ///
+    /// 統計結果永遠先算好；只有成本差小於
+    /// [`NeuralConfig::gap_threshold`] 時才問模型，通過五條驗證才替換。
+    /// `--neural off` 把 [`NeuralConfig::enabled`] 設成 `false`，回到舊路徑。
+    pub ja_neural: NeuralConfig,
     /// 日文逐字変換設定；預設關閉，關閉時日文走一般変換流程。
     pub ja_live: live::Config,
     /// 聲調選填：沒有聲調的音節展開成五個聲調再解碼。
@@ -159,6 +172,7 @@ impl Default for SessionConfig {
             zh_lm: None,
             ja: None,
             ja_rerank: false,
+            ja_neural: NeuralConfig::default(),
             ja_live: live::Config::default(),
             toneless: false,
             zhuyin_error_hint: false,
@@ -588,6 +602,20 @@ impl Session {
     pub fn reset(&mut self) {
         self.pending_commit = None;
         self.clear_composition();
+    }
+
+    /// 日文神經轉換是否開啟（模型是否載入不影響這個值）。
+    pub fn ja_neural_enabled(&self) -> bool {
+        self.config.ja_neural.enabled
+    }
+
+    /// 日文神經轉換的累計統計；模型未載入時為 `None`。
+    pub fn ja_neural_stats(&self) -> Option<NeuralStatsSnapshot> {
+        self.config
+            .ja_neural
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.stats())
     }
 
     /// 日文逐字変換是否開啟。
@@ -1522,5 +1550,114 @@ mod tests {
         assert_eq!(s.snapshot().preedit, "今日");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "今日");
+    }
+
+    /// 測試用神經引擎：固定回覆，可選延遲與呼叫計數。
+    struct StubEngine {
+        reply: &'static str,
+        delay: std::time::Duration,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl neural::NeuralEngine for StubEngine {
+        fn convert(
+            &mut self,
+            _request: &neural::NeuralRequest,
+        ) -> Result<String, neural::NeuralError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if !self.delay.is_zero() {
+                std::thread::sleep(self.delay);
+            }
+            Ok(self.reply.to_string())
+        }
+    }
+
+    /// 同讀音兩個詞、成本差 400 的日文 session；可選擇接上神經引擎。
+    fn ja_neural_session(
+        second_cost: i32,
+        runtime: Option<Arc<neural::NeuralRuntime>>,
+        timeout_ms: u64,
+    ) -> (Session, Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let source = LiveTestSource(vec![
+            ja_entry("今日", "きょう", 1_000),
+            ja_entry("京", "きょう", second_cost),
+            ja_entry("きょう", "きょう", 3_000),
+        ]);
+        let mut config = SessionConfig::new(Mode::Ja);
+        config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_neural = neural::NeuralConfig {
+            timeout_ms,
+            runtime,
+            ..neural::NeuralConfig::default()
+        };
+        (Session::new(config), calls)
+    }
+
+    fn stub_runtime(
+        reply: &'static str,
+        delay: std::time::Duration,
+        calls: &Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Arc<neural::NeuralRuntime> {
+        Arc::new(neural::NeuralRuntime::spawn(Box::new(StubEngine {
+            reply,
+            delay,
+            calls: Arc::clone(calls),
+        })))
+    }
+
+    /// 門檻命中且輸出通過驗證時，採用 Jinen 的結果。
+    #[test]
+    fn test_ja_neural_replaces_when_gap_below_threshold() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let runtime = stub_runtime("京", std::time::Duration::ZERO, &calls);
+        let (mut s, _) = ja_neural_session(1_400, Some(runtime), 180);
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.snapshot().preedit, "京");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "京");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// 成本差超過門檻時完全不呼叫模型。
+    #[test]
+    fn test_ja_neural_skips_when_gap_above_threshold() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let runtime = stub_runtime("京", std::time::Duration::ZERO, &calls);
+        let (mut s, _) = ja_neural_session(2_000, Some(runtime), 180);
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.snapshot().preedit, "今日");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "今日");
+    }
+
+    /// 推論超過預算就沿用統計結果。
+    #[test]
+    fn test_ja_neural_timeout_keeps_statistical_result() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let runtime = stub_runtime("京", std::time::Duration::from_millis(80), &calls);
+        let (mut s, _) = ja_neural_session(1_400, Some(runtime), 5);
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.snapshot().preedit, "今日");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "今日");
+        let stats = s.ja_neural_stats().expect("要能取得統計");
+        assert_eq!(stats.timeouts, 1);
+    }
+
+    /// 模型缺席或關閉時，輸出與純統計完全相同。
+    #[test]
+    fn test_ja_neural_unavailable_keeps_statistical_result() {
+        let (mut missing, _) = ja_neural_session(1_400, None, 180);
+        let (mut disabled, _) = ja_neural_session(1_400, None, 180);
+        disabled.config.ja_neural.enabled = false;
+        for session in [&mut missing, &mut disabled] {
+            type_ja(session, "kyou");
+            assert_eq!(session.snapshot().preedit, "今日");
+            session.press(Key::new(KeyCode::Enter, None, false));
+            assert_eq!(session.commit(), "今日");
+        }
+        assert!(missing.ja_neural_stats().is_none());
     }
 }
