@@ -113,7 +113,8 @@ TSF 依宿主行程的位元數載入 DLL，所以 32 位元程式需要另一�
 profile**，只差註冊的機碼檢視，因此使用者的語言清單只有一項「jc 注音」。
 `jc-tip-register` 是 x64 程式，載入不了 32 位元 DLL，所以 x86 那個檢視由它自己用
 `KEY_WOW64_32KEY` 寫。`installer/jc-ime.wxs` 的 `TsfDllX86` 元件標了
-`Win64="no"`。完整理由、GUID 對照、`reg query` 驗證步驟與反安裝流程見
+`Bitness="always32"`（WiX v5；v3 的 `Win64="no"` 已移除）。完整理由、GUID 對照、
+`reg query` 驗證步驟與反安裝流程見
 [`../docs/port/x86-tip.md`](../docs/port/x86-tip.md)。
 
 開始功能表有兩個捷徑：`jc 注音設定`（`jc-tip-register settings`）與

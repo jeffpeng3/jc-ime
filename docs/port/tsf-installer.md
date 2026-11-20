@@ -52,6 +52,20 @@ Go 參考實作沒有 MSI，Windows 安裝過程分散在 `0c-update` 與 NSIS �
 | 版本 | `UpgradeCode` 固定、`Version` 取自 workspace `Cargo.toml` | 升級由 `MajorUpgrade` 處理，版本號不在 WXS 手抄 |
 | CRT | `-C target-feature=+crt-static` 統一放在 `.cargo/config.toml` 的兩個 Windows target | TSF DLL 被載入 explorer，不能依賴 `vcruntime140.dll`（`docs/history.md`）；build.ps1 與 CI 共用同一組 rustflags，避免指紋失效重編 |
 
+## WiX v5 與 v3 的差異
+
+RC4 的錯誤是 `Component` 的 `Win64`：WiX v5 schema 沒有這個屬性，會回 `WIX0004`。本專案實際用到的對照：
+
+| 主題 | WiX v3 | WiX v5 | 本檔 |
+|---|---|---|---|
+| 元件架構 | `Component Win64="no"`／`"yes"` | `Component Bitness="always32"`／`"always64"`；預設 `default` 跟隨套件架構 | `TsfDllX86` 用 `Bitness="always32"` |
+| 標準目錄 | `DirectoryRef Id="ProgramFiles64Folder"` 再包 `Directory` | `StandardDirectory Id="ProgramFiles64Folder"` 再包 `Directory` | 用 `StandardDirectory` |
+| 套件根元素 | `Product` 內含 `Package` | `Package` 直接放在 `Wix` 下 | 用 `Package` |
+| 套件架構 | `Package/@Platform="x64"` | 移除；改用 `wix build -arch x64`，個別元件再用 `Bitness` 覆寫 | `build.ps1` 傳 `-arch x64` |
+| Windows Installer 版本 | 常見 `Package/@InstallerVersion="200"` | 仍接受，預設 `500`，一般不需要手動指定 | 本檔沒設 |
+
+`DirectoryRef` 在 v5 仍然存在，用來引用既有目錄；標準目錄改用 `StandardDirectory` 比較清楚。`CustomAction` 等元素在 v3 也有 `Win64`，v5 一律改用 `Bitness`；本檔的自訂動作沒有設定架構。
+
 ### 反安裝順序
 
 ```text
@@ -79,6 +93,7 @@ RemoveTipLayout（immediate，使用者）      InstallLayoutOrTip(ILOT_UNINSTAL
 | `cargo check --target x86_64-pc-windows-gnu --all-targets`（`installer/jc-tip-register`） | 通過，0 錯誤 |
 | `cargo check --target x86_64-pc-windows-msvc --all-targets`（同上） | 通過，clippy 0 警告 |
 | `installer/validate-linux.sh` | WiX 5.0.2 編譯與符號解析通過；綁定階段如預期因 Linux 沒有 `msi.dll` 停止 |
+| `python3` 的 `xml.etree.ElementTree.parse` | 通過：37 個 Component；`TsfDllX86` 是唯一的 `Bitness="always32"`；沒有 `Win64`／`Win32`／`DirectoryRef`／`Platform`／`InstallerVersion` |
 | `uv run --no-project installer/check-payload.py <payload>` | 通過：WXS 引用 34 個檔案，5 個 `shipped` 資料檔的大小與 SHA-256 全部符合 `docs/port/data-pack.md` 的真實 manifest |
 | `wix build`（完整 MSI） | **做不到**，見下 |
 

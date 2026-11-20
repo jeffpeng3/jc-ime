@@ -130,7 +130,8 @@
 
     兩份 TSF DLL：`jc-tsf.dll` 是 x64，`jc-tsf-x86.dll` 是 i686。兩個檔案共用同一個
     CLSID，只是註冊在不同機碼檢視；檔名分開是因為兩份都放在同一個目錄。x86 的
-    Component 標 `Win64="no"`，機碼與檔案才不會被當成 64 位元元件處理。
+    Component 標 `Bitness="always32"`（WiX v5 的元件架構寫法），機碼與檔案才不會
+    被當成 64 位元元件處理。
   -->
   <Fragment>
     <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
@@ -141,7 +142,9 @@
               Vital="yes" />
       </Component>
 
-      <Component Id="TsfDllX86" Guid="{1B4E9C60-2A7D-4E51-9C3F-7A6D5B8E2140}" Win64="no">
+      <Component Id="TsfDllX86"
+                 Guid="{1B4E9C60-2A7D-4E51-9C3F-7A6D5B8E2140}"
+                 Bitness="always32">
         <File Id="FileTsfDllX86"
               Source="$(var.PayloadDir)/jc-tsf-x86.dll"
               KeyPath="yes"
