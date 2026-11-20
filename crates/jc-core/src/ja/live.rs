@@ -332,18 +332,13 @@ impl Default for AutoTrigger {
 }
 
 /// 什麼時候真正執行轉換。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Trigger {
     /// 每次讀音更新都轉換（現況）。
+    #[default]
     EveryKey,
     /// 自動変換：長度、邊界、停頓三種條件可組合。
     Auto(AutoTrigger),
-}
-
-impl Default for Trigger {
-    fn default() -> Self {
-        Self::EveryKey
-    }
 }
 
 /// 神經採用的階段。
@@ -1090,7 +1085,7 @@ impl Controller {
             moved[0].segments.clear();
             self.locked_seq.truncate(kept);
             self.cut = kept;
-            moved.extend(self.tail.drain(..));
+            moved.append(&mut self.tail);
             self.tail = moved;
         } else {
             let tail_index = index - self.locked.len();
@@ -1315,9 +1310,7 @@ impl Controller {
             self.stats.stale_discards += 1;
             return None;
         }
-        let Some(gate) = self.cfg.neural.clone() else {
-            return None;
-        };
+        let gate = self.cfg.neural.clone()?;
         let started = self.now();
         self.stats.neural_requests += 1;
         let decision = gate.adopt(&GateRequest {
@@ -1722,9 +1715,7 @@ impl Controller {
 
     /// 取出結果、套用，並在需要時再送一次。
     fn pump_flight(&mut self, start_new: bool) -> Option<Plan> {
-        let Some(gate) = self.cfg.neural.clone() else {
-            return None;
-        };
+        let gate = self.cfg.neural.clone()?;
         let mut plan = None;
         if let Some(result) = gate.take() {
             plan = self.apply_flight(result);
@@ -1799,9 +1790,7 @@ impl Controller {
             self.stats.stale_discards += 1;
             return None;
         }
-        let Some(surface) = result.surface else {
-            return None;
-        };
+        let surface = result.surface?;
         if surface == flight.statistical {
             return None;
         }
