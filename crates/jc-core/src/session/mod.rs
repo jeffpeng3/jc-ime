@@ -366,9 +366,14 @@ impl Session {
         let zh_lm = config.zh_lm.clone();
         let style = config.style.clone();
         // 逐字変換控制器與日文解碼器共用同一份詞典；關閉時完全不建立。
+        //
+        // 神經轉換開啟且模型已載入時，逐字路徑才拿到採用器；關閉或模型
+        // 缺席時 `ja_live` 完全走原本的統計路徑。
         let live = if config.ja_live.enabled {
             config.ja.as_ref().map(|decoder| {
-                LiveController::new(decoder.as_ref().clone(), config.ja_live.clone())
+                let mut live_config = config.ja_live.clone();
+                live_config.neural = neural::live_gate(&config.ja_neural);
+                LiveController::new(decoder.as_ref().clone(), live_config)
             })
         } else {
             None
@@ -1788,13 +1793,12 @@ mod tests {
         }
     }
 
-    /// 同讀音兩個詞、成本差 400 的日文 session；可選擇接上神經引擎。
-    fn ja_neural_session(
+    /// 同讀音兩個詞、成本差 400 的日文 session 設定；可選擇接上神經引擎。
+    fn ja_neural_config(
         second_cost: i32,
         runtime: Option<Arc<neural::NeuralRuntime>>,
         timeout_ms: u64,
-    ) -> (Session, Arc<std::sync::atomic::AtomicUsize>) {
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    ) -> SessionConfig {
         let source = LiveTestSource(vec![
             ja_entry("今日", "きょう", 1_000),
             ja_entry("京", "きょう", second_cost),
@@ -1813,7 +1817,20 @@ mod tests {
             runtime,
             ..neural::NeuralConfig::default()
         };
-        (Session::new(config), calls)
+        config
+    }
+
+    /// 同讀音兩個詞、成本差 400 的日文 session；可選擇接上神經引擎。
+    fn ja_neural_session(
+        second_cost: i32,
+        runtime: Option<Arc<neural::NeuralRuntime>>,
+        timeout_ms: u64,
+    ) -> (Session, Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        (
+            Session::new(ja_neural_config(second_cost, runtime, timeout_ms)),
+            calls,
+        )
     }
 
     fn stub_runtime(
@@ -1919,5 +1936,73 @@ mod tests {
             assert_eq!(session.commit(), "今日");
         }
         assert!(missing.ja_neural_stats().is_none());
+    }
+
+    /// 逐字変換加上神經轉換的 session 設定。
+    fn ja_live_neural_session(
+        second_cost: i32,
+        runtime: Option<Arc<neural::NeuralRuntime>>,
+    ) -> Session {
+        let mut config = ja_neural_config(second_cost, runtime, 180);
+        config.ja_live = live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            ..live::Config::default()
+        };
+        Session::new(config)
+    }
+
+    /// 逐字路徑只在完整讀音時呼叫模型，結果與一般路徑一致。
+    #[test]
+    fn test_ja_live_neural_adopts_complete_reading_only() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let runtime = stub_runtime("京", std::time::Duration::ZERO, &calls);
+        let mut s = ja_live_neural_session(1_400, Some(runtime));
+        assert!(s.ja_live_enabled());
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.snapshot().preedit, "京");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "半截讀音（き、きょ）不得呼叫模型"
+        );
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "京");
+    }
+
+    /// `--neural off` 時逐字路徑完全不呼叫模型，結果回到統計值。
+    #[test]
+    fn test_ja_live_neural_off_keeps_statistical_result() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let runtime = stub_runtime("京", std::time::Duration::ZERO, &calls);
+        let mut config = ja_neural_config(1_400, Some(runtime), 180);
+        config.ja_neural.enabled = false;
+        config.ja_live = live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            ..live::Config::default()
+        };
+        let mut s = Session::new(config);
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.snapshot().preedit, "今日");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// 逐字路徑的門檻與一般路徑相同：平均候選數不足就不呼叫。
+    #[test]
+    fn test_ja_live_neural_respects_mean_candidates() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let runtime = stub_runtime("京", std::time::Duration::ZERO, &calls);
+        let mut config = ja_neural_config(1_400, Some(runtime), 180);
+        config.ja_neural.min_mean_candidates = 9.0;
+        config.ja_live = live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            ..live::Config::default()
+        };
+        let mut s = Session::new(config);
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.snapshot().preedit, "今日");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

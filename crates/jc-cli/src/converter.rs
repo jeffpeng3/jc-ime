@@ -2,19 +2,24 @@
 //!
 //! 評測與 `convert` 子命令都走這裡，確保兩邊的 N-best 完全一致。
 
+use std::cell::RefCell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::Instant;
 
 use jc_core::candidate::Candidate;
 use jc_core::decode::{Decoder, Locks};
 use jc_core::ja::decode::{mean_candidates, JaContext, JaDecoder};
+use jc_core::ja::live::{self, Controller as LiveController, Plan as LivePlan};
 use jc_core::ja::personal::{
     learn_unified, UnifiedLearning, UNIFIED_MANUAL_WEIGHT, UNIFIED_PASSIVE_WEIGHT,
 };
 use jc_core::lattice::{InMemoryLexicon, Lattice};
 use jc_core::personal::PersonalStore;
+use jc_core::reading::Unit;
 use jc_core::score::ScoreContext;
-use jc_core::session::neural::{maybe_convert, NeuralConfig, NeuralDecision, NeuralInput};
+use jc_core::session::neural::{self, maybe_convert, NeuralConfig, NeuralDecision, NeuralInput};
 use jc_core::zh::syllable::class_of;
 use jc_eval::Converter;
 use serde_json::json;
@@ -137,6 +142,10 @@ pub struct JaConverter {
     rolling_left: bool,
     left: std::cell::RefCell<String>,
     neural: NeuralConfig,
+    /// 逐字変換設定；`Some` 時走逐字路徑。
+    live: Option<live::Config>,
+    /// 逐字路徑每次按鍵轉換的牆鐘毫秒，供評測印出 p50／p95。
+    live_keystrokes: Rc<RefCell<Vec<f64>>>,
 }
 
 /// 左文保留的字元上限，與 `jc_core::session` 相同（前身 `MaxLeftContextUnits`）。
@@ -150,6 +159,8 @@ impl JaConverter {
             rolling_left: false,
             left: std::cell::RefCell::new(String::new()),
             neural: NeuralConfig::default(),
+            live: None,
+            live_keystrokes: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -157,6 +168,23 @@ impl JaConverter {
     pub fn with_neural(mut self, neural: NeuralConfig) -> Self {
         self.neural = neural;
         self
+    }
+
+    /// 開啟逐字変換；神經轉換已接上時，逐字路徑共用同一份門檻與驗證。
+    ///
+    /// 逐字路徑的採用器由 [`neural::live_gate`] 依目前的
+    /// [`NeuralConfig`] 建立，因此 `--neural off` 或模型缺席時完全不會
+    /// 呼叫模型。
+    pub fn with_live(mut self, mut config: live::Config) -> Self {
+        config.enabled = true;
+        config.neural = neural::live_gate(&self.neural);
+        self.live = Some(config);
+        self
+    }
+
+    /// 逐字路徑每次按鍵轉換的延遲（毫秒）；沒開逐字変換時為空。
+    pub fn live_latency(&self) -> Vec<f64> {
+        self.live_keystrokes.borrow().clone()
     }
 
     /// 神經轉換的累計統計；模型未載入時為 `None`。
@@ -197,11 +225,69 @@ impl JaConverter {
     /// 前 `n` 條轉換結果。
     ///
     /// 統計結果永遠保留；第一名只有在成本差命中門檻、且輸出通過五條
-    /// 驗證時才換成 Jinen 的結果。
+    /// 驗證時才換成 Jinen 的結果。開啟逐字変換時整題走逐字路徑，第一名
+    /// 是逐字控制器最後定案的結果。
     pub fn nbest(&self, reading: &str, n: usize) -> Vec<jc_core::decode::Conversion> {
         if n == 0 {
             return Vec::new();
         }
+        if let Some(config) = &self.live {
+            return self.live_nbest(reading, n, config);
+        }
+        self.statistical_nbest(reading, n)
+    }
+
+    /// 逐字路徑：逐鍵送進控制器，回傳最後定案的字串與統計 N-best。
+    ///
+    /// 每次按鍵的轉換延遲都記進 [`JaConverter::live_latency`]；逐字路徑的
+    /// 呼叫次數比整句多，延遲要按鍵看，不是按題看。
+    fn live_nbest(
+        &self,
+        reading: &str,
+        n: usize,
+        config: &live::Config,
+    ) -> Vec<jc_core::decode::Conversion> {
+        let units: Vec<Unit> = reading
+            .chars()
+            .map(|ch| Unit::new(ch.to_string()))
+            .collect();
+        if units.is_empty() {
+            return Vec::new();
+        }
+        let ctx = self.context();
+        let mut controller = LiveController::new(self.decoder.clone(), config.clone());
+        let mut plan = LivePlan::default();
+        let mut latencies = self.live_keystrokes.borrow_mut();
+        for end in 1..=units.len() {
+            let started = Instant::now();
+            plan = controller.input(&units[..end], &ctx);
+            latencies.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        drop(latencies);
+
+        let (surface, segments) = live_display(&plan, reading, &units);
+        let mut out = vec![jc_core::decode::Conversion {
+            surface,
+            segments,
+            cost: 0,
+        }];
+        for conversion in self.statistical_nbest(reading, n) {
+            if out.len() >= n {
+                break;
+            }
+            if out
+                .iter()
+                .any(|existing| existing.surface == conversion.surface)
+            {
+                continue;
+            }
+            out.push(conversion);
+        }
+        out
+    }
+
+    /// 純統計的 N-best；第一名會依門檻換成 Jinen 的輸出。
+    fn statistical_nbest(&self, reading: &str, n: usize) -> Vec<jc_core::decode::Conversion> {
         let ctx = self.context();
         let chars: Vec<char> = reading.chars().collect();
         // 一次解到至少兩條：候選清單與 gating 的 top-2 共用同一次搜尋。
@@ -250,6 +336,56 @@ impl JaConverter {
     }
 }
 
+/// 逐字変換的顯示字串與片段。
+///
+/// 與 `jc_core::session` 的套用邏輯相同：控制器只轉換到最後一次定案的
+/// 範圍，後面還沒轉換的かな直接接上，畫面不會先退回かな。
+fn live_display(
+    plan: &LivePlan,
+    reading: &str,
+    units: &[Unit],
+) -> (String, Vec<jc_core::segment::Segment>) {
+    let Some(result) = &plan.result else {
+        return (reading.to_string(), Vec::new());
+    };
+    let mut surface = String::new();
+    let mut segments = Vec::new();
+    for clause in &result.clauses {
+        let start = surface.len();
+        surface.push_str(&clause.surface);
+        segments.push(segment(start, surface.len()));
+    }
+    let covered: usize = result.clauses.iter().map(clause_units).sum();
+    if covered < units.len() {
+        let start = surface.len();
+        surface.extend(units[covered..].iter().map(Unit::as_str));
+        segments.push(segment(start, surface.len()));
+    }
+    (surface, segments)
+}
+
+/// 日文片段；逐字変換的所有輸出都是かな模式。
+fn segment(start: usize, end: usize) -> jc_core::segment::Segment {
+    jc_core::segment::Segment::new(
+        start,
+        end,
+        jc_core::lang::Mode::Ja,
+        jc_core::segment::Script::Kana,
+    )
+}
+
+/// 文節讀音長度；`reading` 為空時由詞段串接。
+fn clause_units(clause: &jc_core::ja::decode::JaClause) -> usize {
+    if !clause.reading.is_empty() {
+        return clause.reading.chars().count();
+    }
+    clause
+        .segments
+        .iter()
+        .map(|seg| seg.reading.chars().count())
+        .sum()
+}
+
 impl Converter for JaConverter {
     fn convert(&self, reading: &str, top_n: usize) -> Vec<String> {
         self.nbest(reading, top_n)
@@ -257,7 +393,6 @@ impl Converter for JaConverter {
             .map(|conversion| conversion.surface)
             .collect()
     }
-
     fn convert_segmented(&self, reading: &str, top_n: usize) -> Vec<jc_eval::Conversion> {
         let conversions: Vec<jc_eval::Conversion> = self
             .nbest(reading, top_n)
@@ -752,5 +887,30 @@ mod tests {
             assert_eq!(surfaces, other, "{reading}");
             assert_eq!(costs, other_costs, "{reading}");
         }
+    }
+
+    /// 逐字路徑逐鍵轉換、逐鍵記延遲，同一讀音的結果可重現。
+    #[test]
+    fn live_path_converts_per_keystroke_and_is_deterministic() {
+        let dir = jc_testdata::require_data!("0c-testdata");
+        let root = data::data_root(&dir);
+        let decoder = data::load_ja_decoder(&root).unwrap();
+        let live = JaConverter::new(decoder).with_live(live::Config {
+            debounce: std::time::Duration::ZERO,
+            ..live::Config::default()
+        });
+        let reading = "きょうはいいてんき";
+        let first = live.convert(reading, 5);
+        assert!(first.len() > 1, "逐字結果後面要補統計候選：{first:?}");
+        assert!(!first[0].is_empty());
+        assert_eq!(
+            live.live_latency().len(),
+            reading.chars().count(),
+            "每個かな都要有按鍵延遲"
+        );
+
+        let again = live.convert(reading, 5);
+        assert_eq!(first, again, "同一讀音要可重現");
+        assert_eq!(live.live_latency().len(), reading.chars().count() * 2);
     }
 }
