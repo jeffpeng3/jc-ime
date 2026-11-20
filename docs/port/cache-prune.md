@@ -5,10 +5,13 @@
 | Go 檔案 | Rust 檔案 | 狀態 |
 |---|---|---|
 | n/a | `scripts/cache-prune.sh` | 新增：依 family／閒置時間判斷並用 `gh cache delete` 刪除 |
-| n/a | `.github/workflows/cache-prune.yml` | 新增：每週排程（真刪）與手動 dispatch（預設 dry-run） |
+| n/a | `.github/workflows/cache-prune.yml` | 修改：每天排程（真刪）與手動 dispatch（預設 dry-run） |
 | n/a | `.github/workflows/ci.yml` | 修改：`linux` job 加 `permissions.actions: write` 與 main 收尾清理步驟 |
 | n/a | `.github/workflows/release.yml` | 修改：`linux` job 加 `permissions.actions: write` 與 main 收尾清理步驟 |
 | n/a | `scripts/fixtures/cache-prune.json` | 新增：判定規則的測試資料 |
+| n/a | `scripts/fixtures/cache-prune-total.json` | 新增：總量壓力的測試資料 |
+| n/a | `scripts/fixtures/cache-prune-protected.json` | 新增：全部落在保護窗的測試資料 |
+| n/a | `scripts/test-cache-prune.sh` | 新增：固定 `PRUNE_NOW` 的 dry-run 輸出檢查 |
 
 ## 觸發點
 
@@ -16,7 +19,7 @@
 |---|---|---|
 | `ci.yml` 的 `linux` job | main 分支 push 後的收尾 | 真的刪 |
 | `release.yml` 的 `linux` job | main 分支 `workflow_dispatch` 的收尾 | 真的刪 |
-| `cache-prune.yml` 排程 | 每週一 03:00 UTC | 真的刪 |
+| `cache-prune.yml` 排程 | 每天 03:00 UTC | 真的刪 |
 | `cache-prune.yml` 手動 dispatch | 人工 | 預設 dry-run，可取消勾選 |
 
 清理是「收尾時順手做」，排程只補漏。原因：快取累積的速度跟 push 次數成正比，
@@ -37,8 +40,14 @@
 「沒被讀取」用 `lastAccessedAt`；`gh` 對從未讀取的項目給 `null`，此時退回
 `createdAt`，也就是「建立後沒人用過」一律照建立時間算。
 
-另外有一條保護：**建立未滿 N 小時的快取一律不刪**（`SKIP_RECENT_HOURS`，預設 6）。
-它優先於上面兩條，理由見下一節。
+另外有一條保護：**建立未滿 N 小時的快取一律不刪**（`SKIP_RECENT_HOURS`，腳本預設 6，
+workflow 用 1）。它優先於上面兩條，理由見下一節。
+
+上面算完後還有第三段**總量規則**：若執行後預估仍超過 `MAX_TOTAL_GB`（預設 8 GB），
+就從還沒刪的項目依 `createdAt` 由舊到新追加到刪除清單，直到低於門檻或沒有可刪的為止。
+這段用自己的保護窗 `PROTECTED_HOURS`（預設 1 小時），不受 `SKIP_RECENT_HOURS` 影響，
+因此多次發版留下的 tag 快取仍有出口。`MAX_TOTAL_GB` 設 0 或 -1 可關閉總量規則。
+1 GB 以 1073741824 bytes 計，與輸出裡的 MB 口徑一致。
 
 ### 為什麼是 OR
 
@@ -60,9 +69,14 @@
 
 因此：
 
-- 建立未滿 6 小時的項目一律跳過，剛存好的快取不會被同一個 run 的收尾步驟刪掉。
+- 建立未滿 `SKIP_RECENT_HOURS` 小時的項目一律跳過，剛存好的快取不會被同一個 run 的
+  收尾步驟刪掉。`ci.yml` 用 1 小時；6 小時曾讓 rc.4／rc.5／rc.7 的 tag 快取全部落在
+  保護窗內，清理完全沒作用。
 - 被跳過的項目仍會出現在「保留」表格，原因寫「建立未滿 6 小時（N 小時），暫不刪」，
   必要時會附上它原本會命中的規則，例如 `family 第 3 份 > 2`。
+
+總量壓力是第二段保護：`PROTECTED_HOURS` 縮到 1 小時，只擋正在寫入的項目。若所有可刪項目
+都在這 1 小時內，summary 會寫「全部受保護」，不會勉強刪。
 
 這條保護不能消除所有競爭：一份建立很久、但正在被並行 run 讀取的快取仍可能被刪。
 GitHub 的快取是唯讀的，讀取端在下載開始後就與快取條目無關；刪除只影響還沒開始
@@ -102,13 +116,16 @@ GH_REPO=owner/repo CACHE_JSON= bash scripts/cache-prune.sh --dry-run
 
 | 參數 | 預設 | 位置 | 說明 |
 |---|---|---|---|
-| `KEEP_PER_FAMILY` | 2 | `cache-prune.yml` 的 `env`，或呼叫時給環境變數 | 每個 family 留幾份 |
+| `KEEP_PER_FAMILY` | 2（workflow 用 1） | `cache-prune.yml` 的 `env`，或呼叫時給環境變數 | 每個 family 留幾份 |
 | `MAX_IDLE_DAYS` | 7 | 同上 | 幾天沒讀就刪 |
-| `SKIP_RECENT_HOURS` | 6 | 同上，也可用命令列 `--skip-recent-hours N` | 太新不刪 |
+| `SKIP_RECENT_HOURS` | 6（workflow 用 1） | 同上，也可用命令列 `--skip-recent-hours N` | 太新不刪 |
+| `MAX_TOTAL_GB` | 8 | 同上，也可用命令列 `--max-total-gb N` | 總量上限；0/-1 關閉 |
+| `PROTECTED_HOURS` | 1 | 同上，也可用命令列 `--protected-hours N` | 總量壓力下的保護窗 |
 
-`ci.yml`／`release.yml` 的步驟用命令列 `--skip-recent-hours 6`，要調整就改那裡。
-`KEEP_PER_FAMILY` 想改成 1 之前先確認：同一 family 的兩份通常是「目前 lockfile」與
-「上一個 lockfile」，留 1 份會讓回退版本的 run 一定 miss。
+`ci.yml` 的步驟用命令列 `--skip-recent-hours 1`，`release.yml` 仍是 6，要調整就改各別
+workflow。`KEEP_PER_FAMILY` 改成 1 的取捨：同一 family 的兩份通常是「目前 lockfile」與
+「上一個 lockfile」，回退版本的 run 會 miss；但留 2 份 × 四個 family 就接近 9 GB，
+等於永遠貼著 10 GB 上限，因此 `cache-prune.yml` 選 1。
 
 family 的算法是把 key 尾端的雜湊拿掉：
 
@@ -130,7 +147,7 @@ family 的算法是把 key 尾端的雜湊拿掉：
 `PRUNE_NOW=2026-11-20T00:00:00Z` 固定判定時間，輸出才能逐字比對：
 
 ```text
-快取清理：family 上限 2 份，閒置上限 7 天，建立未滿 6 小時不動（現在 2026-11-20T00:00:00Z）
+快取清理：family 上限 2 份，閒置上限 7 天，建立未滿 6 小時不動；總量上限 8 GB（0/-1 關閉），壓力下保護未滿 1 小時（現在 2026-11-20T00:00:00Z）
 
 == 要刪除：2 筆 ==
 key | 大小(MB) | 最後使用(UTC) | 判定原因
@@ -151,22 +168,35 @@ v0-rust-release-windows-9f8e7d6c5b4a3021 | 280 | 2026-11-18 00:00 | 最新且近
 待刪除：2 筆，1324.0 MB
 保留：5 筆，2028.0 MB
 因建立未滿 6 小時而跳過：1 筆
+總量：掃描 3.27 GB，原規則後預估 1.98 GB，上限 8 GB
+壓力清理：無（預估 1.98 GB 未超過 8 GB）
+執行後預估：1.98 GB
 ```
 
 把 `SKIP_RECENT_HOURS=0` 拿掉保護後，`Linux-cargo-0123…` 會多一條刪除，原因
 `family 第 3 份 > 2`，待刪除變成 3 筆、保留 4 筆。這確認 skip-recent 只影響
 「本來要刪」的項目，不會改變 family 排名。
 
+`scripts/fixtures/cache-prune-total.json` 模擬回報的 9 筆、9.59 GB 快取：兩筆 ci 剛建立，
+六筆 tag 快取落在 1～5 小時前。用 `KEEP_PER_FAMILY=1`、`PRUNE_NOW=2026-11-20T06:00:00Z`：
+
+- 門檻 8 GB：追加刪最舊的 rc.4 windows/linux 共 2 筆、1.60 GB，執行後 7.99 GB。
+- 門檻 7 GB：再刪 rc.5 windows/linux，共 4 筆、3.20 GB，執行後 6.39 GB；rc.7 仍保留。
+- 門檻 0：總量規則關閉，待刪除 0 筆。
+
+`scripts/fixtures/cache-prune-protected.json` 是 6 筆各 1.5 GB、全部未滿 1 小時的快取；
+同一個 `PRUNE_NOW` 下 summary 印「全部受保護」，沒有快取被刪。
+
 ## 驗證
 
 ```sh
 bash -n scripts/cache-prune.sh
-python3 -c "import yaml;[yaml.safe_load(open(p)) for p in [
-  '.github/workflows/cache-prune.yml',
-  '.github/workflows/ci.yml',
-  '.github/workflows/release.yml']]"
-PRUNE_NOW=2026-11-20T00:00:00Z CACHE_JSON=scripts/fixtures/cache-prune.json \
-  bash scripts/cache-prune.sh --dry-run
+bash scripts/test-cache-prune.sh
+python3 -c "import yaml,glob; [yaml.safe_load(open(f)) for f in glob.glob('.github/workflows/*.yml')]; print('yaml ok')"
+PRUNE_NOW=2026-11-20T06:00:00Z CACHE_JSON=scripts/fixtures/cache-prune-total.json \
+  KEEP_PER_FAMILY=1 bash scripts/cache-prune.sh --dry-run
+PRUNE_NOW=2026-11-20T06:00:00Z CACHE_JSON=scripts/fixtures/cache-prune-total.json \
+  KEEP_PER_FAMILY=1 bash scripts/cache-prune.sh --dry-run --max-total-gb 0
 ```
 
 `--dry-run` 不會呼叫 `gh cache delete`，可以重複執行；沒有要刪的項目時只印總結。
