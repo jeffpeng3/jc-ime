@@ -1,7 +1,11 @@
 //! 候選詞與來源。
 
 /// 候選詞的來源。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// 線格式為 snake_case（`lexicon`、`personal`、`predicted`、`literal`），
+/// 由 `jc-proto` 的 `CandidateDetail` 直接沿用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CandidateSource {
     /// 系統詞典。
     Lexicon,

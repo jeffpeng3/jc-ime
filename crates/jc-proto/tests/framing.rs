@@ -4,7 +4,7 @@ use std::io::{self, Cursor, Read};
 
 use jc_proto::frame::{self, Decoded, FrameError, DEFAULT_MAX_FRAME, HEADER_LEN};
 use jc_proto::message::{read_message, write_message, ProtoError};
-use jc_proto::{Key, Request, Response};
+use jc_proto::{CandidateDetail, CandidateSource, Key, Request, Response, SegmentInfo};
 
 /// 每次 `read` 最多回 1 byte，模擬資料一段一段到達。
 struct OneByteReader<R>(R);
@@ -33,6 +33,9 @@ fn frame_round_trip_keeps_empty_and_non_ascii_text() {
             preedit: String::new(),
             cursor: 0,
             candidates: Vec::new(),
+            details: Vec::new(),
+            segments: Vec::new(),
+            highlighted: 0,
             cursor_rune: 0,
             suggestion: None,
             label: None,
@@ -42,6 +45,35 @@ fn frame_round_trip_keeps_empty_and_non_ascii_text() {
             preedit: "ㄇㄚˊ ㄆㄛˊ".into(),
             cursor: 5,
             candidates: vec!["麻婆".into(), "痲婆".into()],
+            details: vec![
+                CandidateDetail {
+                    reading: "ㄇㄚˊㄆㄛˊ".into(),
+                    source: CandidateSource::Lexicon,
+                    cost: 18,
+                    learned: false,
+                },
+                CandidateDetail {
+                    reading: "ㄇㄚˊㄆㄛˊ".into(),
+                    source: CandidateSource::Personal,
+                    cost: -2,
+                    learned: true,
+                },
+            ],
+            segments: vec![
+                SegmentInfo {
+                    start: 0,
+                    end: 4,
+                    mode: "zhuyin".into(),
+                    script: "bopomofo".into(),
+                },
+                SegmentInfo {
+                    start: 4,
+                    end: 5,
+                    mode: "mixed".into(),
+                    script: "symbol".into(),
+                },
+            ],
+            highlighted: 1,
             cursor_rune: 5,
             suggestion: Some("婆".into()),
             label: Some("common".into()),
@@ -125,6 +157,9 @@ fn message_over_custom_limit_is_rejected() {
         preedit: "x".repeat(64),
         cursor: 64,
         candidates: Vec::new(),
+        details: Vec::new(),
+        segments: Vec::new(),
+        highlighted: 0,
         cursor_rune: 64,
         suggestion: None,
         label: None,

@@ -1,5 +1,5 @@
 {
   "op": "ready",
-  "protocol": 2,
+  "protocol": 3,
   "engine": "jc-engine/0.1.0"
 }
