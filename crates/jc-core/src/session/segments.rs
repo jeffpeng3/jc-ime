@@ -824,6 +824,9 @@ mod tests {
     }
 
     /// 手動片段只存活到下一次按鍵。
+    ///
+    /// `x` 是注音的 ㄌ；新按鍵會留下未完成注音，片段因此變成兩段。這裡要
+    /// 確認的是手動標記失效，片段由目前的組字狀態重新推導，而不是片段數不變。
     #[test]
     fn test_manual_segments_expire_on_next_key() {
         let mut s = session();
@@ -831,8 +834,15 @@ mod tests {
         assert!(s.replace_segment(0, Segment::new(0, 3, Mode::Ja, Script::Kana)));
         assert_eq!(s.segments()[0].mode, Mode::Ja);
         s.press(Key::char('x', false));
-        assert_eq!(s.segments().len(), 1);
-        assert_eq!(s.segments()[0].mode, Mode::Zh, "下一次按鍵重新推導");
+        let preedit = s.preedit();
+        let segments = s.segments();
+        assert_eq!(segments.len(), 2, "未完成注音自成一段");
+        assert_eq!(&preedit[segments[0].start..segments[0].end], "我");
+        assert_eq!(&preedit[segments[1].start..segments[1].end], "ㄌ");
+        assert!(
+            segments.iter().all(|segment| segment.mode == Mode::Zh),
+            "下一次按鍵重新推導"
+        );
     }
 
     /// 對照 `TestSessionSegmentSelectionLocksOnlyThatSegment` 的狀態行為。

@@ -1383,7 +1383,11 @@ mod tests {
         controller.input(&units("あいうえおか"), &JaContext::default());
         let seen = gate.seen.borrow();
         assert_eq!(seen.len(), 2);
-        assert_eq!(seen[1].reading, "あいうえおか");
+        assert_eq!(seen[0].reading, "あいうえお");
+        assert_eq!(seen[0].left, "", "第一次轉換還沒有鎖定");
+        // 逐字変換只送尚未鎖定的尾端；已鎖定的詞面接在左文脈，不重複放進
+        // 讀音，否則模型輸出會跟鎖定前段重疊。
+        assert_eq!(seen[1].reading, "おか", "只轉換尚未鎖定的尾端");
         assert_eq!(seen[1].left, "[あい][うえ]", "左文脈要含已鎖定的詞面");
     }
 
