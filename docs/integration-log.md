@@ -1255,3 +1255,9 @@
 - `cargo fmt --all -- --check`：exit 0。
 - 題庫：`zh-golden` **45/45**、`ja modern-500 --neural quality` **93.6%**、`--neural off` **86.0%**、`fuzzy` **44.5%**、`mixed` **6/6**。
 - `jc-settings-ui` 測試本機缺 `libxcb`／`libxkbcommon`，依指示只由 CI 驗。
+
+### CI（push `b21eafe`，run 44680265069）
+
+- linux (core)：**success**（clippy 與測試都過，含 `jc-settings-ui` 的連結與測試）。
+- windows (msvc)：**success**（build 與 test 都過）。
+- 沒有需要重試或回報的失敗測試。
