@@ -228,14 +228,62 @@ Cache saved with key: ...                # 存檔
 Cache Size: ~NNN MB (NNNNNNNN B)         # 這次存了多大
 ```
 
-`release-*` 的快取綁 tag：不同 tag 互不相通，`v0.1.1` 讀不到 `v0.1.0` 存的快取，只有
-重跑同一個 tag 才省得到。
+`release-*` 的快取寫在觸發的 ref scope：不同 tag 互不相通，`v0.1.1` 讀不到 `v0.1.0`
+存的快取。要讓 tag 觸發的 release 命中快取，得先在 `main` 手動暖機，讓它從預設分支
+fallback，程序見下面的「快取與發版流程」。
 
 快取上限是每個 repo 10 GB（超過按最久未存取淘汰，7 天沒用到自動刪）。本機 debug 建置
 量到 38 個測試執行檔共 4.5 GB，CI 的快取估計每個 OS 2–4 GB（壓縮後），Linux 加 Windows
 可能吃掉一半以上的額度。接近上限時先把 `ci-windows` 的 `cache-all-crates` 改成
 `"false"`，再不夠才關 `ci-linux` 的；release 的三個 job 維持只快取依賴。細節與清理
 指令見 `docs/port/ci-cache.md`。
+
+## 快取與發版流程
+
+### 發現：tag 觸發的 Windows job 每次都 miss
+
+rc.5 與 rc.7 的 `windows` job log 都印出 `No cache found.`。跑完後
+`Post Run Swatinem/rust-cache` 又存了一份 967 MB 快取，等於每次重蓋。
+
+key 的組成欄位相同：
+
+```text
+Restore Key: v0-rust-release-windows-Windows_NT-x64-ea627442
+Cache Key:   v0-rust-release-windows-Windows_NT-x64-ea627442-9e16f66d
+```
+
+差別在 scope。release 由 `push tag v*` 觸發，快取寫在該 tag 的 scope；GitHub 只允許
+從同一 ref 或預設分支 `main` 還原。下一次 tag 是新 ref，讀不到前一個 tag 存的快取，
+所以每次都 miss。
+
+rc.7 windows job 的實際時間分佈：
+
+| 步驟 | 時間 |
+|---|---:|
+| 驗證資料包（x64 release 建 `jc-cli`） | 5m55s |
+| 建置 MSI（x64 五個 crate + i686 `jc-tsf` + helper + 900 MB payload + WiX） | 19m19s |
+| 存快取 | 59s |
+
+### 操作順序
+
+1. 版本號與 `Cargo.toml` 改好、commit 並 push 到 `main`。
+2. 到 Actions → Release → Run workflow，在 `main` 手動觸發一次。這次會跑
+   `verify` → `windows` → `linux`，把 `release-windows` 快取寫在 `main` 的 scope。
+   確認 windows job 的 log 出現 `Cache saved with key:` 再繼續。
+3. 建立並 push tag。tag 觸發的 release 會從預設分支 fallback 還原剛才那份，
+   Windows job 不用從空快取開始。
+4. 檢查 `publish` 建立或更新的 Release assets、說明與 checksum。
+
+`workflow_dispatch` 不會建立 GitHub Release。`publish` 的條件維持
+`github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')`，暖機 run 只留
+artifact，可以重複觸發。
+
+bump 版本會改 `Cargo.lock`，精確 key 末段的 hash 跟著變。
+`Swatinem/rust-cache` 還原時先用 restore key 前綴比對，仍會命中 `main` 上先前存的
+那份；差別只是 `Cargo.lock` 變動部分的增量 rebuild。
+
+不要在 `ci.yml` 加「每次 push 都跑 release build」的 job 來暖機：每次 main CI 會多
+約 20 分鐘。手動 `workflow_dispatch` 就夠。
 
 ## Artifact 內容
 

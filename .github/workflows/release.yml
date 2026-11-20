@@ -40,7 +40,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       msi_version: ${{ steps.version.outputs.msi_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # 與 rust-toolchain.toml 同一版（action 不讀該檔案）。
       - uses: dtolnay/rust-toolchain@master
@@ -143,7 +143,7 @@ jobs:
       DATA_BUNDLE_URL: ${{ github.event.inputs.data_bundle_url || secrets.JC_DATA_BUNDLE_URL || vars.JC_DATA_BUNDLE_URL }}
       DATA_BUNDLE_SHA256: ${{ github.event.inputs.data_bundle_sha256 || secrets.JC_DATA_BUNDLE_SHA256 || vars.JC_DATA_BUNDLE_SHA256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # 與 rust-toolchain.toml 同一版（action 不讀該檔案）。
       - uses: dtolnay/rust-toolchain@master
@@ -354,7 +354,7 @@ jobs:
             Set-Content -Path "$msi.sha256" -Encoding ascii
 
       - name: 上傳 Windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windows-msi-${{ needs.verify.outputs.version }}
           if-no-files-found: error
@@ -375,7 +375,7 @@ jobs:
     env:
       RELEASE_VERSION: ${{ needs.verify.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # 與 rust-toolchain.toml 同一版（action 不讀該檔案）。
       - uses: dtolnay/rust-toolchain@master
@@ -432,7 +432,7 @@ jobs:
           cat "target/release-package/${pkg}.tar.gz.sha256"
 
       - name: 上傳 Linux artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: linux-tar-${{ needs.verify.outputs.version }}
           if-no-files-found: error
@@ -462,16 +462,16 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 下載 Windows artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: windows-msi-${{ needs.verify.outputs.version }}
           path: dist/windows
 
       - name: 下載 Linux artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: linux-tar-${{ needs.verify.outputs.version }}
           path: dist/linux

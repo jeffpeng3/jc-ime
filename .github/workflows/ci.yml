@@ -29,7 +29,7 @@ jobs:
       contents: read
       actions: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # 版本由 rust-toolchain.toml 決定；這裡寫死同一版，因為 action 不會讀
       # 該檔案。兩邊要一起改（見 docs/port/toolchain-pin.md）。
       - uses: dtolnay/rust-toolchain@master
@@ -99,7 +99,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # 與 rust-toolchain.toml 同一版（action 不讀該檔案）。
       - uses: dtolnay/rust-toolchain@master
         with:

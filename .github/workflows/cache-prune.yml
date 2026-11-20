@@ -32,7 +32,7 @@ jobs:
       MAX_IDLE_DAYS: "7"
       SKIP_RECENT_HOURS: "6"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 清理舊快取
         env:
