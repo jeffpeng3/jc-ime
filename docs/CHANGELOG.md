@@ -4,6 +4,15 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.3 - 2026-11-20
+
+### 修正
+
+- Windows 安裝包：TSF 的 cdylib 產物是 `jc_tsf.dll`，打包時才改名成
+  `jc-tsf.dll`／`jc-tsf-x86.dll`；先前找不到檔案導致 MSI 建置失敗。
+- Windows 建置：`+crt-static` 移到 `.cargo/config.toml`，不再於安裝腳本裡改
+  `RUSTFLAGS`，避免同一份程式被完整重編兩次（release 約省 10 分鐘）。
+
 ## 0.1.0-rc.2 - 2026-11-20
 
 ### 變更
