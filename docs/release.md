@@ -190,6 +190,44 @@ Windows 建置必須指定 target（`--target x86_64-pc-windows-msvc`），否�
 
 `release.yml` 不跑 `cargo fmt`、clippy；那些由 `ci.yml` 在日常 push／PR 負責。
 
+## 建置快取
+
+release 與 CI 都用 `Swatinem/rust-cache@v2`，只快取依賴（candle、GPUI 等），
+不快取 workspace crate 的產物，避免拿到過期的自家 binary。
+
+| Workflow | Job | shared-key |
+|---|---|---|
+| `ci.yml` | `linux` | `ci-linux` |
+| `ci.yml` | `windows` | `ci-windows` |
+| `release.yml` | `verify` | `release-linux` |
+| `release.yml` | `linux` | `release-linux`（與 `verify` 共用） |
+| `release.yml` | `windows` | `release-windows` |
+
+`verify` 與 `linux（tar.gz）` 同為 ubuntu-24.04、同為 release profile、同一次 run、
+同一份 `Cargo.lock`，因此共用 `release-linux`：`verify` 先跑並寫入快取，打包 job
+直接命中。CI 是 debug profile，`target/debug` 與 `target/release` 的產物不能互換，
+所以 `ci-*` 與 `release-*` 不共用。
+
+第一次跑一定不會命中，這是正常的：job 照常編譯，結束後才存檔。第二次（key 相同）
+開始變快。
+
+確認命中與否，開 run 的 log 找這幾行：
+
+```text
+Cache not found for input keys: ...      # 第一次，miss
+Cache restored from key: ...             # 之後，hit
+Cache saved with key: ...                # 存檔
+Cache Size: ~NNN MB (NNNNNNNN B)         # 這次存了多大
+```
+
+改 `Cargo.lock` 或 rustc 版本會 miss 一次，之後再命中。`release-*` 的快取綁 tag：
+不同 tag 互不相通，`v0.1.1` 讀不到 `v0.1.0` 存的快取，只有重跑同一個 tag 才省得到。
+
+快取上限是每個 repo 10 GB（超過按最久未存取淘汰，7 天沒用到自動刪）。接近上限時，
+先把最大的那一組改成 `cache-targets: "false"`，只留 `~/.cargo` 的 registry／git；
+取捨是依賴每次重編、只省下載。查看用量與清理指令見
+`docs/port/ci-cache.md`。
+
 ## Artifact 內容
 
 ### Windows
