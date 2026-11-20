@@ -1470,3 +1470,11 @@ gate（固定工具鏈）：
 ### CI（push `28c93a6`，run 44744661803；`0.1.0-rc.2`）
 
 - linux (core)：success；windows (msvc)：success。
+
+## 2026-11-20 17:50 mixed-latin（`a660183` → `e3dbb1d`）
+
+- 修正 `split_cmd` 的 `redundant_closure` 與 `ja/live.rs` 的 `needless_bool`。`ja/live.rs` 的 `should_convert` 有衝突，
+  取 main 已重構的版本（`reached_min_units || (boundary && is_boundary())`，語意等價且已是 clippy-clean）。
+- gate：test exit 0（54 targets、1286 passed、0 failed）、clippy exit 0、fmt exit 0。
+- 題庫（DP 切分預設關閉）：zh-golden **45/45**、ja **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：空。
