@@ -1281,3 +1281,46 @@ clippy exit 0；fmt exit 0。題庫：zh-golden **45/45**、quality **93.6%**、
 
 - linux (core)：success，06:13 總時長約 6 分 18 秒（05:47:31–05:53:49）。
 - windows (msvc)：success，約 13 分 12 秒（05:47:31–06:00:43）。
+
+## 2026-11-20 14:10 ci-speed 與後續六條
+
+### ci-speed（`d43cb9e` → `3b48e55`，push 後 run 44685683929）
+
+改動：windows job 不再 `cargo build --release`（只 `cargo test`）、兩個 job 加 Cargo registry／git 快取、`CARGO_INCREMENTAL=0`。
+YAML 用 `python3 -c "yaml.safe_load(...)"` 驗過。
+
+CI 耗時對照：
+| Job | 改前（run 44683332668） | 改後（run 44685683929） |
+|---|---|---|
+| linux (core) | 6 分 18 秒 | **6 分 09 秒** |
+| windows (msvc) | 13 分 12 秒 | **7 分 38 秒** |
+
+兩個 job 都 success；windows 少掉一次 release 建置，時間減約 42%。
+
+### 合併清單（依序）
+
+| Branch | Commit | Merge commit |
+|---|---|---|
+| `candidate-click` | `122a6f8` | `e00ce7c` |
+| `installer-payload` | `7582804` | `ba3c783` |
+| `manifest-tokenizer` | `0a77ae0` | `80f0334` |
+| `settings-neural` | `26fd626` | `040713e` |
+| `pipe-name` | `eeeec1d` | `f747861` |
+| `os-isolation` | `17de715` | `2d92d81` |
+| `release-flow` | `d8433d0` | `2027435` |
+
+- `manifest-tokenizer` 與 `installer-payload` 同改 `installer/jc-ime.wxs`：合併時兩邊都保留，`legal\` 目錄與
+  `models/quant/jinen-v2-xsmall/tokenizer.json` 都在同一份 payload 清單（WXS 內可 grep 到兩者）。
+- `installer/check-payload.py` 需要 `target/installer/payload`，本機沒有產生 payload，無法完整跑；WXS 條目已用 grep 核對。
+- `os-isolation` 與 `ci-speed` 的 `ci.yml` 衝突兩邊都保留：快取＋只跑 debug test，另加
+  `cargo check --workspace --all-targets --exclude jc-cli --exclude jc-settings-ui --target x86_64-pc-windows-msvc` 守門。
+- `release-flow` 的 `installer/build.ps1` 只有檔頭說明衝突，合併保留「使用或產生 manifest」與「授權文件進 payload」兩句。
+
+### 最後 gate（HEAD `2027435`）
+
+- `RUST_FONTCONFIG_DLOPEN=1 cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、1231 passed、0 failed）。
+- clippy exit 0；fmt exit 0。
+- `cargo check --workspace --all-targets --target x86_64-pc-windows-msvc`：**本機失敗**，`ring v0.17.14` 的 build script 需要 MSVC 工具鏈；
+  依指示不算阻擋，Windows 目標由 CI 的 windows (msvc) job 驗。
+- 題庫：zh-golden **45/45**、quality **93.6%**、off **86.0%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：**空**。
