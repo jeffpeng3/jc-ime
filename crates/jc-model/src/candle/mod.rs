@@ -696,6 +696,22 @@ fn inference(err: candle_core::Error) -> ModelError {
     ModelError::Candle(err.to_string())
 }
 
+/// 載入 safetensors 權重，回傳裝置與 [`VarBuilder`]。
+///
+/// 供注音選字模型使用：它與 encoder 共用同一份權重檔載入邏輯，但分類頭與
+/// embedding 的綁定方式不同，所以只共用這一步。
+pub(crate) fn load_weights(weights: &Path) -> Result<(Device, VarBuilder<'static>)> {
+    // VarBuilder 內含 mmap 的 tensor 資料，與 `weights` 的 lifetime 無關；
+    // 這裡延長成 'static 讓呼叫端能把 encoder 與分類頭一起載入。
+    let device = Device::Cpu;
+    // SAFETY: 權重檔在行程生命週期內不會被改寫；mmap 只讀取。
+    let builder: VarBuilder<'static> = unsafe {
+        VarBuilder::from_mmaped_safetensors(&[weights.to_path_buf()], DType::F32, &device)
+    }
+    .map_err(inference)?;
+    Ok((device, builder))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
