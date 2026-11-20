@@ -42,7 +42,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # 與 rust-toolchain.toml 同一版（action 不讀該檔案）。
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          components: rustfmt, clippy
 
       - name: 系統依賴（GPUI Kit 的 X11／Wayland／字型）
         run: |
@@ -138,7 +142,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # 與 rust-toolchain.toml 同一版（action 不讀該檔案）。
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          components: rustfmt, clippy
 
       # 32 位元的 TSF DLL：build.ps1 會另外建 i686-pc-windows-msvc 的 jc-tsf，
       # 讓舊版 Office 等 32 位元程式也載入得到輸入法。
@@ -365,7 +373,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # 與 rust-toolchain.toml 同一版（action 不讀該檔案）。
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          components: rustfmt, clippy
 
       - name: 系統依賴（GPUI Kit 的 X11／Wayland／字型）
         run: |
