@@ -607,18 +607,32 @@ impl Session {
             self.segments.push(Segment::new(start, at, mode, script));
         }
         // 待定按鍵是英文詞時，候選先放原按鍵，再放注音顯示與英文前綴補完。
+        // 同一個拼法有學過的修正時，修正直接排第一，原按鍵留在第二項。
         let raw = self.ascii.pending().to_string();
         if raw.is_empty() {
             return;
         }
         let limit = self.max_candidates();
+        let mut seen = vec![raw.to_lowercase()];
+        if let Some(learned) = self.personal.english_correction(&raw) {
+            let learned = learned.to_string();
+            let key = learned.to_lowercase();
+            if !seen.contains(&key) {
+                seen.push(key);
+                self.candidates.push(Candidate::new(
+                    learned,
+                    raw.clone(),
+                    0,
+                    CandidateSource::Personal,
+                ));
+            }
+        }
         self.candidates.push(Candidate::new(
             raw.clone(),
             raw.clone(),
             0,
             CandidateSource::Literal,
         ));
-        let mut seen = vec![raw.to_lowercase()];
         // 整串可以組成注音時，原按鍵之外另列注音本身（`co6` 的 ㄏㄟˊ）。
         if let Some(text) = self.ascii.reading_candidate(&raw, &self.lexicon) {
             if !seen.contains(&text) {
@@ -631,7 +645,7 @@ impl Session {
                 ));
             }
         }
-        for candidate in english_candidates(&raw, limit) {
+        for candidate in english_candidates(&self.personal, &raw, limit) {
             let key = candidate.surface.to_lowercase();
             if seen.contains(&key) {
                 continue;
@@ -694,15 +708,19 @@ impl Session {
     }
 }
 
-/// 英文片段的候選：前綴補完先排，拼字建議接在後面。
+/// 英文片段的候選：學過的修正先排，前綴補完次之，拼字建議接在後面。
 ///
 /// 對照前身 `core/session/english_autocomplete.go` 的
 /// `refreshEnglishCandidates` 與 `core/session/mixed.go` 的
-/// `openMixedCandidates`：最多保留 3 個拼字建議，剩下的名額才給前綴補完，
-/// 這樣補完不會把拼字建議擠掉。拼字建議直接用已收進來的
-/// [`crate::mixed::Dictionary::corrections`]，沒有另寫演算法；打對的完整單字
-/// 不會有建議，建議保留查詢時的大小寫。
-pub(super) fn english_candidates(raw: &str, limit: usize) -> Vec<Candidate> {
+/// `openMixedCandidates`：先用內建詞表算出前綴補完與拼字建議，再問
+/// [`crate::personal::Store`] 有沒有學過的修正；學過的排在內建候選前面。
+/// 最多保留 3 個拼字建議，剩下的名額才給前綴補完，這樣補完不會把拼字建議
+/// 擠掉。打對的完整單字不會有建議，建議保留查詢時的大小寫。
+pub(super) fn english_candidates(
+    personal: &crate::personal::Store,
+    raw: &str,
+    limit: usize,
+) -> Vec<Candidate> {
     if limit == 0 || raw.chars().count() < 2 || !raw.chars().all(|c| c.is_ascii_alphabetic()) {
         return Vec::new();
     }
@@ -734,8 +752,24 @@ pub(super) fn english_candidates(raw: &str, limit: usize) -> Vec<Candidate> {
         out.push(candidate);
     }
     out.extend(corrections);
-    out.truncate(limit);
-    out
+    // 學過的修正優先；同一批候選內依權重排序，被跳過的仍然保留。
+    let mut learned: Vec<Candidate> = Vec::new();
+    for candidate in personal.english_candidates(raw) {
+        let key = candidate.text.to_lowercase();
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        learned.push(Candidate::new(
+            candidate.text.clone(),
+            candidate.text,
+            0,
+            CandidateSource::Personal,
+        ));
+    }
+    learned.extend(out);
+    learned.truncate(limit);
+    learned
 }
 
 #[cfg(test)]

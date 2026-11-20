@@ -1411,6 +1411,107 @@ mod tests {
         );
     }
 
+    fn english_session() -> Session {
+        Session::new(SessionConfig::new(Mode::En))
+    }
+
+    fn candidate_index(session: &Session, surface: &str) -> Option<usize> {
+        session
+            .candidates()
+            .iter()
+            .position(|candidate| candidate.surface == surface)
+    }
+
+    fn accept_english(session: &mut Session, surface: &str) -> String {
+        let index = candidate_index(session, surface).expect("候選要有指定的字面");
+        session.select(index);
+        session.press(Key::new(KeyCode::Enter, None, false));
+        session.commit()
+    }
+
+    /// 接受 `recieve → receive` 後，再打同一個拼法時學到的修正排第一。
+    #[test]
+    fn test_english_learned_correction_ranks_first() {
+        let mut s = english_session();
+        type_keys(&mut s, "recieve");
+        assert_eq!(accept_english(&mut s, "receive"), "receive");
+
+        type_keys(&mut s, "recieve");
+        assert_eq!(s.candidates()[0].surface, "receive");
+        assert!(candidate_index(&s, "recieve").is_some(), "原字仍留在候選裡");
+    }
+
+    /// 連續跳過學過的修正 3 次後不再排第一，但仍在候選中。
+    #[test]
+    fn test_english_skip_demotes_learned_correction() {
+        let mut s = english_session();
+        type_keys(&mut s, "recieve");
+        assert_eq!(accept_english(&mut s, "receive"), "receive");
+
+        for _ in 0..crate::personal::SKIP_LIMIT {
+            type_keys(&mut s, "recieve");
+            assert_eq!(accept_english(&mut s, "recieve"), "recieve");
+        }
+
+        type_keys(&mut s, "recieve");
+        assert_ne!(s.candidates()[0].surface, "receive");
+        assert!(
+            candidate_index(&s, "receive").is_some(),
+            "降權不是刪除，修正仍要留在候選裡"
+        );
+    }
+
+    /// 跳過降權之後手選一次修正，下一次就恢復第一。
+    #[test]
+    fn test_english_manual_choice_restores_learned_correction() {
+        let mut s = english_session();
+        type_keys(&mut s, "recieve");
+        assert_eq!(accept_english(&mut s, "receive"), "receive");
+        for _ in 0..crate::personal::SKIP_LIMIT {
+            type_keys(&mut s, "recieve");
+            assert_eq!(accept_english(&mut s, "recieve"), "recieve");
+        }
+        type_keys(&mut s, "recieve");
+        assert_ne!(s.candidates()[0].surface, "receive");
+
+        assert_eq!(accept_english(&mut s, "receive"), "receive");
+        type_keys(&mut s, "recieve");
+        assert_eq!(s.candidates()[0].surface, "receive");
+    }
+
+    /// 5 個字母的拼法只記錄證據，排序維持原樣。
+    #[test]
+    fn test_english_short_correction_records_only() {
+        let mut s = english_session();
+        type_keys(&mut s, "hellp");
+        assert_eq!(accept_english(&mut s, "hello"), "hello");
+        assert_eq!(
+            s.personal().english_correction("hellp"),
+            None,
+            "短於最短觸發長度只記錄"
+        );
+
+        type_keys(&mut s, "hellp");
+        assert_eq!(s.candidates()[0].surface, "hellp");
+        assert!(
+            candidate_index(&s, "hello").is_some(),
+            "內建拼字建議不受學習影響"
+        );
+    }
+
+    /// 沒有學習紀錄時，英文候選與改動前相同：原字第一，拼字建議在後面。
+    #[test]
+    fn test_english_without_learning_keeps_existing_order() {
+        let mut s = english_session();
+        type_keys(&mut s, "recieve");
+        assert_eq!(s.candidates()[0].surface, "recieve");
+        assert!(candidate_index(&s, "receive").is_some());
+
+        let mut correct = english_session();
+        type_keys(&mut correct, "hello");
+        assert_eq!(correct.candidates().len(), 1, "打對的字沒有其他候選");
+    }
+
     /// 混合模式的待定英文詞也能看到拼字建議，選了就取代原按鍵。
     #[test]
     fn test_mixed_candidates_include_spelling_suggestions() {

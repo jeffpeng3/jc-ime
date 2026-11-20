@@ -42,7 +42,9 @@ use crate::score::BigramLm;
 use crate::zh::syllable::{parse_reading, Syllable};
 
 pub use corrections::{Correction, RejectedSeg};
-pub use english::{english_token, EnglishCandidate, EnglishCommit, EnglishEvidence, NoEnglish};
+pub use english::{
+    english_token, EnglishCandidate, EnglishCommit, EnglishCorrection, EnglishEvidence, NoEnglish,
+};
 pub use evidence::UsageEvidence;
 pub use language::{
     CrossLanguage, LanguageEvidence, LanguageId, LanguageNamespace, LanguageSelection,
@@ -343,6 +345,11 @@ pub struct Store {
     pub pronouns: BTreeMap<String, PronounHabit>,
     /// 正規化英文詞 → 證據。
     pub english: BTreeMap<String, EnglishEvidence>,
+    /// 打錯的英文拼法（小寫）→ 學到的修正。
+    ///
+    /// 只記使用者接受過的拼字修正；內建詞表仍然先查，這份表讓學過的修正
+    /// 排到前面。連續跳過 [`SKIP_LIMIT`] 次後降權，手選一次就恢復。
+    pub english_pairs: BTreeMap<String, EnglishCorrection>,
     /// 表情選單顯示順序。
     pub emoji_recent: Vec<String>,
     /// 表情常用分數。
@@ -398,6 +405,7 @@ impl Default for Store {
             zhuyin_keys: BTreeMap::new(),
             pronouns: BTreeMap::new(),
             english: BTreeMap::new(),
+            english_pairs: BTreeMap::new(),
             emoji_recent: Vec::new(),
             emoji_stats: HashMap::new(),
             palette_tab: String::new(),
