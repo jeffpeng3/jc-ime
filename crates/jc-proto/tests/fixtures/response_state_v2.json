@@ -1,0 +1,10 @@
+{
+  "op": "state",
+  "preedit": "ㄨㄛˇ",
+  "cursor": 3,
+  "candidates": ["我", "窩"],
+  "cursor_rune": 3,
+  "suggestion": "ˇ",
+  "label": "常用字",
+  "navigating": true
+}
