@@ -206,7 +206,9 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
                         Err(error) => report.fail(
                             "5. Activate",
                             format!(
-                                "ITfTextInputProcessor::Activate 回 HRESULT {}",
+                                "ITfTextInputProcessor::Activate 回 HRESULT {}；詳細步驟見 TSF 日誌：\
+                                 設定環境變數 JC_TSF_LOG=1 後重跑，會追加到 %LOCALAPPDATA%\\jc-ime\\tsf.log\
+                                 （沒設定時只走 OutputDebugStringW，用 DebugView 才看得到）",
                                 report::hex(error.code().0 as u32)
                             ),
                         ),

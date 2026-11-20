@@ -104,6 +104,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             return Ok(());
         };
 
+        logging::debug(format!("Activate：開始（client_id = {tid}）"));
+
         // sink 就是這個物件本身；這兩個引用會在 Deactivate 明確丟掉，否則會
         // 形成自己引用自己的循環，`DllCanUnloadNow` 永遠不會回 S_OK。
         let key_sink: ITfKeyEventSink =
@@ -115,12 +117,16 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
         match Control::start(Box::new(control), key_sink, thread_sink) {
             Ok(control) => {
                 this.control.replace(Some(control));
+                logging::debug("Activate：完成");
                 logging::info("文字服務已啟用");
                 Ok(())
             }
             Err(error) => {
                 // 啟用失敗要讓 TSF 知道，否則它會以為這個 TIP 可以使用。
-                logging::warn(format!("啟用失敗：{error}"));
+                logging::warn(format!(
+                    "Activate：失敗，HRESULT = {}：{error}",
+                    logging::hresult(error.code())
+                ));
                 Err(error)
             }
         }

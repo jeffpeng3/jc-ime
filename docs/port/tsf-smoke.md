@@ -166,6 +166,7 @@ x64 裝好、x86 沒裝（例如只跑過 `regsvr32 jc-tsf.dll`）時，這一�
 | 4 | `0x800401F0`（`CO_E_NOTINITIALIZED`） | 前面 `CoInitializeEx` 失敗（`[INFO]` 那行不是 `0x00000000`） |
 | 5 | `ITfThreadMgr::Activate` 失敗 | TSF 已被同執行緒的其他程式佔用、COM apartment 不對 |
 | 5 | `ITfTextInputProcessor::Activate` 回 `0x80004005` | `Control::start` 建訊息視窗或 `AdviseKeyEventSink` 失敗（看 `OutputDebugStringW` 的 `[jc-tsf]` 記錄） |
+| 5 | `ITfTextInputProcessor::Activate` 回 `0x80070057`（`E_INVALIDARG`） | 三種可能：`CreateWindowExW` 失敗（`GetLastError` 被轉成 HRESULT，例如 87）、`AdviseKeyEventSink`、`AdviseSink`。設定 `JC_TSF_LOG=1` 重跑，`%LOCALAPPDATA%\jc-ime\tsf.log` 會指出是哪一行；見 `docs/port/activate-diagnose.md` |
 | 5 | `0x8001010E`（`RPC_E_WRONG_THREAD`） | TIP 物件被跨 apartment 呼叫；`Activate` 必須在建立它的執行緒 |
 | 6 | 連不上 | 引擎沒開、pipe 名稱不同（`HKCU\Software\jc-ime\EnginePipe`）、連線被真正的輸入法佔住 |
 | 6 | `VersionMismatch` | 引擎與 `jc-proto` 的 `PROTOCOL_VERSION` 不同 |

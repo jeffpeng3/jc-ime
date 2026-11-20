@@ -150,6 +150,7 @@
 | [`tsf-candidates.md`](tsf-candidates.md) | `ITfCandidateListUIElement` 候選窗與分頁 |
 | [`tsf-polish.md`](tsf-polish.md) | 組字虛線底線與候選窗滑鼠點選 |
 | [`tsf-smoke.md`](tsf-smoke.md) | 免管理員的 TSF 註冊與載入冒煙測試 |
+| [`activate-diagnose.md`](activate-diagnose.md) | `Activate` 回 `0x80070057` 的逐步日誌與 `HINSTANCE` 修正 |
 | [`tsf-installer.md`](tsf-installer.md) | per-machine MSI、TIP 註冊與反安裝 |
 | [`installer-payload.md`](installer-payload.md) | 授權文件與 Jinen tokenizer 進 MSI payload |
 | [`candidate-click.md`](candidate-click.md) | 滑鼠點選改成只送一個數字鍵 |
