@@ -96,6 +96,10 @@ OUT_DIR=/tmp/opencode \
 scripts/data-bundle.sh /mnt/work/jc/jc-ime-data
 ```
 
+下載項（`shipped: false`）缺席是正常狀態：`jc-cli data verify` 的人類可讀輸出
+不顯示這些項目，末尾摘要也只算顯示出來的 check。`--json` 仍輸出完整 report；
+引擎啟動日誌會個別提示缺席的下載項，相關功能維持停用。
+
 腳本用 `tar --sort=name`、固定 mtime、固定 UID/GID 與 `gzip -n`／`zstd -n`
 讓同一份 manifest 產生相同 SHA-256。沒有 `zstd` 時會退回 `.tar.gz` 並在輸出
 說明。檔名預設是 `jc-ime-data-<manifest version>.tar.zst`。

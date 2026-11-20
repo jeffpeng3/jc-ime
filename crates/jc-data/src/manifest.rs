@@ -91,8 +91,6 @@ pub enum DataRole {
     JaTokenizer,
     /// 注音選字模型（Funmula，僅下載）。
     ZhSelect,
-    /// 注音標點模型（Funmula，僅下載；2026-11-20 起不再載入）。
-    ZhPunct,
 }
 
 impl DataRole {
@@ -106,7 +104,6 @@ impl DataRole {
             Self::JaNeural => "ja_neural",
             Self::JaTokenizer => "ja_tokenizer",
             Self::ZhSelect => "zh_select",
-            Self::ZhPunct => "zh_punct",
         }
     }
 }
@@ -497,7 +494,7 @@ const ZH_LICENSES: &[&str] = &[
 /// 目前產品資料檔的清單。
 ///
 /// 注音詞典與語言模型的授權見 `legal/licenses/ZH-DATA-NOTICE.txt`；Funmula
-/// 的兩個模型只允許下載，`shipped` 固定 `false`。
+/// 的選字模型只允許下載，`shipped` 固定 `false`。
 pub const CATALOG: &[DataFileSpec] = &[
     DataFileSpec {
         role: DataRole::JaLexicon,
@@ -558,24 +555,6 @@ pub const CATALOG: &[DataFileSpec] = &[
         candidates: &["models/zh-select/vocab.json"],
         url: Some(
             "https://huggingface.co/Funmula/0c-sequence-d512/resolve/3533e34ef25896afeacc928d136ba7f35783bba7/vocab.json",
-        ),
-    },
-    DataFileSpec {
-        role: DataRole::ZhPunct,
-        licenses: &["L-12"],
-        shipped: false,
-        candidates: &["models/zh-punct/model.onnx"],
-        url: Some(
-            "https://huggingface.co/Funmula/0c-punct-d512/resolve/105c2770e0b7cf4ce44a792b3b186000dd1727d9/model.onnx",
-        ),
-    },
-    DataFileSpec {
-        role: DataRole::ZhPunct,
-        licenses: &["L-12"],
-        shipped: false,
-        candidates: &["models/zh-punct/vocab.json"],
-        url: Some(
-            "https://huggingface.co/Funmula/0c-punct-d512/resolve/105c2770e0b7cf4ce44a792b3b186000dd1727d9/vocab.json",
         ),
     },
 ];

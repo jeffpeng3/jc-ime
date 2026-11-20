@@ -80,7 +80,7 @@ impl DownloadState {
 pub struct DownloadStatus {
     /// 相對於資料根目錄的路徑。
     pub path: String,
-    /// 檔案角色（`zh_select`、`zh_punct`）。
+    /// 檔案角色。
     pub role: DataRole,
     /// 下載來源；manifest 沒寫時是 `None`，下載器會拒絕該項。
     pub url: Option<String>,
@@ -354,19 +354,15 @@ mod tests {
     }
 
     #[test]
-    fn real_root_reports_four_download_items() {
+    fn real_root_reports_download_items() {
         let Some(root) = jc_testdata::root() else {
             eprintln!("缺少測試資料：JC_TESTDATA");
             return;
         };
-        let path = root.join(crate::manifest::MANIFEST_FILE);
-        if !path.is_file() {
-            eprintln!("資料根目錄沒有 manifest.json，略過：{}", path.display());
-            return;
-        }
-        let manifest = DataManifest::load(&path).unwrap();
+        // 用現行 catalog 重新產生，避免讀到舊 manifest 裡已移除的角色。
+        let manifest = DataManifest::generate_now(&root).unwrap();
         let report = DownloadReport::inspect(&root, &manifest);
-        assert_eq!(report.items.len(), 4);
+        assert_eq!(report.items.len(), 2);
         assert!(
             report.items.iter().all(|item| item.url.is_some()),
             "下載項要帶 URL"
