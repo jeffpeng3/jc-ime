@@ -303,6 +303,72 @@ pub extern "system" fn DllUnregisterServer() -> HRESULT {
     }
 }
 
+/// 冒煙測試用的按鍵直驅匯出：虛擬鍵 → 引擎 → 回應碼。
+///
+/// 不經過 TSF 的 context 與組字套用，只驗證「按鍵 → 引擎」這一段；回傳的是
+/// 引擎有沒有正常回應，不代表畫面上出現什麼。`jc-tsf-smoke.exe` 用它量測
+/// DLL 與引擎的實際連線，不需要管理員、也不需要安裝輸入法。
+///
+/// 回傳值：
+///
+/// - `0`：按鍵已送出，引擎也回應了
+/// - `1`：這個鍵不歸輸入法處理，或 `vk` 不是合法的虛擬鍵碼
+/// - `2`：連不上引擎 pipe
+/// - `3`：引擎往返失敗（逾時、協定錯誤、連線已關閉）
+///
+/// 只在 `debug_assertions` 或 feature `test-export` 下編譯，出貨版不會帶這個
+/// 符號。
+#[cfg(any(debug_assertions, feature = "test-export"))]
+#[no_mangle]
+pub extern "system" fn jc_test_key(vk: u32) -> i32 {
+    use std::time::Duration;
+
+    use jc_proto::Request;
+    use jc_windows::Client;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC};
+
+    /// 這個鍵不歸輸入法處理。
+    const NOT_HANDLED: i32 = 1;
+    /// 連不上引擎。
+    const CONNECT_FAILED: i32 = 2;
+    /// 引擎往返失敗。
+    const ENGINE_FAILED: i32 = 3;
+
+    let Ok(vk) = u16::try_from(vk) else {
+        return NOT_HANDLED;
+    };
+    // SAFETY: MapVirtualKeyW 只讀兩個純量參數。
+    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) };
+    let Some(batch) = keys::translate(vk, scan, false) else {
+        return NOT_HANDLED;
+    };
+
+    // 這條連線與 TSF 的 worker 無關：冒煙程式是在自己的行程裡直接驅動 DLL。
+    let name = engine::pipe_name();
+    let client_name = concat!("jc-tsf-smoke/", env!("CARGO_PKG_VERSION"));
+    let mut client = match Client::connect_with_retry(
+        &name,
+        client_name,
+        engine::REQUEST_TIMEOUT,
+        2,
+        Duration::from_millis(100),
+    ) {
+        Ok(client) => client,
+        Err(error) => {
+            logging::debug(format!("jc_test_key 連線失敗：{error}"));
+            return CONNECT_FAILED;
+        }
+    };
+
+    for key in batch {
+        if let Err(error) = client.request(&Request::Key { key }, engine::REQUEST_TIMEOUT) {
+            logging::debug(format!("jc_test_key 引擎往返失敗：{error}"));
+            return ENGINE_FAILED;
+        }
+    }
+    0
+}
+
 /// 把字串轉成以 NUL 結尾的 UTF-16，供 Win32 的 `PCWSTR` 使用。
 pub(crate) fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
