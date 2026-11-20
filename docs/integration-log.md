@@ -1163,8 +1163,8 @@
 
 ### 待辦（不要現在做）
 
-- **legal 帳本 L-21**：`legal/README.md` 的 L-21 還寫 Jinen「僅本機評估、暫不散布」，但 Jinen 是自家訓練、要隨產品散布，
-  出貨前必須改帳本（散布欄位、NOTICE 與 `docs/models.md` 一起更新）。
+- **legal 帳本 L-21**（已完成）：`legal/README.md` 的 L-21 原本標成評估用、暫不散布；
+  `legal-update` 已改散布欄位，同步 NOTICE、`docs/models.md` 與 manifest 對照表。
 - **settings-ui 兩個已知缺口**：`--neural` 三態與 `rerank` 在 UI 是唯讀，因為 `Settings` 沒有對應欄位；
   「重新啟動引擎」要等安裝器提供。
 - **tsf-skeleton 的 14 項未實機驗證清單**在 `docs/port/tsf-skeleton.md`，不要當成已驗證。
