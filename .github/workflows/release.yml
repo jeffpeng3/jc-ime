@@ -54,10 +54,12 @@ jobs:
 
       # 與 linux（tar.gz）共用 release-linux：同一個 OS、同一個 release profile，
       # 這裡編好的依賴產物可以直接給打包 job 用。verify 先跑，負責寫入快取。
+      # release 只快取依賴，不快取 workspace 產物：一份太大，會擠掉其他快取。
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-linux
           cache-targets: "true"
+          cache-all-crates: "false"
           cache-on-failure: "true"
 
       - name: 版本號一致性
@@ -151,6 +153,7 @@ jobs:
           shared-key: release-windows
           key: x86_64-pc-windows-msvc
           cache-targets: "true"
+          cache-all-crates: "false"
           cache-on-failure: "true"
 
       # build.ps1 需要資料根目錄。資料不進 git，因此由 release workflow 下載
@@ -373,6 +376,7 @@ jobs:
         with:
           shared-key: release-linux
           cache-targets: "true"
+          cache-all-crates: "false"
           cache-on-failure: "true"
 
       - name: 建置 Linux 執行檔

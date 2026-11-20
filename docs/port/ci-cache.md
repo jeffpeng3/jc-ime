@@ -12,13 +12,13 @@ n/a。
 
 ## 分組
 
-| Workflow | Job | Runner | Profile | shared-key |
-|---|---|---|---|---|
-| `ci.yml` | `linux` | ubuntu-24.04 | debug | `ci-linux` |
-| `ci.yml` | `windows` | windows-2022 | debug | `ci-windows` |
-| `release.yml` | `verify` | ubuntu-24.04 | release | `release-linux` |
-| `release.yml` | `windows` | windows-2022 | release | `release-windows`（另有 `key: x86_64-pc-windows-msvc`） |
-| `release.yml` | `linux` | ubuntu-24.04 | release | `release-linux` |
+| Workflow | Job | Runner | Profile | shared-key | cache-all-crates |
+|---|---|---|---|---|---|
+| `ci.yml` | `linux` | ubuntu-24.04 | debug | `ci-linux` | `true` |
+| `ci.yml` | `windows` | windows-2022 | debug | `ci-windows` | `true` |
+| `release.yml` | `verify` | ubuntu-24.04 | release | `release-linux` | `false` |
+| `release.yml` | `windows` | windows-2022 | release | `release-windows`（另有 `key: x86_64-pc-windows-msvc`） | `false` |
+| `release.yml` | `linux` | ubuntu-24.04 | release | `release-linux` | `false` |
 
 `verify` 與 `linux` 共用 `release-linux`：兩個 job 同為 ubuntu-24.04、同為 release
 profile、同一次 workflow run、同一份 `Cargo.lock`，編出來的依賴產物完全一樣。`verify`
@@ -47,17 +47,61 @@ hash）、`Cargo.toml`／`Cargo.lock` 雜湊、`rust-toolchain*`、`.cargo/confi
 shared-key。代價是 CI 變慢（要先編 release），而且 `debug_assert` 與整數溢位檢查不會
 生效，測試抓到的問題會少一些。目前不做。
 
-## 只快取依賴，不快取 workspace 產物
+## 快取範圍：CI 全快取，release 只快取依賴
 
-`cache-targets: "true"` 會快取 `target/` 目錄，但 `rust-cache` 存檔前會清掉 workspace
-crate 的編譯產物與 incremental 目錄，只留依賴。`cache-workspace-crates` 保持預設
-`false`。
+`cache-all-crates: "true"` 會連 workspace crate 的編譯產物一起存；`"false"`（預設）只留
+依賴，存檔前把自家 crate 的產物與 incremental 目錄清掉。
 
-不快取 workspace crate 的原因：快取到過期的自家 binary 會讓 CI 跑舊程式；而且每次
-commit 都變，命中率低。代價是自家 crate 每次重編，本專案的依賴（candle、GPUI）遠大於
-自家程式碼，這樣最划算。
+| 工作 | 設定 | 理由 |
+|---|---|---|
+| `ci.yml` 的 `linux`／`windows` | `cache-all-crates: "true"` | 每個 commit 通常只改幾個 crate，還原後 cargo 只重編有變的，其餘直接命中 |
+| `release.yml` 三個 job | `cache-all-crates: "false"` | release 產物大，每個 tag 存一份會擠掉其他快取 |
 
-`rust-cache` 也會自動設 `CARGO_INCREMENTAL=0`；`ci.yml` 本來就設了，不衝突。
+不會拿到過期 binary：cargo 用 `.fingerprint` 與原始檔 mtime 判斷，還原後改過的 crate
+一定重編，沒改的才重用。風險在大小，不在正確性。
+
+`cache-workspace-crates` 保持預設 `false`；要全套就用 `cache-all-crates`，兩者不要混。
+
+`rust-cache` 會自動設 `CARGO_INCREMENTAL=0`；`ci.yml` 本來就設了，不衝突。incremental
+目錄不會進快取。
+
+### 量測
+
+在本機對主 repo 的 debug 建置（含 `cargo test` 的測試執行檔）量到的數字：
+
+| 項目 | 大小 |
+|---|---|
+| `target/debug/deps` 全部 | 55.5 GB（累積多個 feature／版本變體） |
+| 其中 workspace crate 產物 | 18.3 GB（33%） |
+| 其中依賴的 `.rlib`／`.rmeta` | 11.9 GB |
+| 測試／範例執行檔，每個 target 取最新一份 | 38 個，4.5 GB |
+| 單一變體的 workspace `.rlib` 總和 | 208 MB |
+| `target/debug/incremental` | 14 GB（rust-cache 會清掉，不會進快取） |
+
+變體以目錄內 6 個左右 hash 為一組；CI 只會有一份。換算下來，CI 的 debug 快取（依賴
+加上 38 個測試執行檔）壓縮前約 5–8 GB，cache 服務壓縮後估計每個 OS 2–4 GB。Linux 加
+Windows 兩個 job 可能吃掉一半以上的 10 GB 額度。
+
+這是估計值。實際大小看 run log 的 `Cache Size: ~NNN MB`，或
+
+```sh
+gh api repos/{owner}/{repo}/actions/caches --paginate \
+  --jq '.actions_caches[] | "\(.size_in_bytes/1048576|floor) MB\t\(.key)"'
+```
+
+### 接近 10 GB 時
+
+處理順序：
+
+1. 先把 `ci-windows` 的 `cache-all-crates` 改成 `"false"`。Windows 那份最大，而且
+   PR 上 Windows 的重編成本比 Linux 低於快取搬運成本。
+2. 還是不夠，再關 `ci-linux` 的 `cache-all-crates`。回到只快取依賴，自家 crate 每次
+   重編，但仍省掉 candle、GPUI 的下載與編譯。
+3. release 的三個 job 不要再打開。它們本來就只快取依賴，是刻意留的空間。
+4. 已經爆量時，用上面的 `gh api` 找出舊 key，`gh api -X DELETE
+   repos/{owner}/{repo}/actions/caches/<id>` 清掉，再重跑。
+
+不要靠 `cache-workspace-crates` 或把 `target/` 以外的路徑塞進快取來提高命中率。
 
 ## registry 快取只留一份
 
@@ -74,8 +118,8 @@ git 依賴、已安裝的 binary），兩者並存只會同一批檔案下載兩
 
 1. 第一次：`Cache not found for input keys` → job 照常編譯 → job 結束後的 post step
    存檔，log 出現 `Cache saved with key: ...` 與 `Cache Size: ~NNN MB`。
-2. 第二次（key 相同）：`Cache restored from key: ...`，依賴跳過重編，log 會有
-   `Cache hit occurred on the primary key ...`。
+2. 第二次（key 相同）：`Cache restored from key: ...`，已快取的 crate 跳過重編，log
+   會有 `Cache hit occurred on the primary key ...`。
 
 要看 hit／miss，開一次 run 的 log，找這幾行：
 
@@ -86,8 +130,14 @@ Cache saved with key: ...
 Cache Size: ~NNN MB (NNNNNNNN B)
 ```
 
-`rust-cache` 的 cache key 含 `Cargo.lock` 雜湊，所以改依賴的 commit 會 miss 一次，
-之後再命中。改 rustc 版本（`dtolnay/rust-toolchain@stable` 換版）也會 miss。
+cache key 不含 commit SHA。同一個 `Cargo.lock`、同一個 rustc 下，CI 的第一個 commit
+會存一份新快取，之後的 commit 還原同一份、只重編改到的 crate。GitHub 的快取不可覆寫，
+所以後面 commit 的存檔會被跳過（post step 印 warning，不影響 job），快取內容停在第一
+次寫入的狀態；這是預期行為，cargo 的 fingerprint 會確保改過的 crate 重編。
+
+`Cargo.lock` 或 rustc 版本一變，key 就變，會 miss 一次並存一份新的；這種變動越頻繁，
+佔用的額度越多。tag 上的 release 也一樣，只是 release 那組關掉了 `cache-all-crates`，
+單份小得多。
 
 同一組 `shared-key` 的兩個 job 在同一次 run 都想存同一把 key 時，GitHub 的 cache 不可
 覆寫：先存的那份留著，後存的會在 post step 印警告但不影響 job。`verify` 一定先於
@@ -115,26 +165,13 @@ GitHub 的快取綁 ref：一個 workflow run 只能還原「目前 ref」與「
 GitHub 每個 repo 的快取總量預設 10 GB，超過就從最久沒被存取的開始淘汰；超過 7 天沒被
 存取的項目也會自動刪除。淘汰會造成 thrashing：剛存完又被擠掉，下次還是 miss。
 
-先量再調。看目前用量：repo → Settings → Actions → Caches，或
+快取不可覆寫，key 一變就多一份，所以「改 `Cargo.lock`／換 rustc」的頻率直接決定佔用
+量。處理順序見上面「接近 10 GB 時」：先關 `ci-windows` 的 `cache-all-crates`，再關
+`ci-linux` 的，release 三個 job 保持只快取依賴。
 
-```sh
-gh api repos/{owner}/{repo}/actions/caches --paginate \
-  --jq '.actions_caches[] | "\(.size_in_bytes/1048576|floor) MB\t\(.key)"'
-```
+監控用量：repo → Settings → Actions → Caches，或 `gh api` 指令（見「量測」）。
 
-判準與處理順序：
-
-1. 總量在 10 GB 以下：維持現況，五個 job 都開 `cache-targets`。
-2. 接近或超過 10 GB：先把最大的那一組改成 `cache-targets: "false"`。這樣只快取
-   `~/.cargo`（registry／git，通常數百 MB），依賴每次重編，但仍省下載。
-   取捨是建置時間回到接近現在的水準，只省網路。
-3. 只想留最近狀態：對變動最頻繁的 CI job 加 `save-if`，例如只讓 `main` 寫入、
-   PR 唯讀還原。
-4. 已經爆量時，用上面 `gh api` 找出舊 key，`gh api -X DELETE
-   repos/{owner}/{repo}/actions/caches/<id>` 清掉，再重跑。
-
-不要用「開 `cache-workspace-crates`」來提高命中率：快取會變大，而且會拿到過期的自家
-binary。也不要快取 `target/` 以外的路徑。
+不要用「開 `cache-workspace-crates`」來提高命中率，也不要快取 `target/` 以外的路徑。
 
 ## 驗證
 
