@@ -160,11 +160,6 @@ pub struct SessionConfig {
     pub style: InputStyle,
     /// 日文片段假名切換鍵；預設 F7。
     pub ja_toggle_key: KeyCode,
-    /// 拉丁字串的雙語言切分（研究原型）；預設關閉。
-    ///
-    /// 開啟時，[`Mode::Mixed`] 的拉丁按鍵會先交給
-    /// [`crate::mixed_latin`] 切成羅馬字與注音片段；關閉時行為不變。
-    pub mixed_latin_split: bool,
 }
 
 /// 固定替身重排設定。
@@ -208,7 +203,6 @@ impl Default for SessionConfig {
             document_context: true,
             style: InputStyle::default(),
             ja_toggle_key: KeyCode::F(7),
-            mixed_latin_split: false,
         }
     }
 }
@@ -332,14 +326,6 @@ pub struct Session {
     pub(super) last_ja_results: Vec<JaResult>,
     /// 混合模式的英數按鍵推斷。
     pub(super) ascii: AsciiInput,
-    /// 混合模式的拉丁雙語言切分器；設定關閉時為 `None`。
-    pub(super) latin: Option<crate::mixed_latin::LatinSplitter>,
-    /// 最近一次增量切分的輸入文字。
-    pub(super) latin_split_text: String,
-    /// 最近一次增量切分的結果。
-    pub(super) latin_split: Option<crate::mixed_latin::Split>,
-    /// 最近一次增量切分未解析的尾巴。
-    pub(super) latin_tail: String,
     /// 混合模式依按鍵推斷出來的日文片段。
     ///
     /// 有值時 [`Session::config`] 的 `mode` 暫時是 [`Mode::Ja`]，送出或取消後
@@ -410,7 +396,6 @@ impl Session {
         } else {
             None
         };
-        let mixed_latin_split = config.mixed_latin_split;
         let mut session = Self {
             config,
             zh: ZhInput::standard(),
@@ -447,16 +432,6 @@ impl Session {
             last_hypotheses: Vec::new(),
             last_ja_results: Vec::new(),
             ascii: AsciiInput::new(),
-            latin: if mixed_latin_split {
-                Some(crate::mixed_latin::LatinSplitter::new(
-                    crate::mixed_latin::Options::default(),
-                ))
-            } else {
-                None
-            },
-            latin_split_text: String::new(),
-            latin_split: None,
-            latin_tail: String::new(),
             ja_run: false,
             ja_prev_mode: Mode::Mixed,
             menu: None,
@@ -1486,12 +1461,16 @@ mod tests {
     }
 
     /// 對照 `TestMixedCompleteEnglishWordKeepsSpace`：完整英文詞接空白保留
-    /// 空白，組得成注音的字尾讓給中文。
+    /// 空白。
+    ///
+    /// 統一管線後 `helloji ` 的空白不屬於 `ji` 的一聲（R2 要求整段 run 可
+    /// 完整解析成注音），所以 `ji` 留在日文，預期從 `hello窩` 改成
+    /// `helloじ `。
     #[test]
     fn test_mixed_complete_english_word_keeps_space() {
         for (keys, want) in [
             ("hello ", "hello "),
-            ("helloji ", "hello窩"),
+            ("helloji ", "helloじ "),
             ("ji3hello ji3", "我hello 我"),
         ] {
             let mut s = mixed_session();
@@ -1509,7 +1488,8 @@ mod tests {
         config.english_autocomplete = true;
         let mut s = Session::new(config);
         type_keys(&mut s, "ji3hellp");
-        assert_eq!(s.snapshot().preedit, "我hellp");
+        // 統一管線把 `p` 解成 ㄣ；英文補完仍以原始按鍵流為準。
+        assert_eq!(s.snapshot().preedit, "我hellㄣ");
         s.press(Key::new(KeyCode::Tab, None, false));
         assert_eq!(s.snapshot().preedit, "我hello");
         s.press(Key::new(KeyCode::Enter, None, false));

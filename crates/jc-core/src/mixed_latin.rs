@@ -12,8 +12,9 @@
 //! [`LatinSplitter`] 支援逐鍵增量：往前追加字元時，位置 `<= 舊長度` 的最佳
 //! 分數與回溯指標都不會改變，因此每次按鍵只計算新尾端那一格。
 //!
-//! 這個模組目前是研究原型，`mixed::Config::mixed_latin_split` 預設為
-//! `false`，關閉時完全不會被呼叫。
+//! 這個模組是混合路由唯一的拉丁分詞器（見 `docs/port/unify-segment.md`）。
+//! [`split`] 只由 [`crate::mixed`] 的 tokenize 管線呼叫；對外不再有第二條
+//! 可比較的分詞路徑。
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -109,6 +110,11 @@ impl Split {
     pub fn languages(&self) -> Vec<SplitLang> {
         self.pieces.iter().map(|p| p.lang).collect()
     }
+
+    /// 最後一段的語言；用來把語言狀態接到下一個 run。
+    pub fn last_lang(&self) -> Option<SplitLang> {
+        self.pieces.last().map(|piece| piece.lang)
+    }
 }
 
 /// 切分評分需要的詞典查詢。
@@ -183,11 +189,17 @@ impl SplitLexicon for ZhLexiconAdapter<'_> {
 ///
 /// 切分器只把英文詞當成「照字面的完整單字」，不會做前綴補完；長度 1–2 的
 /// 英文不列入，避免 `s`、`a` 這種單字母把正常的羅馬字切壞。
+///
+/// 英文詞的判定與路由共用 [`crate::mixed::is_english_word`]；`config` 決定
+/// 最短長度與是否偏好かな，讓 A／B 兩條路徑對同一個詞得到相同答案。
+#[derive(Clone, Default)]
 pub struct LexiconAdapter<'a> {
     /// 注音詞典。
     pub zh: Option<&'a dyn Lexicon>,
     /// 英文查詢層；`None` 時不辨識英文詞。
     pub english: Option<&'a crate::mixed::English>,
+    /// 路由設定；`Default` 與 [`crate::mixed::Config::default`] 相同。
+    pub config: crate::mixed::Config,
 }
 
 impl SplitLexicon for LexiconAdapter<'_> {
@@ -202,9 +214,11 @@ impl SplitLexicon for LexiconAdapter<'_> {
     }
 
     fn english(&self, text: &str) -> bool {
-        text.chars().count() >= 3
-            && text.chars().all(|ch| ch.is_ascii_lowercase())
-            && self.english.is_some_and(|lookup| lookup.has(text))
+        let Some(english) = self.english else {
+            return false;
+        };
+        let lookup: &dyn crate::mixed::Lookup = english;
+        crate::mixed::is_english_word(text, lookup, &self.config)
     }
 
     fn english_weight(&self, text: &str) -> f64 {
@@ -245,6 +259,11 @@ pub struct Options {
     pub en_common_bonus: i32,
     /// 分數相同時偏好日文。
     pub prefer_ja: bool,
+    /// 前一個拉丁 run 的語言當 DP 的起始狀態。
+    ///
+    /// 相鄰的 run 因此有連貫性：`xi`、`wu` 這種兩邊都合法的短音節不會因為
+    /// 換一個 run 就翻成另一種語言。`None` 表示不限制起始語言。
+    pub initial_lang: Option<SplitLang>,
 }
 
 impl Default for Options {
@@ -261,6 +280,7 @@ impl Default for Options {
             en_common_weight: 100.0,
             en_common_bonus: 4,
             prefer_ja: true,
+            initial_lang: None,
         }
     }
 }
@@ -268,6 +288,18 @@ impl Default for Options {
 // ---------------------------------------------------------------------------
 // 文法
 // ---------------------------------------------------------------------------
+
+/// 大千鍵盤上當韻母的標點。
+///
+/// `.` 是 ㄡ、`,` 是 ㄝ、`;` 是 ㄤ、`/` 是 ㄥ、`-` 是 ㄦ。這些鍵只有在
+/// 緊接在缺韻母的合法音節後面時才是韻母；在 run 開頭或中間單獨出現時是
+/// 標點（R3）。
+pub const FINAL_PUNCT: [char; 5] = ['.', ',', ';', '/', '-'];
+
+/// 回報 `ch` 是否為可以當韻母的標點。
+pub fn is_final_punct(ch: char) -> bool {
+    FINAL_PUNCT.contains(&ch)
+}
 
 /// 羅馬字音節表：完整的按鍵序列與對應かな。
 struct JaGrammar {
@@ -472,8 +504,13 @@ fn compute_cell(
             consider(&mut best, cells, start, JA, piece, opts);
         }
         if let Some((reading, toned)) = zh_grammar().parse(keys) {
-            let piece = syllable_score(ZH, &reading, toned, opts, lexicon);
-            consider(&mut best, cells, start, ZH, piece, opts);
+            // R3：標點只有接在缺韻母的音節尾巴時才是韻母。注音音節的韻母
+            // 一定在最後，因此以韻母標點開頭的音節一律不成立。
+            let starts_with_punct = keys.first().is_some_and(|ch| is_final_punct(*ch));
+            if !starts_with_punct {
+                let piece = syllable_score(ZH, &reading, toned, opts, lexicon);
+                consider(&mut best, cells, start, ZH, piece, opts);
+            }
         }
     }
     // 英文詞：整串照字面。只接受 3 個字元以上、全小寫的詞表單字，
@@ -689,18 +726,35 @@ struct Dp {
 }
 
 impl Dp {
-    fn new() -> Self {
-        // 起點：兩種語言都是 0 分，第一段不付切換成本。
+    fn new(opts: &Options) -> Self {
+        // 起點：預設三種語言都是 0 分，第一段不付切換成本。指定
+        // `initial_lang` 時只留那一種起步狀態，第一段換語言仍照付切換成本。
         let start = Cell {
             score: 0,
             pieces: 0,
             prev_pos: 0,
             prev_lang: JA as u8,
         };
+        let cells = match opts.initial_lang {
+            None => vec![[Some(start), Some(start), Some(start)]],
+            Some(lang) => {
+                let index = match lang {
+                    SplitLang::Ja => JA,
+                    SplitLang::Zh => ZH,
+                    SplitLang::En => EN,
+                };
+                let mut row = [None, None, None];
+                row[index] = Some(Cell {
+                    prev_lang: index as u8,
+                    ..start
+                });
+                vec![row]
+            }
+        };
         Self {
             chars: Vec::new(),
             offsets: vec![0],
-            cells: vec![[Some(start), Some(start), Some(start)]],
+            cells,
         }
     }
 
@@ -808,6 +862,26 @@ pub fn split_preview(text: &str, opts: &Options, lexicon: &dyn SplitLexicon) -> 
     splitter.preview().0
 }
 
+/// 回報 `text` 的尾端空白是否為一聲（R2）。
+///
+/// 條件：整段 run 加上空白後，DP 的最佳解是注音而且空白被最後一個音節
+/// 吃掉。這樣 `hello `、`sa ` 不會被吃掉空白，`vul3 ` 已有聲調也不會。
+pub fn space_is_first_tone(text: &str, opts: &Options, lexicon: &dyn SplitLexicon) -> bool {
+    if !text.ends_with(' ') {
+        return false;
+    }
+    let Some(split) = split(text, opts, lexicon) else {
+        return false;
+    };
+    if split.is_empty() || split.pieces.iter().any(|piece| piece.lang != SplitLang::Zh) {
+        return false;
+    }
+    split
+        .pieces
+        .last()
+        .is_some_and(|piece| piece.end == text.len())
+}
+
 /// 可逐鍵增量的切分器。
 ///
 /// 追加字元時只計算新尾端的位置格；只有內容被改寫（退格、換字）才重建。
@@ -823,7 +897,7 @@ impl LatinSplitter {
     pub fn new(opts: Options) -> Self {
         Self {
             text: String::new(),
-            dp: Dp::new(),
+            dp: Dp::new(&opts),
             opts,
         }
     }
@@ -831,7 +905,7 @@ impl LatinSplitter {
     /// 清空。
     pub fn reset(&mut self) {
         self.text.clear();
-        self.dp = Dp::new();
+        self.dp = Dp::new(&self.opts);
     }
 
     /// 目前的輸入。
@@ -892,7 +966,7 @@ impl LatinSplitter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lattice::InMemoryLexicon;
+    use crate::lattice::{InMemoryLexicon, LexEntry};
 
     fn opts() -> Options {
         Options::default()
@@ -930,6 +1004,53 @@ mod tests {
     }
 
     #[test]
+    fn test_initial_lang_carries_previous_run_language() {
+        // `xi` 兩邊都合法：沒有起始語言時偏好日文，前一個 run 是注音時留在注音。
+        let ja = split("xi", &opts(), &NoLexicon).expect("切分");
+        assert_eq!(ja.pieces[0].lang, SplitLang::Ja);
+        let zh_opts = Options {
+            initial_lang: Some(SplitLang::Zh),
+            ..opts()
+        };
+        let zh = split("xi", &zh_opts, &NoLexicon).expect("切分");
+        assert_eq!(zh.pieces[0].lang, SplitLang::Zh);
+        assert_eq!(zh.pieces[0].reading, "ㄌㄛ");
+    }
+
+    #[test]
+    fn test_r2_space_is_first_tone_only_when_run_parses() {
+        let mut lexicon = InMemoryLexicon::new();
+        for reading in ["ㄩ", "ㄠ", "ㄟ", "ㄅㄟ", "ㄘㄜ"] {
+            lexicon.push(LexEntry::new("字", reading, 0, crate::lattice::UNKNOWN_POS));
+        }
+        let dict = english_words(&["hello"]);
+        let adapter = LexiconAdapter {
+            zh: Some(&lexicon),
+            english: Some(&dict),
+            ..Default::default()
+        };
+        let space_is = |text: &str| space_is_first_tone(text, &opts(), &adapter);
+        assert!(space_is("m "));
+        assert!(space_is("lo "));
+        assert!(space_is("1ohk "));
+        // 已有聲調鍵，空白是停頓。
+        assert!(!space_is("vul3 "));
+        // 整段不是注音，空白是分隔。
+        assert!(!space_is("hello "));
+        assert!(!space_is("sa "));
+    }
+
+    #[test]
+    fn test_punct_at_run_start_is_not_a_final() {
+        assert!(split(".3yj7", &opts(), &NoLexicon).is_none());
+        assert!(split("/vul3.ck", &opts(), &NoLexicon).is_none());
+        // 接在缺韻母音節後面的標點仍是韻母。
+        let split = split("5k42.", &opts(), &NoLexicon).expect("切分");
+        assert!(split.pieces.iter().all(|piece| piece.lang == SplitLang::Zh));
+        assert_eq!(split.pieces.last().map(|piece| piece.end), Some(5));
+    }
+
+    #[test]
     fn test_english_word_stays_literal() {
         // `small` 以 `s` 開頭，但 `sm` 不是合法羅馬字，只能靠英文詞表判定
         // 為照字面的片段。
@@ -937,6 +1058,7 @@ mod tests {
         let lexicon = LexiconAdapter {
             zh: None,
             english: Some(&dict),
+            ..Default::default()
         };
         check_with(
             "rishireej/ sasmall",
@@ -965,6 +1087,7 @@ mod tests {
         let lexicon = LexiconAdapter {
             zh: None,
             english: Some(&common),
+            ..Default::default()
         };
         let code = split("code", &opts(), &lexicon).expect("切分");
         assert_eq!(code.pieces[0].lang, SplitLang::En);
@@ -976,6 +1099,7 @@ mod tests {
         let lexicon = LexiconAdapter {
             zh: None,
             english: Some(&rare),
+            ..Default::default()
         };
         let kanji = split("kanji", &opts(), &lexicon).expect("切分");
         assert_eq!(kanji.pieces[0].lang, SplitLang::Ja);

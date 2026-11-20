@@ -1,26 +1,28 @@
-//! `mixed-split`：研究用的拉丁字串雙語言切分與逐鍵延遲量測。
+//! `mixed-split`：混合輸入的唯一分詞結果與逐鍵延遲量測。
 //!
-//! 這個子命令只印出切分結果，不改任何設定。真實轉換仍走 [`Router`]，並把
-//! `mixed_latin_split` 打開，因此輸出可以對照 `eval mixed` 的預設關閉行為。
+//! 輸出只有一份結果，來源是 [`Router::convert`]。`--steps` 另外印出
+//! tokenize、每個拉丁 run 的 DP 與後處理三個階段，方便對照規則。
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use jc_core::mixed::Router;
-use jc_core::mixed_latin::{self, LexiconAdapter, Options, Piece, SplitLang};
+use jc_core::mixed::{self, Router};
+use jc_core::mixed_latin::{self, LexiconAdapter, Options};
 use jc_core::Mode;
 
 use crate::cli::CliError;
 use crate::data;
 
 /// 執行 `mixed-split`。
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     keys: &[String],
     testdata: Option<PathBuf>,
     data_dir: Option<PathBuf>,
     incremental: bool,
     repeat: usize,
+    steps: bool,
     json: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
@@ -41,54 +43,48 @@ pub fn run(
         .ok()
         .map(|decoder| decoder.with_prefer_hiragana(true));
     let english = jc_core::mixed::English::load_default();
-    let config = jc_core::mixed::Config {
-        mixed_latin_split: true,
-        ..jc_core::mixed::Config::default()
-    };
+    let config = jc_core::mixed::Config::default();
     let mut router = Router::new()
-        .with_config(config)
+        .with_config(config.clone())
         .with_zh(&resources.lexicon, &resources.ctx)
         .with_english(&english);
     if let Some(decoder) = &ja {
         router = router.with_ja(decoder);
     }
+    let adapter = LexiconAdapter {
+        zh: Some(&resources.lexicon),
+        english: Some(&english),
+        config: config.clone(),
+    };
+    let lookup: &dyn mixed::Lookup = &english;
 
     let opts = Options::default();
     let mut reports = Vec::new();
     for key in keys {
-        let split = mixed_latin::split(
-            key,
-            &opts,
-            &LexiconAdapter {
-                zh: Some(&resources.lexicon),
-                english: Some(&english),
-            },
-        );
         let conversion = router
             .convert(key)
             .map_err(|err| CliError::Eval(format!("轉換 {key:?} 失敗：{err}")))?;
+        let trace = steps.then(|| mixed::explain(key, lookup, &config, Some(&adapter)));
         let latency = if incremental {
-            Some(measure(key, &resources, &english, &opts, repeat))
+            Some(measure(key, &resources, &english, &config, &opts, repeat))
         } else {
             None
         };
         reports.push(Report {
             input: key.clone(),
             surface: conversion.surface.clone(),
-            split,
-            latency,
             segments: conversion
                 .segments
                 .iter()
-                .map(|segment| {
-                    (
-                        segment.mode,
-                        segment.script,
-                        key[segment.input_start..segment.input_end].to_string(),
-                        segment.surface.clone(),
-                    )
+                .map(|segment| SegmentView {
+                    mode: segment.mode,
+                    script: segment.script,
+                    input: key[segment.input_start..segment.input_end].to_string(),
+                    surface: segment.surface.clone(),
                 })
                 .collect(),
+            trace,
+            latency,
         });
     }
 
@@ -107,26 +103,19 @@ pub fn run(
     for report in &reports {
         writeln!(out, "輸入：{:?}", report.input)?;
         writeln!(out, "輸出：{:?}", report.surface)?;
-        match &report.split {
-            Some(split) => {
-                writeln!(out, "切分（score {}）：", split.score)?;
-                for piece in &split.pieces {
-                    writeln!(
-                        out,
-                        "  {:>2} {:>3}..{:<3} {:?} → {:?}",
-                        piece.lang.as_str(),
-                        piece.start,
-                        piece.end,
-                        piece.text(&report.input),
-                        piece.reading
-                    )?;
-                }
-            }
-            None => writeln!(out, "切分：無法完整解析")?,
+        if let Some(trace) = &report.trace {
+            write_steps(out, trace)?;
         }
-        writeln!(out, "路由片段：")?;
-        for (mode, script, input, surface) in &report.segments {
-            writeln!(out, "  {:?} {:?} {:?} → {:?}", mode, script, input, surface)?;
+        writeln!(out, "片段：")?;
+        for segment in &report.segments {
+            writeln!(
+                out,
+                "  {} {} {:?} → {:?}",
+                mode_name(segment.mode),
+                segment.script.as_str(),
+                segment.input,
+                segment.surface
+            )?;
         }
         if let Some(latency) = &report.latency {
             writeln!(
@@ -143,28 +132,77 @@ pub fn run(
     Ok(())
 }
 
-/// 一個輸入的完整報告。
+fn write_steps(out: &mut dyn Write, trace: &mixed::Explain) -> Result<(), CliError> {
+    writeln!(out, "tokenize（{} 個 atom）：", trace.atoms.len())?;
+    for atom in &trace.atoms {
+        writeln!(
+            out,
+            "  {:<7} {:<8} {:>3}..{:<3} {:?}",
+            atom.kind,
+            atom.mode.map(mode_name).unwrap_or("-"),
+            atom.start,
+            atom.end,
+            atom.text
+        )?;
+    }
+    writeln!(out, "DP（{} 個 run）：", trace.runs.len())?;
+    for run in &trace.runs {
+        writeln!(out, "  run {:?}", run.text)?;
+        for piece in &run.pieces {
+            writeln!(
+                out,
+                "    {:>2} {:>3}..{:<3} {:?} → {:?}",
+                piece.lang, piece.start, piece.end, piece.text, piece.reading
+            )?;
+        }
+    }
+    for (index, title, atoms) in [
+        ("1/3", "片語合併", &trace.after_group_words),
+        ("2/3", "語言判定", &trace.after_resolve),
+    ] {
+        writeln!(out, "後處理 {index} {title}：")?;
+        for atom in atoms {
+            writeln!(
+                out,
+                "  {:<7} {:<8} {:>3}..{:<3} {:?}",
+                atom.kind,
+                atom.mode.map(mode_name).unwrap_or("-"),
+                atom.start,
+                atom.end,
+                atom.text
+            )?;
+        }
+    }
+    writeln!(out, "後處理 3/3 片段合併：")?;
+    for plan in &trace.after_merge {
+        writeln!(
+            out,
+            "  {} {} {:>3}..{:<3} {:?}",
+            mode_name(plan.mode),
+            plan.script.as_str(),
+            plan.start,
+            plan.end,
+            plan.text
+        )?;
+    }
+    Ok(())
+}
+
+/// 一個輸入的報告。
 struct Report {
     input: String,
     surface: String,
-    split: Option<mixed_latin::Split>,
+    segments: Vec<SegmentView>,
+    trace: Option<mixed::Explain>,
     latency: Option<Latency>,
-    segments: Vec<(Mode, jc_core::segment::Script, String, String)>,
 }
 
-impl Report {
-    fn languages(&self) -> Vec<&'static str> {
-        self.split
-            .as_ref()
-            .map(|split| {
-                split
-                    .pieces
-                    .iter()
-                    .map(|piece| piece.lang.as_str())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
+/// 一個輸出片段。
+struct SegmentView {
+    mode: Mode,
+    script: jc_core::segment::Script,
+    input: String,
+    surface: String,
 }
 
 /// 逐鍵延遲統計，單位是毫秒。
@@ -177,37 +215,42 @@ struct Latency {
 }
 
 fn report_json(report: &Report) -> serde_json::Value {
-    let pieces: Vec<serde_json::Value> = report
-        .split
-        .as_ref()
-        .map(|split| {
-            split
-                .pieces
-                .iter()
-                .map(|piece: &Piece| {
-                    serde_json::json!({
-                        "start": piece.start,
-                        "end": piece.end,
-                        "lang": piece.lang.as_str(),
-                        "reading": piece.reading,
-                        "text": piece.text(&report.input),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
     let segments: Vec<serde_json::Value> = report
         .segments
         .iter()
-        .map(|(mode, script, input, surface)| {
+        .map(|segment| {
             serde_json::json!({
-                "mode": mode_name(*mode),
-                "script": script.as_str(),
-                "input": input,
-                "surface": surface,
+                "mode": mode_name(segment.mode),
+                "script": segment.script.as_str(),
+                "input": segment.input,
+                "surface": segment.surface,
             })
         })
         .collect();
+    let steps = report.trace.as_ref().map(|trace| {
+        serde_json::json!({
+            "atoms": trace.atoms.iter().map(atom_json).collect::<Vec<_>>(),
+            "runs": trace.runs.iter().map(|run| serde_json::json!({
+                "text": run.text,
+                "pieces": run.pieces.iter().map(|piece| serde_json::json!({
+                    "start": piece.start,
+                    "end": piece.end,
+                    "lang": piece.lang,
+                    "text": piece.text,
+                    "reading": piece.reading,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+            "after_group_words": trace.after_group_words.iter().map(atom_json).collect::<Vec<_>>(),
+            "after_resolve": trace.after_resolve.iter().map(atom_json).collect::<Vec<_>>(),
+            "after_merge": trace.after_merge.iter().map(|plan| serde_json::json!({
+                "start": plan.start,
+                "end": plan.end,
+                "mode": mode_name(plan.mode),
+                "script": plan.script.as_str(),
+                "text": plan.text,
+            })).collect::<Vec<_>>(),
+        })
+    });
     let latency = report.latency.as_ref().map(|latency| {
         serde_json::json!({
             "keys": latency.keys,
@@ -220,11 +263,20 @@ fn report_json(report: &Report) -> serde_json::Value {
     serde_json::json!({
         "input": report.input,
         "surface": report.surface,
-        "score": report.split.as_ref().map(|split| split.score),
-        "languages": report.languages(),
-        "pieces": pieces,
         "segments": segments,
+        "steps": steps,
         "latency": latency,
+    })
+}
+
+fn atom_json(atom: &mixed::AtomView) -> serde_json::Value {
+    serde_json::json!({
+        "start": atom.start,
+        "end": atom.end,
+        "kind": atom.kind,
+        "mode": atom.mode.map(mode_name),
+        "script": atom.script.as_str(),
+        "text": atom.text,
     })
 }
 
@@ -245,12 +297,14 @@ fn measure(
     key: &str,
     resources: &crate::data::ZhResources,
     english: &jc_core::mixed::English,
+    config: &jc_core::mixed::Config,
     opts: &Options,
     repeat: usize,
 ) -> Latency {
     let adapter = LexiconAdapter {
         zh: Some(&resources.lexicon),
         english: Some(english),
+        config: config.clone(),
     };
     let mut samples = Vec::new();
     let mut keys = 0usize;
@@ -286,9 +340,4 @@ fn measure(
         p95_ms: percentile(0.95),
         max_ms: *samples.last().unwrap_or(&0.0),
     }
-}
-
-/// 語言名稱；測試與 JSON 共用。
-pub fn lang_name(lang: SplitLang) -> &'static str {
-    lang.as_str()
 }
