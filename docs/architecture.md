@@ -11,7 +11,7 @@ wrapper（各平台獨立）              引擎行程
 
 jc-cli ── jc-core、jc-data、jc-eval、jc-testdata  （開發工具）
 jc-jadic ── 產出 pack v2                     （資料匯入）
-jc-model ── ONNX 載入與推論                  （尚未接進 jc-core）
+jc-model ── ONNX／candle 載入與推論          （注音選字已接進 jc-core）
 jc-platform ── wrapper 契約                  （尚未接進 jc-engine）
 ```
 
@@ -43,14 +43,18 @@ jc-platform ── wrapper 契約                  （尚未接進 jc-engine）
 ## 協定
 
 - 傳輸：4-byte 小端長度前綴 + JSON（serde）；預設訊框上限 1 MiB。
-- 版本：`jc_proto::PROTOCOL_VERSION`（目前 `1`），握手不一致即回
+- 版本：`jc_proto::PROTOCOL_VERSION`（目前 `2`），握手不一致即回
   `VersionMismatch` 並收線。
 - 請求：`Hello`、`Key`、`Snapshot`、`Commit`、`Shutdown`；狀態回應是完整
   快照，wrapper 不需要自己保存組字狀態。
+- 狀態回應的 `State` 另有 `cursor_rune`、`suggestion`、`label` 與
+  `navigating`；空值時省略。
 - 錯誤：`VersionMismatch`、`BadFrame`、`FrameTooLarge`、`UnknownOp`、
   `Internal`。
 - 傳輸方式：`jc-engine` 目前提供 stdio 與 Unix domain socket，一次服務一條
   連線；Windows named pipe 尚未實作。
+- wrapper 作者規格見 [`docs/wrapper.md`](wrapper.md)，內容包含生命週期、
+  pass-through、UTF-16 轉換與已知限制。
 
 ## 核心的請求流程
 
@@ -84,9 +88,10 @@ jc-platform ── wrapper 契約                  （尚未接進 jc-engine）
 
 - `jc-platform` 的契約與測試已完成，但 `jc-engine` 還沒有依賴它，也還沒有
   任何實際 wrapper。
-- `jc-model` 可以載入並跑單次推論，但 `jc-core` 沒有依賴它；日文 reranker
-  與標點尚未進入解碼與送出流程。
-- `jc-engine` 啟動時不載入詞典；沒有資料時 `Session` 只回讀音，這是為了讓
-  協定往返可以在無資料環境測試。
-- 注音 `lexicon.bin`／`lm.bin` 的讀取已完成，接在 `jc-cli` 的 `convert`／
-  `bench --data`；`eval zh-golden` 仍讀凍結 TSV，引擎行程也還沒接資料。
+- `jc-model` 已接進 `jc-core` 的注音選字模型；`jc-engine` 啟動時若資料根
+  目錄有 `models/` 就安裝，缺檔只警告並維持統計排序。日文 reranker 預設
+  關閉，標點尚未進入送出流程。
+- `jc-engine` 正式啟動要求 `--data` 或 `JC_DATA`，並載入注音詞典與日文
+  pack；`--allow-empty-data` 才使用空 session，供協定測試與除錯。
+- 注音 `lexicon.bin`／`lm.bin` 的讀取接在 `jc-engine` 的 `loader` 與
+  `jc-cli`；`eval zh-golden` 仍讀凍結 TSV。
