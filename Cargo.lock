@@ -3778,6 +3778,7 @@ dependencies = [
  "jc-proto",
  "jc-settings",
  "jc-testdata",
+ "libc",
  "log",
  "serde",
  "serde_json",

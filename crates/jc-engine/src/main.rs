@@ -6,11 +6,16 @@
 //! ```text
 //! jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>]
 //!           [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]
+//! jc-engine --supervise [--socket <name>] [--supervisor-log <path>]
 //! ```
 //!
 //! 啟動時讀 `settings.json`（`--settings` 或資料根目錄），轉成
 //! `SessionConfig`；CLI 參數優先於檔案。設定檔缺漏或壞掉只記警告，不讓引擎
 //! 啟動失敗。`--print-settings` 印出生效後的設定後直接結束。
+//!
+//! `--supervise` 啟動常駐監督者：用同一支執行檔啟動子行程
+//! `jc-engine --socket <name>`，子行程結束後依退避曲線重啟，並用
+//! `Local\` 具名 mutex 保證每個使用者只有一個監督者（見 [`jc_engine::supervise`]）。
 //!
 //! `--allow-empty-data` 跳過資料載入，只用空 session，供協定測試與除錯；
 //! 正式啟動仍要求 `--data` 或 `JC_DATA`。
@@ -18,6 +23,7 @@
 //! stdio 模式在所有平台都能跑；`--socket` 在 unix 是 unix domain socket，
 //! 在 Windows 是本機 named pipe（見 `pipe_windows`），其他平台回報尚未實作。
 
+use std::ffi::OsString;
 use std::io::{self, BufReader, BufWriter};
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -28,6 +34,7 @@ use jc_core::session::{Session, SessionConfig};
 use jc_core::Mode;
 use jc_engine::config;
 use jc_engine::loader::load_engine_data;
+use jc_engine::supervise::{self, SupervisorConfig};
 use jc_engine::{engine_label, serve, Engine};
 use jc_proto::{DEFAULT_MAX_FRAME, PROTOCOL_VERSION};
 
@@ -56,6 +63,10 @@ struct Options {
     print_settings: bool,
     /// 跳過資料載入，只用空 session；僅供測試與協定除錯。
     allow_empty_data: bool,
+    /// `--supervise`：啟動常駐監督者，而不是自己服務請求。
+    supervise: bool,
+    /// `--supervisor-log`：監督者 log 路徑；未指定時用平台預設位置。
+    supervisor_log: Option<PathBuf>,
 }
 
 /// 命令列解析結果。
@@ -98,6 +109,9 @@ fn main() {
 
 fn run(options: Options) -> anyhow::Result<()> {
     log::debug!("啟動 {}（協定 {}）", engine_label(), PROTOCOL_VERSION);
+    if options.supervise {
+        return run_supervisor(&options);
+    }
     let goos = config::platform_goos();
     let data_dir = data_dir_from_env(options.data.clone());
     let loaded = config::load(options.settings.as_deref(), data_dir.as_deref(), goos);
@@ -157,6 +171,102 @@ fn run(options: Options) -> anyhow::Result<()> {
         }
         Transport::Socket(path) => serve_socket(&mut engine, &path, options.max_frame),
     }
+}
+
+/// 啟動監督者，讓引擎常駐並在子行程結束後自動重啟。
+fn run_supervisor(options: &Options) -> anyhow::Result<()> {
+    if options.print_settings {
+        bail!("--supervise 不能與 --print-settings 併用");
+    }
+    let socket = match &options.mode {
+        Transport::Socket(path) => path.clone(),
+        Transport::Stdio => default_supervisor_socket(),
+    };
+    let log_path = options
+        .supervisor_log
+        .clone()
+        .unwrap_or_else(default_supervisor_log);
+    let program = std::env::current_exe().context("取得目前的執行檔路徑失敗")?;
+    let config = SupervisorConfig::new(program, child_args(options, &socket), socket, log_path);
+
+    match supervise::run(&config) {
+        Ok(()) => Ok(()),
+        // 第二個實例（例如登入時 Run key 觸發兩次）不算錯誤。
+        Err(supervise::Error::AlreadyRunning { name }) => {
+            log::info!("監督者已在執行（{name}），這次啟動直接結束");
+            Ok(())
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// 把目前的參數原封不動轉給子行程，並強制使用 socket 模式。
+fn child_args(options: &Options, socket: &Path) -> Vec<OsString> {
+    let mut args: Vec<OsString> = Vec::new();
+    if let Some(data) = &options.data {
+        args.push("--data".into());
+        args.push(data.as_os_str().to_os_string());
+    }
+    if let Some(settings) = &options.settings {
+        args.push("--settings".into());
+        args.push(settings.as_os_str().to_os_string());
+    }
+    if let Some(mode) = options.input {
+        args.push("--mode".into());
+        args.push(config::mode_str(mode).into());
+    }
+    if let Some(neural) = options.neural {
+        args.push("--neural".into());
+        args.push(if neural { "on" } else { "off" }.into());
+    }
+    if options.allow_empty_data {
+        args.push("--allow-empty-data".into());
+    }
+    args.push("--max-frame".into());
+    args.push(options.max_frame.to_string().into());
+    args.push("--socket".into());
+    args.push(socket.as_os_str().to_os_string());
+    args
+}
+
+/// 監督模式的預設 socket。Windows 與 TSF 預設 pipe 名稱一致。
+#[cfg(windows)]
+fn default_supervisor_socket() -> PathBuf {
+    PathBuf::from("jc-ime")
+}
+
+/// 監督模式的預設 socket；優先放 `XDG_RUNTIME_DIR`。
+#[cfg(unix)]
+fn default_supervisor_socket() -> PathBuf {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    dir.join("jc-ime-engine.sock")
+}
+
+/// 其他平台沒有 socket 傳輸，仍回傳一個名稱讓錯誤早點出現。
+#[cfg(not(any(unix, windows)))]
+fn default_supervisor_socket() -> PathBuf {
+    PathBuf::from("jc-ime-engine.sock")
+}
+
+/// 監督者 log 的預設位置：`%LOCALAPPDATA%\jc-ime\supervisor.log`，其他平台用
+/// `XDG_STATE_HOME` 或 `~/.local/state`。
+fn default_supervisor_log() -> PathBuf {
+    if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(dir).join("jc-ime").join("supervisor.log");
+    }
+    if let Some(dir) = std::env::var_os("XDG_STATE_HOME") {
+        return PathBuf::from(dir).join("jc-ime").join("supervisor.log");
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home)
+            .join(".local")
+            .join("state")
+            .join("jc-ime")
+            .join("supervisor.log");
+    }
+    std::env::temp_dir().join("jc-ime").join("supervisor.log")
 }
 
 /// 在 `path` 上監聽並序列處理連線，收到 `Shutdown` 才回傳。
@@ -233,6 +343,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut neural: Option<bool> = None;
     let mut print_settings = false;
     let mut allow_empty_data = false;
+    let mut supervise = false;
+    let mut supervisor_log: Option<PathBuf> = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -254,6 +366,11 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             }
             "--print-settings" => print_settings = true,
             "--allow-empty-data" => allow_empty_data = true,
+            "--supervise" => supervise = true,
+            "--supervisor-log" => {
+                let value = value_of(args, &mut index, "--supervisor-log")?;
+                supervisor_log = Some(PathBuf::from(value));
+            }
             "--mode" => {
                 let value = value_of(args, &mut index, "--mode")?;
                 input = Some(parse_mode(&value)?);
@@ -293,6 +410,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         neural,
         print_settings,
         allow_empty_data,
+        supervise,
+        supervisor_log,
     }))
 }
 
@@ -347,12 +466,15 @@ fn print_usage() {
     println!(
         "jc-engine {}（協定 {}）\n\n\
          用法：\n  jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>]\n\
-         \x20           [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]\n\n\
+         \x20           [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]\n\
+         \x20 jc-engine --supervise [--socket <name>] [--supervisor-log <path>]\n\n\
          選項：\n\
          \x20 --data <dir>        資料根目錄；未指定時讀 JC_DATA\n\
          \x20 --settings <path>   設定檔；未指定時讀資料根目錄的 settings.json\n\
          \x20 --print-settings    印出生效後的設定（JSON）後結束\n\
          \x20 --allow-empty-data  不載入資料，只用空 session（測試／除錯用）\n\
+         \x20 --supervise         常駐監督子行程，結束後依退避曲線重啟\n\
+         \x20 --supervisor-log <path>  監督者 log 路徑（預設 %LOCALAPPDATA%\\jc-ime\\supervisor.log）\n\
          \x20 --mode <mode>       輸入模式：zh、ja、mixed、en；預設由設定檔決定\n\
          \x20 --neural <on|off>   日文神經轉換；預設由設定檔的 selection 決定\n\
         {SOCKET_HELP}\
@@ -366,7 +488,8 @@ fn print_usage() {
 
 fn print_usage_to_stderr() {
     eprintln!(
-        "用法：jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>] [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]"
+        "用法：jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>] [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]\n\
+         \x20     jc-engine --supervise [--socket <name>] [--supervisor-log <path>]"
     );
 }
 
@@ -475,6 +598,68 @@ mod tests {
         assert!(parse(&["--nope"]).is_err());
         assert!(parse(&["--socket"]).is_err());
         assert!(parse(&["--settings"]).is_err());
+        assert!(parse(&["--supervisor-log"]).is_err());
+    }
+
+    #[test]
+    fn supervise_and_log_path_are_parsed() {
+        let Ok(Parsed::Run(options)) = parse(&["--supervise", "--supervisor-log", "/tmp/s.log"])
+        else {
+            panic!("應該解析成功");
+        };
+        assert!(options.supervise);
+        assert_eq!(options.supervisor_log, Some(PathBuf::from("/tmp/s.log")));
+    }
+
+    #[test]
+    fn supervise_forwards_child_options() {
+        let Ok(Parsed::Run(options)) = parse(&[
+            "--supervise",
+            "--data",
+            "/data",
+            "--mode",
+            "ja",
+            "--neural",
+            "off",
+            "--allow-empty-data",
+            "--max-frame",
+            "4096",
+        ]) else {
+            panic!("應該解析成功");
+        };
+        let args = child_args(&options, Path::new("/tmp/engine.sock"));
+        let args: Vec<String> = args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "--data",
+                "/data",
+                "--mode",
+                "ja",
+                "--neural",
+                "off",
+                "--allow-empty-data",
+                "--max-frame",
+                "4096",
+                "--socket",
+                "/tmp/engine.sock",
+            ]
+        );
+    }
+
+    #[test]
+    fn supervise_rejects_print_settings() {
+        let Ok(Parsed::Run(options)) = parse(&["--supervise", "--print-settings"]) else {
+            panic!("應該解析成功");
+        };
+        let err = run_supervisor(&options).expect_err("不可併用");
+        assert!(
+            err.to_string().contains("--print-settings"),
+            "錯誤應說明衝突：{err}"
+        );
     }
 
     /// 既不是 unix 也不是 Windows 的平台的 `--socket` 必須回傳明確錯誤，不能 panic。
