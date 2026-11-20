@@ -9,6 +9,10 @@ description = "Windows TSF 文字服務骨架（COM 註冊、按鍵、組字、�
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+# 讓 release 建置也能帶上 `jc_test_key`（冒煙測試用）；預設關閉。
+test-export = []
+
 [dependencies]
 
 [target.'cfg(windows)'.dependencies]

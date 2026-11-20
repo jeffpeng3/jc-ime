@@ -974,6 +974,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "jc-tsf-smoke"
+version = "0.1.0"
+dependencies = [
+ "jc-proto",
+ "jc-windows",
+ "thiserror 2.0.21",
+ "windows",
+]
+
+[[package]]
 name = "jc-windows"
 version = "0.1.0"
 dependencies = [

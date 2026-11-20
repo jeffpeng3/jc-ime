@@ -17,6 +17,7 @@ members = [
     "crates/jc-englishpack",
     "crates/jc-settings",
     "crates/jc-tsf",
+    "crates/jc-tsf-smoke",
 ]
 
 [workspace.package]

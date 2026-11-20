@@ -1,0 +1,24 @@
+[package]
+name = "jc-tsf-smoke"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "jc-tsf.dll 的免管理員冒煙測試（只能在 Windows 執行）"
+
+[[bin]]
+name = "jc-tsf-smoke"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+thiserror = { workspace = true }
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Registry",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_TextServices",
+] }
+jc-proto = { path = "../jc-proto" }
+jc-windows = { path = "../jc-windows" }
