@@ -19,8 +19,14 @@
 //!
 //! [`Client::connect_with_retry`] 只在啟動階段使用（引擎還沒起來時重試幾次）。
 //! 已連線後斷線不會自動重送請求，因為重送 `Key` 會造成重複輸入。
+//!
+//! # pipe 名稱
+//!
+//! 引擎 pipe 名稱的解析規則放在 [`pipe_name`] 模組，`jc-tsf`、`jc-engine` 與這個
+//! crate 共用同一份實作。名稱帶使用者 SID 尾段，避免同機多使用者共用一條 pipe。
 
 mod pipe;
+mod pipe_name;
 mod worker;
 
 use std::io::{self, Read, Write};
@@ -28,6 +34,10 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 pub use pipe::NamedPipe;
+pub use pipe_name::{
+    choose_pipe_name, current_user_sid, name_from_sid, resolve_pipe_name, ResolvedPipeName,
+    BASE_PIPE_NAME, PIPE_ENV,
+};
 
 use jc_proto::{ErrorCode, Request, Response, PROTOCOL_VERSION};
 use worker::Worker;

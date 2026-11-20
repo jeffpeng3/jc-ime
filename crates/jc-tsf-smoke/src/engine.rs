@@ -8,20 +8,6 @@ use std::time::Duration;
 
 use jc_proto::{Key, KeyCode, Request, Response, PROTOCOL_VERSION};
 use jc_windows::Client;
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::ERROR_SUCCESS;
-use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
-
-/// 沒有設定時使用的 pipe 名稱，與 `jc-tsf` 相同。
-pub const DEFAULT_PIPE: &str = "jc-ime";
-
-/// 覆寫 pipe 名稱的環境變數（除錯用）。
-pub const PIPE_ENV: &str = "JC_IME_PIPE";
-
-/// 註冊表裡指定引擎 pipe 名稱的位置，與 `jc-tsf` 相同。
-const PIPE_REGISTRY_KEY: &str = r"Software\jc-ime";
-/// 註冊表值的名稱。
-const PIPE_REGISTRY_VALUE: &str = "EnginePipe";
 
 /// 單次往返逾時；與 `jc-tsf` 一致。
 const TIMEOUT: Duration = Duration::from_millis(500);
@@ -33,45 +19,16 @@ const BACKOFF: Duration = Duration::from_millis(200);
 /// 握手時送出的客戶端名稱。
 const CLIENT_NAME: &str = concat!("jc-tsf-smoke/", env!("CARGO_PKG_VERSION"));
 
-/// 讀 `HKCU\Software\jc-ime\EnginePipe`，沒有就用 [`DEFAULT_PIPE`]。
+/// 解析引擎 pipe 名稱；規則與 `jc-tsf`、`jc-engine` 共用 `jc-windows`。
 ///
-/// `jc-tsf` 只產出 cdylib，這個小函式沒辦法直接借用，只能照同一條規則重寫。
+/// 沒有另寫一份：`JC_IME_PIPE` > `HKCU\Software\jc-ime\EnginePipe` >
+/// `jc-ime-<SID 尾段>`，取不到 SID 才退回 `jc-ime`。警告只在解析失敗時出現一次。
 pub fn pipe_name() -> String {
-    if let Ok(name) = std::env::var(PIPE_ENV) {
-        if !name.trim().is_empty() {
-            return name;
-        }
+    let resolved = jc_windows::resolve_pipe_name();
+    if let Some(warning) = &resolved.warning {
+        eprintln!("[jc-tsf-smoke 警告] {warning}");
     }
-
-    let key = wide(PIPE_REGISTRY_KEY);
-    let value = wide(PIPE_REGISTRY_VALUE);
-    let mut buffer = [0u16; 256];
-    let mut size = (buffer.len() * std::mem::size_of::<u16>()) as u32;
-
-    // SAFETY: buffer 與 size 的長度一致；兩個字串都以 NUL 結尾。
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            PCWSTR(key.as_ptr()),
-            PCWSTR(value.as_ptr()),
-            RRF_RT_REG_SZ,
-            None,
-            Some(buffer.as_mut_ptr() as *mut core::ffi::c_void),
-            Some(&mut size),
-        )
-    };
-    if status != ERROR_SUCCESS || size < 2 {
-        return DEFAULT_PIPE.to_string();
-    }
-
-    let units = (size as usize / 2).saturating_sub(1).min(buffer.len());
-    let text = String::from_utf16_lossy(&buffer[..units]);
-    let text = text.trim_matches('\0').trim();
-    if text.is_empty() {
-        DEFAULT_PIPE.to_string()
-    } else {
-        text.to_string()
-    }
+    resolved.name
 }
 
 /// 連上引擎、送 `Hello` 與一個 `Key`，回傳可以印出來的結果摘要。
@@ -127,23 +84,14 @@ fn describe(response: &Response) -> String {
     }
 }
 
-/// 把字串轉成以 NUL 結尾的 UTF-16。
-fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 名稱解析共用 `jc-windows`，這裡只確認不會拿到空字串。
     #[test]
-    fn default_pipe_name_is_stable() {
-        assert_eq!(DEFAULT_PIPE, "jc-ime");
-    }
-
-    #[test]
-    fn wide_adds_terminator() {
-        assert_eq!(wide("jc"), vec![b'j' as u16, b'c' as u16, 0]);
+    fn pipe_name_is_never_empty() {
+        assert!(!pipe_name().is_empty());
     }
 
     #[test]
