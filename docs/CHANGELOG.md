@@ -4,6 +4,13 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.5 - 2026-11-20
+
+### 修正
+
+- Windows 安裝器：`jc-ime.wxs` 使用 WiX v3 的 `Win64` 屬性，v5 已改為
+  `Bitness`，導致 MSI 建置在最後一步失敗。x86 元件改為 `Bitness="always32"`。
+
 ## 0.1.0-rc.4 - 2026-11-20
 
 ### 修正
