@@ -1604,3 +1604,18 @@ gate（版本不變，仍 `0.1.0-rc.7`）：
 ### CI（push `2f980d8`，run 44795803352）
 
 - linux (core)：success；windows (msvc)：success。
+
+## 2026-11-21 03:05 mixed-latin-final（`112566c` → `432f9a7`）
+
+修 `mixed-split` 曝光的路由 bug：`split_token` 會把拉丁 run 尾端的 `.` `,` `;` 當英文標點剝掉，
+但在大千鍵盤它們是韻母 ㄡ ㄝ ㄤ，`5k42. g4n0 vul3` 因此只解出 `5k42. 是三小`。
+
+- 新增 `split_latin_run`：剝標點前先問切分器，條件是「最後片段是注音、結束在 run 結尾、
+  起點在標點之前」。只看整段能否解析不夠（`hello.` 也會解析成 `hello` 加獨立 ㄡ）。
+- `mixed_latin_split` 關閉時直接走原本的 `split_token`，行為完全不變。
+
+gate：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、1289 passed、0 failed）。
+- clippy exit 0；fmt exit 0。
+- 題庫（與合併前逐項相同，無回歸）：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：空。
