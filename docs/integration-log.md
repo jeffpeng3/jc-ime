@@ -1196,4 +1196,5 @@
 ### CI（push `a3cddee`，run 44673374135）
 
 - linux (core)：**failure**，失敗步驟是 `Clippy`（就是上面 `collapsible_if`，當時的 HEAD 已含 composition-cursor）。
-- windows (msvc)：build 成功，`Test` 步驟執行中；後續以實際結果補記。
+- windows (msvc)：build 成功，`Test` 失敗，原因與本機相同：`test_manual_segments_expire_on_next_key`
+  與 `test_english_without_learning_keeps_existing_order`（628 passed、2 failed）。
