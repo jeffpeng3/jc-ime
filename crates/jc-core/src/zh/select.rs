@@ -635,9 +635,23 @@ mod onnx {
         pub p95_ms: f64,
     }
 
+    /// forward 的實作；ORT 與 candle 只差這一個欄位。
+    ///
+    /// `--backend` 在載入模型前設定 `jc_model::default_backend()`，這裡照它
+    /// 選 session 或 candle 權重；融合、margin 與候選順序的決策邏輯完全
+    /// 不受影響。
+    enum Engine {
+        /// 現行 ONNX Runtime session。
+        Ort(Mutex<Session>),
+        /// candle fp32（`model.safetensors`）。
+        Candle(jc_model::candle::zh::ZhSelect),
+        /// candle 量化（`model.gguf`）。
+        CandleQuant(jc_model::candle::zh::QuantZhSelect),
+    }
+
     /// 已載入的注音選字模型。
     pub struct SelectModel {
-        session: Mutex<Session>,
+        engine: Engine,
         vocab: Vocabulary,
         manifest: SelectManifest,
         timeout: Duration,
@@ -645,7 +659,11 @@ mod onnx {
     }
 
     impl SelectModel {
-        /// 從模型目錄載入 `model.onnx`、`vocab.json` 與 `manifest.json`。
+        /// 從模型目錄載入權重、`vocab.json` 與 `manifest.json`。
+        ///
+        /// 後端由 [`jc_model::default_backend`] 決定：`ort` 讀 `model.onnx`，
+        /// `candle` 讀 [`jc_model::candle::zh::weights_path`] 找到的
+        /// safetensors 或 GGUF。candle 路徑不需要 ONNX Runtime。
         pub fn load(dir: impl AsRef<Path>, ort_lib: Option<&Path>) -> Result<Self, SelectError> {
             let dir = dir.as_ref();
             let vocab = Vocabulary::load(dir.join("vocab.json"))?;
@@ -660,18 +678,42 @@ mod onnx {
                     vocab.dictionary_sha256()
                 )));
             }
-            let env = jc_model::runtime::environment(ort_lib)
-                .map_err(|err| SelectError::Inference(err.to_string()))?;
-            let session = Session::builder(&env)
-                .map_err(|err| SelectError::Inference(err.to_string()))?
-                .with_intra_threads(1)
-                .map_err(|err| SelectError::Inference(err.to_string()))?
-                .with_inter_threads(1)
-                .map_err(|err| SelectError::Inference(err.to_string()))?
-                .commit_from_file(dir.join("model.onnx"))
-                .map_err(|err| SelectError::Inference(err.to_string()))?;
+            let engine = match jc_model::default_backend() {
+                jc_model::Backend::Ort => {
+                    let env = jc_model::runtime::environment(ort_lib)
+                        .map_err(|err| SelectError::Inference(err.to_string()))?;
+                    let session = Session::builder(&env)
+                        .map_err(|err| SelectError::Inference(err.to_string()))?
+                        .with_intra_threads(1)
+                        .map_err(|err| SelectError::Inference(err.to_string()))?
+                        .with_inter_threads(1)
+                        .map_err(|err| SelectError::Inference(err.to_string()))?
+                        .commit_from_file(dir.join("model.onnx"))
+                        .map_err(|err| SelectError::Inference(err.to_string()))?;
+                    Engine::Ort(Mutex::new(session))
+                }
+                jc_model::Backend::Candle => {
+                    let path = jc_model::candle::zh::weights_path(dir).ok_or_else(|| {
+                        SelectError::Inference(format!(
+                            "{} 沒有 candle 權重（model.safetensors 或 model.gguf）",
+                            dir.display()
+                        ))
+                    })?;
+                    if jc_model::candle::quant::is_gguf(&path) {
+                        Engine::CandleQuant(
+                            jc_model::candle::QuantZhSelect::load(&path)
+                                .map_err(|err| SelectError::Inference(err.to_string()))?,
+                        )
+                    } else {
+                        Engine::Candle(
+                            jc_model::candle::ZhSelect::load(&path)
+                                .map_err(|err| SelectError::Inference(err.to_string()))?,
+                        )
+                    }
+                }
+            };
             Ok(Self {
-                session: Mutex::new(session),
+                engine,
                 vocab,
                 manifest,
                 timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
@@ -731,6 +773,51 @@ mod onnx {
         }
 
         fn run(&self, arrays: &Arrays) -> Result<Vec<f32>, SelectError> {
+            match &self.engine {
+                Engine::Ort(session) => self.run_ort(arrays, session),
+                Engine::Candle(model) => self.run_candle(arrays, |input| model.scores(input)),
+                Engine::CandleQuant(model) => self.run_candle(arrays, |input| model.scores(input)),
+            }
+        }
+
+        /// candle 的推論路徑；沒有可中止的 watchdog，只量延遲。
+        fn run_candle(
+            &self,
+            arrays: &Arrays,
+            run: impl FnOnce(&jc_model::candle::ZhInput<'_>) -> jc_model::Result<Vec<f32>>,
+        ) -> Result<Vec<f32>, SelectError> {
+            let cols = arrays.target_node.first().map(Vec::len).unwrap_or(0);
+            let target_node: Vec<i64> = arrays.target_node.iter().flatten().copied().collect();
+            let target_ids: Vec<i64> = arrays.target_ids.iter().flatten().copied().collect();
+            let input = jc_model::candle::ZhInput {
+                seq: arrays.len(),
+                ids: &arrays.ids,
+                bases: &arrays.bases,
+                tones: &arrays.tones,
+                types: &arrays.types,
+                positions: &arrays.positions,
+                mask: &arrays.mask,
+                proj_pos: &arrays.proj_pos,
+                target_node: &target_node,
+                target_ids: &target_ids,
+                rows: arrays.rows(),
+                cols,
+            };
+            let started = Instant::now();
+            let result = run(&input);
+            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+            let scores = result.map_err(|err| SelectError::Inference(err.to_string()))?;
+            if let Ok(mut durations) = self.durations.lock() {
+                durations.push(elapsed);
+            }
+            Ok(scores)
+        }
+
+        fn run_ort(
+            &self,
+            arrays: &Arrays,
+            session: &Mutex<Session>,
+        ) -> Result<Vec<f32>, SelectError> {
             let length = arrays.len();
             let rows = arrays.rows();
             let cols = arrays.target_node.first().map(Vec::len).unwrap_or(0);
@@ -775,8 +862,7 @@ mod onnx {
                 "target_ids" => target_ids,
             ];
 
-            let mut session = self
-                .session
+            let mut session = session
                 .lock()
                 .map_err(|_| SelectError::Inference("session 鎖已損壞".into()))?;
             let options =

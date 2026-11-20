@@ -55,6 +55,8 @@ pub struct GoldenOptions {
     pub json: bool,
     /// 啟用注音選字模型重排。
     pub select_model: bool,
+    /// 選字模型的推論後端。
+    pub backend: jc_model::Backend,
 }
 
 /// 注音 golden 的 45 個案例。
@@ -73,8 +75,11 @@ pub fn zh_golden(options: GoldenOptions, out: &mut dyn Write) -> Result<(), CliE
         stats,
         json,
         select_model,
+        backend,
     } = options;
     let dir = data::testdata_dir(testdata)?;
+    // 後端是行程層級設定，必須在安裝模型前指定。
+    jc_model::set_default_backend(backend);
     if select_model {
         if let Err(err) = data::install_select_model(Some(&dir)) {
             eprintln!("警告：--select-model on 無法載入選字模型，維持統計排序：{err}");

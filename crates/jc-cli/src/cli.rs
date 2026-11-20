@@ -67,6 +67,8 @@ pub enum Command {
         json: bool,
         /// 啟用注音選字模型重排。
         select_model: bool,
+        /// 選字模型的推論後端：`ort` 或 `candle`。
+        backend: jc_model::Backend,
     },
     /// 跑一個日文題庫。
     EvalJa {
@@ -284,7 +286,6 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     match kind {
         "zh-golden" => {
             reject_ja_flags(rerank, gate, left, "eval zh-golden")?;
-            reject_backend(backend, "eval zh-golden")?;
             reject_items(items, "eval zh-golden")?;
             Ok(Command::EvalZhGolden {
                 testdata,
@@ -293,6 +294,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 mu,
                 stats,
                 select_model: select_model.unwrap_or(true),
+                backend: backend.unwrap_or(jc_model::Backend::Ort),
                 json,
             })
         }
@@ -662,6 +664,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             stats,
             json,
             select_model,
+            backend,
         } => crate::eval_cmd::zh_golden(
             crate::eval_cmd::GoldenOptions {
                 testdata: testdata.clone(),
@@ -671,6 +674,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 stats: *stats,
                 json: *json,
                 select_model: *select_model,
+                backend: *backend,
             },
             out,
         ),
@@ -769,7 +773,7 @@ pub fn usage() -> String {
     format!(
         "jc-cli {}（開發工具）\n\n\
          用法：\n  \
-         jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--select-model on|off] [--json]\n  \
+         jc-cli eval zh-golden --testdata <dir> [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--select-model on|off] [--backend ort|candle] [--json]\n  \
          jc-cli eval ja --testdata <dir> --corpus modern-500 [--pack <pack>] \
          [--rerank on|off] [--gate off|<成本差>|cand:<N>] [--backend ort|candle] \
          [--left off|rolling] [--json] [--items]\n  \
@@ -818,6 +822,7 @@ mod tests {
                 stats: false,
                 json: true,
                 select_model: true,
+                backend: jc_model::Backend::Ort,
             }
         );
     }
@@ -1068,6 +1073,7 @@ mod tests {
                 stats: false,
                 json: false,
                 select_model: false,
+                backend: jc_model::Backend::Ort,
             }
         );
         assert!(parse(&args(&["convert", "ㄨㄛˇ", "--select-model", "auto"])).is_err());

@@ -45,11 +45,13 @@ use crate::manifest::ModelSpec;
 
 pub mod jinen;
 pub mod quant;
+pub mod zh;
 
 pub use quant::{
     export_gguf, export_gguf_with_embedding, EmbeddingDtype, QuantDtype, QuantReranker,
     DEFAULT_QUANT_FILE,
 };
+pub use zh::{QuantZhSelect, ZhConfig, ZhInput, ZhSelect};
 
 /// candle 後端的名稱。
 pub const BACKEND_NAME: &str = "candle";
