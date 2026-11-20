@@ -4,6 +4,24 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.7 - 2026-11-21
+
+### 修正
+
+- Windows 安裝：TSF 的 `HKCR\CLSID\{...}\InprocServer32` 改由 MSI 的 `<Class>`
+  寫入，不再由 DLL 的 `DllRegisterServer` 在自訂動作裡寫。先前 64 位元檢視的 CLSID
+  在 `RegisterCategory` 執行時還不存在或指到 exe，導致存取違規（`0xC0000005`）與
+  1722 失敗。
+- Windows 安裝：註冊改用 `ITfInputProcessorProfileMgr::RegisterProfile`，取代
+  `Register` 加 `AddLanguageProfile` 兩步。
+- Windows 安裝：反安裝不再呼叫 `InstallLayoutOrTip(ILOT_UNINSTALL)`。移除語系最後
+  一個 layout 會讓 Windows 變更系統地區；現在只清 `%LOCALAPPDATA%\jc-ime`。
+- Windows 安裝：CLSID 機碼改由 Windows Installer 管理，自訂動作不再自行刪除。
+
+### 移除
+
+- `jc-tip-register` 的跨架構註冊程式碼（`arch.rs` 與自行寫機碼的路徑），約 900 行。
+
 ## 0.1.0-rc.6 - 2026-11-21
 
 ### 修正
