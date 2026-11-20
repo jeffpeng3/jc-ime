@@ -1409,3 +1409,21 @@ gate：test exit 0（54 targets、1231 passed、0 failed）、clippy exit 0、fm
   - `session::tests::test_ja_passive_learning_keeps_clear_statistical_winner`
   - `session::tests::test_ja_short_reading_records_evidence_only`
   - `jc-settings`：`features_tests::test_bool_settings_defaults_and_persist`
+
+## 2026-11-20 16:20 composition-model 修正（`3360141` → `bafeb8c`）
+
+- `release-msi-fix` 的 `2aa57b1` 已在 `394bc3b` 合入，`git merge-base --is-ancestor` 確認包含。
+- `ja-script`、`selection-pin` 兩條舊分支已刪（`selection-pin` 先移除 `/mnt/work/jc/wt/selection-pin` worktree）；
+  `git branch --no-merged main` 現在是空的。
+
+gate：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**1 failed**（54 targets、1264 passed）：
+  `jc-settings` 的 `features_tests::test_bool_settings_defaults_and_persist`，
+  `ja-live-conversion 預設`：實際 `Some("on")`、期望 `Some("off")`。這是 live-default 把預設改成 ON 後，測試期望沒同步，
+  屬 branch 自帶（已在 composition-model worktree 單獨重現）。
+- `cargo clippy --workspace --all-targets -- -D warnings`：**2 個錯**，都在 `crates/jc-core/src/ja/live.rs`：
+  `:343` `derivable_impls`（`impl Default for Trigger` 可 derive）、`:1093` `extend_with_drain`（`extend(self.tail.drain(..))` 應改 `append`）。
+- fmt exit 0。
+
+題庫（本機）：`zh-golden` **45/45**、`ja auto` **92.2%**、`quality` **93.6%**、`--neural off` **86.0%**、
+`fuzzy` **44.5%**、`mixed` **6/6**。
