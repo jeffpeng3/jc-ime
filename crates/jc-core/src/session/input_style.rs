@@ -265,7 +265,7 @@ impl Session {
     /// 混打與英文模式的「組字」由各自的路徑判斷，這裡只描述注音狀態。
     pub(super) fn composing(&self) -> bool {
         self.config.mode == Mode::Zh
-            && (!self.zh.pending().is_empty() || !self.zh.syllables().is_empty())
+            && (!self.zh.pending().is_empty() || !self.syllables.is_empty())
     }
 
     /// 候選一頁幾項；風格指定 9 時用 9，其餘 10。

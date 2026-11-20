@@ -226,12 +226,36 @@ pub(super) struct Menu {
     pub(super) tab: usize,
 }
 
+/// 正在編輯的片段視窗。
+///
+/// `start`、`len` 都是音節索引；候選清單只解碼這一段，選字也只鎖定這一段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EditWindow {
+    /// 視窗起點（音節索引）。
+    pub(super) start: usize,
+    /// 視窗長度（音節數）。
+    pub(super) len: usize,
+}
+
 /// 一次輸入的工作階段。
 ///
 /// 只保留組字所需的狀態；送出後立即清空，因此呼叫端每次都用快照重畫。
 pub struct Session {
     pub(super) config: SessionConfig,
     pub(super) zh: ZhInput,
+    /// 已完成的注音音節；組字游標與片段編輯都以這份清單為準。
+    ///
+    /// `ZhInput` 只負責尚未完成的注音；音節打完就搬進這裡，才能在中間插入
+    /// 與刪除。對照上游 `s.syls`。
+    pub(super) syllables: Vec<Syllable>,
+    /// 組字游標位置（音節格，`0..=syllables.len()`）。
+    ///
+    /// 對外一律換算成 rune 位移；內部用音節格才能對應讀音與鎖定。
+    pub(super) cursor: usize,
+    /// 游標所在片段的編輯視窗；有值時候選清單只算這一段。
+    pub(super) edit: Option<EditWindow>,
+    /// 換字後是否保留候選窗，直到 Esc 或游標離開目前片段。
+    pub(super) keep_candidates: bool,
     pub(super) romaji: RomajiInput,
     pub(super) lexicon: InMemoryLexicon,
     /// 不含自訂詞的原始詞典；自訂詞變動時由它重建 [`Session::lexicon`]。
@@ -352,6 +376,10 @@ impl Session {
         let mut session = Self {
             config,
             zh: ZhInput::standard(),
+            syllables: Vec::new(),
+            cursor: 0,
+            edit: None,
+            keep_candidates: false,
             romaji: RomajiInput::new(),
             lexicon,
             base_lexicon,
@@ -470,6 +498,8 @@ impl Session {
                             }
                         }
                     }
+                    KeyCode::ArrowRight if key.shift => self.resize_segment(1),
+                    KeyCode::ArrowLeft if key.shift => self.resize_segment(-1),
                     KeyCode::ArrowRight => self.navigate(1),
                     KeyCode::ArrowLeft => self.navigate(-1),
                     KeyCode::Char(ch) => self.press_char(ch),
@@ -1822,6 +1852,30 @@ mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "今日");
+    }
+
+    /// 組字中的半截讀音不送 Jinen；完整讀音才送一次。
+    #[test]
+    fn test_ja_neural_not_called_for_incomplete_reading() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let runtime = stub_runtime("京", std::time::Duration::ZERO, &calls);
+        let (mut s, _) = ja_neural_session(1_400, Some(runtime), 180);
+
+        type_ja(&mut s, "ky");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "半截讀音不呼叫神經模型"
+        );
+
+        type_ja(&mut s, "ou");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "完整讀音才送模型"
+        );
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "京");
     }
 
     /// 平均候選數沒有超過下限時不呼叫模型；就算 gap 很小也一樣。

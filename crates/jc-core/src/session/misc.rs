@@ -177,7 +177,7 @@ impl Session {
     /// `start`、`end` 是音節索引（半開區間），對照上游 `markHint`。空範圍
     /// 回傳空字串。
     pub fn mark_hint(&self, start: usize, end: usize) -> String {
-        if start >= end || end > self.zh.syllables().len() {
+        if start >= end || end > self.syllables.len() {
             return String::new();
         }
         if end - start < MIN_COMPOSE_WORD {
@@ -207,7 +207,7 @@ impl Session {
     /// 取代，畫面不變；加入後立刻打得出同一個詞。對照上游 `addMarked`，
     /// 但游標與標示樣式由呼叫端提供（本埠 `Snapshot` 沒有標示樣式）。
     pub fn add_composition_word(&mut self, start: usize, end: usize) -> WordMark {
-        if start >= end || end > self.zh.syllables().len() {
+        if start >= end || end > self.syllables.len() {
             return WordMark {
                 changed: false,
                 notice: String::new(),
@@ -299,7 +299,7 @@ impl Session {
             return out;
         }
         let mut out = String::new();
-        for syllable in &self.zh.syllables()[start..end] {
+        for syllable in &self.syllables[start..end] {
             out.push_str(&self.decode_syllable(syllable));
         }
         out
@@ -307,7 +307,7 @@ impl Session {
 
     /// 使用者打的讀音；沒打聲調的音節用目前解碼選到的聲調。
     fn typed_reading(&self, start: usize, end: usize) -> Option<Vec<Syllable>> {
-        let syllables = &self.zh.syllables()[start..end];
+        let syllables = &self.syllables[start..end];
         let readings = self.zh_readings(syllables);
         if readings.len() != end - start {
             return None;
@@ -400,7 +400,7 @@ impl Session {
         if !self.config.learning || self.locks.is_empty() {
             return None;
         }
-        let syllables = self.zh.syllables();
+        let syllables = &self.syllables;
         if base >= syllables.len() {
             return None;
         }
@@ -557,7 +557,7 @@ impl Session {
     /// `enclosedSelections` 尚未接上（見 port 文件的 deferred 表）。
     pub fn correction_selections(&self, begin: usize, end: usize, local: bool) -> Vec<Seg> {
         let mut out = Vec::new();
-        if !local || begin >= end || end > self.zh.syllables().len() {
+        if !local || begin >= end || end > self.syllables.len() {
             return out;
         }
         for at in begin..end {
@@ -608,11 +608,11 @@ impl Session {
     pub fn committed_tail(&self) -> Option<&str> {
         if !self.config.document_context
             || !self.zh.pending().is_empty()
-            || self.zh.syllables().is_empty()
+            || self.syllables.is_empty()
         {
             return None;
         }
-        let syllables = self.zh.syllables();
+        let syllables = &self.syllables;
         let hypothesis = self.current_hypothesis()?;
         let last = hypothesis.segments.last()?;
         if last.partial || last.end != syllables.len() || last.start >= last.end {
