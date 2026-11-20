@@ -1062,8 +1062,10 @@ mod tests {
     fn test_tone_keys_mark_zhuyin() {
         // `ji` 兩邊都合法，沒有聲調時偏好日文。
         check("ji", &[("ja", "ji", "じ")]);
-        // 聲調鍵固定注音段。
-        check("ji3", &[("zh", "ji3", "ㄐㄧˇ")]);
+        // 聲調鍵固定注音段；大千鍵盤 j＝ㄨ、i＝ㄛ，所以 `ji3` 是 ㄨㄛˇ。
+        check("ji3", &[("zh", "ji3", "ㄨㄛˇ")]);
+        // ㄐㄧˇ 要用 r＝ㄐ、u＝ㄧ。
+        check("ru3", &[("zh", "ru3", "ㄐㄧˇ")]);
         check("savul3", &[("ja", "sa", "さ"), ("zh", "vul3", "ㄒㄧㄠˇ")]);
     }
 

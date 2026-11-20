@@ -39,3 +39,7 @@ Go 沒有可沿用的測試名；新測試都在 `mixed_latin.rs` 與 `mixed.rs`
 | `test_mixed_latin_split_fixture` | Router 端到端 |
 | `test_mixed_latin_split_off_keeps_literal` | 開關關閉時行為不變 |
 | `test_mixed_latin_split_commit` | Session 逐鍵與送出 |
+
+測試用 `InMemoryLexicon` 的 `LexEntry` 成本要低於未知詞成本（8），否則解碼器
+會選未知詞弧，表面上看起來像「只還原讀音、沒有轉成漢字」；`cost = 0` 與正式
+詞庫一致。
