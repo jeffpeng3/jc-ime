@@ -1102,6 +1102,13 @@ fn named_key(name: &str) -> Result<Option<Key>, String> {
     Ok(Some(Key::new(code, None, false)))
 }
 
+/// Go 參考實作的候選頁面大小。
+///
+/// 題庫的 `page` 動作是照 Go 版錄的，當時一頁 10 項。產品分頁已固定 9 項
+/// （`jc_core::session::PAGE_SIZE`），這裡只把題庫頁碼換算成候選索引，讓
+/// golden 維持原本「第二頁第 2 項」的語意；不是產品頁邊界。
+const GOLDEN_PAGE_SIZE: usize = 10;
+
 fn apply_request(session: &mut Session, request: &serde_json::Value) -> Result<(), String> {
     let kind = request
         .get("type")
@@ -1121,7 +1128,8 @@ fn apply_request(session: &mut Session, request: &serde_json::Value) -> Result<(
                 .get("index")
                 .and_then(|value| value.as_u64())
                 .unwrap_or(0) as usize;
-            session.page(index);
+            // 題庫頁碼是 Go 版的 10 項分頁；換成候選索引後直接指定高亮。
+            session.select(index * GOLDEN_PAGE_SIZE);
             Ok(())
         }
         "toggle" => {

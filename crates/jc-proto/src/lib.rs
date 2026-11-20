@@ -16,9 +16,9 @@ pub use message::{read_message, read_payload, write_message};
 /// 協定版本。握手時兩邊的版本必須相同。
 ///
 /// 版本 2 在 [`Response::State`] 加上 `cursor_rune`、`suggestion`、`label` 與
-/// `navigating`。版本 3 再加上 `details`、`segments` 與 `highlighted`。這些
-/// 欄位都有預設值，舊 wrapper 讀到的 JSON 形狀不變，但握手版本一定要是
-/// [`PROTOCOL_VERSION`]，不能靜默接受舊版本。
+/// `navigating`。版本 3 再加上 `details`、`segments`、`highlighted`、`page`
+/// 與 `page_size`。這些欄位都有預設值，舊 wrapper 讀到的 JSON 形狀只多不減，
+/// 但握手版本一定要是 [`PROTOCOL_VERSION`]，不能靜默接受舊版本。
 pub const PROTOCOL_VERSION: u32 = 3;
 
 /// 一個候選的結構化資訊。
@@ -115,8 +115,8 @@ pub enum Response {
     /// 目前的完整組字快照。`cursor` 單位是字元（Unicode scalar value）。
     ///
     /// 版本 2 起多了 `cursor_rune`、`suggestion`、`label` 與 `navigating`；
-    /// 版本 3 起多了 `details`、`segments` 與 `highlighted`。空值時不寫進
-    /// JSON，舊 wrapper 看到的形狀與前一版相同。
+    /// 版本 3 起多了 `details`、`segments`、`highlighted`、`page` 與
+    /// `page_size`。空值時不寫進 JSON，舊 wrapper 看到的形狀不變。
     ///
     /// `cursor` 只為相容而留，權威值是 `cursor_rune`。
     State {
@@ -133,6 +133,15 @@ pub enum Response {
         /// 目前高亮的候選索引；0 時省略。
         #[serde(default, skip_serializing_if = "is_zero")]
         highlighted: usize,
+        /// 目前頁碼（0 起算）；0 時省略。
+        ///
+        /// 由核心以 `highlighted / page_size` 推導，wrapper 直接拿來畫頁，
+        /// 不要自己另算頁邊界。
+        #[serde(default, skip_serializing_if = "is_zero")]
+        page: usize,
+        /// 一頁幾項；固定 9。舊 wrapper 沒有這個欄位時，反序列化預設也是 9。
+        #[serde(default = "default_page_size")]
+        page_size: usize,
         /// 游標的 rune 位置；與 `cursor` 同值，供需要 rune 位移的外殼使用。
         #[serde(default, skip_serializing_if = "is_zero")]
         cursor_rune: usize,
@@ -155,6 +164,11 @@ pub enum Response {
 /// serde 的 `skip_serializing_if`：值為 0 時省略。
 fn is_zero(value: &usize) -> bool {
     *value == 0
+}
+
+/// 舊版 `State` 沒有 `page_size` 時的預設值。
+fn default_page_size() -> usize {
+    jc_core::candidate::PAGE_SIZE
 }
 
 impl Response {
@@ -181,6 +195,8 @@ impl Response {
             segments,
             candidates,
             highlighted,
+            page,
+            page_size,
             suggestion,
             label,
             navigating,
@@ -215,6 +231,8 @@ impl Response {
             details,
             segments,
             highlighted,
+            page,
+            page_size,
             cursor_rune,
             suggestion,
             label,
@@ -294,7 +312,7 @@ mod tests {
         let text = serde_json::to_string(&resp).unwrap();
         assert_eq!(
             text,
-            r#"{"op":"state","preedit":"ㄇㄚ","cursor":2,"candidates":[],"cursor_rune":2}"#
+            r#"{"op":"state","preedit":"ㄇㄚ","cursor":2,"candidates":[],"page_size":9,"cursor_rune":2}"#
         );
     }
 
@@ -309,7 +327,7 @@ mod tests {
         let text = serde_json::to_string(&Response::state(snapshot)).unwrap();
         assert_eq!(
             text,
-            r#"{"op":"state","preedit":"ㄇ","cursor":1,"candidates":[],"cursor_rune":1,"suggestion":"ㄚ","label":"common","navigating":true}"#
+            r#"{"op":"state","preedit":"ㄇ","cursor":1,"candidates":[],"page_size":9,"cursor_rune":1,"suggestion":"ㄚ","label":"common","navigating":true}"#
         );
     }
 
@@ -326,6 +344,8 @@ mod tests {
                 details: vec![],
                 segments: vec![],
                 highlighted: 0,
+                page: 0,
+                page_size: 9,
                 cursor_rune: 0,
                 suggestion: None,
                 label: None,
@@ -339,12 +359,13 @@ mod tests {
         let text = serde_json::to_string(&Response::state(jc_core::Snapshot::empty())).unwrap();
         assert_eq!(
             text,
-            r#"{"op":"state","preedit":"","cursor":0,"candidates":[]}"#
+            r#"{"op":"state","preedit":"","cursor":0,"candidates":[],"page_size":9}"#
         );
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        for key in ["details", "segments", "highlighted"] {
+        for key in ["details", "segments", "highlighted", "page"] {
             assert!(value.get(key).is_none(), "{key} 不應出現在空快照");
         }
+        assert_eq!(value["page_size"], 9, "頁面大小永遠是 9");
     }
 
     #[test]
@@ -469,6 +490,8 @@ mod tests {
                 details,
                 segments,
                 highlighted,
+                page,
+                page_size,
                 ..
             } => {
                 assert_eq!(preedit, "ㄨㄛˇ");
@@ -476,6 +499,32 @@ mod tests {
                 assert!(details.is_empty(), "v2 形狀沒有 details");
                 assert!(segments.is_empty(), "v2 形狀沒有 segments");
                 assert_eq!(highlighted, 0);
+                assert_eq!(page, 0, "v2 形狀沒有 page");
+                assert_eq!(page_size, 9, "舊 wrapper 反序列化也要拿到固定頁面大小");
+            }
+            other => panic!("應是 State，得到 {other:?}"),
+        }
+    }
+
+    /// 分頁由核心決定：`page` 與 `page_size` 直接從快照帶到線格式。
+    #[test]
+    fn state_carries_core_page_and_page_size() {
+        let snapshot = jc_core::Snapshot {
+            highlighted: 10,
+            page: 1,
+            page_size: jc_core::candidate::PAGE_SIZE,
+            ..jc_core::Snapshot::from_preedit("ㄕˋ")
+        };
+        match Response::state(snapshot) {
+            Response::State {
+                page,
+                page_size,
+                highlighted,
+                ..
+            } => {
+                assert_eq!(page, 1);
+                assert_eq!(page_size, 9);
+                assert_eq!(highlighted, 10);
             }
             other => panic!("應是 State，得到 {other:?}"),
         }

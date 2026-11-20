@@ -268,23 +268,25 @@ impl Session {
             && (!self.zh.pending().is_empty() || !self.syllables.is_empty())
     }
 
-    /// 候選一頁幾項；風格指定 9 時用 9，其餘 10。
+    /// 候選一頁幾項。
+    ///
+    /// 固定 [`PAGE_SIZE`]（9），與 Windows 候選窗一致。`InputStyle` 的
+    /// `candidate_page_size` 只保留給舊設定檔讀取，不再參與分頁；頁面大小
+    /// 只有這一個來源。
     pub fn page_size(&self) -> usize {
-        if self.style.rules.candidate_page_size == 9 {
-            9
-        } else {
-            10
-        }
+        PAGE_SIZE
     }
 
     /// 目前使用的選字鍵。
     ///
-    /// 對照上游 `selectionKeys`：長度要剛好是每頁項數（9 項頁面允許 10 個鍵），
-    /// 每個鍵是不重複的可見 ASCII（不含大寫）；不合用時退回預設。
+    /// 對照上游 `selectionKeys`：每個鍵是不重複的可見 ASCII（不含大寫），
+    /// 長度要符合頁面大小。舊設定可能是 10 個鍵，第一個字元起取一頁；不合用
+    /// 時退回預設的 `123456789`。
     pub fn selection_keys(&self) -> String {
         let page = self.page_size();
         let configured: Vec<char> = self.style.selection_keys.chars().collect();
-        let usable_len = configured.len() == page || (page == 9 && configured.len() == 10);
+        // 舊版 10 鍵設定（`1234567890`）仍可讀，只取前 9 個。
+        let usable_len = configured.len() == page || configured.len() == page + 1;
         if !usable_len {
             return default_selection_keys(page);
         }
@@ -943,7 +945,7 @@ mod tests {
         );
     }
 
-    /// 對照 `TestSelectionKeysDefaultLabelsDigits`：不合用的設定退回 1–0。
+    /// 對照 `TestSelectionKeysDefaultLabelsDigits`：不合用的設定退回 1–9。
     #[test]
     fn test_selection_keys_default_to_digits() {
         for keys in [
@@ -959,28 +961,28 @@ mod tests {
             type_syllable(&mut s, "ㄕˋ");
             s.press(Key::new(KeyCode::ArrowRight, None, false));
             let candidates = s.candidates().to_vec();
-            s.press(Key::char('0', false));
+            s.press(Key::char('9', false));
             assert_eq!(
                 s.commit(),
-                candidates[9].surface,
-                "SelectionKeys={keys:?} 的 0"
+                candidates[8].surface,
+                "SelectionKeys={keys:?} 的 9"
             );
         }
     }
 
     /// 對照 `TestSelectionKeysLettersSelectByPosition`：字母按位置選字。
+    ///
+    /// 頁面固定 9 項，10 鍵設定只取前 9 個；第 10 個鍵不再選字。
     #[test]
     fn test_selection_keys_letters_select_by_position() {
         for (keys, pressed, index) in [
             ("1234qweras", 'q', 4),
             ("1234qweras", 'w', 5),
-            ("1234qweras", 's', 9),
             ("1234qweras", '1', 0),
             ("asdfghjkl;", 'a', 0),
             ("asdfghjkl;", 'l', 8),
-            ("asdfghjkl;", ';', 9),
             ("1234qweras", '5', 4),
-            ("1234qweras", '0', 9),
+            ("1234567890", '9', 8),
             ("asdfghjkl;", '1', 0),
         ] {
             let mut s = many_session(keys);
@@ -1022,12 +1024,13 @@ mod tests {
         assert_eq!(s.commit(), want);
     }
 
-    /// 風格頁面大小 9：第 0 頁 9 項，`page(1)` 跳到第 9 項。
+    /// 頁面大小固定 9，與風格設定無關；`page(1)` 跳到第 9 項。
     #[test]
     fn test_candidate_page_size_can_be_nine() {
         let mut s = many_session("");
+        assert_eq!(s.page_size(), 9, "預設風格也是 9");
         s.style = InputStyle::preset("mcbopomofo").expect("預設存在");
-        assert_eq!(s.page_size(), 9);
+        assert_eq!(s.page_size(), 9, "風格設定不再改變頁面大小");
         type_syllable(&mut s, "ㄕˋ");
         s.page(1);
         assert_eq!(s.highlighted(), 9);

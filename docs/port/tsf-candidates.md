@@ -55,12 +55,13 @@ TSF 的 UI 執行緒被呼叫，資料用 `Rc<RefCell<_>>` 與 `CandidateHost` �
 | `GetCount` | 候選總數，不是單頁數量 |
 | `GetSelection` | 引擎的絕對高亮索引 `highlighted`；超出範圍時收回最後一項 |
 | `GetString(i)` | `candidates[i]`；越界回 `E_INVALIDARG` |
-| `GetPageIndex` | 每頁 9 項，回傳每頁起始索引；`pIndex == NULL` 時只回頁數 |
-| `SetPageIndex` | 接受外部指定的頁首，下一次資料更新時重設回 9 項分頁 |
+| `GetPageIndex` | 讀 `State.page_size` 分頁，回傳每頁起始索引；`pIndex == NULL` 時只回頁數 |
+| `SetPageIndex` | 接受外部指定的頁首，下一次資料更新時重設回核心回報的頁面大小 |
 | `GetCurrentPage` | 由 `highlighted` 與頁首反推，不另外保存頁碼 |
 
-`GetPageIndex` 的頁首是 `0, 9, 18, …`；`GetCount` 是全部候選數。Windows
-用這兩個值加上 `GetCurrentPage` 決定目前要畫哪 9 項。
+頁首由 `State.page_size` 決定，目前核心固定 9，所以是 `0, 9, 18, …`；
+`GetCount` 是全部候選數。wrapper 沒有自己的頁面大小常數，核心改頁面大小時
+這裡跟著變。Windows 用這兩個值加上 `GetCurrentPage` 決定目前要畫哪一頁。
 
 ## 更新旗標
 
@@ -130,28 +131,20 @@ wrapper 不自己從 `candidates` 挑字、不自己組提交字串、不改 `St
 看到候選字面。若產品要顯示「讀音／來源／label」，必須改成自繪視窗（例如
 GDI 分層視窗），不能靠這個介面；本 task 沒有改協定去硬塞資料。
 
-## 分頁與引擎的落差（跨 task）
+## 分頁與引擎的頁面大小
 
-`ITfCandidateListUIElement` 每頁固定 9 項，是任務書的規格。但引擎的每頁
-項數由 `InputStyle.rules.candidate_page_size` 決定，**目前預設是 10**
-（`0c` 預設；只有小麥注音是 9）。協定 v3 沒有帶頁面大小，wrapper 無法查詢。
+`ITfCandidateListUIElement` 由 TIP 提供每頁起始索引，Windows 沒有規定一頁
+幾項。頁面大小一律讀協定 v3 的 `State.page_size`（目前核心固定 9），
+`candidates.rs` 不保留本地常數。
 
-影響：
+數字選字也在核心：`select_by_digit` 用 `page * page_size + 頁內位置`，候選
+不足一頁或超出候選數時忽略按鍵。wrapper 只送實體數字鍵，不自己從
+`candidates` 挑字。
 
-- 第 1 頁（索引 0–8）顯示與數字選字一致。
-- `PageDown` 時引擎把 `highlighted` 移到 `page * 10`，UI 卻用 9 計算頁碼；
-  兩邊的頁邊界會逐漸錯開。畫面仍會換頁，但同一頁的內容可能與引擎認定的
-  頁不同。
-- 數字鍵選字在 `jc-core::session::select_by_digit` 少了頁首位移：
-  參考實作是 `candidateID(candidatePage()*pageSize() + n)`，Rust 版直接
-  `candidates.get(n)`。因此第 2 頁以後按數字會選到清單最前面的候選。這是
-  `jc-core` 的既有 bug，不在本 task 的 owned paths。
-
-需要後續處理：
-
-1. `settings-wire` 接上後，讓 wrapper 與引擎使用同一個 `candidate_page_size`；
-   或在協定 v4 增加可忽略的頁面資訊。
-2. 修 `jc-core` 的 `select_by_digit` 頁首位移，並補行為測試（第 2 頁選第 2 項）。
+`State.page` 是核心認定的目前頁碼，可供診斷；`GetCurrentPage` 仍由
+`highlighted` 與頁首反推，兩者在預設分頁下一致。若 Windows 透過
+`SetPageIndex` 指定自訂頁首，`GetCurrentPage` 會跟著自訂頁首走，直到下一次
+資料更新重設。
 
 ## 驗證
 
@@ -187,8 +180,8 @@ GDI 分層視窗），不能靠這個介面；本 task 沒有改協定去硬塞�
 
 - 沒有 `ITfCandidateListUIElementBehavior`：滑鼠點選候選不支援。
 - 讀音與 label 不顯示；需要自繪視窗。
-- 每頁固定 9 項；與引擎預設的 10 項頁面不一致（見上一節）。
-- 第 2 頁以後的數字選字受 `jc-core` 頁首 bug 影響。
+- 頁面大小跟著核心的 `State.page_size`（目前 9），wrapper 沒有本地常數。
+- 需要協定 v3 的 `State.page_size`；舊引擎沒有這個欄位時反序列化預設 9。
 - 沒有 `Settings` 接線；顯示條件固定是「有候選就顯示」。
 - `docs/port/tsf-skeleton.md` 仍寫「沒有候選窗」；該檔不在本 task 的 owned
   paths，交給整合階段一起更新。

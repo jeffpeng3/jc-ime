@@ -59,11 +59,13 @@ use mixed::AsciiInput;
 /// 這個 crate 的語意版本，供協定握手與診斷使用。
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// 預設候選數。
-pub const DEFAULT_MAX_CANDIDATES: usize = 5;
+/// 預設候選數：兩頁，讓第二頁的數字選字有實際用途。
+pub const DEFAULT_MAX_CANDIDATES: usize = PAGE_SIZE * 2;
 
-/// 候選視窗一頁幾項。
-pub const PAGE_SIZE: usize = 10;
+/// 候選視窗一頁幾項；核心唯一的頁面大小，固定 9。
+///
+/// 由 [`crate::candidate::PAGE_SIZE`] 轉出，避免 `session` 內外各留一份常數。
+pub use crate::candidate::PAGE_SIZE;
 
 /// 聲調選填最多展開幾種組合；超過就維持原讀音。
 pub(super) const TONELESS_COMBINATIONS: usize = 256;
@@ -449,6 +451,14 @@ impl Session {
         self.highlighted
     }
 
+    /// 目前候選頁碼（0 起算）。
+    ///
+    /// 頁碼不另存，一律由 `highlighted / page_size` 推導。這樣翻頁、方向鍵與
+    /// 直接指定高亮都只有一份頁邊界。
+    pub fn current_page(&self) -> usize {
+        self.highlighted / self.page_size().max(1)
+    }
+
     /// 目前候選清單。
     pub fn candidates(&self) -> &[Candidate] {
         &self.candidates
@@ -580,9 +590,11 @@ impl Session {
         self.menu_tab_names(menu.kind).get(menu.tab).copied()
     }
 
-    /// 翻到候選的第 `page` 頁；頁面大小由輸入風格決定，預設 10。
+    /// 翻到候選的第 `page` 頁；頁面大小固定 [`PAGE_SIZE`]。
     ///
-    /// 目前候選清單保留全部候選，翻頁只是把高亮移到該頁第一項。
+    /// 目前候選清單保留全部候選，翻頁只是把高亮移到該頁第一項；頁碼超出
+    /// 範圍時不改變狀態。外殼不需要呼叫這個方法，`PageUp`／`PageDown` 會走
+    /// 同一套頁邊界。
     pub fn page(&mut self, page: usize) -> Snapshot {
         let index = page.saturating_mul(self.page_size());
         if index < self.candidates.len() {
@@ -704,6 +716,8 @@ impl Session {
             segments: self.segments(),
             candidates: self.candidates.clone(),
             highlighted: self.highlighted,
+            page: self.current_page(),
+            page_size: self.page_size(),
             suggestion: self.snapshot_suggestion(),
             label: self.highlighted_label().map(str::to_string),
             navigating: self.navigating,
@@ -1162,6 +1176,79 @@ mod tests {
             s.highlighted_text(),
             s.candidates().get(PAGE_SIZE).map(|c| c.surface.as_str())
         );
+    }
+
+    /// 18 個同音候選、頁面 9 項：第二頁按 `1` 選第 10 個，不是第 1 個。
+    #[test]
+    fn test_digit_on_second_page_selects_page_offset() {
+        let mut s = eighteen_candidates_session();
+        type_syllable(&mut s, "ㄕˋ");
+        assert_eq!(s.candidates().len(), 18, "要剛好兩頁");
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::PageDown, None, false));
+        assert_eq!(s.current_page(), 1, "PageDown 到第二頁");
+        assert_eq!(s.page_size(), 9);
+
+        let want = s.candidates()[9].surface.clone();
+        s.press(Key::char('1', false));
+        assert_eq!(s.commit(), want, "第二頁的 1 是第 10 個候選");
+    }
+
+    /// 頁碼由 `highlighted / page_size` 推導：同頁內移動高亮後，數字鍵仍以
+    /// 頁首為基準。
+    #[test]
+    fn test_digit_selection_uses_page_derived_from_highlight() {
+        let mut s = eighteen_candidates_session();
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::PageDown, None, false));
+        assert_eq!(s.highlighted(), 9);
+        s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(s.highlighted(), 10);
+
+        let want = s.candidates()[10].surface.clone();
+        s.press(Key::char('2', false));
+        assert_eq!(s.commit(), want, "頁內第 2 項是索引 10");
+    }
+
+    /// 候選不足一頁時，超出範圍的數字鍵被吃掉，狀態不變。
+    #[test]
+    fn test_digit_beyond_candidate_count_keeps_state() {
+        let mut lex = InMemoryLexicon::new();
+        for (index, surface) in ["甲", "乙", "丙"].iter().enumerate() {
+            lex.push(LexEntry::new(*surface, "ㄕˋ", index as i32, 0));
+        }
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lex);
+        config.max_candidates = DEFAULT_MAX_CANDIDATES;
+        let mut s = Session::new(config);
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        let before = s.snapshot();
+
+        let after = s.press(Key::char('5', false));
+        assert_eq!(after.preedit, before.preedit, "組字不變");
+        assert_eq!(after.candidates, before.candidates, "候選不變");
+        assert_eq!(after.highlighted, 0, "高亮不變");
+        assert!(after.navigating, "仍在選取模式，沒有退回注音鍵");
+    }
+
+    /// 同音候選剛好 18 個的注音 session。
+    fn eighteen_candidates_session() -> Session {
+        let mut lex = InMemoryLexicon::new();
+        for (index, surface) in "是事市試式世室士視示適勢誓釋逝飾侍嗜".chars().enumerate()
+        {
+            lex.push(LexEntry::new(
+                surface.to_string(),
+                "ㄕˋ",
+                index as i32 * 10,
+                0,
+            ));
+        }
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lex);
+        config.max_candidates = DEFAULT_MAX_CANDIDATES;
+        Session::new(config)
     }
 
     fn mixed_session() -> Session {

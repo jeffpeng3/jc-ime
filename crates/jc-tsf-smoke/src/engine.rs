@@ -155,6 +155,8 @@ mod tests {
             details: Vec::new(),
             segments: Vec::new(),
             highlighted: 0,
+            page: 0,
+            page_size: 9,
             cursor_rune: 1,
             suggestion: None,
             label: None,
