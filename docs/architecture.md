@@ -3,35 +3,53 @@
 ## 形狀
 
 ```text
-wrapper（各平台獨立）              引擎行程
-  TSF DLL ─┐                       jc-engine ── jc-proto
-  候選窗   ├── 長度前綴 JSON ──────┘    │
-  設定程式 ┘                            └── jc-core ── jc-data
-                                             （注音／日文／Mixed／session）
+wrapper（各平台獨立）                  引擎行程
+  TSF DLL ─┐                          jc-engine ── jc-proto
+  候選窗   ├─ client crate ── proto ──┘    │
+  設定程式 ┘   jc-windows                  ├── jc-core ── jc-data
+               jc-linux（佔位）            │      │
+               jc-mac（佔位）              │      └── jc-model
+                                           │            │
+                                           │            └── candle（Jinen、注音 Q8_0）
+                                           │                ort（對照後端，執行期偵測）
+                                           └── jc-data
 
-jc-cli ── jc-core、jc-data、jc-eval、jc-testdata  （開發工具）
-jc-jadic ── 產出 pack v2                     （資料匯入）
-jc-model ── ONNX／candle 載入與推論          （注音選字已接進 jc-core）
-jc-platform ── wrapper 契約                  （尚未接進 jc-engine）
+jc-cli ── jc-core、jc-data、jc-model、jc-eval、jc-engine、jc-testdata（開發工具）
+jc-jadic ── Mozc 匯入與 pack v2 寫出          （資料匯入）
+jc-settings ── jc-core 的模糊音與輸入習慣規則 （設定資料模型，引擎尚未讀取）
+jc-platform ── wrapper 契約                    （引擎尚未依賴它）
 ```
 
-相依方向是單向的：`jc-core` 只依賴 `jc-data`；`jc-engine` 只依賴
-`jc-core` 與 `jc-proto`；`jc-eval` 不依賴 `jc-core`，轉換器由呼叫端注入。
+相依方向是單向的：
+
+- `jc-windows`／`jc-linux`／`jc-mac` → `jc-proto`；client 不依賴核心。
+- `jc-engine` → `jc-core`、`jc-data`、`jc-model`、`jc-proto`。
+- `jc-core` → `jc-data`、`jc-model`；神經 runtime 的 worker 在 `jc-core`。
+- `jc-eval` 不依賴 `jc-core`，轉換器由呼叫端注入。
+- `jc-settings` → `jc-core`，只為了共用模糊音與輸入習慣規則表。
+
+workspace 目前 15 個成員：`jc-core`、`jc-testdata`、`jc-data`、`jc-model`、
+`jc-proto`、`jc-platform`、`jc-eval`、`jc-engine`、`jc-windows`、`jc-linux`、
+`jc-mac`、`jc-cli`、`jc-jadic`、`jc-englishpack`、`jc-settings`。
 
 ## 責任
 
 | 元件 | 負責 | 不負責 |
 |---|---|---|
-| `jc-core` | 注音音節與鍵盤、lattice／Viterbi、注音解碼、日文輸入與解碼、Mixed 路由、session、輸出 | 檔案格式、IPC、任何 OS API |
+| `jc-core` | 注音音節與鍵盤、lattice／Viterbi、注音解碼、日文輸入與解碼、Mixed 路由、session、神經 runtime worker、輸出 | 檔案格式、IPC、任何 OS API |
 | `jc-data` | 日文 `0CJADIC` pack v1／v2、注音 `lexicon.bin`／`lm.bin` 的 mmap 讀取、manifest 驗證、連接矩陣與 bigram 查詢 | 匯入與寫檔（屬 `jc-jadic`）、轉換決策 |
 | `jc-jadic` | Mozc `dictionary_oss` 解析、去重排序、pack v2 與 manifest 寫出 | 執行期轉換 |
-| `jc-model` | 模型 manifest、tokenizer、reranker 與標點推論、逾時 | 解碼排序、個人化 |
-| `jc-proto` | 訊框、請求／回應列舉、版本握手、錯誤碼 | 組字狀態 |
+| `jc-model` | 模型 manifest、tokenizer、reranker、Jinen、注音選字（candle Q8_0／fp32，ORT 對照）、逾時 | 解碼排序、個人化 |
+| `jc-proto` | v3 訊框、請求／回應列舉、版本握手、錯誤碼、候選明細 | 組字狀態 |
 | `jc-platform` | `InputHost`、`HostEvent`、`Clock`、`Scheduler` 的語意契約 | 任何視窗或 OS handle |
-| `jc-engine` | 一條連線的請求迴圈、握手、把按鍵交給 `Session` | 轉換邏輯、詞典載入 |
+| `jc-engine` | 一條連線的請求迴圈、握手、資料與模型載入、把按鍵交給 `Session` | 轉換邏輯、個人化儲存 |
 | `jc-eval` | 題庫 loader、top-1／top-5／邊界／延遲指標、`Report`、gate | 引擎與資料載入 |
 | `jc-testdata` | 測試資料路徑解析與缺資料跳過 | 正式執行期資料 |
 | `jc-cli` | 評測、轉換、bench 的開發入口 | 產品執行期 |
+| `jc-englishpack` | 英文詞表建置與打包 | 執行期轉換 |
+| `jc-settings` | 設定與模型包的資料模型、驗證、原子寫檔 | UI、引擎接線 |
+| `jc-windows` | named pipe client、握手、逾時與重連 | 平台外殼 |
+| `jc-linux`／`jc-mac` | Unix socket client 的佔位 | 目前全部回 `Unsupported` |
 
 ## 為什麼分離
 
@@ -39,29 +57,54 @@ jc-platform ── wrapper 契約                  （尚未接進 jc-engine）
 2. wrapper 只做轉發，崩潰不會把核心一起帶走，宿主程式（explorer）也不承擔
    核心風險。
 3. 之後的 Fcitx5／macOS 只需要新的 wrapper，核心與題庫不動。
+4. 神經模型用獨立的 worker 執行緒，輸入路徑不必等模型；逾時就回統計結果。
+
+## 神經 runtime 的位置
+
+模型載入與 worker 分在兩層：
+
+| 工作 | 位置 |
+|---|---|
+| manifest、tokenizer、權重載入 | `jc-engine` 的 `loader.rs` |
+| 模型物件與推論 | `jc-model`（candle；ORT 只在對照後端使用） |
+| worker 執行緒、請求佇列、180 ms 逾時、舊請求丟棄 | `jc-core` 的 `session/neural.rs` |
+| 門檻判斷、五條輸出驗證、回退統計 | `jc-core` 的 `Session` |
+
+`SessionConfig` 只持有 `NeuralRuntime` 的 handle。引擎載入模型後注入
+runtime；沒有模型時 handle 是 `None`，轉換完全走統計，不報錯也不阻塞。
+
+```text
+按鍵 ──▶ Session::press
+           ├─ 統計 Viterbi（一定先算）
+           ├─ gap < 460？──否──▶ 回統計結果
+           └─ 是 ──▶ NeuralRuntime 佇列 ──▶ worker（candle）
+                        │                     │
+                        └─ 180 ms 逾時 ───────┴─▶ 回統計結果
+                                               └─ 通過驗證 ──▶ 替換
+```
 
 ## 協定
 
 - 傳輸：4-byte 小端長度前綴 + JSON（serde）；預設訊框上限 1 MiB。
-- 版本：`jc_proto::PROTOCOL_VERSION`（目前 `2`），握手不一致即回
+- 版本：`jc_proto::PROTOCOL_VERSION`（目前 `3`），握手不一致即回
   `VersionMismatch` 並收線。
 - 請求：`Hello`、`Key`、`Snapshot`、`Commit`、`Shutdown`；狀態回應是完整
   快照，wrapper 不需要自己保存組字狀態。
-- 狀態回應的 `State` 另有 `cursor_rune`、`suggestion`、`label` 與
-  `navigating`；空值時省略。
+- 狀態回應的 `State` 另有 `cursor_rune`、`suggestion`、`label`、
+  `navigating`、`details`、`segments`、`highlighted`；空值時省略。
 - 錯誤：`VersionMismatch`、`BadFrame`、`FrameTooLarge`、`UnknownOp`、
   `Internal`。
-- 傳輸方式：`jc-engine` 目前提供 stdio 與 Unix domain socket，一次服務一條
-  連線；Windows named pipe 尚未實作。
-- wrapper 作者規格見 [`docs/wrapper.md`](wrapper.md)，內容包含生命週期、
-  pass-through、UTF-16 轉換與已知限制。
+- 傳輸方式：stdio、Unix domain socket，Windows 上 `--socket` 走 named pipe；
+  一次服務一條連線。
+- wrapper 作者規格見 [`docs/wrapper.md`](wrapper.md)，契約本體見
+  [`docs/proto.md`](proto.md)。
 
 ## 核心的請求流程
 
 1. wrapper 把平台按鍵轉成 `jc_proto::Key`（語意鍵，不含 OS 鍵碼）。
 2. `Engine::handle` 檢查握手後呼叫 `Session::press`。
-3. `Session` 依模式走注音、日文或 Mixed 解碼，回傳含組字文字、游標與候選的
-   `Snapshot`。
+3. `Session` 依模式走注音、日文或 Mixed 解碼；日文先算統計，必要時再問
+   Jinen。回傳含組字文字、游標、候選、明細與片段的 `Snapshot`。
 4. `Enter` 或 `Commit` 走 `Session::commit`，回 `Response::Committed`；核心
    保證送出的文字非空，且之後組字狀態已清空。
 
@@ -86,12 +129,16 @@ jc-platform ── wrapper 契約                  （尚未接進 jc-engine）
 
 ## 目前的邊界狀況
 
-- `jc-platform` 的契約與測試已完成，但 `jc-engine` 還沒有依賴它，也還沒有
-  任何實際 wrapper。
-- `jc-model` 已接進 `jc-core` 的注音選字模型；`jc-engine` 啟動時若資料根
-  目錄有 `models/` 就安裝，缺檔只警告並維持統計排序。日文 reranker 預設
-  關閉，標點尚未進入送出流程。
+- `jc-platform` 的契約與測試已完成，但 `jc-engine` 還沒有依賴它；Windows
+  TSF 外殼也還沒開始。
+- `jc-windows` 已是可用的 named pipe client；`jc-linux`／`jc-mac` 只回
+  `Unsupported`。
+- `jc-model` 已接進 `jc-core` 的注音選字；`jc-engine` 啟動時若資料根目錄有
+  `models/` 就安裝，缺檔只警告並維持統計排序。
+- 日文預設走 Jinen small 的門檻混合；reranker 保留程式但預設關閉，標點模型
+  已移除。
 - `jc-engine` 正式啟動要求 `--data` 或 `JC_DATA`，並載入注音詞典與日文
   pack；`--allow-empty-data` 才使用空 session，供協定測試與除錯。
 - 注音 `lexicon.bin`／`lm.bin` 的讀取接在 `jc-engine` 的 `loader` 與
   `jc-cli`；`eval zh-golden` 仍讀凍結 TSV。
+- `jc-settings` 只有資料模型，`jc-engine` 不讀設定檔。

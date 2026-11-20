@@ -1,13 +1,14 @@
 # 模型來源與雜湊
 
-本表列出 `jc-model` 的角色來源、固定 revision、授權與實際檔案雜湊。2026-11-20
+本表列出模型來源、固定 revision、授權、實際檔案雜湊與散布方式。2026-11-20
 起標點模型已從程式移除，`zh-punct` 與 `ja-punct` 只保留歷史紀錄，模型檔仍在
-資料目錄，不再被載入。資料來源：
+資料目錄，不再被載入，也不隨安裝包出貨。資料來源：
 
-- 注音：`jc-ime-data/models/zh-select/manifest.json`、`zh-punct/manifest.json`（下載時
-  追加的 `download` 區塊）。
-- 日文：`jc-ime-data/models/manifest.json` 的角色對應，以及前身固定的
-  `ref/0c-ime/models/pairing.lock.json`（HF 套件沒有在資料根目錄留下 runtime manifest）。
+- 注音：`jc-ime-data/models/zh-select/manifest.json`、`zh-punct/manifest.json`
+  （下載時追加的 `download` 區塊）。
+- 日文 reranker：`jc-ime-data/models/manifest.json` 的角色對應，以及前身固定的
+  `ref/0c-ime/models/pairing.lock.json`。
+- 日文神經轉換：`jc-ime-data/models/external/jinen-v2-small/manifest.json`。
 - 集合 manifest：`jc-ime-data/models/manifest.json`（schema `jc.model-set/1`）。
 
 授權帳本與完整聲明見 [`legal/README.md`](../legal/README.md) 與
@@ -15,26 +16,32 @@
 
 ## 角色與來源
 
-| 角色 | 目錄 | repo | revision | 授權 | 是否散布 | 狀態 |
+| 角色 | 目錄 | repo | revision | 授權 | 隨安裝包出貨 | 狀態 |
 |---|---|---|---|---|---|---|
-| `zh-select` | `models/zh-select` | `Funmula/0c-sequence-d512` | `3533e34ef25896afeacc928d136ba7f35783bba7`（`3533e34e`） | MIT | **否，第三方僅下載** | 使用中 |
-| `zh-punct` | `models/zh-punct` | `Funmula/0c-punct-d512` | `105c2770e0b7cf4ce44a792b3b186000dd1727d9`（`105c2770`） | MIT | **否，第三方僅下載** | 已移除（2026-11-20） |
-| `ja-rerank` | `models/reranker-extra` | `jeffpeng3/0c-ja-reranker` | `7450e10fe8b673560044c5db08ad3006a06d7a6e`（`7450e10f`） | CC-BY-SA-4.0 | 是（日文模型包） | 使用中 |
-| `ja-punct` | `models/punctuation-public-core` | `jeffpeng3/0c-ja-punct` | `ff9166abc620b6716ac7de73cfa67335e6b985d2`（`ff9166ab`） | MIT | 是（日文模型包） | 已移除（2026-11-20） |
+| `zh-select` | `models/zh-select` | `Funmula/0c-sequence-d512` | `3533e34ef25896afeacc928d136ba7f35783bba7`（`3533e34e`） | MIT | 否，第三方僅下載 | 使用中，candle Q8_0 |
+| `zh-punct` | `models/zh-punct` | `Funmula/0c-punct-d512` | `105c2770e0b7cf4ce44a792b3b186000dd1727d9`（`105c2770`） | MIT | 否 | 已移除（2026-11-20） |
+| `ja-rerank` | `models/reranker-extra` | `jeffpeng3/0c-ja-reranker` | `7450e10fe8b673560044c5db08ad3006a06d7a6e`（`7450e10f`） | CC-BY-SA-4.0 | 否 | 棄用，僅保留模型與訓練碼 |
+| `ja-punct` | `models/punctuation-public-core` | `jeffpeng3/0c-ja-punct` | `ff9166abc620b6716ac7de73cfa67335e6b985d2`（`ff9166ab`） | MIT | 否 | 已移除（2026-11-20） |
+| `ja-neural` | `models/external/jinen-v2-small` | `togatogah/jinen-v2-small.gguf` | `3461d0573ab447985badde3174165b967d06076c` | CC-BY-SA-4.0 | 否，僅本機評測，暫不散布 | 使用中，預設 |
 
 `Funmula` 兩個模型是第三方模型，只隨下載腳本取得，不進 git，也不得放進本專案的
-release 或安裝包。日文兩個角色以同一個模型包散布，權重同樣不進 git。
+release 或安裝包。日文 reranker 不再是預設路徑：`SessionConfig::ja_rerank`
+預設 `false`，由 Jinen small 的門檻混合取代。`ja-neural` 沒有 `Role` 列舉，
+`jc-engine` 直接依 `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf`
+載入；tokenizer 沿用 `models/quant/jinen-v2-xsmall/tokenizer.json`。
 
 標點模型的資料檔案保留在原目錄，方便回溯；程式與 manifest 不再引用它們。
 
 ## 檔案雜湊
 
-以下雜湊是歷史紀錄。標點的檔案仍留在資料目錄，但程式不再使用。
+以下雜湊是實際檔案紀錄。標點的檔案仍留在資料目錄，但程式不再使用。
 
 ### 注音模型
 
 | 角色 | 檔案 | 大小 | SHA-256 |
 |---|---|---:|---|
+| `zh-select` | `model.q8_0.gguf` | 35,515,136 | `fbbafa210ad640ae4cba79b21ce7a28ca993d3f2f0528385e3be3d4ea5bbaed4` |
+| `zh-select` | `model.safetensors` | 130,559,104 | `098e8d47b9e658dd6859e3668783942abafebdf97de2f53592f42dc0daba85d4` |
 | `zh-select` | `model.onnx` | 130,723,137 | `4a80caf18acbaddde10c908dcbf35919908d616e94618cdde71fc3409c969261` |
 | `zh-select` | `vocab.json` | 312,708 | `556dffaffbf4c05211a846dcee55ef735cea68c5754f9bffcc6f9588124172b3` |
 | `zh-select` | `manifest.json`（下載時追加 `download` 區塊） | 2,901 | `8a7ee717f17c8449666f4c128c96a64a2b2e595f314f303f59822b0e51a67847` |
@@ -51,6 +58,10 @@ release 或安裝包。日文兩個角色以同一個模型包散布，權重同
 `zh-punct` 為 556 bytes／`70909d272d81fe8556efb5a0e2301c872f3c6fbdb9932a6651fedd214e39527c`。
 本機檔案是下載腳本追加 `download` 區塊後的版本，因此雜湊不同。
 
+Q8_0 是量測與建議使用的注音選字權重：33.9 MiB、推論 p50 9.36 ms、逐對排序
+一致 99.51%（5439/5466）、golden 45/45。fp32 safetensors 與 ORT 的
+`model.onnx` 保留作對照。
+
 ### 日文模型
 
 | 角色 | 檔案 | 大小 | SHA-256 |
@@ -61,16 +72,22 @@ release 或安裝包。日文兩個角色以同一個模型包散布，權重同
 | `ja-punct` | `vocab.json` | 515,605 | `4528ac15d2c17da1246d85dd6bac9fb09ec987f699c38933ae8b7d38b905e18a` |
 | 共用 | `ja-tokenizer/public_core_ja.model` | 614,451 | `b25260c9c3d90a754c719e62eea6b8125f08448d48dd4d1755c18edbd00e2078` |
 
-上游另提供 fp32 權重，但本專案出貨與本機資料使用 int8：
+`ja-rerank` 已棄用，仍保留權重、manifest 與訓練碼供回溯；`SessionConfig::ja_rerank`
+預設 `false`，`jc-engine` 只在明確開啟時使用。`ja-punct` 已不再載入。
 
-| 角色 | fp32 檔案 | 大小 | SHA-256 |
-|---|---|---:|---|
-| `ja-rerank` | `model.onnx` | 135,613,420 | `4b74ae019b15443f2a30936e9cf53959e60716a30548f17bb1f0d8569fa978e9` |
-| `ja-punct` | `model.onnx` | 135,599,640 | `998b3df5af330a7f2106d6ecd4185a15760bb4ea942eb3ebf9f24b9ca7151a06` |
+### 日文神經轉換（Jinen）
 
-`ja-tokenizer/public_core_ja.model` 是 `ja-rerank` 與 `ja-punct` 共用的 SentencePiece
-模型；兩個模型包各自的 notice 都要附。`ja-rerank` 的權重依 CC-BY-SA-4.0 散布，
-`ja-punct` 依 MIT 散布。`ja-punct` 已不再載入，分詞器仍由 `ja-rerank` 使用。
+| 檔案 | 大小 | SHA-256 |
+|---|---:|---|
+| `jinen-v2-small-Q5_K_M.gguf` | 81,117,824 | `80482707513d6b67dafc31774371cf95d765542abf8d74eebf5f32f92d788bd3` |
+| `tokenizer.json`（`models/quant/jinen-v2-xsmall/`） | 2,047,498 | `477c91a788bf97e7ed993a4441cfb2c4d60033e505ade17d6c367bc09ed6e6ba` |
+
+來源 `togatogah/jinen-v2-small.gguf`，revision
+`3461d0573ab447985badde3174165b967d06076c`，授權 CC-BY-SA-4.0。Qwen3
+109.5M 級，Q5_K_M 量化，檔案 77.4 MiB（約 78 MB）。用途是日文轉換的
+第二階段：統計結果永遠先算好，`top2 - top1 < 460` 時才送 Jinen，通過五條
+驗證才替換，180 ms 逾時回退統計結果。`jc-engine` 預設載入，`JC_JINEN=off`
+關閉。詳細門檻與量測見 [`docs/port/jinen-default.md`](port/jinen-default.md)。
 
 ## 集合 manifest
 
@@ -88,7 +105,8 @@ release 或安裝包。日文兩個角色以同一個模型包散布，權重同
 
 `zh-punct` 與 `ja-punct` 已於 2026-11-20 從程式移除；本專案的 manifest 範本
 不再列出。資料目錄的既有 `manifest.json` 仍可能保留這兩個鍵，載入時會忽略
-不支援的角色。
+不支援的角色。Jinen 不在集合 manifest 內，路徑寫在 `jc-engine` 的
+`loader.rs`，可用 `JC_JINEN_GGUF` 覆寫。
 
 資料目錄現況的 SHA-256：`c069d44ff0aaa68fcec47f8030fe5075468dba0ef0c63ebc27a02a7acce0f56c`
 （387 bytes，仍含兩個標點鍵）。
@@ -96,6 +114,9 @@ release 或安裝包。日文兩個角色以同一個模型包散布，權重同
 ## 散布檢查
 
 1. `models/zh-select`、`models/zh-punct` 不得出現在 release、安裝包或 git。
-2. 散布日文模型包時，附上 `legal/licenses/CC-BY-SA-4.0.txt`、`legal/licenses/MIT.txt`
-   與 `legal/THIRD-PARTY-NOTICES.md` 第 9、10 節。
-3. 換 revision 時同步更新本表、下載腳本與帳本；不得只改 manifest 而留下舊雜湊。
+2. 日文模型目前不隨安裝包出貨：Jinen 與 reranker 都標成「僅本機評測」。要出貨
+   需先完成資料打包，並依 CC-BY-SA-4.0 附署名與同授權。
+3. 散布日文模型時，附上 `legal/licenses/CC-BY-SA-4.0.txt`、
+   `legal/THIRD-PARTY-NOTICES.md` 第 9、10 節。Jinen 的衍生或散布同樣受
+   CC-BY-SA-4.0 約束。
+4. 換 revision 時同步更新本表、下載腳本與帳本；不得只改 manifest 而留下舊雜湊。
