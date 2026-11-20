@@ -438,7 +438,6 @@ impl Control {
             CandidateSnapshot {
                 items,
                 highlighted: state.highlighted,
-                navigating: state.navigating,
             },
             document,
         );

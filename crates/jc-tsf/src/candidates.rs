@@ -6,8 +6,9 @@
 //! 需要的資料，因此這個檔案只提供「讀得到的快照」，不碰引擎、不改字。
 //!
 //! 滑鼠點選由 [`ITfCandidateListUIElementBehavior`] 接住：`SetSelection` 把
-//! 點到的索引換成「上／下鍵」請求，`Finalize` 送 `Space` 確認，`Abort` 送
-//! `Escape` 關閉。實際選到哪一項、要提交什麼字，全部由引擎回應決定，wrapper
+//! 點到的頁內索引換成對應的數字鍵（與鍵盤 `1`–`0` 選字同一條路徑），
+//! `Finalize` 送 `Space`、`Abort` 送 `Escape`。數字鍵本身就代表「選取並提交」，
+//! 所以送出數字鍵後 `Finalize` 不再補鍵。實際提交什麼字仍由引擎決定，wrapper
 //! 不從快照自己挑字。
 //!
 //! **顯示限制**：這個介面每個候選只有一個 `GetString`，沒有讀音或 label
@@ -65,10 +66,6 @@ pub struct CandidateSnapshot {
     pub items: Vec<CandidateItem>,
     /// 引擎目前的高亮索引。
     pub highlighted: usize,
-    /// 引擎是否已進入明確的候選選取模式。
-    ///
-    /// 只用來計算滑鼠點選要補幾個導覽鍵，不影響畫面是否顯示候選。
-    pub navigating: bool,
 }
 
 /// 分頁後的候選清單。
@@ -152,9 +149,9 @@ impl CandidatePages {
 
 /// 把滑鼠點選轉成引擎看得懂的按鍵請求。
 ///
-/// 只送「上／下鍵」移動高亮，不改字、不直接挑候選；`Finalize` 再由引擎用
-/// 目前高亮項提交。`generation` 與 [`crate::composition::Control`] 共用同一
-/// 個計數器，過期的 `State` 才會照既有規則被丟棄。
+/// 只送一個數字鍵：核心收到後照 `1`–`0` 選字規則選取並提交，與鍵盤走同一條
+/// 路徑。`generation` 與 [`crate::composition::Control`] 共用同一個計數器，
+/// 過期的 `State` 才會照既有規則被丟棄。
 pub struct CandidateActions {
     jobs: Sender<Job>,
     generation: Rc<Cell<u64>>,
@@ -196,36 +193,26 @@ impl CandidateActions {
     }
 }
 
-/// 從目前高亮走到目標索引要送哪些鍵。
+/// 頁內位置換成核心的數字選字鍵。
 ///
-/// 規則與引擎的 `down`／`up` 一致：
-///
-/// - 還沒進選取模式時，第一個 `Down` 只開窗／進入選取模式，不會移動高亮；
-/// - 進入選取模式後，一個 `Down`／`Up` 移動一格，兩端會循環。
-///
-/// 因此往前要先補一個 `Down`，往後則不用（`Up` 在未選取時會直接移動）。
-/// 取前後較短的方向，索引無效時回空清單。
-fn navigation_keys(current: u32, target: u32, count: u32, navigating: bool) -> Vec<Key> {
-    if count == 0 || target >= count || current >= count {
-        return Vec::new();
+/// 核心的 `1`–`9` 對應頁內第 1–9 項；頁面大小是 10 時第 10 項是 `0`。超過
+/// 10 項的頁面沒有對應鍵，回 `None`。
+fn digit_for(within: usize) -> Option<char> {
+    match within + 1 {
+        10 => Some('0'),
+        ordinal if ordinal < 10 => char::from_digit(ordinal as u32, 10),
+        _ => None,
     }
-    let mut keys = Vec::new();
-    if !navigating {
-        // 這一下不會移動高亮，只負責進入選取模式。
-        keys.push(Key::new(KeyCode::Down, None, false));
-    }
+}
 
-    let forward = (target + count - current) % count;
-    let backward = (current + count - target) % count;
-    let (code, steps) = if forward <= backward {
-        (KeyCode::Down, forward)
-    } else {
-        (KeyCode::Up, backward)
-    };
-    for _ in 0..steps {
-        keys.push(Key::new(code, None, false));
-    }
-    keys
+/// 候選索引換成要送給核心的數字鍵。
+///
+/// 頁面大小一律讀核心的公開常數 [`CANDIDATE_PAGE_SIZE`]，不在外殼寫死；索引
+/// 先用頁面大小取頁內位置，所以第 2 頁的第 1 項同樣送 `1`。
+fn selection_key(index: u32) -> Option<Key> {
+    let page = CANDIDATE_PAGE_SIZE.max(1);
+    let within = index as usize % page;
+    digit_for(within).map(|ch| Key::char(ch, false))
 }
 
 /// `Finalize` 的按鍵：空白鍵選取目前高亮項，由引擎決定提交內容。
@@ -246,15 +233,9 @@ struct ElementData {
     shown: bool,
     /// 上一次變更的欄位；初始值是 [`ALL_UPDATED`]。
     flags: u32,
-    /// 引擎上一次回報的選取模式。
-    navigating: bool,
     /// 送出點選請求的通道；`None` 代表候選窗停用。
     actions: Option<Rc<CandidateActions>>,
-    /// 已送出、但還沒被引擎 `State` 確認的目標索引。
-    requested: Option<u32>,
-    /// 送出請求後是否已進入選取模式（用來避免重複補 `Down`）。
-    requested_navigating: bool,
-    /// 這次候選是否已經 `Finalize`／`Abort`，避免重複送確認鍵。
+    /// 這次候選是否已經送出點選鍵或 `Finalize`／`Abort`，避免重複送鍵。
     settled: bool,
 }
 
@@ -286,10 +267,6 @@ impl ElementData {
         self.pages.reset_starts();
         self.document = document;
         self.flags = flags;
-        self.navigating = snapshot.navigating;
-        // 引擎的 State 是權威值；之前本地記下的點選目標到此為止。
-        self.requested = None;
-        self.requested_navigating = false;
         flags
     }
 }
@@ -428,40 +405,42 @@ impl ITfCandidateListUIElementBehavior_Impl for CandidateListElement_Impl {
         };
         let count = data.pages.count();
         if nindex >= count {
-            return Err(Error::from_hresult(E_INVALIDARG));
+            // 清單已經變短（例如引擎回了新的 State），這次點選沒有目標。
+            logging::debug(format!("候選索引 {nindex} 超出 {count} 項，忽略點選"));
+            return Ok(());
         }
         if !actions.connected() {
             logging::debug("引擎未連線，忽略候選點選");
             return Ok(());
         }
-
-        // 連續點選時以前一次「已送出但還沒確認」的索引為基準，避免每次都用
-        // 過期的引擎高亮重算而多走好幾格。
-        let current = data.requested.unwrap_or_else(|| data.pages.selection());
-        let navigating = if data.requested.is_some() {
-            data.requested_navigating
-        } else {
-            data.navigating
+        // 數字鍵由核心換算成「核心目前頁」的候選；點到別頁的項目會選錯字，
+        // 因此只接受落在目前頁的索引。
+        let page = CANDIDATE_PAGE_SIZE.max(1);
+        let current = data.pages.selection() as usize / page;
+        let clicked = nindex as usize / page;
+        if clicked != current {
+            logging::debug(format!(
+                "候選索引 {nindex} 不在目前頁（第 {current} 頁），忽略點選"
+            ));
+            return Ok(());
+        }
+        let Some(key) = selection_key(nindex) else {
+            logging::debug(format!("候選索引 {nindex} 沒有對應的數字鍵，忽略點選"));
+            return Ok(());
         };
-        let keys = navigation_keys(current, nindex, count, navigating);
         drop(data);
 
-        {
-            let mut data = self.get_impl().data_mut();
-            data.requested = Some(nindex);
-            data.requested_navigating = true;
-            data.settled = false;
-        }
-        logging::debug(format!(
-            "候選點選 index={nindex}（目前 {current}），送 {} 個導覽鍵",
-            keys.len()
-        ));
-        actions.send_keys(&keys);
+        // 數字鍵會直接選取並提交，之後的 `Finalize` 不能再補 `Space`。
+        self.get_impl().data_mut().settled = true;
+        logging::debug(format!("候選點選 index={nindex}，送數字鍵 {:?}", key.code));
+        actions.send_keys(&[key]);
         Ok(())
     }
 
     fn Finalize(&self) -> Result<()> {
         let data = self.get_impl().data();
+        // `SetSelection` 已送數字鍵（選取並提交）時不再補鍵；Windows 對
+        // 單擊通常是先 `SetSelection` 再 `Finalize`。
         if data.settled || data.pages.count() == 0 {
             return Ok(());
         }
@@ -582,10 +561,7 @@ impl CandidateHost {
             document,
             shown: true,
             flags: ALL_UPDATED,
-            navigating: snapshot.navigating,
             actions: Some(Rc::clone(&self.actions)),
-            requested: None,
-            requested_navigating: false,
             settled: false,
         }));
         let element: ITfCandidateListUIElement = CandidateListElement {
@@ -640,7 +616,6 @@ mod tests {
                 })
                 .collect(),
             highlighted,
-            navigating: false,
         }
     }
 
@@ -714,54 +689,55 @@ mod tests {
         assert_eq!(flags & TF_CLUIE_COUNT, TF_CLUIE_COUNT);
     }
 
+    /// 點選第 `n` 項只送一個數字鍵，`n + 1` 對應 `1`–`9`；不再送 `Down`。
     #[test]
-    fn click_moves_forward_with_a_down_prefix() {
-        let keys = navigation_keys(0, 2, 9, false);
-        assert_eq!(keys.len(), 3);
-        assert!(keys.iter().all(|key| key.code == KeyCode::Down));
+    fn click_sends_one_digit_key() {
+        let digits: Vec<char> = (0..CANDIDATE_PAGE_SIZE as u32)
+            .map(
+                |index| match selection_key(index).expect("頁內索引有數字鍵").code {
+                    KeyCode::Char(ch) => ch,
+                    other => panic!("第 {index} 項不是字元鍵：{other:?}"),
+                },
+            )
+            .collect();
+        assert_eq!(digits, vec!['1', '2', '3', '4', '5', '6', '7', '8', '9']);
+        assert_eq!(CANDIDATE_PAGE_SIZE, 9, "頁面大小來自核心常數");
     }
 
+    /// 數字鍵是單一字元鍵、不帶 Shift／Ctrl，等同鍵盤按 `1`–`9`。
     #[test]
-    fn click_on_the_same_item_only_enters_selection_mode() {
-        let keys = navigation_keys(1, 1, 9, false);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].code, KeyCode::Down);
+    fn digit_keys_look_like_keyboard_digits() {
+        let key = selection_key(2).expect("第 3 項有數字鍵");
+        assert_eq!(key.code, KeyCode::Char('3'));
+        assert_eq!(key.text, Some('3'));
+        assert!(!key.shift);
+        assert!(!key.ctrl);
     }
 
+    /// 索引先取頁內位置，所以第 2 頁的第 1 項同樣送 `1`。
     #[test]
-    fn click_uses_the_shorter_direction() {
-        let keys = navigation_keys(0, 8, 9, true);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].code, KeyCode::Up);
-
-        let keys = navigation_keys(8, 0, 9, true);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].code, KeyCode::Down);
-
-        let keys = navigation_keys(2, 5, 9, true);
-        assert_eq!(keys.len(), 3);
-        assert!(keys.iter().all(|key| key.code == KeyCode::Down));
-
-        let keys = navigation_keys(5, 2, 9, true);
-        assert_eq!(keys.len(), 3);
-        assert!(keys.iter().all(|key| key.code == KeyCode::Up));
+    fn click_index_is_page_relative() {
+        let page = CANDIDATE_PAGE_SIZE as u32;
+        assert_eq!(
+            selection_key(page).map(|key| key.code),
+            Some(KeyCode::Char('1'))
+        );
+        assert_eq!(
+            selection_key(page + 1).map(|key| key.code),
+            Some(KeyCode::Char('2'))
+        );
     }
 
+    /// 頁面大小 10 時第 10 項是 `0`；現行頁面大小用不到，但換算不寫死。
     #[test]
-    fn click_backward_before_selection_still_prefixes_down() {
-        let keys = navigation_keys(5, 4, 9, false);
-        assert_eq!(keys.len(), 2);
-        assert_eq!(keys[0].code, KeyCode::Down);
-        assert_eq!(keys[1].code, KeyCode::Up);
+    fn tenth_item_maps_to_zero() {
+        assert_eq!(digit_for(9), Some('0'));
+        assert_eq!(digit_for(8), Some('9'));
+        assert_eq!(digit_for(0), Some('1'));
+        assert_eq!(digit_for(10), None, "超過 10 項沒有對應鍵");
     }
 
-    #[test]
-    fn click_outside_the_list_sends_nothing() {
-        assert!(navigation_keys(0, 9, 9, true).is_empty());
-        assert!(navigation_keys(0, 0, 0, false).is_empty());
-        assert!(navigation_keys(9, 0, 9, false).is_empty());
-    }
-
+    /// 確認／取消鍵沒有變：`Finalize` 還是 `Space`，`Abort` 還是 `Escape`。
     #[test]
     fn confirm_and_abort_use_engine_keys() {
         assert_eq!(confirm_key().code, KeyCode::Space);

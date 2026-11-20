@@ -88,8 +88,8 @@ Behavior，不需要另一個物件或 CLSID。
 
 | 方法 | 行為 |
 |---|---|
-| `SetSelection(index)` | 把點到的絕對索引換成上／下鍵，送給引擎移動高亮；不改字、不直接挑候選 |
-| `Finalize()` | 送 `Space`，由引擎以目前高亮項選字並提交 |
+| `SetSelection(index)` | 把點到的頁內索引換成數字鍵，送給引擎；核心照鍵盤 `1`–`0` 的規則選取並提交 |
+| `Finalize()` | 已經送出數字鍵時不補鍵；否則送 `Space`，由引擎以目前高亮項選字 |
 | `Abort()` | 送 `Escape`，由引擎關閉候選窗 |
 
 ### 點選流程
@@ -98,12 +98,13 @@ Behavior，不需要另一個物件或 CLSID。
 Windows 候選窗（滑鼠點擊）
   └─ QI(ITfCandidateListUIElementBehavior)
        ├─ SetSelection(nIndex)
-       │    ├─ nIndex >= GetCount() → E_INVALIDARG
+       │    ├─ nIndex >= GetCount() → 記 log，忽略點選
        │    ├─ 引擎未連線 → 只記 log，回 S_OK
-       │    ├─ 以「上一次請求的索引」為基準算前後距離
-       │    ├─ 未進選取模式 → 先補一個 Down（不移動高亮）
-       │    ├─ 送較短方向的 Down／Up（同一世代）
-       │    └─ 記下 requested；不改 GetSelection
+       │    ├─ nIndex 不在核心目前頁 → 記 log，忽略點選
+       │    ├─ 頁內位置 = nIndex % CANDIDATE_PAGE_SIZE
+       │    ├─ 數字鍵 = 頁內位置 + 1（頁面 10 項時第 10 項是 0）
+       │    ├─ settled = true（數字鍵本身就是選取＋提交）
+       │    └─ 送這一個數字鍵
        ├─ Finalize()
        │    ├─ 已 settled → 不重送
        │    └─ 送 Space
@@ -111,22 +112,21 @@ Windows 候選窗（滑鼠點擊）
             └─ 送 Escape（已 settled 則略過）
 ```
 
-為什麼用上／下鍵而不是數字鍵：
+為什麼用數字鍵：
 
-- 數字鍵在引擎裡是「直接選字並提交」，沒有「只移動高亮」的語意；`SetSelection`
-  之後可能還有 `Finalize`，用數字鍵會提前提交。
-- `jc-core::session::select_by_digit` 目前沒有加頁首位移，第 2 頁以後的數字選字
-  會選到清單最前面的候選；上／下鍵是絕對索引移動，不受這個 bug 影響。
-- 協定 v3 沒有「選取指定索引」的請求，owned paths 也不能改 `jc-core`／
-  `jc-proto`。因此**不需要協定變更**；代價是索引離目前高亮很遠時會連續送多個
-  按鍵（每個都是一次 pipe 往返，同一批共用世代，引擎依序處理）。
+- 與鍵盤選字是同一條路徑：核心 `select_by_digit` 以
+  `current_page * CANDIDATE_PAGE_SIZE + 頁內位置` 取候選，數字鍵本身就代表
+  「選取並提交」，wrapper 沒有另外發明選字規則。
+- 不再模擬方向鍵：點第 7 項原本要送 6 次 `Down` 再一次 `Space`（每次都是一趟
+  pipe 往返），現在只有一個按鍵。
+- 頁面大小讀 `jc_core::output::CANDIDATE_PAGE_SIZE`，外殼沒有寫死 9；之後改成
+  10 項一頁時，第 10 項自動換成 `0`。
+- 協定仍是 v3：不需要「選取指定索引」的新請求。
 
-`SetSelection` 連續呼叫（例如拖曳）時，`requested` 會記住已送出但還沒被
-`State` 確認的目標，下一次只補差額；引擎的 `State` 一回來就以它為準並清掉
-`requested`。wrapper 不改 `GetSelection` 的值，畫面仍然只反映引擎回應。
-
-`Finalize`／`Abort` 共用 `settled` 旗標，避免 Windows 重複呼叫時送出兩次
-`Space`／`Escape`。
+代價是 `SetSelection` 不再只是「移動高亮」，點下去就等於選字提交。連續點選
+（拖曳）時第二下會落在已經提交後的畫面上，因此不改 `GetSelection`；畫面仍然
+只反映引擎回應。`Finalize`／`Abort` 共用 `settled` 旗標，避免 Windows 重複
+呼叫時送出兩次鍵。
 
 ### 與一般按鍵的關係
 
@@ -146,8 +146,8 @@ Windows 候選窗（滑鼠點擊）
 `jc-core/src/session/core.rs:692` 既有的 `collapsible_if`；該檔不在 owned
 paths，沒有動它。`cargo fmt -p jc-tsf` 已執行。
 
-依 `common.md`，測試只編譯不執行；新增測試涵蓋顯示屬性內容、滑鼠點選的前後
-方向、選取模式前綴、索引越界與確認／取消鍵。
+依 `common.md`，測試只編譯不執行；新增測試涵蓋顯示屬性內容、滑鼠點選的數字鍵
+換算（`1`–`9`、第 10 項為 `0`、頁內位移）、索引越界與確認／取消鍵。
 
 ## 未驗證清單（需要實機）
 
@@ -167,13 +167,17 @@ paths，沒有動它。`cargo fmt -p jc-tsf` 已執行。
 滑鼠點選：
 
 7. Windows 內建候選窗是否在單擊時先呼叫 `SetSelection` 再呼叫 `Finalize`；
-   若只呼叫其中一個，行為會是「只移動高亮」或「直接確認目前高亮」。
-8. 候選很多（索引離高亮很遠）時，連續上／下鍵的延遲與畫面更新順序。
-9. 拖曳或連點時 `requested` 的差額計算是否符合實際呼叫序列。
-10. `Abort` 送 `Escape` 是否會連未完成的注音一起清掉（引擎的 Escape 有優先
+   若是，數字鍵已提交、`Finalize` 被 `settled` 擋掉，不會多打一個空白。
+8. 是否有應用程式會為了「只移動高亮」而呼叫 `SetSelection`（例如候選窗內的
+   鍵盤導覽）；那種情況會變成提前選字提交。
+9. 點選不在核心目前頁的項目時，目前是忽略並記 log；實機上 Windows 是否真的
+   會給出跨頁索引。
+10. 候選窗顯示中但核心的 `candidate_window` 為 false（例如注音還沒打完）時，
+    數字鍵會退回注音鍵；此時點選會插入一個數字。需要實機確認這個狀態是否
+    會出現候選窗。
+11. `Abort` 送 `Escape` 是否會連未完成的注音一起清掉（引擎的 Escape 有優先
     順序：先關候選窗）。
-11. 應用程式回 `bShow == FALSE`（自行繪製候選）時，是否還會呼叫 Behavior；
+12. 應用程式回 `bShow == FALSE`（自行繪製候選）時，是否還會呼叫 Behavior；
     若不會，滑鼠點選在該應用程式內仍然無效。
-12. 與數字鍵、`PageUp`／`PageDown` 交錯使用時的高亮一致性。
 13. `GetSelection` 在點選後、`State` 回來前仍回舊值；Windows 是否會因此把
     選取框畫回舊位置。
