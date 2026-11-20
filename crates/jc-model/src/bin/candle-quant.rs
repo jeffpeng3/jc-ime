@@ -22,29 +22,16 @@
 //! `bench` 會印出 RSS（載入後、100 次推論後）與延遲分佈，並把每一組的
 //! 分數寫進 `--out`，`compare` 再從兩份 JSON 算誤差與排序統計。分開跑的
 //! 原因是 RSS 只有在單一模型載入的乾淨行程裡才有意義。
-//!
-//! 標點模型用 `punct` 子命令，輸入是固定 256-token 視窗的 int32 檔（P2-24A
-//! validation 的第 0 個 shard），輸出每組的 logits：
-//!
-//! ```text
-//! cargo run -p jc-model --release --bin candle-quant -- punct \
-//!   --model-dir /mnt/work/jc/jc-ime-data/models/punctuation-public-core \
-//!   --weights models/quant/candle/ja-punct/q4k/model.gguf \
-//!   --tokens /mnt/work/0c/data/punctuation_public_core_ja/validation/validation-00000.tokens.i32 \
-//!   --groups 200 --out /tmp/punct-q4k.json
-//! ```
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use jc_model::candle::{
-    export_gguf, export_gguf_with_embedding, export_punct_gguf, EmbeddingDtype, QuantDtype,
-};
+use jc_model::candle::{export_gguf, export_gguf_with_embedding, EmbeddingDtype, QuantDtype};
 use jc_model::layout::{pack_batch, PackedBatch};
 use jc_model::manifest::ModelSpec;
-use jc_model::{Backend, PunctuationModel, Reranker, Tokenizer};
+use jc_model::{Backend, Reranker, Tokenizer};
 use serde_json::{json, Value};
 
 fn main() -> ExitCode {
@@ -64,7 +51,6 @@ fn run() -> Result<(), String> {
     match command.as_str() {
         "export" => export(&rest),
         "bench" => bench(&rest),
-        "punct" => punct_bench(&rest),
         "compare" => compare(&rest),
         "-h" | "--help" | "help" => Err(usage()),
         other => Err(format!("不認得的子命令 {other}\n{}", usage())),
@@ -74,11 +60,9 @@ fn run() -> Result<(), String> {
 fn usage() -> String {
     "用法：candle-quant <export|bench|compare> [選項]\n\
      export  --input SAFETENSORS --output GGUF --dtype q8_0|q5k|q4k \
-     [--embed-dtype f32|q8_0|q5k|q4k] [--punct]\n\
+     [--embed-dtype f32|q8_0|q5k|q4k]\n\
      bench   --model-dir DIR --weights FILE --benchmark JSONL [--groups N] \
      [--iters N] [--latency-groups N] [--out JSON]\n\
-     punct   --model-dir DIR --weights FILE --tokens I32 [--groups N] \
-     [--seq N] [--iters N] [--out JSON]\n\
      compare --baseline JSON --other JSON"
         .into()
 }
@@ -109,9 +93,7 @@ fn export(args: &[String]) -> Result<(), String> {
                 .map_err(|err| format!("--embed-dtype：{err}"))?,
         )),
     };
-    let report = if args.iter().any(|arg| arg == "--punct") {
-        export_punct_gguf(&input, &output, dtype).map_err(|err| err.to_string())?
-    } else if let Some(embedding) = embedding {
+    let report = if let Some(embedding) = embedding {
         export_gguf_with_embedding(&input, &output, dtype, embedding, &ModelSpec::default())
             .map_err(|err| err.to_string())?
     } else {
@@ -298,142 +280,6 @@ fn rss_bytes() -> Option<u64> {
         }
     }
     None
-}
-
-/// 標點模型的預設 token 檔；P2-24A validation 的第一個 shard。
-const DEFAULT_PUNCT_TOKENS: &str =
-    "/mnt/work/0c/data/punctuation_public_core_ja/validation/validation-00000.tokens.i32";
-
-struct PunctArgs {
-    model_dir: PathBuf,
-    weights: PathBuf,
-    tokens: PathBuf,
-    groups: usize,
-    seq: usize,
-    iters: usize,
-    out: Option<PathBuf>,
-}
-
-impl PunctArgs {
-    fn parse(args: &[String]) -> Result<Self, String> {
-        Ok(Self {
-            model_dir: PathBuf::from(required(args, "--model-dir")?),
-            weights: PathBuf::from(required(args, "--weights")?),
-            tokens: PathBuf::from(value_of(args, "--tokens").unwrap_or(DEFAULT_PUNCT_TOKENS)),
-            groups: value_of(args, "--groups")
-                .unwrap_or("200")
-                .parse()
-                .map_err(|err| format!("--groups：{err}"))?,
-            seq: value_of(args, "--seq")
-                .unwrap_or("256")
-                .parse()
-                .map_err(|err| format!("--seq：{err}"))?,
-            iters: value_of(args, "--iters")
-                .unwrap_or("100")
-                .parse()
-                .map_err(|err| format!("--iters：{err}"))?,
-            out: value_of(args, "--out").map(PathBuf::from),
-        })
-    }
-}
-
-fn punct_bench(args: &[String]) -> Result<(), String> {
-    let args = PunctArgs::parse(args)?;
-    // 對照模式把預算放寬；產品路徑的 100 ms 上限由呼叫端控制。
-    let spec = ModelSpec {
-        timeout_ms: Some(10_000),
-        ..ModelSpec::default()
-    };
-    std::env::set_var(jc_model::candle::PUNCT_WEIGHTS_ENV, &args.weights);
-    let started = Instant::now();
-    let model = PunctuationModel::load_with_backend(&args.model_dir, &spec, None, Backend::Candle)
-        .map_err(|err| format!("載入模型失敗：{err}"))?;
-    let load_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let rss_load = rss_bytes().ok_or("讀不到 /proc/self/status")?;
-    let file_bytes = std::fs::metadata(&args.weights)
-        .map_err(|err| format!("{}：{err}", args.weights.display()))?
-        .len();
-    let quant = match args.weights.extension().and_then(|ext| ext.to_str()) {
-        Some(ext) if ext.eq_ignore_ascii_case("gguf") => "gguf",
-        _ => "fp32",
-    };
-    let windows = read_windows(&args.tokens, args.groups, args.seq)?;
-    let mut logits = Vec::with_capacity(windows.len());
-    for (index, window) in windows.iter().enumerate() {
-        let rows = model
-            .logits_for_ids(window)
-            .ok_or_else(|| format!("第 {index} 組推論失敗"))?;
-        logits.push(rows);
-    }
-    for window in windows.iter().take(3) {
-        model
-            .logits_for_ids(window)
-            .ok_or_else(|| "暖機失敗".to_string())?;
-    }
-    let mut samples = Vec::with_capacity(args.iters);
-    for index in 0..args.iters {
-        let window = &windows[index % windows.len()];
-        let started = Instant::now();
-        model
-            .logits_for_ids(window)
-            .ok_or_else(|| "延遲量測失敗".to_string())?;
-        samples.push(started.elapsed().as_secs_f64() * 1000.0);
-    }
-    samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let rss_after = rss_bytes().ok_or("讀不到 /proc/self/status")?;
-    let payload = json!({
-        "label": args.weights.display().to_string(),
-        "quant": quant,
-        "file_bytes": file_bytes,
-        "file_mb": file_bytes as f64 / (1024.0 * 1024.0),
-        "rss_load_mb": rss_load as f64 / (1024.0 * 1024.0),
-        "rss_after_mb": rss_after as f64 / (1024.0 * 1024.0),
-        "rss_delta_mb": (rss_after.saturating_sub(rss_load)) as f64 / (1024.0 * 1024.0),
-        "load_ms": load_ms,
-        "groups": windows.len(),
-        "seq": args.seq,
-        "iters": args.iters,
-        "latency_ms": {
-            "p50": percentile(&samples, 50.0),
-            "p95": percentile(&samples, 95.0),
-            "mean": samples.iter().sum::<f64>() / samples.len().max(1) as f64,
-            "min": samples.first().copied().unwrap_or(0.0),
-            "samples": samples.len(),
-        },
-        "logits": logits,
-    });
-    let text = serde_json::to_string_pretty(&payload).map_err(|err| err.to_string())?;
-    if let Some(path) = &args.out {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-        }
-        std::fs::write(path, &text).map_err(|err| format!("{}：{err}", path.display()))?;
-    }
-    println!("{text}");
-    Ok(())
-}
-
-/// 讀 int32 token 檔，每 `seq` 個 token 一組。
-fn read_windows(path: &Path, groups: usize, seq: usize) -> Result<Vec<Vec<i64>>, String> {
-    let bytes = std::fs::read(path).map_err(|err| format!("{}：{err}", path.display()))?;
-    if bytes.len() % 4 != 0 {
-        return Err(format!("{}：長度不是 4 的倍數", path.display()));
-    }
-    let values: Vec<i32> = bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|chunk| i32::from_le_bytes(*chunk))
-        .collect();
-    let available = values.len() / seq.max(1);
-    if available == 0 {
-        return Err(format!("{}：不足一個視窗", path.display()));
-    }
-    let take = groups.min(available);
-    Ok(values[..take * seq]
-        .chunks_exact(seq)
-        .map(|window| window.iter().map(|id| i64::from(*id)).collect())
-        .collect())
 }
 
 fn compare(args: &[String]) -> Result<(), String> {

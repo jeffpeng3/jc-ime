@@ -90,7 +90,8 @@ repo 內的檔案相對於本 repo 根目錄。同一個資料包目錄的 `mani
 
 `zh-select` 與 `zh-punct` 是 Funmula 的第三方模型：只列出下載來源與雜湊，**不隨本專案散布**。
 `reranker-extra` 與 `punctuation-public-core` 隨日文模型包散布；`ja-tokenizer` 是兩者共用的
-分詞器，兩份 notice 都要附。模型清單與逐檔雜湊另見 [`docs/models.md`](../docs/models.md)。
+分詞器，兩份 notice 都要附。`zh-punct` 與 `punctuation-public-core` 自 2026-11-20 起不再被
+程式載入，檔案保留。模型清單與逐檔雜湊另見 [`docs/models.md`](../docs/models.md)。
 
 ### 外部日文模型（僅本機評估，暫不散布）
 
@@ -133,9 +134,9 @@ Public Domain，`ja/ajimee_200.json` 是 CC-BY-SA-3.0。若要隨產品散布題
 | L-07 | OpenCC `tw2s` 字典 | ver.1.4.2，commit `025f371dc76b598d77384fbdab90c937471844d8` | Apache-2.0 | 台灣正體轉簡體 | 是 | [`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt) |
 | L-08 | English Speller Database（ESDB／SCOWL） | 2026.02.25，commit `7e99edab8e32f9f9ea2b15f249ca8d4d67237410` | SCOWL／ESDB permission（MIT-like） | 英文詞表 `words.bin` | 是 | [`licenses/ESDB-SCOWL-LICENSE.txt`](licenses/ESDB-SCOWL-LICENSE.txt)、[`licenses/ENGLISH-DATA-NOTICE.txt`](licenses/ENGLISH-DATA-NOTICE.txt) |
 | L-09 | `jeffpeng3/0c-ja-reranker` | rev `7450e10fe8b673560044c5db08ad3006a06d7a6e` | CC-BY-SA-4.0 | 日文 reranker 與共用分詞器 | 是（模型包） | [`licenses/CC-BY-SA-4.0.txt`](licenses/CC-BY-SA-4.0.txt)、`models/reranker-extra/` |
-| L-10 | `jeffpeng3/0c-ja-punct` | rev `ff9166abc620b6716ac7de73cfa67335e6b985d2` | MIT | 日文標點與共用分詞器 | 是（模型包） | [`licenses/MIT.txt`](licenses/MIT.txt)、`models/punctuation-public-core/` |
+| L-10 | `jeffpeng3/0c-ja-punct` | rev `ff9166abc620b6716ac7de73cfa67335e6b985d2` | MIT | 日文標點（2026-11-20 起不再使用；共用分詞器仍由 ja-rerank 使用） | 是（模型包） | [`licenses/MIT.txt`](licenses/MIT.txt)、`models/punctuation-public-core/` |
 | L-11 | `Funmula/0c-sequence-d512`（第三方） | rev `3533e34ef25896afeacc928d136ba7f35783bba7` | MIT | 注音選字 | **否，僅下載** | `models/zh-select/`；[`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt) |
-| L-12 | `Funmula/0c-punct-d512`（第三方） | rev `105c2770e0b7cf4ce44a792b3b186000dd1727d9` | MIT | 注音標點 | **否，僅下載** | `models/zh-punct/`；[`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt) |
+| L-12 | `Funmula/0c-punct-d512`（第三方） | rev `105c2770e0b7cf4ce44a792b3b186000dd1727d9` | MIT | 注音標點（2026-11-20 起不再使用） | **否，僅下載** | `models/zh-punct/`；[`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt) |
 | L-13 | 小麥注音（McBopomofo）詞庫 | commit `a5ad2e94a173d6721b9d52e60f4d0266251a76ba` | MIT | 注音詞條與破音字優先表 | 是 | [`licenses/ZH-DATA-NOTICE.txt`](licenses/ZH-DATA-NOTICE.txt) |
 | L-14 | 全字庫 CNS11643 | `Properties.zip` SHA-256 `3d56ef14cc809989…`；`MapingTables.zip` SHA-256 `4502fcf7b433d679…` | 政府資料開放授權條款第 1 版 | 注音字表與 CNS 對照 | 是 | [`licenses/ZH-DATA-NOTICE.txt`](licenses/ZH-DATA-NOTICE.txt) |
 | L-15 | CC-CEDICT | 2026-09-19；SHA-256 `38e1697e3925a2c7…` | CC-BY-SA-4.0 | 注音詞條 | 是 | [`licenses/ZH-DATA-NOTICE.txt`](licenses/ZH-DATA-NOTICE.txt) |

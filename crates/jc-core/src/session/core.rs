@@ -446,17 +446,6 @@ impl Session {
         }
     }
 
-    /// 送出前呼叫標點模型；沒有設定時原樣回傳。
-    pub(super) fn model_punctuated(&self, text: String) -> String {
-        let Some(punctuator) = &self.config.punct else {
-            return text;
-        };
-        if text.is_empty() {
-            return text;
-        }
-        punctuator.punctuate(&text, self.config.mode)
-    }
-
     /// 依設定在最後一個漢字前插入標點；規則同 [`punct::apply`]。
     pub(super) fn puncted(&self, text: String) -> String {
         let Some(mark) = self.config.punct_mark else {

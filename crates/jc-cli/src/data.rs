@@ -168,14 +168,6 @@ pub fn models_root(testdata: Option<&Path>) -> PathBuf {
     }
 }
 
-/// 載入提交時補標點的模型。
-pub fn load_punctuator(
-    testdata: Option<&Path>,
-    mode: jc_core::Mode,
-) -> Result<jc_core::output::OnnxPunctuator, CliError> {
-    loader::load_punctuator(&models_root(testdata), &[mode]).map_err(to_cli)
-}
-
 /// 載入並安裝注音選字模型。
 pub fn install_select_model(testdata: Option<&Path>) -> Result<(), CliError> {
     loader::install_select_model(&models_root(testdata)).map_err(to_cli)?;

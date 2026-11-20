@@ -16,7 +16,6 @@ use jc_core::ja::decode::{JaDecoder, JaDictionary, JaReranker, JaWordMatch, JaWo
 use jc_core::ja::lexicon::{JaEntry, JaLexicon, SingleColumnCost};
 use jc_core::ja::rerank::NeuralReranker;
 use jc_core::lattice::{InMemoryLexicon, LexEntry};
-use jc_core::output::OnnxPunctuator;
 use jc_core::score::{BigramLm, ScoreContext, ZhLm};
 use jc_core::session::SessionConfig;
 use jc_core::Mode;
@@ -423,12 +422,6 @@ pub fn load_ja_reranker(root: &Path) -> Result<Arc<NeuralReranker>, LoadError> {
 pub fn load_zhconv(root: &Path) -> Result<jc_core::zhconv::Converter, LoadError> {
     let dir = root.join("opencc");
     jc_core::zhconv::tw2s_from_dir(&dir).map_err(|err| LoadError::read(&dir, err))
-}
-
-/// 載入提交時補標點的模型。
-pub fn load_punctuator(models: &Path, modes: &[Mode]) -> Result<OnnxPunctuator, LoadError> {
-    OnnxPunctuator::load_from_models(models, modes)
-        .map_err(|err| LoadError(format!("{}：{err}", models.display())))
 }
 
 /// 載入並安裝注音選字模型。

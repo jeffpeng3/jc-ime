@@ -1,5 +1,10 @@
 # punct-wire：標點模型接進輸出
 
+> **已移除（2026-11-20）**：模型標點整條路徑已從程式刪除，`--punct`、
+> `SessionConfig::punct` 與 `SharedPunctuator` 都不存在。本文保留為歷史紀錄；
+> 保留的規則是 `ctrl_punct`（`Ctrl+,` 全形逗號）與 `punct_mark`（送出前插入
+> 單一標點）。移除清單見 [`drop-punct.md`](drop-punct.md)。
+
 把日文 `ja-punct` 與注音 `zh-punct` 兩個標點模型接進送出階段。預設關閉；
 `--punct on` 或 `SessionConfig::punct` 有值時才推論。模型缺席、建置沒有
 `onnx`、逾時或推論失敗都回傳原文，不改動任何原字。

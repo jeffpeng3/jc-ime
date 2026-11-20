@@ -41,14 +41,13 @@ cargo build --workspace
 cargo check --workspace --all-targets
 ```
 
-模型推論預設不編譯，也不下載 ONNX Runtime：
+模型推論預設不編譯，也不下載 ONNX Runtime。需要驗證 reranker 時用：
 
 ```sh
-cargo run -p jc-model --features onnx --bin probe -- --models /mnt/work/jc/jc-ime-data/models
+cargo run -p jc-cli --release -- eval ja --corpus modern-500 --rerank on
 ```
 
-`probe` 會載入 `reranker-extra` 與 `punctuation-public-core` 各跑一次，並印出
-延遲。需要系統上有 ONNX Runtime 動態庫，可用 `--ort-lib` 指定。
+需要系統上有 ONNX Runtime 動態庫，或改用 `--backend candle` 讀 safetensors。
 
 ## 跑評測
 
@@ -107,7 +106,7 @@ cargo test --workspace
   packs/            日文 pack v2 與 manifest
   mozc-3.35.6354/   Mozc OSS dictionary_oss
   opencc/           OpenCC 1.4.2 的 tw2s 字典
-  models/           reranker-extra、punctuation-public-core
+  models/           reranker-extra；標點模型保留但不再使用
   english/、ja-src/ 英文詞表與日文 curated 來源
 ```
 

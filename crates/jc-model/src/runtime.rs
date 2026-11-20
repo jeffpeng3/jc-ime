@@ -212,7 +212,7 @@ pub(crate) fn build_session(path: &Path, threads: usize) -> Result<Session> {
 /// 跑一次 `input_ids`／`attention_mask` 推論，回傳展平的 float 輸出。
 ///
 /// 超過 `timeout` 時用 `RunOptions::terminate` 中止並回
-/// [`ModelError::Inference`]，呼叫端（reranker／punctuator）再轉成 `None`。
+/// [`ModelError::Inference`]，呼叫端（reranker）再轉成 `None`。
 pub(crate) fn run_timed(
     session: &mut Session,
     ids: Vec<i64>,
