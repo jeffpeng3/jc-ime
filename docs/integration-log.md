@@ -1666,3 +1666,45 @@ gate：
 - `cargo check -p jc-tsf -p jc-tsf-smoke --all-targets --target x86_64-pc-windows-msvc` exit 0。
 - 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
 - `git branch --no-merged main`：`segment-diff`、`real-corpus`（新分支，待指示）。
+
+## 2026-11-21 04:40 segment-diff、real-corpus 與量測工具修正（`72426ab`、`0058651`）
+
+| Branch | Commit | Merge commit |
+|---|---|---|
+| `segment-diff` | `f619b46` | `72426ab` |
+| `real-corpus`（rebase 後 tip，parent=`72426ab`） | `2a3e53c` | `0058651` |
+
+兩支都只新增 `jc-cli` 量測子命令（`mixed-diff`、`corpus-diff`），不改 `mixed.rs`／`mixed_latin.rs`。
+
+### 四個測試期望的事實修正（逐筆對照按鍵表／資料檔）
+
+| 測試 | 舊值 | 新值 | 依據 |
+|---|---|---|---|
+| `zh_keys("ㄐㄧㄣ")` | `fup ` | `rup ` | `jc-core/src/zh/keyboard.rs:52/62/74`：`r=ㄐ, u=ㄧ, p=ㄣ`；同檔 `:219` `("ㄑㄧㄣ","fup ")` 證明 `f` 是 ㄑ、尾空白是預設一聲鍵 |
+| `zh_toneless_keys("ㄐㄧㄣ")` | `fup` | `rup` | 同一張按鍵表，去掉聲調鍵後為 `r+u+p` |
+| `convert_mixed(..., false)` | `watashiwa284ru418 desu` | `watashiwa284ru18desu` | `:45/65/81/52/62/40`：`2=ㄉ, 8=ㄚ, 4=ˋ, r=ㄐ, u=ㄧ, 1=ㄅ`；`ㄉㄚˋ="284"`、`ㄐㄧㄅㄚ="ru18"` |
+| `convert_mixed(..., true)` | `watashiwa28ru418desu` | `watashiwa28ru18desu` | 同上，toneless 應去掉 `4`；`kana_to_romaji("わたしは")` 舊 `watashiha` → 新 `wataciha`：`ja/input.rs:149/150/301` し 有 `si`/`shi`/`ci`，reverse table 取最短 `ci`（2 字，字母序小於 `si`）|
+
+第五筆（同一測試的 `kana_to_romaji`）也列在上面；共修正 5 個期望值。
+
+### `convert_mixed` 實作修正與報告重算
+
+- `convert_mixed` 原本在每個注音字元前就 `flush()`，聲調記號被切成獨立 run，`toneless` 因此漏掉調號 `4`。
+  改成只在切換 run 時 flush；修正後 toneless 與保留聲調兩版都符合按鍵表。
+- 重跑 `corpus-diff`，`docs/reports/real-corpus-2026-11-21.md` 全部數字已用實際結果更新並加第 7 節新舊對照：
+  938→939 筆、937→939 種、A 無法解析 509→510、不一致 680→681、`a-none` 505→506（74.26%→74.30%）、
+  `space-merged-segments` 21.76%→21.73%、`space-tone-vs-separator` 3.09%→3.08%、
+  `mixed-golden` 5→6 筆；前五代表案例的 `a-none` 與 `mid-run-symbol` 也換成 toneless 版。
+  結論方向不變：空白語意仍是主因。
+
+### gate
+
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、1301 passed、0 failed）。
+- clippy exit 0；fmt exit 0。
+- 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- 題庫與指標語料無回歸；worktree `w73`（segment-diff）與 `w77`（real-corpus）已回收，branch 保留。
+- `git branch --no-merged main`：`unify-segment`（使用者自行處理）。
+
+### CI（push `dd0d835`，run 44809704573；activate-diagnose）
+
+- linux (core)：success；windows (msvc)：success。

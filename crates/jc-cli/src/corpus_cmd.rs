@@ -817,10 +817,16 @@ fn convert_mixed(input: &str, toneless: bool) -> Option<String> {
     };
     for ch in input.chars() {
         if is_bopomofo(ch) {
-            flush(&mut out, &mut bopomofo, &mut kana)?;
+            // 只在切換到另一種 run 時 flush：聲調記號也屬於注音 run，
+            // 若在每個字元前就 flush，調號會被當成獨立音節，toneless 也丟不掉。
+            if !kana.is_empty() {
+                flush(&mut out, &mut bopomofo, &mut kana)?;
+            }
             bopomofo.push(ch);
         } else if is_kana(ch) {
-            flush(&mut out, &mut bopomofo, &mut kana)?;
+            if !bopomofo.is_empty() {
+                flush(&mut out, &mut bopomofo, &mut kana)?;
+            }
             kana.push(ch);
         } else {
             flush(&mut out, &mut bopomofo, &mut kana)?;
@@ -1999,14 +2005,14 @@ mod tests {
     #[test]
     fn test_zh_keys_keeps_first_tone_space() {
         assert_eq!(zh_keys("ㄨㄛˇ").as_deref(), Some("ji3"));
-        assert_eq!(zh_keys("ㄐㄧㄣ").as_deref(), Some("fup "));
+        assert_eq!(zh_keys("ㄐㄧㄣ").as_deref(), Some("rup "));
         assert_eq!(zh_keys("ㄇㄣ˙").as_deref(), Some("ap7"));
     }
 
     #[test]
     fn test_zh_toneless_keys_removes_tones() {
         assert_eq!(zh_toneless_keys("ㄨㄛˇ ㄒㄧㄤˇ").as_deref(), Some("jivu;"));
-        assert_eq!(zh_toneless_keys("ㄐㄧㄣ").as_deref(), Some("fup"));
+        assert_eq!(zh_toneless_keys("ㄐㄧㄣ").as_deref(), Some("rup"));
         assert_eq!(zh_toneless_keys("ㄇㄣ˙").as_deref(), Some("ap"));
     }
 
@@ -2027,11 +2033,11 @@ mod tests {
     fn test_convert_mixed_replaces_bopomofo() {
         assert_eq!(
             convert_mixed("watashiwaㄉㄚˋㄐㄧㄅㄚdesu", false).as_deref(),
-            Some("watashiwa284ru418 desu")
+            Some("watashiwa284ru18desu")
         );
         assert_eq!(
             convert_mixed("watashiwaㄉㄚˋㄐㄧㄅㄚdesu", true).as_deref(),
-            Some("watashiwa28ru418desu")
+            Some("watashiwa28ru18desu")
         );
     }
 
@@ -2040,7 +2046,7 @@ mod tests {
         let table = reverse_romaji_table();
         assert_eq!(
             kana_to_romaji("わたしは", table).as_deref(),
-            Some("watashiha")
+            Some("wataciha")
         );
         assert_eq!(kana_to_romaji("きょうは", table).as_deref(), Some("kyouha"));
     }
