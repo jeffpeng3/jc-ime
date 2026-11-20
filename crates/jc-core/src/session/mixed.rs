@@ -913,6 +913,8 @@ mod tests {
         for ch in "kyou".chars() {
             s.press(Key::char(ch, false));
         }
+        // 日文片段沿用延遲整句：停頓後才顯示轉換結果。
+        s.ja_live_idle();
         assert_eq!(s.mode(), Mode::Ja);
         assert_eq!(s.snapshot().preedit, "今日");
         s.press(Key::new(KeyCode::Enter, None, false));

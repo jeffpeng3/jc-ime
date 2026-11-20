@@ -467,6 +467,14 @@ impl Session {
         if !live.replace_clause(segment, candidate.surface.clone()) {
             return false;
         }
+        // 非延遲模式沒有 user_segments 路徑，要用鎖定前綴讓下一次重建
+        // 保留剛選的片段；延遲模式由 `Composition` 的 User 標記處理。
+        if !live.sentence_mode() {
+            live.lock_through(segment);
+        }
+        // 片段選字也要進個人學習。重畫會清掉候選清單，必須在清掉前記錄，
+        // 否則 commit 時已經找不到被選的候選。
+        self.learn_candidate(index);
         self.capture_ja_users();
         self.refresh_ja_live();
         if let Some(segment) = self.segments().get(segment) {
@@ -483,6 +491,9 @@ impl Session {
         let Some(result) = self.live.as_ref().and_then(|live| live.draft().cloned()) else {
             return;
         };
+        // 片段變換後舊候選已不對應目前詞面；清掉才不會用舊候選蓋住組字區。
+        self.candidates.clear();
+        self.highlighted = 0;
         let units = self.romaji.units().to_vec();
         let mut base = String::new();
         let mut segments = Vec::new();
@@ -1421,18 +1432,17 @@ impl Session {
         if self.edit.is_some() {
             return &self.base;
         }
-        if let Some(text) = &self.accepted_completion {
-            return text.as_str();
+        match (
+            &self.accepted_completion,
+            self.candidates.get(self.highlighted),
+        ) {
+            (Some(text), _) => text.as_str(),
+            // 混合模式的候選只取代待定英數按鍵，`base` 已含前面的中文片段；
+            // 直接拿候選當整個組字字串會把中文吃掉。
+            (None, _) if self.config.mode == Mode::Mixed => &self.base,
+            (None, Some(candidate)) => candidate.surface.as_str(),
+            (None, None) => &self.base,
         }
-        // 只有候選窗開著時才用高亮候選預覽；關窗後畫面回到實際轉換結果，
-        // 否則片段變換（F7、拆回讀音）的結果會被舊候選蓋住。
-        if !self.candidate_window || self.config.mode == Mode::Mixed {
-            return &self.base;
-        }
-        self.candidates
-            .get(self.highlighted)
-            .map(|candidate| candidate.surface.as_str())
-            .unwrap_or(&self.base)
     }
 
     /// 顯示用字串：高亮候選反映在組字區，未完成的注音插在游標位置。
@@ -1492,7 +1502,16 @@ impl Session {
         }
         self.base.clear();
         self.pending.clear();
-        self.candidates.clear();
+        // 日文逐字変換的純重畫（游標移動、開候選窗）讀音沒變，保留候選
+        // 清單；讀音一變就清掉，交給 `apply_live_plan` 重建。
+        // 真正轉換時候選會整份換掉。
+        let keep_ja_candidates = self.config.mode == Mode::Ja && self.live.is_some() && {
+            let reading: String = self.romaji.units().iter().map(Unit::as_str).collect();
+            reading == self.composition.reading(crate::composition::Lang::Ja)
+        };
+        if !keep_ja_candidates {
+            self.candidates.clear();
+        }
         self.segments.clear();
         self.literal_offset = 0;
         match self.config.mode {
@@ -2046,7 +2065,15 @@ impl Session {
                 let chars: Vec<char> = reading.chars().collect();
                 results = decoder.results(&chars, &JaContext::default(), self.max_candidates());
                 let left = self.committed.clone();
+                let before = results.first().map(|result| result.surface());
                 self.rank_ja_learning(&mut results, &left);
+                // 學習真的翻掉第一名時，改用學習後的首選；否則保留這次
+                // 逐字／神經轉換的結果，不要被統計順序蓋掉。
+                if results.first().map(|result| result.surface()) != before {
+                    if let Some(best) = results.first() {
+                        display = best.surface();
+                    }
+                }
                 let pos_table = decoder.pos_table();
                 candidates = results
                     .iter()
@@ -2066,19 +2093,25 @@ impl Session {
                     .collect();
             }
         }
-        self.last_ja_results = results;
-        // 畫面上顯示的是高亮候選；第一個候選必須與逐字変換的結果一致。
-        if candidates
-            .first()
-            .map(|candidate| candidate.surface.as_str())
-            != Some(display.as_str())
-        {
-            candidates.insert(
-                0,
-                Candidate::new(display, reading.to_string(), 0, CandidateSource::Lexicon),
-            );
+        // 單純重畫（例如左右移動游標）沒有重新轉換，保留上一次的候選清單；
+        // 否則片段候選會在移動游標時被縮成一項，選不到第二個候選。
+        // 剛用 Space 開好片段候選窗時也一樣，不能讓整句候選蓋掉片段候選。
+        let keep_open_candidates = self.candidate_window && !self.candidates.is_empty();
+        if (plan.convert || self.candidates.is_empty()) && !keep_open_candidates {
+            self.last_ja_results = results;
+            // 畫面上顯示的是高亮候選；第一個候選必須與逐字変換的結果一致。
+            if candidates
+                .first()
+                .map(|candidate| candidate.surface.as_str())
+                != Some(display.as_str())
+            {
+                candidates.insert(
+                    0,
+                    Candidate::new(display, reading.to_string(), 0, CandidateSource::Lexicon),
+                );
+            }
+            self.candidates = candidates;
         }
-        self.candidates = candidates;
         self.sync_composition_ja();
     }
 

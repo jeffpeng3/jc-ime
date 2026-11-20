@@ -1211,8 +1211,14 @@ impl Controller {
         if self.cut == 0 {
             return true;
         }
-        if seq.len() <= self.cut || self.locked_seq.len() < self.cut {
+        // 整段都被鎖定且沒有未鎖定尾巴時，`seq.len() == cut` 是同一次重畫，
+        // 不能當成前綴被破壞；否則片段選字後的重畫會把鎖定清掉。
+        // 還有尾巴時代表使用者倒退到只剩鎖定前綴，必須從頭轉換。
+        if seq.len() < self.cut || self.locked_seq.len() < self.cut {
             return false;
+        }
+        if seq.len() == self.cut {
+            return self.tail.is_empty() && self.locked_seq[..self.cut] == seq[..self.cut];
         }
         self.locked_seq[..self.cut] == seq[..self.cut]
     }
@@ -1247,6 +1253,8 @@ impl Controller {
         }
         self.pending = false;
         self.due = None;
+        // 輸入結束不再需要避開邊界抖動；直接跳過 hold 才能把最後一段轉完。
+        self.held = self.cfg.hold_limit;
         let plan = self.convert();
         let converted = plan.convert;
         (plan, converted)
@@ -2912,8 +2920,8 @@ mod tests {
         controller.input(&units("きょう"), &ctx);
 
         let cands = controller.candidates(JaSpan::new(1, 2)).expect("合法範圍");
-        assert_eq!(cands.len(), 1);
-        assert_eq!(cands[0].surface, "候補");
+        let surfaces: Vec<&str> = cands.iter().map(|c| c.surface.as_str()).collect();
+        assert_eq!(surfaces, ["候補", "ょう", "ョウ", "ｮｳ"]);
         assert_eq!(state.borrow().spans, vec![JaSpan::new(1, 2)]);
 
         let err = controller.candidates(JaSpan::new(3, 9)).expect_err("越界");
