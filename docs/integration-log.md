@@ -1844,3 +1844,31 @@ gate（以 `JC_IMEDATA=/mnt/work/jc/jc-ime-data` 模擬 CI）：
   （第一次帶 env 跑 ja 得到 92.0%，該次 timeout 欄 1.0%；連續重跑四次都是 92.2%、timeout 0.0%，
   判定為單題 timeout 抖動，不是回歸。）
 - `git branch --no-merged main`：空。
+
+### CI（push `b7650c0`，run 44824780413／重跑同號；unify-segment）
+
+- linux (core)、windows (msvc) 都 failure，同在 `Test` 的
+  `session::tests::test_mixed_english_suggestion_and_completion`：`"我ㄘㄍㄠㄠㄣ"` vs `"我hellp"`。
+- 根因：CI 沒有英文詞表，`English::load_default()` 退回原型詞彙，`hell` 查不到，
+  「英文詞＋單字母尾巴」候選消失，`hellp` 被切成注音。本機以 `JC_ENGLISH_PACK=/tmp/opencode/empty-pack`
+  可重現。重跑兩平台仍失敗，不是 flake。
+
+### CI（push `f6cb47f`，run 44829770518；ci-data-pack）
+
+- 資料包下載／驗 SHA／寫 `JC_IMEDATA` 的步驟成功，但同一條 `hellp` 測試仍失敗（兩平台），
+  原因是 CI 資料包仍沒有讓 `hell` 命中；修法須落在 unify-segment。
+
+## 2026-11-21 06:55 unify-segment 補充修復（`ab13ffa` → `6ed72d3`）
+
+- 小寫 run 內沒有任何詞表單字命中時，整體給一個帶懲罰的英文候選；
+  該候選標記的 cell 只能接單字母尾巴，避免吞掉 `kyouhahello`。
+- 新增 `test_english_tail_without_word_pack` 鎖住降級環境行為。
+- 驗證：`JC_IMEDATA=/nonexistent` 跑 `jc-core --lib` 全數 **709 passed、0 failed**
+  （新測試單獨 1 passed），降級環境不再失敗。
+
+gate（`JC_IMEDATA=/mnt/work/jc/jc-ime-data`，模擬 CI）：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、
+  **1314 passed、0 failed**）。
+- clippy exit 0；fmt exit 0。
+- 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：空。
