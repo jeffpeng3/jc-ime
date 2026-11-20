@@ -3,9 +3,12 @@
 Windows 優先的輸入法，核心全部以 Rust 實作，平台整合由獨立 wrapper 完成。
 
 M0–M4 完成：注音 golden 45/45、模糊音 919 題、日文統計與 Jinen 神經轉換、
-Mixed 6/6、注音選字模型與個人化都已接線。M5 的引擎端（stdio、Unix socket、
-Windows named pipe、client crate）完成，Windows TSF 尚未開始；設定只有資料
-模型，安裝器未做。逐項現況見 [`docs/status.md`](docs/status.md)。
+Mixed 6/6、注音選字模型與個人化都已接線。M5 的引擎端與 Windows TSF 前端完成，
+x64 MSI 可安裝；M6 的設定程式與安裝器完成，更新器不做。逐項現況見
+[`docs/status.md`](docs/status.md)。
+
+安裝與反安裝步驟見 [`docs/install.md`](docs/install.md)，版本與發佈流程見
+[`docs/release.md`](docs/release.md)。
 
 ## 現在的能力與限制
 
@@ -14,13 +17,16 @@ Windows named pipe、client crate）完成，Windows TSF 尚未開始；設定�
 | 注音（大千鍵盤） | 聲調選填、候選翻頁、Tab 補全、簡繁轉換、Ctrl＋標點、mixed ASCII 推斷；golden 45/45 |
 | 模糊音 | `select` 模式（`z-zh`、`c-ch`、`s-sh`、`en-eng`）；919 題 top-1 16.4%，注音 319 題 44.5% |
 | 注音選字模型 | candle Q8_0，33.9 MiB、推論 p50 9.36 ms、逐對排序一致 99.51%、golden 45/45 |
-| 日文（羅馬字→かな→漢字） | Mozc pack v2 與 context ID 矩陣；統計 `modern-500` 86.0%，預設 Jinen small 門檻混合 93.6% |
-| 日文神經轉換 | Jinen v2 small Q5_K_M；`top2 - top1 < 460` 才呼叫，逾時回退統計結果 |
+| 日文（羅馬字→かな→漢字） | Mozc pack v2 與 context ID 矩陣；預設 Jinen small 門檻混合，`auto` 92.2%、`quality` 93.6% |
+| 日文神經轉換 | Jinen v2 small Q5_K_M；`auto` 只在成本差與候選數達門檻時呼叫，逾時回退統計結果 |
 | Mixed 路由 | 注音／日文／英文分段、英文直通與前綴補完；`eval mixed` 6/6 |
 | 個人化 | rollback window、弱負向訊號、最短觸發長度；機制在 `jc-core`，資料可寫成 `personal.json` |
-| 引擎行程 | stdio、Unix domain socket、Windows named pipe；一次服務一條連線 |
+| 引擎行程 | stdio、Unix domain socket、Windows named pipe；`--supervise` 提供單一實例與崩潰重啟 |
+| Windows TSF | x64 MSI 安裝「jc 注音」：組字、候選窗、滑鼠點選、虛線底線、`Win+Space` |
+| 設定程式 | `jc-settings-ui`（GPUI Kit）讀寫 `settings.json`，引擎啟動時讀取 |
 | client crate | `jc-windows` 可連 named pipe；`jc-linux`／`jc-mac` 是佔位，回 `Unsupported` |
-| 平台 wrapper | Windows TSF、Fcitx5、macOS 都尚未實作 |
+| 平台 wrapper | Windows TSF 完成（x64）；Fcitx5、macOS 尚未實作 |
+
 
 ## Crate
 
@@ -31,14 +37,17 @@ Windows named pipe、client crate）完成，Windows TSF 尚未開始；設定�
 | `jc-model` | 推論接線：manifest、tokenizer、candle reranker、注音選字（Q8_0）與 Jinen |
 | `jc-proto` | 引擎與 wrapper 的 v3 訊框、請求／回應、版本握手、候選明細 |
 | `jc-platform` | 平台抽象：`InputHost`、`HostEvent`、`Clock`、`Scheduler` |
-| `jc-engine` | 引擎行程，載入資料與模型，處理協定並把按鍵交給 `jc-core::Session` |
+| `jc-engine` | 引擎行程，載入資料、模型與 `settings.json`，處理協定並把按鍵交給 `jc-core::Session`；`--supervise` 常駐 |
 | `jc-eval` | 題庫讀取、top-1／top-5／邊界／延遲指標、`Report` 與 gate |
 | `jc-testdata` | 測試資料定位（`JC_TESTDATA`、`require_data!`） |
-| `jc-cli` | 開發工具：`eval`、`convert`、`bench`、`tokenize-ja`，另有 `ja-eval` |
+| `jc-cli` | 開發工具：`eval`、`convert`、`bench`、`tokenize-ja`、`data`，另有 `ja-eval` |
 | `jc-jadic` | Mozc `dictionary_oss` 匯入，產出 pack v2 與 manifest |
 | `jc-englishpack` | 英文詞表建置與打包 |
-| `jc-settings` | 設定與模型包的資料模型、驗證、原子寫檔；引擎尚未讀取設定檔 |
-| `jc-windows` | wrapper 端 client：named pipe 傳輸、握手、逾時與重連 |
+| `jc-settings` | 設定與模型包的資料模型、驗證、原子寫檔 |
+| `jc-settings-ui` | GPUI Kit 設定程式，讀寫 `settings.json` |
+| `jc-windows` | wrapper 端 client：named pipe 傳輸、握手、逾時與重連、pipe 名稱解析 |
+| `jc-tsf` | Windows TSF 文字服務（x64 cdylib）：組字、候選窗、顯示屬性與按鍵 |
+| `jc-tsf-smoke` | 免管理員的 TSF 註冊與載入冒煙測試 |
 | `jc-linux` | 佔位，之後接 Unix socket client；目前回 `Unsupported` |
 | `jc-mac` | 佔位，之後接 Unix socket／launchd；目前回 `Unsupported` |
 
@@ -50,16 +59,24 @@ cargo check --workspace --all-targets
 ```
 
 模型推論使用 candle，讀模型目錄的 `model.safetensors` 或 `model.gguf`，
-不需要外部動態庫。需要驗證 reranker 時用：
+不需要外部動態庫。需要驗證 reranker 時加 `--rerank on`。
 
 ## 快速開始
 
 ```sh
-# 啟動引擎（Unix domain socket）
+# 啟動引擎（Unix domain socket；--supervise 常駐並自動重啟）
 cargo run -p jc-engine --release -- --data /mnt/work/jc/jc-ime-data --socket /tmp/jc-engine.sock
 
-# Windows 上同一個參數走 named pipe；只取最後一段掛到 \\.\pipe\
-# cargo run -p jc-engine --release -- --data <資料根> --socket jc-engine
+# Windows：同一個參數走 named pipe；沒給 --socket 時用 jc-ime-<SID 尾段>
+cargo run -p jc-engine --release -- --data <資料根> --supervise
+```
+
+## 安裝（Windows）
+
+下載 `jc-ime-<version>-x64.msi` 後雙擊，步驟與反安裝見
+[`docs/install.md`](docs/install.md)。安裝後用 `Win+Space` 選「jc 注音」，
+設定用開始功能表的「jc 設定」。未簽章警告與其他限制見
+[`docs/release.md`](docs/release.md)。
 
 ## 跑評測
 
@@ -67,9 +84,10 @@ cargo run -p jc-engine --release -- --data /mnt/work/jc/jc-ime-data --socket /tm
 # 注音 golden（45 例）
 cargo run -p jc-cli --release -- eval zh-golden
 
-# 日文題庫（預設開啟 Jinen 門檻；--neural off 回到統計）
+# 日文題庫（預設 --neural auto；quality 提高覆蓋、off 回到統計）
 cargo run -p jc-cli --release -- eval ja --corpus modern-500
-cargo run -p jc-cli --release -- eval ja --corpus hard-cases --neural off
+cargo run -p jc-cli --release -- eval ja --corpus hard-cases --neural quality
+cargo run -p jc-cli --release -- eval ja --corpus modern-500 --neural off
 
 # 模糊輸入與 Mixed
 cargo run -p jc-cli --release -- eval fuzzy
@@ -106,7 +124,7 @@ cargo test --workspace
 
 需要外部資料的測試用 `jc_testdata::require_data!`，資料不存在時跳過而不是
 失敗。開發期間只做 `cargo check`，測試由整合階段統一執行；細節見
-[`docs/blaze.md`](docs/blaze.md)。最新 gate 是 52 targets、1118 passed。
+[`docs/blaze.md`](docs/blaze.md)。最新 gate 是 54 targets、1231 passed。
 
 ## 資料
 
@@ -132,6 +150,9 @@ Hugging Face 下載後記下 revision 與 SHA-256。每個檔案都要能對回�
 ## 文件
 
 - [`docs/status.md`](docs/status.md)：目前數字與缺口，每個里程碑更新這一頁。
+- [`docs/install.md`](docs/install.md)：MSI 安裝、反安裝、檔案位置與已知限制。
+- [`docs/release.md`](docs/release.md)：版本規則、發佈流程、資料包與 release 檢查清單。
+- [`docs/CHANGELOG.md`](docs/CHANGELOG.md)：使用者看得到的變更，release 說明取自這裡。
 - [`docs/proto.md`](docs/proto.md)：v3 協定規格（凍結）。
 - [`docs/wrapper.md`](docs/wrapper.md)：wrapper 作者規格，接引擎不用讀 Rust。
 - [`docs/models.md`](docs/models.md)：模型來源、授權、雜湊與散布規則。

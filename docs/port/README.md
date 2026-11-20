@@ -76,6 +76,8 @@
 | [`ja-context.md`](ja-context.md) | context ID、左文脈與評測數字 |
 | [`eval-ja-ambiguous.md`](eval-ja-ambiguous.md) | 日文歧義題庫與 public-core 對照 |
 | [`ja-particle-rewrite.md`](ja-particle-rewrite.md) | 助詞讀音交替與かな鏈 |
+| [`gating-lowcall.md`](gating-lowcall.md) | 低呼叫率門檻與 `auto`／`quality`／`off` |
+| [`ja-live-neural.md`](ja-live-neural.md) | 逐字変換接 Jinen 與五條驗證 |
 | [`ja-cost-diag.md`](ja-cost-diag.md) | 拆解錯誤轉換的成本來源 |
 | [`ja-live-rewrite.md`](ja-live-rewrite.md) | 逐字変換與即時改寫 |
 | [`ja-personal.md`](ja-personal.md) | 日文個人學習的 Go 對照 |
@@ -104,6 +106,7 @@
 | [`jinen-gating.md`](jinen-gating.md) | 輸入側信心門檻組合統計與 Jinen |
 | [`jinen-gating-v2.md`](jinen-gating-v2.md) | 多目標門檻與 Jinen small 重測 |
 | [`jinen-default.md`](jinen-default.md) | Jinen small 接進 `Session` 並設為預設 |
+| [`manifest-tokenizer.md`](manifest-tokenizer.md) | Jinen tokenizer 納入資料 manifest |
 | [`ja-models-fetch.md`](ja-models-fetch.md) | 外部日文模型抓取、授權與 smoke test |
 | [`punct-wire.md`](punct-wire.md) | 標點模型接進輸出（2026-11-20 已移除） |
 | [`candle-punct.md`](candle-punct.md) | 日文標點模型的 candle 實作（已移除） |
@@ -135,3 +138,36 @@
 | [`fix-windows-cfg.md`](fix-windows-cfg.md) | Windows 編譯的 `cfg` 邊界 |
 | [`ci-clippy.md`](ci-clippy.md) | 清掉 workspace 的 clippy 與 fmt 問題 |
 | [`ci-lint.md`](ci-lint.md) | 修掉 `zh-symbols` 之後的 clippy 錯誤 |
+| [`candidate-paging.md`](candidate-paging.md) | 候選分頁、數字選字與 `CANDIDATE_PAGE_SIZE` |
+| [`composition-cursor.md`](composition-cursor.md) | 組字游標、任意位置編輯與片段換字 |
+
+### TSF、設定與安裝
+
+| 文件 | 一句話 |
+|---|---|
+| [`tsf-skeleton.md`](tsf-skeleton.md) | TSF 文字服務骨架、COM 註冊、按鍵與非同步 IPC |
+| [`tsf-candidates.md`](tsf-candidates.md) | `ITfCandidateListUIElement` 候選窗與分頁 |
+| [`tsf-polish.md`](tsf-polish.md) | 組字虛線底線與候選窗滑鼠點選 |
+| [`tsf-smoke.md`](tsf-smoke.md) | 免管理員的 TSF 註冊與載入冒煙測試 |
+| [`tsf-installer.md`](tsf-installer.md) | per-machine MSI、TIP 註冊與反安裝 |
+| [`installer-payload.md`](installer-payload.md) | 授權文件與 Jinen tokenizer 進 MSI payload |
+| [`candidate-click.md`](candidate-click.md) | 滑鼠點選改成只送一個數字鍵 |
+| [`pipe-name.md`](pipe-name.md) | pipe 名稱加入 SID、`JC_IME_PIPE` 與機碼覆寫 |
+| [`os-isolation.md`](os-isolation.md) | 平台 cfg 邊界與 Windows 目標型別檢查 |
+| [`settings-ui.md`](settings-ui.md) | GPUI Kit 設定程式與 `settings.json` |
+| [`settings-wire.md`](settings-wire.md) | 引擎啟動讀取設定、CLI 參數優先 |
+| [`engine-supervisor.md`](engine-supervisor.md) | `--supervise` 單一實例、重啟與環狀 log |
+| [`data-pack.md`](data-pack.md) | 資料 manifest、驗證與安裝包 payload |
+| [`data-download.md`](data-download.md) | 首次啟動下載、`.part` 與 SHA-256 |
+| [`legal-update.md`](legal-update.md) | 授權帳本與第三方聲明同步 |
+
+### 任務書索引對照
+
+這一輪任務書列的 `x86-tip`、`release-flow`、`settings-neural`、`live-default`
+沒有獨立對照檔：
+
+- `release-flow` 的流程與檢查清單在 [`docs/release.md`](../release.md)。
+- `settings-neural` 併在 [`settings-wire.md`](settings-wire.md) 與
+  [`settings-core.md`](settings-core.md)。
+- `live-default` 併在 [`ja-live-neural.md`](ja-live-neural.md)。
+- `x86-tip` 不在這個 worktree；目前只建 x64 TSF，等合併後再補對照表。
