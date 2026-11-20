@@ -24,6 +24,10 @@ jobs:
     name: linux (core)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # 收尾清理需要刪快取的權限；job 層級覆蓋 workflow 的 contents: read。
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -67,6 +71,16 @@ jobs:
           --target x86_64-pc-windows-msvc
       - name: Test
         run: cargo test --workspace
+
+      # 收尾清理舊快取：只在 main 跑，PR 不動快取。清理失敗不讓 build 變紅。
+      # 並行 run 可能正在使用既有快取，腳本預設跳過建立未滿 6 小時的項目。
+      - name: 清理舊快取
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/cache-prune.sh --skip-recent-hours 6
 
   windows:
     name: windows (msvc)
