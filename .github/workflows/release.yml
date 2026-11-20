@@ -52,6 +52,14 @@ jobs:
             libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
             libxcb-shape0-dev libxcb-xfixes0-dev libasound2-dev
 
+      # 與 linux（tar.gz）共用 release-linux：同一個 OS、同一個 release profile，
+      # 這裡編好的依賴產物可以直接給打包 job 用。verify 先跑，負責寫入快取。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux
+          cache-targets: "true"
+          cache-on-failure: "true"
+
       - name: 版本號一致性
         id: version
         shell: bash
@@ -135,6 +143,15 @@ jobs:
       - name: 加入 i686 target（32 位元 TSF DLL）
         shell: pwsh
         run: rustup target add i686-pc-windows-msvc
+
+      # 這個 job 同時建 x86_64 與 i686 兩份產物，用 key 標明主要 target，
+      # 讓同一 runner 上的其他 Windows 快取不會與這份混淆。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows
+          key: x86_64-pc-windows-msvc
+          cache-targets: "true"
+          cache-on-failure: "true"
 
       # build.ps1 需要資料根目錄。資料不進 git，因此由 release workflow 下載
       # 預先打包的資料包；repo variable 或 workflow_dispatch 輸入提供 URL。
@@ -350,6 +367,13 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev \
             libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
             libxcb-shape0-dev libxcb-xfixes0-dev libasound2-dev
+
+      # 與 verify 共用 release-linux，直接重用 verify 編好的 release 依賴。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux
+          cache-targets: "true"
+          cache-on-failure: "true"
 
       - name: 建置 Linux 執行檔
         run: cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui
