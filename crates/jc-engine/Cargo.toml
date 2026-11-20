@@ -26,6 +26,7 @@ jc-testdata = { path = "../jc-testdata" }
 jc-windows = { path = "../jc-windows" }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    # supervise 測試註冊視窗類別用到的 WNDCLASSW 掛在這個 feature 底下。
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_Storage_FileSystem",
