@@ -186,11 +186,15 @@ impl Session {
             return false;
         };
         // 混合模式的候選是英文補完或拼字建議，選了就取代待定按鍵。
-        if self.config.mode == Mode::Mixed && self.ascii.accept(&candidate.surface) {
-            self.candidate_window = false;
-            self.navigating = false;
-            self.highlighted = 0;
-            return true;
+        if self.config.mode == Mode::Mixed {
+            let raw = self.ascii.pending().to_string();
+            if self.ascii.accept(&candidate.surface) {
+                self.learn_english_choice(&raw, &candidate.surface);
+                self.candidate_window = false;
+                self.navigating = false;
+                self.highlighted = 0;
+                return true;
+            }
         }
         self.remember_text(&candidate.surface);
         self.learn_candidate(index);
@@ -691,7 +695,10 @@ impl Session {
                 self.note_learning_event();
                 self.learn_ja_candidate(index);
             }
-            Mode::En => {}
+            Mode::En => {
+                self.note_learning_event();
+                self.learn_en_candidate(index);
+            }
             Mode::Mixed => {
                 self.note_learning_event();
                 self.learn_mixed_languages();
@@ -767,6 +774,48 @@ impl Session {
                 self.personal
                     .note_passive(&candidate.surface, &candidate.reading);
             }
+        }
+    }
+
+    /// 把一次英文候選記進個人學習。
+    ///
+    /// 接受修正時寫入「打錯 → 修正」的證據；選回原字或其他候選就對學過的
+    /// 修正記一次跳過。連續 [`crate::personal::SKIP_LIMIT`] 次後降權，下一次
+    /// 手選修正會清掉跳過計數。前綴補完不算拼字修正，不寫入這張表。
+    pub(super) fn learn_en_candidate(&mut self, index: usize) {
+        if !self.config.learning {
+            return;
+        }
+        let Some(candidate) = self.candidates.get(index).cloned() else {
+            return;
+        };
+        let wrong = self.raw.trim().to_string();
+        self.learn_english_choice(&wrong, &candidate.surface);
+    }
+
+    /// 記錄一次英文選取：修正或跳過。
+    fn learn_english_choice(&mut self, wrong: &str, chosen: &str) {
+        if !self.config.learning
+            || wrong.is_empty()
+            || !wrong.chars().all(|ch| ch.is_ascii_alphabetic())
+            || !chosen.chars().all(|ch| ch.is_ascii_alphabetic())
+        {
+            return;
+        }
+        if let Some(target) = self.personal.english_correction_target(wrong) {
+            let target = target.to_string();
+            let key = wrong.to_lowercase();
+            if chosen.eq_ignore_ascii_case(&target) {
+                self.personal.clear_skip(&key);
+            } else {
+                self.personal.note_skip(&key);
+            }
+        }
+        // 修正不是原字的前綴；前綴補完只是把字補長，不當拼字修正學習。
+        if !chosen.eq_ignore_ascii_case(wrong)
+            && !chosen.to_lowercase().starts_with(&wrong.to_lowercase())
+        {
+            self.personal.note_english_correction(wrong, chosen);
         }
     }
 
@@ -1493,6 +1542,19 @@ impl Session {
             return;
         }
         let limit = self.max_candidates();
+        let mut seen: Vec<String> = Vec::new();
+        // 同一個拼法有學過的修正時，修正直接排第一；原字仍在候選裡。
+        if let Some(learned) = self.personal.english_correction(&self.raw) {
+            let learned = learned.to_string();
+            seen.push(learned.to_lowercase());
+            self.candidates.push(Candidate::new(
+                learned,
+                self.raw.clone(),
+                0,
+                CandidateSource::Personal,
+            ));
+        }
+        seen.push(self.raw.to_lowercase());
         self.candidates.push(Candidate::new(
             self.raw.clone(),
             self.raw.clone(),
@@ -1501,6 +1563,7 @@ impl Session {
         ));
         if let Some(full) = symbols::width_variant(&self.raw) {
             if full != self.raw {
+                seen.push(full.to_lowercase());
                 self.candidates.push(Candidate::new(
                     full,
                     self.raw.clone(),
@@ -1509,13 +1572,9 @@ impl Session {
                 ));
             }
         }
-        // 前綴補完先排，拼字建議接在後面；打對的詞不會有建議。
-        let extra = super::mixed::english_candidates(&self.raw, limit);
-        let mut seen: Vec<String> = self
-            .candidates
-            .iter()
-            .map(|candidate| candidate.surface.to_lowercase())
-            .collect();
+        // 學過的修正先排，內建前綴補完次之，拼字建議接在後面；打對的詞不會
+        // 有建議。
+        let extra = super::mixed::english_candidates(&self.personal, &self.raw, limit);
         for candidate in extra {
             let key = candidate.surface.to_lowercase();
             if seen.contains(&key) {

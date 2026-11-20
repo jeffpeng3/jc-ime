@@ -13,6 +13,9 @@ pub const MAX_ENGLISH_OBSERVATIONS: usize = 1024;
 /// 英文詞的最大位元組數。
 pub const MAX_WORD_BYTES: usize = 64;
 
+/// 最多保留幾筆「打錯 → 修正」的學習紀錄。
+pub const MAX_ENGLISH_PAIRS: usize = 1024;
+
 /// 個人化英文候選。
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnglishCandidate {
@@ -44,6 +47,30 @@ pub struct EnglishEvidence {
     pub day_confirmed: i32,
     /// 疑似拼錯。
     pub suspicious: bool,
+}
+
+/// 一次「打錯 → 修正」的學習紀錄。
+///
+/// 鍵是打錯的拼法（小寫），值是使用者接受過的修正。這份紀錄只用來把學過的
+/// 修正排到前面，不會取代內建詞表；內建詞表仍然先查。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnglishCorrection {
+    /// 修正後的拼法，保留接受時的大小寫。
+    pub text: String,
+    /// 接受次數。
+    pub accepted: f64,
+    /// 使用次數；接受修正時一起累積，用來和其他學過的拼法排序。
+    pub usage: f64,
+    /// 更新時間。
+    pub updated: i64,
+}
+
+impl EnglishCorrection {
+    /// 排序權重；次數與使用量都算，數值只在本模組內比較。
+    fn weight(&self) -> f64 {
+        320.0 + 10.0 * self.accepted + self.usage
+    }
 }
 
 /// 一次英文提交。
@@ -163,7 +190,140 @@ impl Store {
                 && value.usage.is_finite()
                 && !tombstones.contains(key)
         });
+        self.english_pairs.retain(|wrong, value| {
+            english_token(wrong)
+                && english_token(&value.text)
+                && wrong.to_lowercase() == *wrong
+                && value.text.to_lowercase() != *wrong
+                && (0.0..=32.0).contains(&value.accepted)
+                && (0.0..=32.0).contains(&value.usage)
+                && value.accepted.is_finite()
+                && value.usage.is_finite()
+                && !tombstones.contains(&value.text.to_lowercase())
+        });
         self.bound_english();
+        self.bound_english_pairs();
+    }
+
+    /// 限制英文修正紀錄的筆數。
+    fn bound_english_pairs(&mut self) {
+        if self.english_pairs.len() <= MAX_ENGLISH_PAIRS {
+            return;
+        }
+        let mut entries: Vec<(String, f64)> = self
+            .english_pairs
+            .iter()
+            .map(|(key, value)| (key.clone(), value.weight()))
+            .collect();
+        entries.sort_by(|a, b| {
+            a.1.partial_cmp(&b.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        let drop = entries.len() - MAX_ENGLISH_PAIRS;
+        for (key, _) in entries.into_iter().take(drop) {
+            self.english_pairs.remove(&key);
+        }
+    }
+
+    /// 記一次接受的英文拼字修正。
+    ///
+    /// `wrong` 是打錯的拼法，`right` 是使用者選定的修正。紀錄不受最短觸發
+    /// 長度限制，短字也會留下證據；查詢時才依 [`super::MIN_TRIGGER_LEN`] 決定
+    /// 要不要改變排序。大小寫保留在 `right`，鍵一律用小寫。
+    ///
+    /// 回傳是否真的寫入。
+    pub fn note_english_correction(&mut self, wrong: &str, right: &str) -> bool {
+        if !english_token(wrong) || !english_token(right) {
+            return false;
+        }
+        let key = wrong.to_lowercase();
+        if key == right.to_lowercase() || self.tombstones.contains(&right.to_lowercase()) {
+            return false;
+        }
+        let now = self.time;
+        let entry = self
+            .english_pairs
+            .entry(key)
+            .or_insert_with(|| EnglishCorrection {
+                text: right.to_string(),
+                updated: now,
+                ..EnglishCorrection::default()
+            });
+        entry.text = right.to_string();
+        entry.accepted = (entry.accepted + 1.0).min(32.0);
+        entry.usage = (entry.usage + 1.0).min(16.0);
+        entry.updated = entry.updated.max(now);
+        self.bound_english_pairs();
+        true
+    }
+
+    /// 學過的英文修正；被跳過太多次或字太短時回傳 `None`。
+    ///
+    /// 這是 session 決定「學習結果要不要排第一」的入口：回傳 `Some` 時，
+    /// 同一個打錯的拼法直接以學到的修正為第一候選。連續跳過
+    /// [`super::SKIP_LIMIT`] 次之後回傳 `None`，修正仍留在候選清單裡。
+    pub fn english_correction(&self, wrong: &str) -> Option<&str> {
+        if !english_token(wrong) || wrong.chars().count() < super::MIN_TRIGGER_LEN {
+            return None;
+        }
+        let key = wrong.to_lowercase();
+        if self.skip_count(&key) >= super::SKIP_LIMIT {
+            return None;
+        }
+        let entry = self.english_pairs.get(&key)?;
+        (!entry.text.is_empty()).then_some(entry.text.as_str())
+    }
+
+    /// 學過的英文修正，忽略跳過計數與最短觸發長度。
+    ///
+    /// session 用這個入口判斷「這次是不是又把學過的修正跳過」，才不會因為
+    /// 已經降權就停止累計。
+    pub(crate) fn english_correction_target(&self, wrong: &str) -> Option<&str> {
+        if !english_token(wrong) || wrong.chars().count() < super::MIN_TRIGGER_LEN {
+            return None;
+        }
+        self.english_pairs
+            .get(&wrong.to_lowercase())
+            .map(|entry| entry.text.as_str())
+    }
+
+    /// 個人化的英文候選，依學習權重排序。
+    ///
+    /// 打錯的拼法或修正後的拼法以 `prefix` 開頭就算命中。短於
+    /// [`super::MIN_TRIGGER_LEN`] 的紀錄不列入，因此只記錄、不改排序。被跳過
+    /// 的候選仍在清單裡，只是權重降低。
+    pub fn english_candidates(&self, prefix: &str) -> Vec<EnglishCandidate> {
+        if prefix.is_empty() {
+            return Vec::new();
+        }
+        let lower = prefix.to_lowercase();
+        let mut out: Vec<EnglishCandidate> = self
+            .english_pairs
+            .iter()
+            .filter(|(wrong, entry)| {
+                wrong.chars().count() >= super::MIN_TRIGGER_LEN
+                    && (wrong.starts_with(&lower) || entry.text.to_lowercase().starts_with(&lower))
+            })
+            .map(|(wrong, entry)| {
+                let skips =
+                    i32::try_from(self.skip_count(wrong).min(super::SKIP_LIMIT)).unwrap_or(0);
+                EnglishCandidate {
+                    text: entry.text.clone(),
+                    distance: 0,
+                    weight: entry.weight() - f64::from(skips * super::SKIP_PENALTY),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            b.weight
+                .partial_cmp(&a.weight)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.text.cmp(&b.text))
+        });
+        let mut seen = BTreeSet::new();
+        out.retain(|candidate| seen.insert(candidate.text.to_lowercase()));
+        out
     }
 }
 
@@ -226,13 +386,21 @@ impl Model {
 
     pub(super) fn forget_english(&mut self, text: &str) {
         if english_token(text) {
-            self.store.english.remove(&text.to_lowercase());
+            let key = text.to_lowercase();
+            self.store.english.remove(&key);
+            self.store
+                .english_pairs
+                .retain(|wrong, entry| *wrong != key && entry.text.to_lowercase() != key);
         }
     }
 
     pub(super) fn tombstone_english(&mut self, text: &str) {
         if english_token(text) {
-            self.store.tombstones.insert(text.to_lowercase());
+            let key = text.to_lowercase();
+            self.store.tombstones.insert(key.clone());
+            self.store
+                .english_pairs
+                .retain(|_, entry| entry.text.to_lowercase() != key);
         }
     }
 
@@ -452,5 +620,39 @@ mod tests {
         assert!(m.english_known("OpenCode"));
         m.tombstone_english("OpenCode");
         assert!(!m.english_known("OpenCode"));
+    }
+
+    #[test]
+    fn english_correction_ranks_first_and_skip_demotes() {
+        let mut store = Store::new();
+        store.time = 10 * DAY_SECONDS;
+        assert!(store.note_english_correction("recieve", "receive"));
+        assert_eq!(store.english_correction("recieve"), Some("receive"));
+        assert_eq!(store.english_candidates("reci")[0].text, "receive");
+
+        for _ in 0..crate::personal::SKIP_LIMIT {
+            store.note_skip("recieve");
+        }
+        assert_eq!(store.english_correction("recieve"), None);
+        assert!(
+            store
+                .english_candidates("recieve")
+                .iter()
+                .any(|candidate| candidate.text == "receive"),
+            "跳過只降權，不刪除"
+        );
+
+        store.clear_skip("recieve");
+        assert_eq!(store.english_correction("recieve"), Some("receive"));
+    }
+
+    #[test]
+    fn english_short_correction_records_but_does_not_rank() {
+        let mut store = Store::new();
+        store.time = 10 * DAY_SECONDS;
+        assert!(store.note_english_correction("hellp", "hello"));
+        assert_eq!(store.english_correction("hellp"), None);
+        assert!(store.english_candidates("hell").is_empty());
+        assert_eq!(store.english_pairs["hellp"].text, "hello", "證據要留");
     }
 }
