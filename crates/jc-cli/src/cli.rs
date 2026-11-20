@@ -302,6 +302,23 @@ pub enum Command {
         /// 輸出 JSON。
         json: bool,
     },
+    /// 研究用：大規模比對離線 DP 與正式路由的分詞差異。
+    MixedDiff {
+        /// 產生器種子。
+        seed: u64,
+        /// 要產生的輸入數量。
+        count: usize,
+        /// 每桶輸出的代表案例數。
+        top: usize,
+        /// `0c-testdata` 目錄。
+        testdata: Option<PathBuf>,
+        /// 注音二進位資料包目錄；未指定時依序找 `<資料根>/build-zh` 與 golden 固定詞庫。
+        data: Option<PathBuf>,
+        /// 輸出 JSON。
+        json: bool,
+        /// 把不一致案例寫成 JSON 檔。
+        cases: Option<PathBuf>,
+    },
     /// 顯示說明。
     Help,
     /// 顯示版本。
@@ -322,6 +339,7 @@ pub fn parse(args: &[String]) -> Result<Command, CliError> {
         "bench" => parse_bench(&args[1..]),
         "data" => parse_data(&args[1..]),
         "mixed-split" => parse_mixed_split(&args[1..]),
+        "mixed-diff" => parse_mixed_diff(&args[1..]),
         other => Err(CliError::Usage(format!("不認得的子命令 {other}"))),
     }
 }
@@ -867,6 +885,75 @@ fn parse_mixed_split(args: &[String]) -> Result<Command, CliError> {
     })
 }
 
+/// 解析 `mixed-diff`：大規模比對兩種分詞方式。
+fn parse_mixed_diff(args: &[String]) -> Result<Command, CliError> {
+    let mut seed = 1u64;
+    let mut count = 20_000usize;
+    let mut top = 3usize;
+    let mut testdata = None;
+    let mut data = None;
+    let mut json = false;
+    let mut cases = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--seed" => {
+                index += 1;
+                let text = value(args, index, "--seed")?;
+                seed = text
+                    .parse()
+                    .map_err(|_| CliError::Usage(format!("--seed 必須是整數：{text}")))?;
+            }
+            "--count" => {
+                index += 1;
+                let text = value(args, index, "--count")?;
+                count = text
+                    .parse()
+                    .map_err(|_| CliError::Usage(format!("--count 必須是整數：{text}")))?;
+                if count == 0 {
+                    return Err(CliError::Usage("--count 至少 1".to_string()));
+                }
+            }
+            "--top" => {
+                index += 1;
+                let text = value(args, index, "--top")?;
+                top = text
+                    .parse()
+                    .map_err(|_| CliError::Usage(format!("--top 必須是整數：{text}")))?;
+                if top == 0 {
+                    return Err(CliError::Usage("--top 至少 1".to_string()));
+                }
+            }
+            "--testdata" => {
+                index += 1;
+                testdata = Some(PathBuf::from(value(args, index, "--testdata")?));
+            }
+            "--data" => {
+                index += 1;
+                data = Some(PathBuf::from(value(args, index, "--data")?));
+            }
+            "--json" => json = true,
+            "--cases" => {
+                index += 1;
+                cases = Some(PathBuf::from(value(args, index, "--cases")?));
+            }
+            other => {
+                return Err(CliError::Usage(format!("mixed-diff 不認得的參數 {other}")));
+            }
+        }
+        index += 1;
+    }
+    Ok(Command::MixedDiff {
+        seed,
+        count,
+        top,
+        testdata,
+        data,
+        json,
+        cases,
+    })
+}
+
 /// 解析 `on`／`off` 開關。
 fn switch(value: &str, flag: &str) -> Result<bool, CliError> {
     match value {
@@ -1135,6 +1222,26 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             *json,
             out,
         ),
+        Command::MixedDiff {
+            seed,
+            count,
+            top,
+            testdata,
+            data,
+            json,
+            cases,
+        } => crate::diff_cmd::run(
+            &crate::diff_cmd::DiffOptions {
+                seed: *seed,
+                count: *count,
+                top: *top,
+                testdata: testdata.clone(),
+                data: data.clone(),
+                json: *json,
+                cases: cases.clone(),
+            },
+            out,
+        ),
         Command::Help => {
             write!(out, "{}", usage())?;
             Ok(())
@@ -1317,6 +1424,7 @@ pub fn usage() -> String {
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
          jc-cli mixed-split --keys <字串>... [--testdata <dir>] [--data <dir>] [--incremental] [--repeat 1] [--json]\n  \
+         jc-cli mixed-diff [--seed 1] [--count 20000] [--top 3] [--testdata <dir>] [--data <dir>] [--json] [--cases <file>]\n  \
          jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--backend candle] [--user-data <dir>] [--pick <n>] [--json]\n  \
          jc-cli tokenize ja [--testdata <dir>] [--vocab <model>] [--text <字串>]... [--diff] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
