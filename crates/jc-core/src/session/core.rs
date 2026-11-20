@@ -831,7 +831,7 @@ impl Session {
             let pending = self
                 .live_plan
                 .as_ref()
-                .map_or(true, |plan| plan.result.is_none());
+                .is_none_or(|plan| plan.result.is_none());
             let has_units = !self.romaji.units().is_empty();
             if pending && has_units {
                 if let Some(live) = self.live.as_mut() {
@@ -2647,7 +2647,7 @@ mod tests {
         assert_eq!(s.user_marks().len(), 1, "選字要留下 User 標記");
         assert_eq!(s.user_marks()[0].lang, crate::composition::Lang::Zh);
         assert!(
-            changed.owners.iter().any(|owner| *owner == Owner::User),
+            changed.owners.contains(&Owner::User),
             "快照要標出 User 片段"
         );
 
