@@ -237,6 +237,18 @@ mod tests {
     fn test_apply_writes_readable_settings() {
         let dir = TempDir::new("apply");
         let mut view = view(&dir);
+        assert_eq!(view.value("esc-clear"), "on");
+        view.apply_bool("esc-clear", false);
+        assert!(
+            matches!(view.status, Status::Failed(_)),
+            "內建輸入習慣會鎖住 esc-clear"
+        );
+        assert_eq!(view.value("esc-clear"), "on", "被拒絕的值不改變");
+        assert!(!dir.0.join("settings.json").exists(), "被拒絕的值不寫檔");
+
+        view.copy_profile();
+        assert!(matches!(view.status, Status::Saved), "複製成自訂風格");
+        assert!(!view.locked("esc-clear"));
         view.apply_bool("esc-clear", false);
         assert_eq!(view.value("esc-clear"), "off");
         let report = read(&dir.0.join("settings.json"), "linux");
