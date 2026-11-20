@@ -1600,3 +1600,7 @@ gate（版本不變，仍 `0.1.0-rc.7`）：
 - WXS XML 有效；Windows 目標 `cargo check -p jc-tsf -p jc-tsf-smoke --target x86_64-pc-windows-msvc`
   與 tip-register 同 target 都 exit 0。
 - `git branch --no-merged main`：空。
+
+### CI（push `2f980d8`，run 44795803352）
+
+- linux (core)：success；windows (msvc)：success。
