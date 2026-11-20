@@ -245,3 +245,129 @@ workflow 的 `RELEASE_VERSION` 是完整版本，`MSI_VERSION` 是三段數字�
 - `$msi` 用 `$Version`（完整版本）命名，`wix build` 的 `-d Version` 用 `$MsiVersion`（三段數字）。
 - `$Version`、`$MsiVersion`、`$ReleaseDir`、`$ReleaseDirX86` 都在第一次使用前賦值；`Set-StrictMode -Version Latest` 下沒有未定義變數。
 - `git diff --check` 通過。
+
+## RC5：RegisterTip 存取違規（0xC0000005）
+
+RC5 的 MSI 在真機安裝時，`RegisterTip` 回 `-1073741819`（`0xC0000005`），耗時
+236 ms。同一個 exe、同一份 DLL 的 rollback `machine-unregister` 呼叫
+`DllUnregisterServer` 沒有崩，所以 `LoadLibraryW`、`CoCreateInstance` 與
+`ITfCategoryMgr` 都正常，問題限縮在只有註冊才會走的路徑。
+
+### 兩個 bug
+
+| 位置 | 問題 | 修正 |
+|---|---|---|
+| `crates/jc-tsf/src/register.rs` 的 `module_path` | `GetModuleFileNameW(None, ...)` 的 `hModule = NULL` 拿到的是行程的 exe。`DllRegisterServer` 由 `jc-tip-register.exe` 載入後呼叫，`InprocServer32` 因此寫成 `jc-tip-register.exe` | 改用 `GetModuleHandleExW`，以 `DllRegisterServer` 所在模組的函式位址當錨點（`FROM_ADDRESS | UNCHANGED_REFCOUNT`），再對這個 module 取路徑 |
+| `AddLanguageProfile` 的 `pchIconFile` | 四個呼叫點都傳 `&[]`。空 slice 的 `as_ptr()` 是對齊用的非 NULL 位址（`0x2`），msctf 收到非 NULL 指標配上 `cchIconFile = 0` | 改傳 `&NO_ICON[..0]`：指標指向真正的 NUL、長度仍是 0，API 讀得到也不會越界 |
+
+`InprocServer32` 必須是 DLL 的絕對路徑，不能是 `jc-tip-register.exe`。安裝後各查
+一次：
+
+```bat
+reg query "HKCR\CLSID\{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}\InprocServer32" /ve /reg:64
+reg query "HKCR\CLSID\{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}\InprocServer32" /ve /reg:32
+```
+
+64 位元檢視要指到 `...\jc-tsf.dll`，32 位元檢視要指到 `...\jc-tsf-x86.dll`。
+指到 `.exe` 代表 `module_path` 又退回了行程路徑。
+
+### 安裝日誌
+
+`jc-tip-register` 每個動作寫一行到 `%TEMP%\jc-ime-install.log`。deferred 自訂
+動作以 SYSTEM 執行，`%TEMP%` 是 `C:\Windows\Temp`；一般使用者身分執行時則是該
+使用者的 `%TEMP%`。取不到 `%TEMP%` 時寫在 `jc-tip-register.exe` 同目錄。
+
+`jc-tip-register` 用環境變數 `JC_INSTALL_LOG` 把同一個路徑傳給 `jc-tsf.dll`，
+DLL 內的標記會附加到同一份檔案。手動重跑時也可以自己設這個變數：
+
+```bat
+set JC_INSTALL_LOG=%TEMP%\jc-manual.log
+jc-tip-register.exe machine-register "%ProgramFiles%\jc-ime\jc-tsf.dll" "%ProgramFiles%\jc-ime\jc-tsf-x86.dll"
+```
+
+格式是 `[time] [pid] step`，一行一個動作：
+
+```text
+[1763700000123] [4321] 啟動參數：machine-register ...\jc-tsf.dll ...\jc-tsf-x86.dll
+[1763700000124] [4321] 檢查 DLL：...\jc-tsf.dll
+[1763700000125] [4321] 解析架構：...\jc-tsf.dll → x64
+[1763700000126] [4321] LoadLibraryW：...\jc-tsf.dll
+[1763700000127] [4321] LoadLibraryW：成功（HMODULE(0x...））
+[1763700000128] [4321] GetProcAddress：DllRegisterServer
+[1763700000129] [4321] 呼叫 DllRegisterServer
+[1763700000130] [4322] jc-tsf register：開始
+[1763700000131] [4322] module_path：C:\Program Files\jc-ime\jc-tsf.dll
+```
+
+`[time]` 是 Unix epoch 毫秒，`[pid]` 是行程 ID。每一行都獨立開檔、`flush`、
+`sync_all`，沒有緩衝聚合；行程被存取違規終止後，最後一行仍在磁碟上。
+
+怎麼看：
+
+1. 先看最後一行。它前面的標記就是崩潰或失敗的位置。
+2. 有「呼叫 DllRegisterServer」卻沒有「DllRegisterServer 回傳 ...」，代表崩在
+   DLL 內；接著找同一個 pid 的 `jc-tsf register` 標記。
+3. 有「回傳 0x...」是 HRESULT 失敗，錯誤明確。`0xC0000005` 不會被回報，行程
+   直接終止，只能靠最後一個標記定位。
+4. 「ensure_tip_key：成功」代表
+   `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}` 的 64 位元與 32 位元檢視都讀得到。
+
+### 驗證
+
+| 指令 | 結果 |
+|---|---|
+| `cargo check --workspace --all-targets` | 通過，0 錯誤 |
+| `cargo check --target x86_64-pc-windows-msvc -p jc-tsf`（repo 根目錄） | 通過，0 錯誤 |
+| `cargo check --target x86_64-pc-windows-msvc`（`installer/jc-tip-register`） | 通過，0 錯誤 |
+| `cargo test`（`installer/jc-tip-register`） | 15 passed；純解析測試，Linux 可跑 |
+| 真機安裝 MSI、查兩個 `InprocServer32` | 未執行，需 Windows |
+
+### 第二次 bisect：崩點在 `ITfCategoryMgr`
+
+用 RC5 的檔案在真機手動執行，結果：
+
+| 觀察 | 結果 |
+|---|---|
+| `machine-register` | 崩 `0xC0000005` |
+| `machine-unregister` | exit 0 |
+| `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}\Enable` | 已寫入 `1` |
+| `...\LanguageProfile\0x00000404\{PROFILE}\Description` | 已寫入「jc 注音」 |
+| `reg query HKLM\SOFTWARE\Microsoft\CTF /s /f "{CLSID}"` | 只有 TIP 主鍵 1 個相符，沒有任何分類資料 |
+| 安裝目錄 ACL 的 `S-1-15-2-1`／`S-1-15-2-2` | 沒有 |
+
+`Register` 與 `AddLanguageProfile` 都成功，崩點在 `ITfCategoryMgr` 的
+`RegisterCategory`。後面的 `ensure_tip_key` 與 `grant_app_container` 都沒有跑到，
+所以 ACL 也沒有加上。日誌因此把 CategoryMgr 這一段補到「前後各一行、每次呼叫都
+帶 HRESULT」的粒度：
+
+```text
+[time] [pid] CoCreateInstance(CLSID_TF_CategoryMgr)：開始
+[time] [pid] CoCreateInstance(CLSID_TF_CategoryMgr)：成功（HRESULT 0x00000000）
+[time] [pid] RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)：開始
+[time] [pid] RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)：成功（HRESULT 0x00000000）
+```
+
+下一次若再崩，最後一行會直接指出是哪一個 `RegisterCategory`。
+
+### AppContainer ACL 預設關閉
+
+`grant_app_container` 現在只在環境變數 `JC_IME_APP_CONTAINER=1` 時執行，預設跳過，
+日誌會留下「grant_app_container：已跳過（未設定 JC_IME_APP_CONTAINER）」。
+
+預設關閉的理由：
+
+- `S-1-15-2-1`／`S-1-15-2-2` 只給 UWP／AppContainer 應用程式載入 TIP 用，桌面程式
+  不受影響。
+- 這是 `GetNamedSecurityInfoW` → `SetEntriesInAclW` → `SetNamedSecurityInfoW` 的
+  手工 ACL 操作，放在安裝關鍵路徑上，任何一步出錯都會讓整個註冊失敗。
+- 這次 bisect 已確認崩點在 CategoryMgr，但 ACL 不該是安裝的必要條件；需要 UWP
+  支援時再明確開啟即可。
+
+開啟方式：
+
+```bat
+set JC_IME_APP_CONTAINER=1
+jc-tip-register.exe machine-register "%ProgramFiles%\jc-ime\jc-tsf.dll" "%ProgramFiles%\jc-ime\jc-tsf-x86.dll"
+```
+
+開啟後用 `icacls "%ProgramFiles%\jc-ime"` 確認兩個 SID 的讀取／執行 ACE 存在。

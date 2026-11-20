@@ -35,6 +35,9 @@ mod arch;
 mod guids;
 
 #[cfg(windows)]
+mod log;
+
+#[cfg(windows)]
 mod platform;
 
 /// 說明文字。
@@ -175,14 +178,22 @@ fn run(args: &[String]) -> Result<(), platform::Error> {
 
 #[cfg(windows)]
 fn main() -> ExitCode {
-    match run(&std::env::args().skip(1).collect::<Vec<_>>()) {
-        Ok(()) => ExitCode::SUCCESS,
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    log::init();
+    log::step(&format!("啟動參數：{}", args.join(" ")));
+    match run(&args) {
+        Ok(()) => {
+            log::step("結束：成功");
+            ExitCode::SUCCESS
+        }
         Err(platform::Error::Usage(message)) => {
+            log::step(&format!("結束：用法錯誤（{message}）"));
             eprintln!("jc-tip-register：{message}");
             eprintln!("{}", usage());
             ExitCode::from(2)
         }
         Err(error) => {
+            log::step(&format!("結束：失敗（{error}）"));
             eprintln!("jc-tip-register：{error}");
             ExitCode::from(3)
         }
