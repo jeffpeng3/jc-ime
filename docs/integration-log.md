@@ -1623,3 +1623,22 @@ gate：
 ### CI（push `9ed1873`，run 44800443513）
 
 - linux (core)：success；windows (msvc)：success。
+
+## 2026-11-21 03:20 profile-enabled（`9f6b9a7` → `a759984`）
+
+真機問題：`HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}\LanguageProfile\0x00000404\{PROFILE}\Enable`
+是 0，使用者手動加入鍵盤後切不過去。
+
+- `installer/jc-tip-register/src/platform.rs`：`RegisterProfile` 的 `bEnabledByDefault` 由 `false` 改 `true`
+  （寫入 `Enable=1`；仍不呼叫 `ActivateProfile`，不改系統預設輸入法）。
+- `installer/jc-tip-register/src/log.rs`：安裝日誌第一次建立時先寫 UTF-8 BOM（以
+  `metadata().len() == 0` 判斷），PowerShell 5.1 讀中文不再亂碼；後續附加不重複寫 BOM。
+- 文件 `docs/port/tsf-installer.md`、`docs/port/tsf-skeleton.md` 同步成新行為。
+
+gate：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、1289 passed、0 failed）。
+- clippy exit 0；fmt exit 0。
+- 題庫（無變動）：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- Windows 目標：`cargo check --target x86_64-pc-windows-msvc`（`installer/jc-tip-register`，獨立 crate）exit 0。
+- `cargo test`（`installer/jc-tip-register`）：9 passed。
+- `git branch --no-merged main`：`segment-diff`（新分支，待後續指示）。
