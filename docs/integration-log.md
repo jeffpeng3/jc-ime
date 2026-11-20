@@ -1642,3 +1642,27 @@ gate：
 - Windows 目標：`cargo check --target x86_64-pc-windows-msvc`（`installer/jc-tip-register`，獨立 crate）exit 0。
 - `cargo test`（`installer/jc-tip-register`）：9 passed。
 - `git branch --no-merged main`：`segment-diff`（新分支，待後續指示）。
+
+### CI（push `7bbd64c`，run 44805931861；profile-enabled）
+
+- linux (core)：success；windows (msvc)：success。
+
+## 2026-11-21 03:35 activate-diagnose（`8632d51` → `b7773e5`）
+
+針對 `ITfTextInputProcessor::Activate` 回 `0x80070057` 的定位工具，純診斷加上一處確定的 HINSTANCE 修正，
+不改 TSF 行為。
+
+- `crates/jc-tsf/src/composition.rs`：`create_message_window` 的 `hInstance` 由 `GetModuleHandleW(None)`（宿主 exe）
+  改為 `GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | ...UNCHANGED_REFCOUNT)` 取得 DLL 自己；
+  `RegisterClassW` 遇 1410 `ERROR_CLASS_ALREADY_EXISTS` 視為成功；`advise` 逐步記 HRESULT。
+- `crates/jc-tsf/src/lib.rs`：`Activate` 開始／完成／失敗各一行日誌；`crates/jc-tsf/src/logging.rs` 新增 `hresult` 格式化。
+- `crates/jc-tsf-smoke/src/checks.rs`：檢查 5 失敗時提示 `JC_TSF_LOG=1` 與日誌路徑。
+- `docs/port/activate-diagnose.md`：逐項結論（`WINDOW_STYLE(0)` 合法、`client_id` 正確、`AdviseSink` IID 正確，
+  根因只剩三處）；成功路徑用 `debug`、失敗用 `warn`。
+
+gate：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、1289 passed、0 failed）。
+- clippy exit 0；fmt exit 0。
+- `cargo check -p jc-tsf -p jc-tsf-smoke --all-targets --target x86_64-pc-windows-msvc` exit 0。
+- 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：`segment-diff`、`real-corpus`（新分支，待指示）。
