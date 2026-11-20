@@ -1,6 +1,6 @@
 //! `DllRegisterServer`／`DllUnregisterServer` 的實作。
 //!
-//! 註冊四件事：
+//! 註冊五件事：
 //!
 //! 1. `HKCR\CLSID\{CLSID}\InprocServer32` 指到這個 DLL，`ThreadingModel`
 //!    為 `Apartment`。
@@ -10,6 +10,8 @@
 //!    設定頁才會把它列出來。
 //! 4. 註冊 `GUID_TFCAT_TIPCAP_UIELEMENTENABLED`，允許 TIP 使用
 //!    `ITfUIElementMgr`（候選窗就是靠它交給 Windows 畫）。
+//! 5. 註冊 `GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER`，Windows 才會用這個 CLSID
+//!    的 `ITfDisplayAttributeProvider` 解讀組字底線的顯示屬性 atom。
 //!
 //! **不啟用 profile**：讓使用者在系統設定裡自己選，不偷改使用者的預設輸入法。
 
@@ -24,7 +26,8 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, ITfCategoryMgr,
-    ITfInputProcessorProfiles, GUID_TFCAT_TIPCAP_UIELEMENTENABLED, GUID_TFCAT_TIP_KEYBOARD,
+    ITfInputProcessorProfiles, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+    GUID_TFCAT_TIPCAP_UIELEMENTENABLED, GUID_TFCAT_TIP_KEYBOARD,
 };
 
 use crate::guids::{
@@ -64,6 +67,12 @@ pub fn register() -> Result<()> {
             &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
             &CLSID_JC_TSF,
         )?;
+        // 組字底線：這個 CLSID 同時是 ITfDisplayAttributeProvider 的實作。
+        categories.RegisterCategory(
+            &CLSID_JC_TSF,
+            &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+            &CLSID_JC_TSF,
+        )?;
     }
 
     // 刻意不呼叫 ITfInputProcessorProfileMgr::ActivateProfile。
@@ -95,6 +104,11 @@ pub fn unregister() -> Result<()> {
             let _ = categories.UnregisterCategory(
                 &CLSID_JC_TSF,
                 &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+                &CLSID_JC_TSF,
+            );
+            let _ = categories.UnregisterCategory(
+                &CLSID_JC_TSF,
+                &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
                 &CLSID_JC_TSF,
             );
         }
