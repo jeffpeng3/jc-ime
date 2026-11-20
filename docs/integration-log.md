@@ -1107,3 +1107,17 @@
 - 對照 `quality`：93.6／80.0／71.0；neural 逾時次數 0／0／1。
 - 延遲（auto，本機重跑）：modern-500 p50 6.9／p95 60.6 ms、hard-cases 7.9／58.4 ms、ajimee-200 41.9／174.9 ms；
   三組合計 p95 依任務書為 112.7 ms（本輪未另行合併取樣覆核）。
+
+## 2026-11-20 11:52 docs-sync 與 settings-wire
+
+- `docs-sync` `39ff3a0` → merge `24a6d5b`：只改文件（`architecture`、`models`、`status`、`wrapper`、`docs/port/README.md`，582 增／273 刪），
+  同步到 M0–M4 與 v3 協定。`cargo check --workspace --all-targets` exit 0。
+- `settings-wire` `2f08daa` → merge `7713748`：新增 `jc-engine/src/config.rs`（482 行）與 `tests/settings.rs`，
+  引擎讀 `settings.json` 轉 `SessionConfig`，CLI 參數優先、壞檔只警告不擋啟動。
+
+  gate：fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（53 targets、1137 passed、0 failed）。
+  第一次跑有 3 個 `jc-engine/tests/settings.rs` 的 `啟動 jc-engine: NotFound`，重跑即消失，屬首次建置時 bin 尚未產生的競態。
+
+  題庫（與前一版相同）：`zh-golden` **45/45**、`ja modern-500` **92.2%**（第一次受負載影響量到 90.8／timeout 2.8%，
+  重跑回到 92.2／0%）、`hard-cases` **77.1%**、`ajimee-200` **69.0%**（一次負載下量到 67.0，重跑 69.0）、
+  `fuzzy` **44.5%**、`mixed` **6/6**。
