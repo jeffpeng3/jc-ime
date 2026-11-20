@@ -48,13 +48,15 @@
 wrapper 應直接使用 `page` 與 `page_size`。`highlighted` 仍是絕對候選索引；
 `page` 只是方便畫頁，不能拿 `highlighted / 9` 在 wrapper 重算。
 
-## 外殼接線狀態
+## 外殼接線
 
-這個 branch 的 `crates/jc-tsf` 只有組字骨架，沒有候選窗。候選窗在
-`tsf-candidates` branch 的 `crates/jc-tsf/src/candidates.rs`，那裡目前把
-`PAGE_SIZE` 寫死成 9，並由 `highlighted` 反推頁碼。合併後要改成讀
-`State.page`／`State.page_size`，刪掉本地的頁面常數；本 branch 沒有那個
-檔案，不能先改別人的 worktree。
+`crates/jc-tsf/src/candidates.rs` 已改成讀 `State.page_size`：`CandidateSnapshot`
+帶著核心回報的每頁項數，`CandidatePages::starts()` 用它算 `0, 9, 18, …`，
+不再保留本地的 `PAGE_SIZE`。`State.page` 供診斷；`GetCurrentPage` 仍由
+`highlighted` 與頁首反推，預設分頁下與核心一致。
+
+`SetPageIndex` 自訂頁首只影響 Windows 的顯示，下一次資料更新會重設回核心
+的頁面大小。
 
 ## golden 相容
 
@@ -72,7 +74,7 @@ expected。換算後 `eval zh-golden` 仍是 45/45。
 | `core/session/session.go`（`Page` 請求） | `crates/jc-core/src/session/mod.rs`（`Session::page`） | rewritten：頁面大小改讀 `PAGE_SIZE`，越界不改狀態 |
 | `core/session/selection_keys.go`（數字選字） | `crates/jc-core/src/session/core.rs`（`select_by_digit`） | rewritten：加上頁位移，超出候選數時吃掉按鍵 |
 | n/a（Go 沒有協定頁碼欄位） | `crates/jc-proto/src/lib.rs`（`State.page`、`State.page_size`） | rewritten：v3 可忽略欄位 |
-| n/a（Go 沒有 TSF 外殼） | `crates/jc-tsf/src/candidates.rs`（另一個 branch） | 待整合：改用 `State.page`／`State.page_size` |
+| n/a（Go 沒有 TSF 外殼） | `crates/jc-tsf/src/candidates.rs` | rewritten：候選窗改讀 `State.page_size` |
 
 ## 測試（只寫不跑）
 

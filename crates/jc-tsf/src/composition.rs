@@ -81,6 +81,8 @@ struct StateData {
     candidates: Vec<String>,
     details: Vec<CandidateDetail>,
     highlighted: usize,
+    /// 核心回報的每頁項數；候選窗用它分頁。
+    page_size: usize,
     navigating: bool,
     label: Option<String>,
 }
@@ -274,6 +276,7 @@ impl Control {
                     candidates,
                     details,
                     highlighted,
+                    page_size,
                     navigating,
                     label,
                     ..
@@ -289,6 +292,7 @@ impl Control {
                         candidates,
                         details,
                         highlighted,
+                        page_size,
                         navigating,
                         label,
                     });
@@ -420,6 +424,7 @@ impl Control {
             CandidateSnapshot {
                 items,
                 highlighted: state.highlighted,
+                page_size: state.page_size,
             },
             document,
         );

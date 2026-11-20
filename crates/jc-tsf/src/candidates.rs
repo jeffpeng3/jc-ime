@@ -24,9 +24,6 @@ use windows::Win32::UI::TextServices::{
 use crate::guids::GUID_CANDIDATE_UI_ELEMENT;
 use crate::logging;
 
-/// 每頁顯示幾個候選。`1`–`9` 對應頁內位置，`0` 留給注音鍵。
-pub const PAGE_SIZE: usize = 9;
-
 /// 第一次 `BeginUIElement` 時要宣告全部欄位都是新的。
 const ALL_UPDATED: u32 = TF_CLUIE_DOCUMENTMGR
     | TF_CLUIE_COUNT
@@ -56,17 +53,25 @@ pub struct CandidateSnapshot {
     pub items: Vec<CandidateItem>,
     /// 引擎目前的高亮索引。
     pub highlighted: usize,
+    /// 引擎回報的每頁項數；由核心決定，wrapper 不寫死。
+    ///
+    /// 0 只在手工建構快照時出現，實際 `State` 一定會帶值；分頁時以 1 為
+    /// 下限避免除以零。
+    pub page_size: usize,
 }
 
 /// 分頁後的候選清單。
 ///
 /// 這是純資料，不碰 COM；COM 物件只讀它。頁碼一律由 `highlighted` 反推，
-/// 不由 wrapper 自己保存「目前第幾頁」，避免和引擎的狀態分叉。
+/// 不由 wrapper 自己保存「目前第幾頁」，避免和引擎的狀態分叉。頁面大小讀
+/// 引擎回報的 [`CandidateSnapshot::page_size`]。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct CandidatePages {
     items: Vec<CandidateItem>,
     highlighted: usize,
-    /// 外部透過 `SetPageIndex` 指定的頁首；空的時候用 [`PAGE_SIZE`] 計算。
+    /// 每頁項數，來自核心。
+    page_size: usize,
+    /// 外部透過 `SetPageIndex` 指定的頁首；空的時候用 `page_size` 計算。
     custom_starts: Vec<u32>,
 }
 
@@ -81,6 +86,13 @@ impl CandidatePages {
         Self {
             items: snapshot.items.clone(),
             highlighted,
+            // 真實的 `State` 一定會帶 `page_size`；手工快照給 0 時退回單頁，
+            // 不要用 1 變成每項一頁。
+            page_size: if snapshot.page_size == 0 {
+                snapshot.items.len().max(1)
+            } else {
+                snapshot.page_size
+            },
             custom_starts: Vec::new(),
         }
     }
@@ -101,7 +113,7 @@ impl CandidatePages {
             return self.custom_starts.clone();
         }
         (0..self.items.len())
-            .step_by(PAGE_SIZE)
+            .step_by(self.page_size.max(1))
             .map(|index| index as u32)
             .collect()
     }
@@ -126,7 +138,7 @@ impl CandidatePages {
         self.custom_starts = starts.to_vec();
     }
 
-    /// 重設成依 [`PAGE_SIZE`] 計算的預設分頁。
+    /// 重設成依核心頁面大小計算的預設分頁。
     fn reset_starts(&mut self) {
         self.custom_starts.clear();
     }
@@ -428,6 +440,14 @@ mod tests {
     use super::*;
 
     fn snapshot(texts: &[&str], highlighted: usize) -> CandidateSnapshot {
+        snapshot_with_page_size(texts, highlighted, 9)
+    }
+
+    fn snapshot_with_page_size(
+        texts: &[&str],
+        highlighted: usize,
+        page_size: usize,
+    ) -> CandidateSnapshot {
         CandidateSnapshot {
             items: texts
                 .iter()
@@ -438,6 +458,7 @@ mod tests {
                 })
                 .collect(),
             highlighted,
+            page_size,
         }
     }
 
@@ -448,6 +469,24 @@ mod tests {
         let pages = CandidatePages::new(&snapshot(&refs, 0));
         assert_eq!(pages.starts(), vec![0, 9, 18]);
         assert_eq!(pages.count(), 20);
+        assert_eq!(pages.current_page(), 0);
+    }
+
+    /// 頁面大小讀引擎回報值，不是 wrapper 常數。
+    #[test]
+    fn pages_follow_engine_page_size() {
+        let texts: Vec<String> = (0..20).map(|index| index.to_string()).collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let pages = CandidatePages::new(&snapshot_with_page_size(&refs, 10, 10));
+        assert_eq!(pages.starts(), vec![0, 10]);
+        assert_eq!(pages.current_page(), 1, "高亮 10 在第 2 頁");
+    }
+
+    /// 手工快照沒帶頁面大小時退回單頁，不會每項一頁。
+    #[test]
+    fn missing_page_size_falls_back_to_one_page() {
+        let pages = CandidatePages::new(&snapshot_with_page_size(&["甲", "乙", "丙"], 1, 0));
+        assert_eq!(pages.starts(), vec![0]);
         assert_eq!(pages.current_page(), 0);
     }
 
