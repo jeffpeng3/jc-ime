@@ -1094,3 +1094,16 @@
 | `mixed` | 6/6 | **6/6** |
 
 全綠後 push `origin main`。
+
+## 2026-11-20 11:55 gating-lowcall（預設低呼叫率門檻）
+
+- 合併 `gating-lowcall` `a350ef8` → `f8efb1a`。`session/core.rs` 衝突兩邊都保留：jinen-default 的
+  「半截讀音不呼叫模型」guard＋本 branch 的 `mean_candidates` 門檻；`NeuralConfig` 預設 `gap_threshold = 472.5`、
+  `min_mean_candidates = 5.98`，`--neural` 改成 `auto`／`quality`／`off` 三值。
+- gate：fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（52 targets、1126 passed、0 failed）；
+  `zh-golden` **45/45**。
+- **auto：92.2／77.1／69.0**；離線掃描 69.5，差 1 題逾時（`ajimee-200` neural timeout 1，回到統計結果；
+  任務書下限為 69.0，判為達標，不調門檻）。
+- 對照 `quality`：93.6／80.0／71.0；neural 逾時次數 0／0／1。
+- 延遲（auto，本機重跑）：modern-500 p50 6.9／p95 60.6 ms、hard-cases 7.9／58.4 ms、ajimee-200 41.9／174.9 ms；
+  三組合計 p95 依任務書為 112.7 ms（本輪未另行合併取樣覆核）。
