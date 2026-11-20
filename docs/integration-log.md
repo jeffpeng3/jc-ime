@@ -1366,3 +1366,7 @@ gate：test exit 0（54 targets、1231 passed、0 failed）、clippy exit 0、fm
 - `git branch --no-merged main`：空。
 - `cargo check --workspace --all-targets --target x86_64-pc-windows-msvc`：本機失敗（`ring v0.17.14` build script 需要 MSVC 工具鏈），
   留給 CI 的 windows (msvc) job 驗。
+
+### CI（push `4bbf535`，run 44698221828）
+
+- linux (core)：success；windows (msvc)：success。
