@@ -3,6 +3,7 @@
 //! 目前是骨架：先固定「一個資料集 = manifest + 多個 section」的介面，
 //! 實際格式在 M1／M2 依注音詞典與 Mozc 詞典的需求定義。
 
+pub mod download;
 pub mod ja;
 pub mod manifest;
 pub mod zh;

@@ -201,6 +201,24 @@ pub enum Command {
         /// 輸出 JSON。
         json: bool,
     },
+    /// 列出下載項（`shipped: false`）的狀態。
+    DataStatus {
+        /// 資料根目錄。
+        root: PathBuf,
+        /// manifest 路徑；未指定時讀 `<root>/manifest.json`。
+        manifest: Option<PathBuf>,
+        /// 輸出 JSON。
+        json: bool,
+    },
+    /// 下載 manifest 的 `shipped: false` 項目。
+    DataDownload {
+        /// 資料根目錄。
+        root: PathBuf,
+        /// manifest 路徑；未指定時讀 `<root>/manifest.json`。
+        manifest: Option<PathBuf>,
+        /// 不印進度。
+        quiet: bool,
+    },
     /// 顯示說明。
     Help,
     /// 顯示版本。
@@ -703,10 +721,13 @@ fn parse_bench(args: &[String]) -> Result<Command, CliError> {
 
 fn parse_data(args: &[String]) -> Result<Command, CliError> {
     let Some(kind) = args.first().map(String::as_str) else {
-        return Err(CliError::Usage("data 需要 manifest 或 verify".to_string()));
+        return Err(CliError::Usage(
+            "data 需要 manifest、verify、status 或 download".to_string(),
+        ));
     };
     let rest = &args[1..];
     let (mut root, mut out, mut version, mut manifest, mut json) = (None, None, None, None, false);
+    let mut quiet = false;
     let mut index = 0;
     while index < rest.len() {
         match rest[index].as_str() {
@@ -723,6 +744,7 @@ fn parse_data(args: &[String]) -> Result<Command, CliError> {
                 manifest = Some(PathBuf::from(value(rest, index, "--manifest")?));
             }
             "--json" => json = true,
+            "--quiet" => quiet = true,
             other if other.starts_with("--") => {
                 return Err(CliError::Usage(format!("data {kind} 不認得的參數 {other}")));
             }
@@ -738,7 +760,7 @@ fn parse_data(args: &[String]) -> Result<Command, CliError> {
     let root = root.ok_or_else(|| CliError::Usage(format!("data {kind} 需要資料根目錄")))?;
     match kind {
         "manifest" => {
-            if manifest.is_some() || json {
+            if manifest.is_some() || json || quiet {
                 return Err(CliError::Usage(
                     "data manifest 只接受 --out 與 --version".to_string(),
                 ));
@@ -746,7 +768,7 @@ fn parse_data(args: &[String]) -> Result<Command, CliError> {
             Ok(Command::DataManifest { root, out, version })
         }
         "verify" => {
-            if out.is_some() || version.is_some() {
+            if out.is_some() || version.is_some() || quiet {
                 return Err(CliError::Usage(
                     "data verify 只接受 --manifest 與 --json".to_string(),
                 ));
@@ -757,8 +779,32 @@ fn parse_data(args: &[String]) -> Result<Command, CliError> {
                 json,
             })
         }
+        "status" => {
+            if out.is_some() || version.is_some() || quiet {
+                return Err(CliError::Usage(
+                    "data status 只接受 --manifest 與 --json".to_string(),
+                ));
+            }
+            Ok(Command::DataStatus {
+                root,
+                manifest,
+                json,
+            })
+        }
+        "download" => {
+            if out.is_some() || version.is_some() || json {
+                return Err(CliError::Usage(
+                    "data download 只接受 --manifest 與 --quiet".to_string(),
+                ));
+            }
+            Ok(Command::DataDownload {
+                root,
+                manifest,
+                quiet,
+            })
+        }
         other => Err(CliError::Usage(format!(
-            "data 只支援 manifest 或 verify，收到 {other}"
+            "data 只支援 manifest、verify、status 或 download，收到 {other}"
         ))),
     }
 }
@@ -903,6 +949,16 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             manifest,
             json,
         } => crate::manifest_cmd::verify(root, manifest.as_deref(), *json, out),
+        Command::DataStatus {
+            root,
+            manifest,
+            json,
+        } => crate::download_cmd::status(root, manifest.as_deref(), *json, out),
+        Command::DataDownload {
+            root,
+            manifest,
+            quiet,
+        } => crate::download_cmd::download(root, manifest.as_deref(), *quiet, out),
     }
 }
 
@@ -921,7 +977,9 @@ pub fn usage() -> String {
          jc-cli tokenize ja [--testdata <dir>] [--vocab <model>] [--text <字串>]... [--diff] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
          jc-cli data manifest <root> [--out <manifest.json>] [--version <標籤>]\n  \
-         jc-cli data verify <root> [--manifest <manifest.json>] [--json]\n\n\
+         jc-cli data verify <root> [--manifest <manifest.json>] [--json]\n  \
+         jc-cli data status <root> [--manifest <manifest.json>] [--json]\n  \
+         jc-cli data download <root> [--manifest <manifest.json>] [--quiet]\n\n\
          --backend 只接受 candle；ORT 已移除，其他值會直接報錯。\n\
          --testdata 預設讀 JC_TESTDATA，再退回 /mnt/work/jc/jc-ime-data/0c-testdata。\n\
          --corpus 是 ja/ 目錄裡的題庫名稱；目錄下每份題庫 json 都會被掃到。\n\
@@ -931,7 +989,10 @@ pub fn usage() -> String {
          --select-model on 需要 zh-select 的 candle 權重；預設 on，可用 off 關閉。\n\
          --user-data 指定個人資料目錄；日文學習寫進同一個 personal.json，--pick 記下第幾個候選。\n\
          data manifest 會實際算大小與 SHA-256；下載項不存在就略過，隨附檔缺少則失敗。\n\
-         data verify 逐檔檢查存在、大小與 SHA-256；缺少隨附檔或內容不符會回傳非零。\n",
+         data verify 逐檔檢查存在、大小與 SHA-256；缺少隨附檔或內容不符會回傳非零。\n\
+         data status 只查下載項（shipped: false），列出已存在、缺少或雜湊不符。\n\
+         data download 從 manifest 的 url 下載缺少的下載項，支援 .part 續傳；\n\
+         進度寫 stderr，--quiet 關閉。缺少下載項不影響引擎啟動，只會降級。\n",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -1386,6 +1447,47 @@ mod tests {
         assert!(parse(&args(&["data", "manifest"])).is_err());
         assert!(parse(&args(&["data", "manifest", "/data", "--json"])).is_err());
         assert!(parse(&args(&["data", "verify", "/data", "--out", "/tmp/x"])).is_err());
+    }
+
+    #[test]
+    fn parses_data_status_and_download() {
+        assert_eq!(
+            parse(&args(&[
+                "data",
+                "status",
+                "/data/root",
+                "--manifest",
+                "/tmp/manifest.json",
+                "--json",
+            ]))
+            .unwrap(),
+            Command::DataStatus {
+                root: PathBuf::from("/data/root"),
+                manifest: Some(PathBuf::from("/tmp/manifest.json")),
+                json: true,
+            }
+        );
+        assert_eq!(
+            parse(&args(&["data", "download", "/data/root", "--quiet"])).unwrap(),
+            Command::DataDownload {
+                root: PathBuf::from("/data/root"),
+                manifest: None,
+                quiet: true,
+            }
+        );
+        assert_eq!(
+            parse(&args(&["data", "download", "/data/root"])).unwrap(),
+            Command::DataDownload {
+                root: PathBuf::from("/data/root"),
+                manifest: None,
+                quiet: false,
+            }
+        );
+        // 旗標只在對應的子命令有效。
+        assert!(parse(&args(&["data", "status", "/data", "--quiet"])).is_err());
+        assert!(parse(&args(&["data", "download", "/data", "--json"])).is_err());
+        assert!(parse(&args(&["data", "download", "/data", "--out", "/tmp/x"])).is_err());
+        assert!(parse(&args(&["data", "nope", "/data"])).is_err());
     }
 
     #[test]

@@ -17,3 +17,6 @@ jc-testdata = { path = "../jc-testdata" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+sha2 = "0.10"
+# 下載模型用的同步 HTTP 客戶端；預設帶 rustls 與 webpki 根憑證。
+ureq = { version = "3.3", default-features = false, features = ["rustls", "gzip"] }
