@@ -4,13 +4,18 @@
     建置 jc 注音的可攜 payload 與 WiX v5 MSI。
 
 .DESCRIPTION
-    步驟：cargo build（含 jc-tip-register）→ 使用或產生資料 manifest → 暫存
-    payload（程式、資料、授權文件）→ wix build → 選用簽章。版本號取自
-    workspace Cargo.toml 的 [workspace.package] version；MSI 只接受 x.y.z，
-    pre-release 會被擋下。
+    步驟：cargo build（x64 全部程式 + i686 的 jc-tsf，以及 jc-tip-register）→ 使用或
+    產生資料 manifest → 暫存 payload（程式、資料、授權文件）→ wix build → 選用簽章。
+    版本號取自 workspace Cargo.toml 的 [workspace.package] version；MSI 只接受
+    x.y.z，pre-release 會被擋下。
+
+    安裝包同時帶兩個架構的 TSF 文字服務：x64 的 jc-tsf.dll 與 i686 的
+    jc-tsf-x86.dll。TSF 依宿主行程的位元數載入對應的那一份，兩份各自註冊一個
+    CLSID，理由見 docs/port/x86-tip.md。
 
     需要：
-      - Visual Studio 2022 的 MSVC 工具鏈（Rust 的 x86_64-pc-windows-msvc target）
+      - Visual Studio 2022 的 MSVC 工具鏈，Rust target x86_64-pc-windows-msvc 與
+        i686-pc-windows-msvc（rustup target add i686-pc-windows-msvc）
       - .NET 6 以上與 WiX v5：dotnet tool install --global wix --version 5.*
       - 資料根目錄（預設讀 $env:JC_DATA_ROOT）
       - 選用：Windows SDK 的 signtool.exe（簽章時才需要）
@@ -35,6 +40,7 @@ param(
     [string]$DataRoot = $env:JC_DATA_ROOT,
     [string]$Configuration = 'release',
     [string]$Target = 'x86_64-pc-windows-msvc',
+    [string]$TargetX86 = 'i686-pc-windows-msvc',
     [string]$TimestampUrl = 'http://timestamp.digicert.com',
     [string]$Certificate = $env:JC_SIGN_CERT,
     [string]$CertificatePassword = $env:JC_SIGN_PASSWORD,
@@ -63,6 +69,7 @@ $TargetRoot = Join-Path $Root 'target'
 $OutDir = Join-Path $TargetRoot 'installer'
 $Payload = Join-Path $OutDir 'payload'
 $ReleaseDir = Join-Path $TargetRoot "$Target\$Configuration"
+$ReleaseDirX86 = Join-Path $TargetRoot "$TargetX86\$Configuration"
 $HelperTarget = Join-Path $TargetRoot 'tip-register'
 $HelperRelease = Join-Path $HelperTarget "$Target\$Configuration"
 
@@ -98,6 +105,12 @@ Invoke-Checked '建置 workspace 程式' {
         -p jc-tsf -p jc-engine -p jc-cli -p jc-settings-ui -p jc-tsf-smoke
 }
 
+# 32 位元的 TSF DLL。TSF 依宿主行程的位元數載入 TIP，沒有這一份舊版 Office 等
+# 32 位元程式就看不到輸入法。引擎、CLI 與設定程式只有 x64 版。
+Invoke-Checked '建置 x86 jc-tsf' {
+    & cargo build @profileArgs --target $TargetX86 -p jc-tsf
+}
+
 Invoke-Checked '建置 jc-tip-register' {
     & cargo build @profileArgs --target $Target --target-dir $HelperTarget `
         --manifest-path (Join-Path $PSScriptRoot 'jc-tip-register\Cargo.toml')
@@ -115,6 +128,15 @@ foreach ($name in $programs) {
     if (-not (Test-Path $source)) { throw "建置輸出缺少 $name（$source）" }
     Copy-Item $source $Payload
 }
+
+# x86 的 DLL 改名進 payload：兩份都叫 jc-tsf.dll，安裝後放在同一個目錄，
+# 檔名必須分得出來，WXS 才引用得到兩個檔案。
+$x86Dll = Join-Path $ReleaseDirX86 'jc-tsf.dll'
+if (-not (Test-Path $x86Dll)) {
+    throw "建置輸出缺少 x86 jc-tsf.dll（$x86Dll）；請先 rustup target add $TargetX86"
+}
+Copy-Item $x86Dll (Join-Path $Payload 'jc-tsf-x86.dll')
+
 Copy-Item (Join-Path $HelperRelease 'jc-tip-register.exe') $Payload
 
 $dataStage = Join-Path $Payload 'data'
@@ -186,7 +208,7 @@ if (-not $SkipSign -and $Certificate) {
     $signArgs = @('sign', '/fd', 'sha256', '/tr', $TimestampUrl, '/td', 'sha256',
         '/f', $Certificate)
     if ($CertificatePassword) { $signArgs += @('/p', $CertificatePassword) }
-    foreach ($name in @($programs + 'jc-tip-register.exe')) {
+    foreach ($name in @($programs + 'jc-tsf-x86.dll' + 'jc-tip-register.exe')) {
         Invoke-Checked "簽章 $name" { & $signtool.Source @signArgs (Join-Path $Payload $name) }
     }
 } else {

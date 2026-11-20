@@ -24,7 +24,8 @@
 
 前置：
 
-- Visual Studio 2022 的 MSVC 工具鏈，Rust target `x86_64-pc-windows-msvc`
+- Visual Studio 2022 的 MSVC 工具鏈，Rust target `x86_64-pc-windows-msvc` 與
+  `i686-pc-windows-msvc`（`rustup target add i686-pc-windows-msvc`）
 - .NET 6 以上
 - WiX v5：`dotnet tool install --global wix --version 5.*`
 - 資料根目錄（預設 `JC_DATA_ROOT`），內含 `build-zh`、`english`、`packs`、`models`
@@ -40,13 +41,15 @@ $env:JC_SIGN_PASSWORD = '...'
 .\installer\build.ps1 -DataRoot Z:\mnt\work\jc\jc-ime-data
 ```
 
-輸出：`target\installer\jc-ime-<version>-x64.msi`。
+輸出：`target\installer\jc-ime-<version>-x64.msi`（同一個 MSI 內含 x64 與 x86 的
+TSF DLL）。
 
 腳本做這些事：
 
 1. 用 `-C target-feature=+crt-static` 建置 workspace 的六個執行檔／DLL 與
-   `jc-tip-register`。靜態 CRT 是必要條件：TSF DLL 會被載入 explorer 與任意程式，
-   不能依賴 `vcruntime140.dll`（`docs/history.md` 的既有決策）。
+   `jc-tip-register`，另外用 `i686-pc-windows-msvc` 再建一份 `jc-tsf`（暫存成
+   `jc-tsf-x86.dll`）。靜態 CRT 是必要條件：TSF DLL 會被載入 explorer 與任意
+   程式，不能依賴 `vcruntime140.dll`（`docs/history.md` 的既有決策）。
 2. 用建置出來的 `jc-cli.exe data manifest` 對資料根目錄產生 `manifest.json`，
    只複製 `shipped: true` 的檔案。Funmula 的 `zh-select`、`zh-punct` 依授權不隨
    產品散布。
@@ -56,8 +59,9 @@ $env:JC_SIGN_PASSWORD = '...'
    `legal/licenses/` 空目錄時直接失敗。
 5. `check-payload.py` 比對 WXS 引用、`shipped` 資料檔與授權文件三份清單；repo 的
    授權文件沒進 WXS、payload 少檔或內容與 repo 不同都會失敗。
-6. 有憑證時簽 `jc-tsf.dll`、`jc-engine.exe`、`jc-cli.exe`、`jc-settings-ui.exe`、
-   `jc-tsf-smoke.exe`、`jc-tip-register.exe`，再簽 MSI。沒憑證時輸出未簽章 MSI。
+6. 有憑證時簽 `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe`、`jc-cli.exe`、
+   `jc-settings-ui.exe`、`jc-tsf-smoke.exe`、`jc-tip-register.exe`，再簽 MSI。
+   沒憑證時輸出未簽章 MSI。
 7. `wix build -arch x64 -d Version=<Cargo 版本> -d PayloadDir=<暫存目錄>`。
 
 版本號取自 workspace `Cargo.toml` 的 `version`；MSI 只接受 `x.y.z`，pre-release
@@ -68,7 +72,8 @@ $env:JC_SIGN_PASSWORD = '...'
 安裝目錄：
 
 ```text
-%ProgramFiles%\jc-ime\            jc-tsf.dll、jc-engine.exe、jc-cli.exe、
+%ProgramFiles%\jc-ime\            jc-tsf.dll（x64）、jc-tsf-x86.dll（x86）、
+                                  jc-engine.exe、jc-cli.exe、
                                   jc-settings-ui.exe、jc-tsf-smoke.exe、
                                   jc-tip-register.exe
 %ProgramFiles%\jc-ime\legal\      LICENSE、NOTICE、THIRD-PARTY-NOTICES.md
@@ -87,18 +92,31 @@ $env:JC_SIGN_PASSWORD = '...'
 | 動作 | 種類 | 身分 | 時機 | 內容 |
 |---|---|---|---|---|
 | `RegisterTip` | deferred | SYSTEM | `InstallFiles` 之後 | `jc-tip-register machine-register <jc-tsf.dll>` |
+| `RegisterTipX86` | deferred | SYSTEM | `RegisterTip` 之後 | `machine-register --arch x86 <jc-tsf-x86.dll>` |
 | `RollbackRegisterTip` | rollback | SYSTEM | `RegisterTip` 之前 | `machine-unregister` |
-| `UnregisterTip` | deferred | SYSTEM | `RemoveFiles` 之前 | `machine-unregister`，DLL 不在時內建清理 |
+| `RollbackRegisterTipX86` | rollback | SYSTEM | `RegisterTipX86` 之前 | `machine-unregister --arch x86` |
+| `UnregisterTip` | deferred | SYSTEM | 反安裝、`RemoveFiles` 之前 | `machine-unregister <jc-tsf.dll>`，DLL 不在時內建清理 |
+| `UnregisterTipX86` | deferred | SYSTEM | `UnregisterTip` 之後 | `machine-unregister --arch x86` |
 | `RollbackUnregisterTip` | rollback | SYSTEM | `UnregisterTip` 之前 | `machine-register` |
-| `InstallTipLayout` | immediate | 使用者 | `InstallFinalize` 之後 | `user-install`（`InstallLayoutOrTip`，旗標 0） |
+| `RollbackUnregisterTipX86` | rollback | SYSTEM | `UnregisterTipX86` 之前 | `machine-register --arch x86` |
+| `InstallTipLayout` | immediate | 使用者 | `InstallFinalize` 之後 | `user-install`（`InstallLayoutOrTip`，兩個架構各一次） |
 | `RemoveTipLayout` | immediate | 使用者 | 反安裝的 `InstallFinalize` 之後 | `user-uninstall [KEEPUSERSETTINGS]` |
 
 `machine-*` 必須是 SYSTEM：CTF 機碼在 HKLM。`user-*` 必須是使用者：`InstallLayoutOrTip`
 只寫呼叫者的 HKCU，在 SYSTEM 執行會加到 SYSTEM 的語言清單。
 
-`RegisterTip` 用 `Return="check"`：註冊失敗就讓安裝失敗並回滾，不留半套 TIP。
-`UnregisterTip` 與兩個 `user-*` 用 `Return="ignore"`：反安裝不能被已隔離的 DLL 或
-使用者的語言設定卡住。
+`RegisterTip` 與 `RegisterTipX86` 用 `Return="check"`：註冊失敗就讓安裝失敗並回滾，
+不留半套 TIP。`UnregisterTip*` 與兩個 `user-*` 用 `Return="ignore"`：反安裝不能被
+已隔離的 DLL 或使用者的語言設定卡住。
+
+### 兩個架構
+
+TSF 依宿主行程的位元數載入 DLL，所以 32 位元程式需要另一份：`jc-tsf-x86.dll`
+（`i686-pc-windows-msvc`）註冊在 `Wow6432Node`，用另一個 CLSID。`jc-tip-register`
+是 x64 程式，載入不了 32 位元 DLL，所以 `machine-register --arch x86` 由它自己用
+`KEY_WOW64_32KEY` 寫機碼再呼叫 TSF 介面。`installer/jc-ime.wxs` 的
+`TsfDllX86` 元件標了 `Win64="no"`。完整理由、GUID 對照與反安裝流程見
+[`../docs/port/x86-tip.md`](../docs/port/x86-tip.md)。
 
 開始功能表有兩個捷徑：`jc 注音設定`（`jc-tip-register settings`）與
 `jc 注音授權`（`jc-tip-register legal`）。後者用記事本開啟
@@ -119,6 +137,7 @@ Linux 只能做一部分：
 installer/validate-linux.sh /path/to/payload
 uv run --no-project installer/check-payload.py /path/to/payload
 cd installer/jc-tip-register && cargo check --target x86_64-pc-windows-gnu --all-targets
+cargo check --target i686-pc-windows-msvc -p jc-tsf
 ```
 
 `validate-linux.sh` 會把 `Directory/@Name` 換成 `.` 後交給 WiX 編譯。這是 WiX v5

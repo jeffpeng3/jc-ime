@@ -119,6 +119,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # 32 位元的 TSF DLL：build.ps1 會另外建 i686-pc-windows-msvc 的 jc-tsf，
+      # 讓舊版 Office 等 32 位元程式也載入得到輸入法。
+      - name: 加入 i686 target（32 位元 TSF DLL）
+        shell: pwsh
+        run: rustup target add i686-pc-windows-msvc
+
       # build.ps1 需要資料根目錄。資料不進 git，因此由 release workflow 下載
       # 預先打包的資料包；repo variable 或 workflow_dispatch 輸入提供 URL。
       - name: 下載並展開資料包
@@ -458,7 +464,7 @@ jobs:
               printf '企業的 AppLocker／WDAC 白名單也會擋下未簽章 MSI。\n\n'
             fi
             printf '## 已知限制\n\n'
-            printf -- '- Windows TIP 只有 x64；32 位元程式不會載入這個輸入法。\n'
+            printf -- '- Windows TIP 有 x64 與 x86 兩份；32 位元程式（例如舊版 Office）要在該程式切到「jc 注音（32 位元）」。\n'
             printf -- '- MSI 是 per-machine 安裝，需要系統管理員；只會把輸入法加進執行安裝的帳號。\n'
             printf -- '- 注音神經選字模型（Funmula `zh-select`）依授權不隨附，需另外下載。\n'
             printf -- '- Linux 版目前只有引擎、CLI 與設定程式，沒有桌面輸入法整合。\n'

@@ -869,7 +869,13 @@ fn create_message_window(control: *const Control) -> Result<HWND> {
             Some(windows::Win32::Foundation::HINSTANCE(instance.0)),
             None,
         )?;
+        // 32 位元 Windows 的 `SetWindowLongPtrW` 就是 `SetWindowLongW`，第三個
+        // 參數是 `i32`；64 位元才是 `isize`。指標只當不透明值傳遞，不是真的截斷
+        // （32 位元的指標本來就是 32 位元）。
+        #[cfg(target_pointer_width = "64")]
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, control as isize);
+        #[cfg(target_pointer_width = "32")]
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, control as i32);
         Ok(hwnd)
     }
 }

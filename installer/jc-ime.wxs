@@ -13,16 +13,22 @@
 
   安裝順序（InstallExecuteSequence）：
     InstallFiles
-      → RegisterTip（deferred、SYSTEM）      呼叫 jc-tsf.dll 的 DllRegisterServer
+      → RegisterTip（deferred、SYSTEM）         呼叫 jc-tsf.dll 的 DllRegisterServer（x64）
+      → RegisterTipX86（deferred、SYSTEM）      註冊 jc-tsf-x86.dll（x86，跨架構由安裝器寫機碼）
     InstallFinalize
-      → InstallTipLayout（immediate、使用者）  InstallLayoutOrTip(ILOT_INSTALL)
+      → InstallTipLayout（immediate、使用者）   InstallLayoutOrTip(ILOT_INSTALL)，兩個架構各一次
 
   反安裝順序：
-    UnregisterTip（deferred、SYSTEM）           DllUnregisterServer，失敗時內建清理
+    UnregisterTip（deferred、SYSTEM）           移除 x64 的 CLSID 與 profile
+    UnregisterTipX86（deferred、SYSTEM）        移除 x86 的 CLSID 與 profile
     RemoveFiles
     InstallFinalize
-      → RemoveTipLayout（immediate、使用者）    InstallLayoutOrTip(ILOT_UNINSTALL)
-                                                並刪除 %LOCALAPPDATA%\jc-ime
+      → RemoveTipLayout（immediate、使用者）     InstallLayoutOrTip(ILOT_UNINSTALL)，兩個架構
+                                                 並刪除 %LOCALAPPDATA%\jc-ime
+
+  為什麼有兩份 DLL：TSF 依宿主行程的位元數載入 TIP，32 位元程式（舊版 Office、
+  部分工具）只找得到 32 位元的 COM 註冊（`Wow6432Node`）。兩份用不同 CLSID，
+  各自註冊，詳見 docs/port/x86-tip.md。
 
   檔案與機碼都由 MSI 或上述自訂動作建立／移除；沒有 Permanent 元件。
 -->
@@ -70,14 +76,20 @@
     </Feature>
 
     <InstallExecuteSequence>
-      <!-- 安裝／修復：先排 rollback，再註冊。 -->
+      <!-- 安裝／修復：先排 rollback，再註冊。x64 先、x86 後（順序不影響結果，
+           但日誌與 ACL 的第一次設定都從 x64 開始比較好讀）。 -->
       <Custom Action="RollbackRegisterTip" Before="RegisterTip" Condition="NOT REMOVE" />
       <Custom Action="RegisterTip" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="RollbackRegisterTipX86" Before="RegisterTipX86" Condition="NOT REMOVE" />
+      <Custom Action="RegisterTipX86" After="RegisterTip" Condition="NOT REMOVE" />
 
-      <!-- 反安裝：先移除 TIP，再刪檔案；順序反了會留下無法移除的機碼。 -->
+      <!-- 反安裝：先移除兩個 TIP，再刪檔案；順序反了會留下無法移除的機碼。 -->
       <Custom Action="RollbackUnregisterTip" Before="UnregisterTip"
               Condition='REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' />
-      <Custom Action="UnregisterTip" Before="RemoveFiles" Condition='REMOVE~="ALL"' />
+      <Custom Action="UnregisterTip" Before="UnregisterTipX86" Condition='REMOVE~="ALL"' />
+      <Custom Action="RollbackUnregisterTipX86" Before="UnregisterTipX86"
+              Condition='REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' />
+      <Custom Action="UnregisterTipX86" Before="RemoveFiles" Condition='REMOVE~="ALL"' />
 
       <!-- 使用者語言清單：必須在 SYSTEM 的註冊完成之後、且以使用者身分執行。 -->
       <Custom Action="InstallTipLayout" After="InstallFinalize" Condition="NOT REMOVE" />
@@ -121,12 +133,23 @@
   <!--
     程式檔案。jc-tip-register.exe 必須留到 RemoveFiles 之後才刪，因為反安裝的
     UnregisterTip 會呼叫它。
+
+    兩份 TSF DLL：`jc-tsf.dll` 是 x64，`jc-tsf-x86.dll` 是 i686。檔名分開是因為
+    兩份都放在同一個目錄；x86 的 Component 標 `Win64="no"`，機碼與檔案才不會被
+    當成 64 位元元件處理。
   -->
   <Fragment>
     <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
       <Component Id="TsfDll" Guid="{BA82E245-0AC8-4CE0-8350-48A1AA127BDE}">
         <File Id="FileTsfDll"
               Source="$(var.PayloadDir)/jc-tsf.dll"
+              KeyPath="yes"
+              Vital="yes" />
+      </Component>
+
+      <Component Id="TsfDllX86" Guid="{1B4E9C60-2A7D-4E51-9C3F-7A6D5B8E2140}" Win64="no">
+        <File Id="FileTsfDllX86"
+              Source="$(var.PayloadDir)/jc-tsf-x86.dll"
               KeyPath="yes"
               Vital="yes" />
       </Component>
@@ -443,11 +466,22 @@
 
     machine-* 一定要 Impersonate="no"：CTF 機碼在 HKLM，需要 SYSTEM 權限。
     user-* 一定要 Impersonate="yes"：InstallLayoutOrTip 寫的是呼叫者的 HKCU。
+
+    x86 的兩個動作都明確指定架構（`machine-register` 的第二個參數）：安裝器是
+    x64，載入不了 32 位元 DLL，指定機碼檢視（`Wow6432Node`）比自動偵測更不容易
+    出錯；指定值與檔案不符時 jc-tip-register 會直接失敗。
   -->
   <Fragment>
     <CustomAction Id="RegisterTip"
                   FileRef="FileTipRegister"
                   ExeCommand="machine-register &quot;[#FileTsfDll]&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <CustomAction Id="RegisterTipX86"
+                  FileRef="FileTipRegister"
+                  ExeCommand="machine-register --arch x86 &quot;[#FileTsfDllX86]&quot;"
                   Execute="deferred"
                   Impersonate="no"
                   Return="check" />
@@ -459,6 +493,13 @@
                   Impersonate="no"
                   Return="ignore" />
 
+    <CustomAction Id="RollbackRegisterTipX86"
+                  FileRef="FileTipRegister"
+                  ExeCommand="machine-unregister --arch x86 &quot;[#FileTsfDllX86]&quot;"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+
     <CustomAction Id="UnregisterTip"
                   FileRef="FileTipRegister"
                   ExeCommand="machine-unregister &quot;[#FileTsfDll]&quot;"
@@ -466,9 +507,23 @@
                   Impersonate="no"
                   Return="ignore" />
 
+    <CustomAction Id="UnregisterTipX86"
+                  FileRef="FileTipRegister"
+                  ExeCommand="machine-unregister --arch x86 &quot;[#FileTsfDllX86]&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
     <CustomAction Id="RollbackUnregisterTip"
                   FileRef="FileTipRegister"
                   ExeCommand="machine-register &quot;[#FileTsfDll]&quot;"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <CustomAction Id="RollbackUnregisterTipX86"
+                  FileRef="FileTipRegister"
+                  ExeCommand="machine-register --arch x86 &quot;[#FileTsfDllX86]&quot;"
                   Execute="rollback"
                   Impersonate="no"
                   Return="ignore" />
