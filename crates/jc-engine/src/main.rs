@@ -4,8 +4,13 @@
 //! 用法：
 //!
 //! ```text
-//! jc-engine --data <dir> [--mode <zh|ja|mixed|en>] [--socket <path>] [--max-frame <bytes>]
+//! jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>]
+//!           [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]
 //! ```
+//!
+//! 啟動時讀 `settings.json`（`--settings` 或資料根目錄），轉成
+//! `SessionConfig`；CLI 參數優先於檔案。設定檔缺漏或壞掉只記警告，不讓引擎
+//! 啟動失敗。`--print-settings` 印出生效後的設定後直接結束。
 //!
 //! `--allow-empty-data` 跳過資料載入，只用空 session，供協定測試與除錯；
 //! 正式啟動仍要求 `--data` 或 `JC_DATA`。
@@ -19,7 +24,9 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
+use jc_core::session::{Session, SessionConfig};
 use jc_core::Mode;
+use jc_engine::config;
 use jc_engine::loader::load_engine_data;
 use jc_engine::{engine_label, serve, Engine};
 use jc_proto::{DEFAULT_MAX_FRAME, PROTOCOL_VERSION};
@@ -39,7 +46,14 @@ struct Options {
     mode: Transport,
     max_frame: usize,
     data: Option<PathBuf>,
-    input: Mode,
+    /// `--settings` 指定的設定檔；沒給時用資料根目錄的 `settings.json`。
+    settings: Option<PathBuf>,
+    /// `--mode`；`None` 表示由設定檔決定。
+    input: Option<Mode>,
+    /// `--neural`；`None` 表示由設定檔的 `selection` 決定。
+    neural: Option<bool>,
+    /// 只印出生效後的設定後結束。
+    print_settings: bool,
     /// 跳過資料載入，只用空 session；僅供測試與協定除錯。
     allow_empty_data: bool,
 }
@@ -84,11 +98,37 @@ fn main() {
 
 fn run(options: Options) -> anyhow::Result<()> {
     log::debug!("啟動 {}（協定 {}）", engine_label(), PROTOCOL_VERSION);
+    let goos = config::platform_goos();
+    let data_dir = data_dir_from_env(options.data.clone());
+    let loaded = config::load(options.settings.as_deref(), data_dir.as_deref(), goos);
+    for warning in &loaded.warnings {
+        log::warn!("設定：{warning}");
+    }
+    let overrides = config::Overrides {
+        mode: options.input,
+        neural: options.neural,
+    };
+    let effective = config::effective(&loaded.settings, &overrides, goos);
+    if options.print_settings {
+        println!("{}", loaded.print_json(&effective)?);
+        return Ok(());
+    }
+    log::info!(
+        "設定：模式 {}、選字 {}、候選 {}、混打 {}、Esc 清除 {}、空白開候選 {}、前文脈 {}",
+        config::mode_str(effective.mode),
+        effective.selection,
+        effective.max_candidates,
+        effective.mixed_input,
+        effective.esc_clear,
+        effective.space_selects,
+        effective.document_context
+    );
     let mut engine = if options.allow_empty_data {
         log::info!("--allow-empty-data：不載入資料，使用空 session（僅測試用）");
-        Engine::new()
+        let base = SessionConfig::default();
+        Engine::with_session(Session::new(config::session_config(base, &effective)))
     } else {
-        let dir = resolve_data_dir(options.data)?;
+        let dir = data_dir.ok_or_else(missing_data_dir)?;
         log::debug!("資料根目錄：{}", dir.display());
         let data =
             load_engine_data(&dir).with_context(|| format!("載入資料失敗：{}", dir.display()))?;
@@ -101,7 +141,8 @@ fn run(options: Options) -> anyhow::Result<()> {
                 ""
             }
         );
-        Engine::with_data(&data, options.input)
+        let base = data.session_config(effective.mode);
+        Engine::with_session(Session::new(config::session_config(base, &effective)))
     };
     match options.mode {
         Transport::Stdio => {
@@ -187,7 +228,10 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut socket: Option<PathBuf> = None;
     let mut max_frame = DEFAULT_MAX_FRAME;
     let mut data: Option<PathBuf> = None;
-    let mut input = Mode::Zh;
+    let mut settings: Option<PathBuf> = None;
+    let mut input: Option<Mode> = None;
+    let mut neural: Option<bool> = None;
+    let mut print_settings = false;
     let mut allow_empty_data = false;
     let mut index = 0;
 
@@ -204,10 +248,23 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 let value = value_of(args, &mut index, "--data")?;
                 data = Some(PathBuf::from(value));
             }
+            "--settings" => {
+                let value = value_of(args, &mut index, "--settings")?;
+                settings = Some(PathBuf::from(value));
+            }
+            "--print-settings" => print_settings = true,
             "--allow-empty-data" => allow_empty_data = true,
             "--mode" => {
                 let value = value_of(args, &mut index, "--mode")?;
-                input = parse_mode(&value)?;
+                input = Some(parse_mode(&value)?);
+            }
+            "--neural" => {
+                let value = value_of(args, &mut index, "--neural")?;
+                neural = Some(match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => return Err(format!("--neural 只接受 on 或 off，收到 {other}")),
+                });
             }
             "--max-frame" => {
                 let value = value_of(args, &mut index, "--max-frame")?;
@@ -231,7 +288,10 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         mode,
         max_frame,
         data,
+        settings,
         input,
+        neural,
+        print_settings,
         allow_empty_data,
     }))
 }
@@ -247,17 +307,22 @@ fn parse_mode(value: &str) -> Result<Mode, String> {
     }
 }
 
-/// `--data` 未指定時退回 `JC_DATA`；兩者都沒有就拒絕啟動。
-fn resolve_data_dir(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+/// `--data` 未指定時退回 `JC_DATA`；兩者都沒有回傳 `None`。
+fn data_dir_from_env(explicit: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(dir) = explicit {
-        return Ok(dir);
+        return Some(dir);
     }
-    if let Some(value) = std::env::var_os("JC_DATA") {
-        if !value.is_empty() {
-            return Ok(PathBuf::from(value));
-        }
+    let value = std::env::var_os("JC_DATA")?;
+    if value.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(value))
     }
-    bail!("沒有指定 --data，且 JC_DATA 未設定；請用 --data <dir> 指向資料根目錄")
+}
+
+/// 沒有資料根目錄時的啟動錯誤。
+fn missing_data_dir() -> anyhow::Error {
+    anyhow::anyhow!("沒有指定 --data，且 JC_DATA 未設定；請用 --data <dir> 指向資料根目錄")
 }
 
 fn value_of(args: &[String], index: &mut usize, flag: &str) -> Result<String, String> {
@@ -281,11 +346,15 @@ const SOCKET_HELP: &str = "  --socket <path>     這個平台不支援，目前�
 fn print_usage() {
     println!(
         "jc-engine {}（協定 {}）\n\n\
-         用法：\n  jc-engine --data <dir> [--mode <zh|ja|mixed|en>] [--socket <path>] [--max-frame <bytes>]\n\n\
+         用法：\n  jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>]\n\
+         \x20           [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]\n\n\
          選項：\n\
          \x20 --data <dir>        資料根目錄；未指定時讀 JC_DATA\n\
+         \x20 --settings <path>   設定檔；未指定時讀資料根目錄的 settings.json\n\
+         \x20 --print-settings    印出生效後的設定（JSON）後結束\n\
          \x20 --allow-empty-data  不載入資料，只用空 session（測試／除錯用）\n\
-         \x20 --mode <mode>       輸入模式：zh（預設）、ja、mixed、en\n\
+         \x20 --mode <mode>       輸入模式：zh、ja、mixed、en；預設由設定檔決定\n\
+         \x20 --neural <on|off>   日文神經轉換；預設由設定檔的 selection 決定\n\
         {SOCKET_HELP}\
          \x20 --max-frame <bytes> 單一訊框上限，預設 {DEFAULT_MAX_FRAME}\n\
          \x20 -h, --help          顯示說明\n\
@@ -297,7 +366,7 @@ fn print_usage() {
 
 fn print_usage_to_stderr() {
     eprintln!(
-        "用法：jc-engine --data <dir> [--mode <zh|ja|mixed|en>] [--socket <path>] [--max-frame <bytes>]"
+        "用法：jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>] [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]"
     );
 }
 
@@ -318,7 +387,10 @@ mod tests {
         assert!(matches!(options.mode, Transport::Stdio));
         assert_eq!(options.max_frame, 1 << 20);
         assert!(options.data.is_none(), "資料目錄由 JC_DATA 或 --data 決定");
-        assert_eq!(options.input, Mode::Zh);
+        assert!(options.settings.is_none(), "設定檔由資料根目錄決定");
+        assert_eq!(options.input, None, "模式預設由設定檔決定");
+        assert_eq!(options.neural, None, "神經轉換預設由設定檔決定");
+        assert!(!options.print_settings);
         assert!(!options.allow_empty_data, "預設不可跳過資料載入");
     }
 
@@ -336,7 +408,34 @@ mod tests {
             panic!("應該解析成功");
         };
         assert_eq!(options.data, Some(PathBuf::from("/data/root")));
-        assert_eq!(options.input, Mode::Ja);
+        assert_eq!(options.input, Some(Mode::Ja));
+    }
+
+    #[test]
+    fn settings_neural_and_print_are_parsed() {
+        let Ok(Parsed::Run(options)) = parse(&[
+            "--settings",
+            "/cfg/settings.json",
+            "--neural",
+            "off",
+            "--print-settings",
+            "--mode",
+            "mixed",
+        ]) else {
+            panic!("應該解析成功");
+        };
+        assert_eq!(options.settings, Some(PathBuf::from("/cfg/settings.json")));
+        assert_eq!(options.neural, Some(false));
+        assert!(options.print_settings);
+        assert_eq!(options.input, Some(Mode::Mixed));
+    }
+
+    #[test]
+    fn bad_neural_value_fails() {
+        let Err(err) = parse(&["--neural", "maybe"]) else {
+            panic!("不認得的值應該失敗");
+        };
+        assert!(err.contains("on 或 off"), "錯誤應列出可用值：{err}");
     }
 
     #[test]
@@ -352,7 +451,7 @@ mod tests {
 
     #[test]
     fn explicit_data_dir_wins_over_environment() {
-        let dir = resolve_data_dir(Some(PathBuf::from("/explicit"))).unwrap();
+        let dir = data_dir_from_env(Some(PathBuf::from("/explicit"))).unwrap();
         assert_eq!(dir, PathBuf::from("/explicit"));
     }
 
@@ -375,6 +474,7 @@ mod tests {
         assert!(parse(&["--max-frame"]).is_err());
         assert!(parse(&["--nope"]).is_err());
         assert!(parse(&["--socket"]).is_err());
+        assert!(parse(&["--settings"]).is_err());
     }
 
     /// 既不是 unix 也不是 Windows 的平台的 `--socket` 必須回傳明確錯誤，不能 panic。

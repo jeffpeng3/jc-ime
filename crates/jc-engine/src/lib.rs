@@ -10,6 +10,7 @@ use std::io::{Read, Write};
 use jc_core::session::{Session, SessionConfig};
 use jc_core::{KeyCode, Mode, Snapshot};
 
+pub mod config;
 pub mod loader;
 use jc_proto::message::{read_message, ProtoError};
 use jc_proto::{write_message, ErrorCode, Request, Response, PROTOCOL_VERSION};
