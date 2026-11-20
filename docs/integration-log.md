@@ -1245,3 +1245,13 @@
 ### 題庫（本機）
 
 `zh-golden` **45/45**、`ja modern-500 --neural quality` **93.6%**、`--neural off` **86.0%**、`fuzzy` **44.5%**、`mixed` **6/6**。
+
+## 2026-11-20 13:30 最後一次 gate（candidate-paging 修好後）
+
+- `candidate-paging` `40426bb` → merge `bc3f91a`：`page_size` 從協定移除、改成核心公開常數（14 檔、+71／−199），
+  proto fixture 與 `test_selection_key_columns` 都回到綠。
+- `RUST_FONTCONFIG_DLOPEN=1 cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、1201 passed、0 failed）。
+- `RUST_FONTCONFIG_DLOPEN=1 cargo clippy --workspace --all-targets -- -D warnings`：exit 0。
+- `cargo fmt --all -- --check`：exit 0。
+- 題庫：`zh-golden` **45/45**、`ja modern-500 --neural quality` **93.6%**、`--neural off` **86.0%**、`fuzzy` **44.5%**、`mixed` **6/6**。
+- `jc-settings-ui` 測試本機缺 `libxcb`／`libxkbcommon`，依指示只由 CI 驗。
