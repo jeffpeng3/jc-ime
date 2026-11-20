@@ -6,6 +6,8 @@
 //! - [`Frontend`] 把使用者打的音節序列展開成音節格，帶成本的假設由其他前端
 //!   （容錯、部分注音、語音）補上。
 
+use std::sync::Arc;
+
 use crate::key::{Key, KeyCode};
 use crate::reading::Unit;
 use crate::zh::keyboard::Keyboard;
@@ -84,7 +86,10 @@ pub enum ZhInputEvent {
 ///
 /// 參數是按下前的暫存注音與加上聲調後的音節；回傳 `true` 表示擋下，注音
 /// 留在暫存不動。預設是 [`allow_all_tones`]，行為與沒有閘門時相同。
-pub type ToneGate = fn(pending: &str, syllable: &Syllable) -> bool;
+///
+/// 用 [`Arc`] 是為了讓工作階段把「讀音有沒有字」的詞典查詢包進閘門；閘門
+/// 本身不可變，需要的重試狀態由實作自行處理。
+pub type ToneGate = Arc<dyn Fn(&str, &Syllable) -> bool + Send + Sync>;
 
 /// 預設的聲調閘門：全部放行。
 pub fn allow_all_tones(_pending: &str, _syllable: &Syllable) -> bool {
@@ -95,7 +100,7 @@ pub fn allow_all_tones(_pending: &str, _syllable: &Syllable) -> bool {
 ///
 /// 吃的是語義按鍵（[`Key`]），不是平台鍵碼。注音鍵由 [`Keyboard`] 對照，
 /// 標點與其他鍵原樣交回呼叫端。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ZhInput {
     keyboard: Keyboard,
     composer: Composer,
@@ -103,6 +108,19 @@ pub struct ZhInput {
     cursor: usize,
     tone_blocked: bool,
     tone_gate: ToneGate,
+}
+
+/// 只列出組字狀態；聲調閘門是策略，不印出內容。
+impl std::fmt::Debug for ZhInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZhInput")
+            .field("keyboard", &self.keyboard)
+            .field("composer", &self.composer)
+            .field("syllables", &self.syllables)
+            .field("cursor", &self.cursor)
+            .field("tone_blocked", &self.tone_blocked)
+            .finish()
+    }
 }
 
 /// 只比較組字狀態；聲調閘門是策略，不參與相等判斷。
@@ -133,7 +151,7 @@ impl ZhInput {
             syllables: Vec::new(),
             cursor: 0,
             tone_blocked: false,
-            tone_gate: allow_all_tones,
+            tone_gate: Arc::new(allow_all_tones),
         }
     }
 
@@ -203,8 +221,11 @@ impl ZhInput {
     }
 
     /// 安裝聲調閘門；傳 [`allow_all_tones`] 可以恢復全部放行。
-    pub fn set_tone_gate(&mut self, gate: ToneGate) {
-        self.tone_gate = gate;
+    pub fn set_tone_gate<G>(&mut self, gate: G)
+    where
+        G: Fn(&str, &Syllable) -> bool + Send + Sync + 'static,
+    {
+        self.tone_gate = Arc::new(gate);
     }
 
     /// 清空狀態。

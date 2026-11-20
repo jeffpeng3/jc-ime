@@ -10,11 +10,11 @@
 //!   按鍵後失效，與上游的 `segmentManual`／`segmentRev` 相同。
 //! - 片段鎖定直接寫進解碼器的 [`crate::decode::Locks`]，因此會影響後續轉換。
 //!
-//! 游標只有「組字結尾」一種位置：`ZhInput` 與 `RomajiInput` 目前沒有組字中
-//! 游標，這一層不假造可移動的游標。
+//! 游標以音節格表示：`ZhInput` 的暫存與已完成音節各算一格，顯示時沿目前
+//! 解碼路徑換成 rune 位移。任意位置插入與刪除仍未接。
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use super::*;
 use crate::lattice::Lexicon;
@@ -38,6 +38,47 @@ pub fn tone_mark_keys(mixed_input: bool, standard_layout: bool) -> bool {
 }
 
 impl Session {
+    /// 依「打錯注音時提示」安裝聲調閘門（上游 `refuseTone`）。
+    ///
+    /// 只有開啟設定、注音模式、沒有開聲調選填時才擋。擋下的條件是：加聲調
+    /// 後的讀音在詞典裡完全沒有字、也不是任何詞的開頭，模糊音近音也沒有字；
+    /// 單一注音符號的讀音不擋（注音文）。同一處、同一讀音、同一聲調連按第二
+    /// 次視為使用者故意打注音文，放行一次。
+    pub(super) fn install_tone_gate(&mut self) {
+        if !self.config.zhuyin_error_hint {
+            self.zh.set_tone_gate(crate::zh::input::allow_all_tones);
+            return;
+        }
+        let lexicon = self.lexicon.clone();
+        let fuzzy = self.config.fuzzy_pairs.clone();
+        let toneless = self.config.toneless;
+        let retry = Arc::new(Mutex::new(None::<(String, String)>));
+        self.zh.set_tone_gate(move |pending, done| {
+            if toneless || done.untoned() || single_symbol(pending) {
+                return false;
+            }
+            let key = (pending.to_string(), done.as_str().to_string());
+            {
+                let mut last = lock(&retry);
+                if last.as_ref() == Some(&key) {
+                    *last = None;
+                    return false;
+                }
+            }
+            let reachable = reachable(&lexicon, done.as_str())
+                || fuzzy
+                    .iter()
+                    .flat_map(|&(left, right)| {
+                        fuzzy_spellings(done.as_str(), left, right).into_iter()
+                    })
+                    .any(|reading| reachable(&lexicon, &reading));
+            if !reachable {
+                *lock(&retry) = Some(key);
+            }
+            !reachable
+        });
+    }
+
     /// 目前片段的副本。
     ///
     /// 呼叫端修改回傳值不影響 session。手動編輯過的片段會原樣回傳，直到下一次
@@ -50,9 +91,74 @@ impl Session {
 
     /// 游標在目前組字字串中的 rune 位置。
     ///
-    /// 目前只支援組字結尾，所以等於組字字串的 rune 數。
+    /// 組字游標以音節格計算；顯示字串是轉換後的詞，因此這裡沿著目前路徑
+    /// 把格換成 rune 位移。沒有路徑或不是注音模式時游標在結尾。
     pub fn cursor(&self) -> usize {
-        self.base_with_highlight().chars().count()
+        let text = self.base_with_highlight();
+        rune_offset(&text, self.cursor_byte())
+    }
+
+    /// 組字游標在顯示字串中的 UTF-8 位元組位置。
+    pub(super) fn cursor_byte(&self) -> usize {
+        let text = self.base_with_highlight();
+        if self.config.mode != Mode::Zh {
+            return text.len();
+        }
+        let cells = self.zh.cells();
+        let at = self.zh.cursor().min(cells);
+        if at >= cells {
+            return text.len();
+        }
+        let base = self.displayed_base();
+        let Some(mut byte) = self.cell_byte(base, at) else {
+            return text.len();
+        };
+        // 字面按鍵插在 `base` 中間；游標在插入點之後就加上字面長度。
+        if !self.literal.is_empty() {
+            let mut at_literal = self.literal_offset.min(base.len());
+            while at_literal > 0 && !base.is_char_boundary(at_literal) {
+                at_literal -= 1;
+            }
+            if at_literal <= byte {
+                byte += self.literal.len();
+            }
+        }
+        byte.min(text.len())
+    }
+
+    /// 把音節格換成 `base` 內的位元組位置。
+    ///
+    /// 只在目前路徑對得上顯示字串時換算；對不上（例如接受的補全）回傳
+    /// `None`，由呼叫端把游標放在結尾。
+    fn cell_byte(&self, base: &str, cell: usize) -> Option<usize> {
+        let path = self
+            .last_hypotheses
+            .iter()
+            .find(|hypothesis| hypothesis.text == base)
+            .or_else(|| {
+                (base == self.base)
+                    .then(|| self.last_hypotheses.first())
+                    .flatten()
+            })?
+            .segments
+            .as_slice();
+        let mut byte = 0;
+        for segment in path {
+            if cell <= segment.start {
+                return Some(byte);
+            }
+            if cell < segment.end {
+                let offset = cell - segment.start;
+                return Some(byte + byte_at_rune(&segment.word, offset));
+            }
+            byte += segment.word.len();
+        }
+        Some(byte.min(base.len()))
+    }
+
+    /// 最近一次按鍵是否因「沒有字」而擋下聲調。
+    pub fn tone_blocked(&self) -> bool {
+        self.zh.tone_blocked()
     }
 
     /// 游標所在片段的索引；沒有片段時回傳 `None`。
@@ -483,6 +589,50 @@ fn byte_at_rune(text: &str, pos: usize) -> usize {
         .unwrap_or(text.len())
 }
 
+/// 取得互斥鎖；被毒化時仍取回內容，聲調判斷不需要 panic。
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// 讀音在詞典裡有字，或是某個詞的開頭。
+fn reachable<L: Lexicon + ?Sized>(lexicon: &L, reading: &str) -> bool {
+    !lexicon.lookup(reading).is_empty() || !lexicon.prefix(reading).is_empty()
+}
+
+/// 暫存注音只有一個符號（聲母、介音、韻母其中一類）。
+fn single_symbol(pending: &str) -> bool {
+    let mut seen = [false; 3];
+    for ch in pending.chars() {
+        match class_of(ch) {
+            Class::Initial => seen[0] = true,
+            Class::Medial => seen[1] = true,
+            Class::Final => seen[2] = true,
+            _ => {}
+        }
+    }
+    seen.iter().filter(|present| **present).count() == 1
+}
+
+/// 一組模糊音配對的所有換法；沒有出現的配對回傳空清單。
+fn fuzzy_spellings(reading: &str, left: char, right: char) -> Vec<String> {
+    let mut out = Vec::new();
+    for (from, to) in [(left, right), (right, left)] {
+        if reading.contains(from) {
+            let swapped: String = reading
+                .chars()
+                .map(|ch| if ch == from { to } else { ch })
+                .collect();
+            if swapped != reading {
+                out.push(swapped);
+            }
+        }
+    }
+    out
+}
+
 /// 只比注音符號：聲調與音節邊界固定，相同讀音不算。
 ///
 /// 對照上游 `oneSymbolApart`。
@@ -564,6 +714,7 @@ mod tests {
             ("安", "ㄢ"),
             ("西安", "ㄒㄧ ㄢ"),
             ("仙", "ㄒㄧㄢ"),
+            ("書", "ㄕㄨ"),
             ("麻婆豆腐", "ㄇㄚˊ ㄆㄛˊ ㄉㄡˋ ㄈㄨˇ"),
         ] {
             lexicon.push(LexEntry::new(surface, reading, 0, 0));
@@ -836,5 +987,206 @@ mod tests {
         assert!(!one_symbol_apart(&syl("ㄓ"), &syl("ㄓ")));
         assert!(!one_symbol_apart(&syl("ㄓ"), &syl("ㄗˇ")));
         assert!(!one_symbol_apart(&syl("ㄓ"), &syl("ㄗㄨㄚ")));
+    }
+    fn error_hint_session() -> Session {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.zhuyin_error_hint = true;
+        Session::new(config)
+    }
+
+    /// 翻頁鍵在候選窗還沒開時先開窗並進入選取模式。
+    #[test]
+    fn test_page_keys_open_candidates_before_shown() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        assert!(!s.snapshot().navigating);
+        let snap = s.press(Key::new(KeyCode::PageDown, None, false));
+        assert!(!snap.candidates.is_empty(), "PageDown 開候選窗");
+        assert!(snap.navigating, "翻頁鍵進入選取模式");
+        assert_eq!(snap.highlighted, 0, "第一頁第一項");
+
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        let snap = s.press(Key::new(KeyCode::Up, None, false));
+        assert!(!snap.candidates.is_empty(), "上鍵也開候選窗");
+        assert!(snap.navigating);
+        assert_eq!(snap.highlighted, 0, "剛開窗不移動反白");
+    }
+
+    /// 對照 `moveShownCandidateCursor`：只是顯示候選時 Home／End 移動組字游標。
+    #[test]
+    fn test_home_end_move_composition_cursor_when_shown() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        type_syllable(&mut s, "ㄒㄧㄤˇ");
+        type_syllable(&mut s, "ㄔ");
+        let shown = s.press(Key::new(KeyCode::Space, None, false));
+        assert!(!shown.navigating, "空白只顯示候選");
+        assert_eq!(shown.preedit, "我想吃");
+        assert_eq!(shown.cursor_rune, 3, "游標本來在結尾");
+
+        let home = s.press(Key::new(KeyCode::Home, None, false));
+        assert_eq!(home.cursor_rune, 0, "Home 移到組字開頭");
+        assert_eq!(home.cursor_utf16, 0);
+        assert_eq!(home.preedit, "我想吃", "移動游標不改組字");
+        assert!(!home.navigating, "移動游標不進入選取模式");
+        assert_eq!(home.highlighted, 0);
+
+        let end = s.press(Key::new(KeyCode::End, None, false));
+        assert_eq!(end.cursor_rune, 3, "End 回到結尾");
+        assert_eq!(end.cursor_utf16, 3);
+        assert_eq!(end.preedit, "我想吃");
+    }
+
+    /// 只是顯示候選時左右鍵移動組字游標，不換候選、不進入選取模式。
+    #[test]
+    fn test_arrows_move_composition_cursor_when_shown() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        type_syllable(&mut s, "ㄒㄧㄤˇ");
+        type_syllable(&mut s, "ㄔ");
+        let shown = s.press(Key::new(KeyCode::Space, None, false));
+        assert!(!shown.navigating);
+        assert_eq!(shown.cursor_rune, 3);
+
+        let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(left.cursor_rune, 2, "← 移動組字游標");
+        assert!(!left.navigating, "只是顯示時左右鍵不進入選取模式");
+        assert!(!left.candidates.is_empty(), "候選窗保留");
+        assert_eq!(left.highlighted, 0, "換游標不換反白");
+
+        let back = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(back.cursor_rune, 1);
+        let forward = s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(forward.cursor_rune, 2);
+        assert_eq!(forward.preedit, "我想吃");
+    }
+
+    /// 多音節詞的游標也要落在顯示字串的正確 rune 邊界。
+    #[test]
+    fn test_home_end_cursor_inside_multi_syllable_word() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄈㄥ");
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        assert_eq!(s.snapshot().preedit, "風景");
+        s.press(Key::new(KeyCode::Space, None, false));
+        let home = s.press(Key::new(KeyCode::Home, None, false));
+        assert_eq!(home.cursor_rune, 0);
+        let end = s.press(Key::new(KeyCode::End, None, false));
+        assert_eq!(end.cursor_rune, 2, "兩個字的詞結尾是 rune 2");
+        assert_eq!(end.cursor_utf16, 2);
+    }
+
+    /// 打錯注音時聲調被擋下：注音留在暫存、不完成音節。
+    #[test]
+    fn test_tone_blocked_keeps_pending_when_reading_has_no_word() {
+        let mut s = error_hint_session();
+        let snap = type_syllable_snapshot(&mut s, "ㄘㄨㄛˋ");
+        assert_eq!(snap.preedit, "ㄘㄨㄛ", "聲調被擋下，注音留在暫存");
+        assert_eq!(snap.cursor_rune, 3);
+        assert!(s.tone_blocked(), "ZhInput 記下擋聲調");
+        assert!(snap.candidates.is_empty());
+    }
+
+    /// 擋下後下一個按鍵清掉旗標，暫存注音照常可退格。
+    #[test]
+    fn test_tone_blocked_flag_clears_on_next_key() {
+        let mut s = error_hint_session();
+        type_syllable(&mut s, "ㄘㄨㄛˋ");
+        assert!(s.tone_blocked());
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert!(!s.tone_blocked(), "下一個按鍵清掉旗標");
+        assert_eq!(snap.preedit, "ㄘㄨ", "退格從暫存尾端退一格");
+    }
+
+    /// 讀音有字時聲調照常收下。
+    #[test]
+    fn test_tone_allowed_when_reading_has_word() {
+        let mut s = error_hint_session();
+        let snap = type_syllable_snapshot(&mut s, "ㄨㄛˇ");
+        assert!(!s.tone_blocked());
+        assert_eq!(snap.preedit, "我");
+    }
+
+    /// 單一注音符號的讀音不擋，照舊讓注音文留下。
+    #[test]
+    fn test_single_symbol_reading_is_not_blocked() {
+        let mut s = error_hint_session();
+        let snap = type_syllable_snapshot(&mut s, "ㄟˋ");
+        assert!(!s.tone_blocked());
+        assert_eq!(snap.preedit, "ㄟˋ");
+    }
+
+    /// 模糊音近音有字時不擋。
+    #[test]
+    fn test_fuzzy_near_reading_is_not_blocked() {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.zhuyin_error_hint = true;
+        config.fuzzy_pairs = vec![('ㄙ', 'ㄕ')];
+        let mut s = Session::new(config);
+        let snap = type_syllable_snapshot(&mut s, "ㄙㄨ");
+        assert!(!s.tone_blocked(), "近音 ㄕㄨ 有字，不擋");
+        assert_eq!(snap.preedit, "書");
+
+        let mut strict = SessionConfig::new(Mode::Zh);
+        strict.zh_lexicon = Some(lexicon());
+        strict.zhuyin_error_hint = true;
+        strict.fuzzy_pairs = Vec::new();
+        let mut s = Session::new(strict);
+        let snap = type_syllable_snapshot(&mut s, "ㄙㄨ");
+        assert!(s.tone_blocked(), "沒有模糊音時同一個讀音被擋");
+        assert_eq!(snap.preedit, "ㄙㄨ");
+    }
+
+    /// 同一處連按同一個聲調第二次視為故意打注音文，放行一次。
+    #[test]
+    fn test_tone_retry_allows_deliberate_bopomofo() {
+        let mut s = error_hint_session();
+        for ch in "hji".chars() {
+            s.press(Key::char(ch, false));
+        }
+        assert_eq!(s.snapshot().preedit, "ㄘㄨㄛ", "hji 是 ㄘㄨㄛ");
+        let blocked = s.press(Key::char('4', false));
+        assert_eq!(blocked.preedit, "ㄘㄨㄛ");
+        assert!(s.tone_blocked());
+        let retried = s.press(Key::char('4', false));
+        assert!(!s.tone_blocked(), "重試放行");
+        assert_eq!(retried.preedit, "ㄘㄨㄛˋ");
+    }
+
+    /// 沒開設定時聲調照舊收下，行為與原本相同。
+    #[test]
+    fn test_tone_gate_is_off_by_default() {
+        let mut s = session();
+        let snap = type_syllable_snapshot(&mut s, "ㄘㄨㄛˋ");
+        assert!(!s.tone_blocked());
+        assert_eq!(snap.preedit, "ㄘㄨㄛˋ");
+    }
+
+    /// 聲調選填不套用擋聲調規則。
+    #[test]
+    fn test_tone_gate_is_off_when_toneless() {
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lexicon());
+        config.zhuyin_error_hint = true;
+        config.toneless = true;
+        let mut s = Session::new(config);
+        let snap = type_syllable_snapshot(&mut s, "ㄘㄨㄛˋ");
+        assert!(!s.tone_blocked());
+        assert_eq!(snap.preedit, "ㄘㄨㄛˋ");
+    }
+
+    fn type_syllable_snapshot(session: &mut Session, reading: &str) -> Snapshot {
+        let keyboard = crate::zh::keyboard::Keyboard::standard();
+        let mut snap = session.snapshot();
+        for syllable in crate::zh::syllable::parse_reading(reading) {
+            let keys = keyboard.keys(&syllable).expect("音節應該有對應按鍵");
+            for ch in keys.chars() {
+                snap = session.press(Key::char(ch, false));
+            }
+        }
+        snap
     }
 }
