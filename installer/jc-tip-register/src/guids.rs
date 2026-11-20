@@ -1,6 +1,7 @@
 //! 固定的 CLSID、profile GUID 與 `InstallLayoutOrTip` 的參數。
 //!
-//! 這些值必須與 `crates/jc-tsf/src/guids.rs` 一致：機碼、TSF profile 資料庫與
+//! 這些值必須與 `crates/jc-tsf/src/guids.rs`、`crates/jc-tsf/src/register.rs` 與
+//! `installer/jc-ime.wxs` 的 `<Class Id="...">` 一致：機碼、TSF profile 資料庫與
 //! 使用者語言清單都以它們為鍵。安裝器不 import `jc-tsf`（DLL 沒有 lib 可用），
 //! 所以這裡放一份常數，並用測試把格式固定住。
 //!
@@ -19,12 +20,12 @@ pub const LANGID_ZH_TW: u16 = 0x0404;
 /// profile 的顯示名稱；與 `jc-tsf` 相同。
 pub const PROFILE_DESCRIPTION: &str = "jc 注音";
 
-/// `InstallLayoutOrTip` 的移除旗標（`input.h` 沒有公開這個常數）。
-pub const ILOT_UNINSTALL: u32 = 0x0000_0001;
-
 /// `InstallLayoutOrTip` 的安裝旗標：文件沒有列，實際值是 0。
 ///
 /// 不帶 `ILOT_DEFPROFILE`：不改使用者的預設輸入法。
+///
+/// 刻意沒有 `ILOT_UNINSTALL`：反安裝不從使用者的語言清單移除 layout，理由見
+/// `platform::user_uninstall`。
 pub const ILOT_INSTALL: u32 = 0x0000_0000;
 
 /// `InstallLayoutOrTip` 的字串：`<LangID>:<profile GUID><CLSID>`。
@@ -54,8 +55,7 @@ mod tests {
     }
 
     #[test]
-    fn install_flag_is_zero_and_uninstall_is_one() {
+    fn install_flag_is_zero() {
         assert_eq!(ILOT_INSTALL, 0);
-        assert_eq!(ILOT_UNINSTALL, 1);
     }
 }

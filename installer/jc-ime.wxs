@@ -13,18 +13,31 @@
 
   安裝順序（InstallExecuteSequence）：
     InstallFiles
-      → RegisterTip（deferred、SYSTEM）         一次註冊兩個架構：
-                                                  x64 DLL 自己註冊（64 位元檢視）
-                                                  x86 DLL 由安裝器寫 Wow6432Node
+    WriteRegistryValues
+      → 由 <Class> 寫 HKCR\CLSID\{...}\InprocServer32
+                                   x64 元件寫 64 位元檢視，
+                                   TsfDllX86（Bitness="always32"）寫 Wow6432Node
+      → RegisterTip（deferred、SYSTEM）         RegisterProfile 與三個 RegisterCategory
     InstallFinalize
       → InstallTipLayout（immediate、使用者）   InstallLayoutOrTip(ILOT_INSTALL)
 
   反安裝順序：
-    UnregisterTip（deferred、SYSTEM）           兩個檢視的 CLSID 與唯一的 profile
-    RemoveFiles
+    RemoveRegistryValues（標準順序 2600）       由 <Class> 移除兩個檢視的 CLSID
+    UnregisterTip（deferred、SYSTEM）           UnregisterProfile 與三個
+                                                UnregisterCategory；不需要 CLSID
+    RemoveFiles（3500）
     InstallFinalize
-      → RemoveTipLayout（immediate、使用者）    InstallLayoutOrTip(ILOT_UNINSTALL)
-                                                 並刪除 %LOCALAPPDATA%\jc-ime
+      → RemoveTipLayout（immediate、使用者）    只刪 %LOCALAPPDATA%\jc-ime；
+                                                不呼叫 ILOT_UNINSTALL
+
+  為什麼 CLSID 交給 MSI：rc.5／rc.6 由 DLL 的 DllRegisterServer 自己寫，結果
+  RegisterCategory 在 64 位元檢視的 CLSID 還沒出現時就存取違規（0xC0000005）。
+  <Class> 讓 Windows Installer 的 RegisterClassInfo／WriteRegistryValues 負責寫
+  兩個檢視，自訂動作開始跑時類別工廠已經查得到。詳見
+  docs/port/tsf-installer.md。
+
+  為什麼反安裝不呼叫 ILOT_UNINSTALL：移除語系的最後一個 layout 時，Windows 會
+  把系統地區改成英文。參考專案為此停用這一步（windows-chewing-tsf issue 553）。
 
   為什麼有兩份 DLL：TSF 依宿主行程的位元數載入 TIP，32 位元程式（舊版 Office、
   部分工具）只找得到 32 位元的 COM 註冊（`Wow6432Node`）。兩份共用同一個 CLSID
@@ -76,16 +89,18 @@
     </Feature>
 
     <InstallExecuteSequence>
-      <!-- 安裝／修復：先排 rollback，再註冊。 -->
+      <!-- 安裝／修復：WriteRegistryValues 寫完 <Class> 的 CLSID 之後才註冊 profile
+           與分類，RegisterCategory 執行時類別工廠已經查得到。 -->
       <Custom Action="RollbackRegisterTip" Before="RegisterTip" Condition="NOT REMOVE" />
-      <Custom Action="RegisterTip" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="RegisterTip" After="WriteRegistryValues" Condition="NOT REMOVE" />
 
       <!-- 反安裝：先移除 TIP，再刪檔案；順序反了會留下無法移除的機碼。 -->
       <Custom Action="RollbackUnregisterTip" Before="UnregisterTip"
               Condition='REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' />
       <Custom Action="UnregisterTip" Before="RemoveFiles" Condition='REMOVE~="ALL"' />
 
-      <!-- 使用者語言清單：必須在 SYSTEM 的註冊完成之後、且以使用者身分執行。 -->
+      <!-- 使用者語言清單：必須在 SYSTEM 的註冊完成之後、且以使用者身分執行。
+           RemoveTipLayout 只清使用者資料，不從語言清單移除 layout。 -->
       <Custom Action="InstallTipLayout" After="InstallFinalize" Condition="NOT REMOVE" />
       <Custom Action="RemoveTipLayout" After="InstallFinalize"
               Condition='REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' />
@@ -132,6 +147,11 @@
     CLSID，只是註冊在不同機碼檢視；檔名分開是因為兩份都放在同一個目錄。x86 的
     Component 標 `Bitness="always32"`（WiX v5 的元件架構寫法），機碼與檔案才不會
     被當成 64 位元元件處理。
+
+    CLSID 由 <Class> 註冊，不是由 DLL 的 DllRegisterServer：Windows Installer 的
+    RegisterClassInfo／WriteRegistryValues 會在自訂動作之前把 HKCR\CLSID 的
+    InprocServer32 寫好，包括 x86 元件在 Wow6432Node 的那一份。省略 Server 表示
+    伺服器就是同一個 <File>，所以 File 必須 KeyPath="yes"。
   -->
   <Fragment>
     <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
@@ -139,7 +159,13 @@
         <File Id="FileTsfDll"
               Source="$(var.PayloadDir)/jc-tsf.dll"
               KeyPath="yes"
-              Vital="yes" />
+              Vital="yes">
+          <Class Id="7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01"
+                 Context="InprocServer32"
+                 ThreadingModel="apartment"
+                 Advertise="no"
+                 Description="jc 注音" />
+        </File>
       </Component>
 
       <Component Id="TsfDllX86"
@@ -148,7 +174,14 @@
         <File Id="FileTsfDllX86"
               Source="$(var.PayloadDir)/jc-tsf-x86.dll"
               KeyPath="yes"
-              Vital="yes" />
+              Vital="yes">
+          <!-- 同一個 CLSID；Bitness="always32" 讓 WiX 寫進 Wow6432Node。 -->
+          <Class Id="7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01"
+                 Context="InprocServer32"
+                 ThreadingModel="apartment"
+                 Advertise="no"
+                 Description="jc 注音" />
+        </File>
       </Component>
 
       <Component Id="EngineExe" Guid="{B47CE81B-061C-48BC-BF03-4BB96A5CDEFD}">
@@ -458,42 +491,43 @@
   </Fragment>
 
   <!--
-    自訂動作。ExeCommand 裡的 `[#File...]` 在排程時就解析成安裝後的完整路徑，
-    deferred 動作執行時不再讀 MSI 屬性。
+    自訂動作。ExeCommand 只帶子命令：machine-* 不接參數，CLSID 與 DLL 路徑都由
+    MSI 的 <Class> 負責。
 
     machine-* 一定要 Impersonate="no"：CTF 機碼在 HKLM，需要 SYSTEM 權限。
     user-* 一定要 Impersonate="yes"：InstallLayoutOrTip 寫的是呼叫者的 HKCU。
 
-    註冊與移除都一次帶兩個 DLL：x64 的那份由 DLL 自己註冊（64 位元檢視），x86 的
-    那份由安裝器以 KEY_WOW64_32KEY 寫 Wow6432Node（x64 行程載入不了 32 位元 DLL）。
-    兩份共用同一個 CLSID 與 profile，所以 profile 只註冊一次；反安裝則兩個檢視
-    都清。詳見 docs/port/x86-tip.md。
+    RegisterTip 排在 WriteRegistryValues 之後：此時兩個檢視的 CLSID 都已由
+    RegisterClassInfo 寫好，RegisterCategory 不會拿到不存在的類別工廠。
+    反安裝的 UnregisterTip 維持在 RemoveFiles 之前，CLSID 機碼由標準順序 2600 的
+    RemoveRegistryValues 移除，兩邊各清各的；UnregisterProfile／UnregisterCategory
+    只碰 CTF store，不需要 CLSID。詳見 docs/port/tsf-installer.md。
   -->
   <Fragment>
     <CustomAction Id="RegisterTip"
                   FileRef="FileTipRegister"
-                  ExeCommand="machine-register &quot;[#FileTsfDll]&quot; &quot;[#FileTsfDllX86]&quot;"
+                  ExeCommand="machine-register"
                   Execute="deferred"
                   Impersonate="no"
                   Return="check" />
 
     <CustomAction Id="RollbackRegisterTip"
                   FileRef="FileTipRegister"
-                  ExeCommand="machine-unregister &quot;[#FileTsfDll]&quot; &quot;[#FileTsfDllX86]&quot;"
+                  ExeCommand="machine-unregister"
                   Execute="rollback"
                   Impersonate="no"
                   Return="ignore" />
 
     <CustomAction Id="UnregisterTip"
                   FileRef="FileTipRegister"
-                  ExeCommand="machine-unregister &quot;[#FileTsfDll]&quot; &quot;[#FileTsfDllX86]&quot;"
+                  ExeCommand="machine-unregister"
                   Execute="deferred"
                   Impersonate="no"
                   Return="ignore" />
 
     <CustomAction Id="RollbackUnregisterTip"
                   FileRef="FileTipRegister"
-                  ExeCommand="machine-register &quot;[#FileTsfDll]&quot; &quot;[#FileTsfDllX86]&quot;"
+                  ExeCommand="machine-register"
                   Execute="rollback"
                   Impersonate="no"
                   Return="ignore" />
@@ -505,6 +539,7 @@
                   Impersonate="yes"
                   Return="ignore" />
 
+    <!-- 名稱沿用 RemoveTipLayout，但只刪使用者資料；不呼叫 ILOT_UNINSTALL。 -->
     <CustomAction Id="RemoveTipLayout"
                   FileRef="FileTipRegister"
                   ExeCommand="user-uninstall [KEEPUSERSETTINGS]"

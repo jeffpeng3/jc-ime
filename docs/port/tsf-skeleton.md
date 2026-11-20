@@ -43,6 +43,10 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼，也沒有 Wind
 
 ## 註冊機碼
 
+> MSI 安裝**不走這條路徑**：CLSID 由 `installer/jc-ime.wxs` 的 `<Class>` 寫，
+> profile 由 `jc-tip-register machine-register` 註冊。以下是 DLL 被手動
+> `regsvr32` 時的行為，程式碼保留在 `crates/jc-tsf/src/register.rs`。
+
 `DllRegisterServer` 依序做：
 
 1. 寫 `HKEY_CLASSES_ROOT\CLSID\{7B7D6E1A-...}\InprocServer32`

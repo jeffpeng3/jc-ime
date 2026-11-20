@@ -137,7 +137,7 @@ x64 裝好、x86 沒裝（例如只跑過 `regsvr32 jc-tsf.dll`）時，這一�
 哪一邊：
 
 ```text
-[FAIL] 7. 註冊探測：32 位元檢視的 CTF\TIP\{7B7D6E1A-...} 不存在；32 位元檢視的 HKCR\CLSID\{7B7D6E1A-...}\InprocServer32 不存在。修復：以管理員執行 jc-tip-register machine-register "%ProgramFiles%\jc-ime\jc-tsf.dll" "%ProgramFiles%\jc-ime\jc-tsf-x86.dll"
+[FAIL] 7. 註冊探測：32 位元檢視的 CTF\TIP\{7B7D6E1A-...} 不存在；32 位元檢視的 HKCR\CLSID\{7B7D6E1A-...}\InprocServer32 不存在。修復：CLSID 由 MSI 寫，先修復安裝（msiexec /fa <msi>）；再以管理員執行 jc-tip-register machine-register 補 profile 與分類
 ```
 
 （實際的 `引擎` 字串由引擎的 `engine_label()` 決定；`State` 的內容依當下組字

@@ -61,36 +61,41 @@ CLSID，清單就會出現兩個「jc 注音」，而且只有架構相符的那
 
 - `one_clsid_and_profile_for_both_architectures`、`clsid_matches_tsf_crate`：兩個
   建置拿到同一組 CLSID／profile／顯示名稱，值沒有漂移。
-- `targets_differ_only_by_registry_view`：x64 與 x86 只差
-  `KEY_WOW64_64KEY`／`KEY_WOW64_32KEY`。
-- `detects_x64_and_x86_machine_types`、`rejects_other_machine_types`：PE 標頭的
-  架構判斷（含 ARM64 不猜成 x64）。
+- `categories_are_three_distinct_guids`：三個分類都在，而且互不相同。
+- `machine_register_takes_no_arguments`、`machine_unregister_takes_no_arguments`：
+  安裝器不再接受 DLL 路徑或 `--arch`。
 
 ## 註冊流程
 
-安裝時一次呼叫 `machine-register`，帶兩個 DLL：
+兩個檢視的 CLSID 都由 WXS 的 `<Class>` 寫，`machine-register` 只註冊 profile 與
+分類：
 
 ```text
-RegisterTip  machine-register "[#FileTsfDll]" "[#FileTsfDllX86]"   （deferred、SYSTEM）
+WriteRegistryValues
+  <Class Id="7B7D6E1A-…" Context="InprocServer32" ThreadingModel="apartment">
+    TsfDll      → HKCR\CLSID\{…}\InprocServer32             = …\jc-tsf.dll
+    TsfDllX86   → HKCR\Wow6432Node\CLSID\{…}\InprocServer32 = …\jc-tsf-x86.dll
+RegisterTip        machine-register                                  （deferred、SYSTEM）
 ```
 
-`jc-tip-register` 是 x64 程式，`LoadLibraryW` **載入不了** 32 位元 DLL
-（`ERROR_BAD_EXE_FORMAT`），所以對每個路徑先判斷 PE 架構，再分兩條路徑：
+| 元件 | Bitness | 寫入的檢視 | 預設值 |
+|---|---|---|---|
+| `TsfDll` | 預設（x64 套件 → 64 位元） | `HKCR\CLSID\{…}\InprocServer32` | `…\jc-tsf.dll` |
+| `TsfDllX86` | `always32` | `HKCR\Wow6432Node\CLSID\{…}\InprocServer32` | `…\jc-tsf-x86.dll` |
 
-| 情況 | 做法 |
-|---|---|
-| 同架構（x64 DLL） | `LoadLibraryW` → `DllRegisterServer`；寫 `KEY_WOW64_64KEY` 的 `InprocServer32`，並註冊 profile |
-| 跨架構（x86 DLL） | 安裝器自己用 `KEY_WOW64_32KEY` 寫 `Wow6432Node` 的 `InprocServer32` |
-
-機碼檢視一律明確指定（`RegCreateKeyExW` 加 `KEY_WOW64_*`），不靠「行程位元數決定
-預設檢視」的隱含行為；DLL 內的 `register.rs` 也一樣，用 `cfg(target_pointer_width)`
-選 `REGISTRY_VIEW`。
+`<Class>` 省略 `Server` 表示伺服器就是同一個 `<File>`，所以兩個 `File` 都必須
+`KeyPath="yes"`。rc.6 之前由 `DllRegisterServer`（x64）與安裝器自己
+（`KEY_WOW64_32KEY`）各寫一份；rc.7 換成 MSI 統一寫，理由是
+`RegisterCategory` 需要 64 位元檢視的 CLSID 已經存在，否則 msctf 會存取違規
+（`0xC0000005`）。完整記錄見 [`tsf-installer.md`](tsf-installer.md) 的 RC7 一節。
 
 profile 與分類（`HKLM\SOFTWARE\Microsoft\CTF`）**不是** WOW64 轉向機碼，兩個架構
-讀寫同一份資料，所以整支程式只註冊一次。x86 DLL 那條路徑會補上
-`ITfInputProcessorProfiles::Register`、`AddLanguageProfile` 與三個
-`RegisterCategory`（`TIP_KEYBOARD`、`TIPCAP_UIELEMENTENABLED`、
-`DISPLAYATTRIBUTEPROVIDER`），內容與 `crates/jc-tsf/src/register.rs` 相同。
+讀寫同一份資料，所以整支程式只註冊一次：`ITfInputProcessorProfileMgr::RegisterProfile`
+加三個 `RegisterCategory`（`TIP_KEYBOARD`、`TIPCAP_UIELEMENTENABLED`、
+`DISPLAYATTRIBUTEPROVIDER`）。
+
+DLL 內的 `register.rs` 仍保留給手動 `regsvr32`：它用 `cfg(target_pointer_width)`
+選 `REGISTRY_VIEW`，只寫自己那個檢視。MSI 安裝不走這條。
 
 註冊完會用兩個檢視各讀一次 `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}`：64 位元
 檢視讀不到就讓安裝失敗（`Return="check"`，不留半套）；32 位元檢視讀不到只送到
@@ -98,7 +103,8 @@ debugger（DebugView）警告，因為那是共用的一份資料，真正的判
 `reg query /reg:32`。
 
 安裝目錄的 AppContainer ACE 只設一次，而且用 `SET_ACCESS`（取代該 trustee 的
-既有 ACE）而不是 `GRANT_ACCESS`，修復安裝不會讓 DACL 愈長愈多。
+既有 ACE）而不是 `GRANT_ACCESS`，修復安裝不會讓 DACL 愈長愈多。目錄取自
+`jc-tip-register.exe` 自己的位置，不需要 MSI 傳路徑。
 
 ### 使用者語言清單
 
@@ -112,21 +118,22 @@ profile 之後只有一組：
 ## 反安裝流程
 
 ```text
-UnregisterTip      machine-unregister "[#FileTsfDll]" "[#FileTsfDllX86]"  （deferred、SYSTEM）
-RemoveFiles
+RemoveRegistryValues（既定順序 2600）                                  <Class> 移除兩個檢視
+UnregisterTip      machine-unregister                                  （deferred、SYSTEM）
+RemoveFiles（3500）
 InstallFinalize
 RemoveTipLayout    user-uninstall [KEEPUSERSETTINGS]
 ```
 
-順序是「先 `RemoveLanguageProfile`／`Unregister`／`UnregisterCategory`，再刪
-`HKCR\CLSID\{…}`」，而且**兩個檢視的 CLSID 機碼都要刪**；漏掉一個會讓 32 位元
-程式持續看到一個載入不了的輸入法。
+`machine-unregister` 只做 `UnregisterCategory` 三次與 `UnregisterProfile`。
+`HKCR\CLSID` 兩個檢視由 MSI 的 `<Class>` 登錄資料移除：`RemoveRegistryValues`
+（2600）與 `UnregisterClassInfo`（2700）都在 `UnregisterTip` 之前，自訂動作再去
+刪只會跟 MSI 搶。`UnregisterProfile`／`UnregisterCategory` 只碰
+`HKLM\SOFTWARE\Microsoft\CTF`，不需要 CLSID。DLL 被防毒隔離時，
+`machine-unregister` 完全不碰檔案，反安裝不會卡住。
 
-`RegDeleteTreeW` 沒有檢視參數，所以對每個檢視先用對應的 `KEY_WOW64_*` 開
-`HKCR\CLSID`，再相對刪除子機碼——handle 的檢視決定後續所有操作。x64 DLL 自己的
-`DllUnregisterServer` 只清 64 位元檢視，另一個檢視由安裝器補。
-
-DLL 不在（防毒隔離）或跨架構時全部走內建路徑，反安裝不會卡住。
+反安裝**不呼叫** `InstallLayoutOrTip(ILOT_UNINSTALL)`：移除語系的最後一個 layout
+會讓 Windows 把系統地區改成英文（windows-chewing-tsf issue 553）。
 
 ## 移植對照
 
@@ -140,9 +147,9 @@ GUID 與註冊程式碼是在原處擴充。
 | n/a | `crates/jc-tsf/src/lib.rs`（建置說明、日誌帶架構與 CLSID） | rewritten |
 | n/a | `crates/jc-tsf/src/composition.rs`（`SetWindowLongPtrW` 在 32 位元的參數型別） | rewritten：i686 才編得過的修正，不涉及行為 |
 | n/a | `crates/jc-tsf/Cargo.toml`（加 `Win32_Security`，`RegCreateKeyExW` 在那個 feature 下） | rewritten |
-| n/a | `installer/jc-tip-register/src/arch.rs`（PE 架構偵測） | rewritten |
-| `cmd/0c-update/platform_windows.go`（`regsvr32` 呼叫） | `installer/jc-tip-register/src/platform.rs`（跨架構直接註冊、兩個檢視、單一 profile） | rewritten |
-| n/a | `installer/jc-ime.wxs`（`TsfDllX86` 元件、雙 DLL 的自訂動作） | rewritten |
+| n/a | `installer/jc-tip-register/src/arch.rs`（PE 架構偵測） | 已移除：CLSID 交給 MSI 的 `<Class>` 之後不需要判斷 DLL 架構 |
+| `cmd/0c-update/platform_windows.go`（`regsvr32` 呼叫） | `installer/jc-tip-register/src/platform.rs`（單一 profile、三個分類） | rewritten：CLSID 改由 MSI 的 `<Class>` 寫，安裝器不再載入 DLL |
+| n/a | `installer/jc-ime.wxs`（`TsfDllX86` 元件、兩個 `<Class>`） | rewritten |
 | n/a | `installer/build.ps1`（兩個 target、payload 改名、簽章清單） | rewritten |
 | n/a | `.github/workflows/release.yml`（windows job 加 i686 target） | rewritten |
 
@@ -211,8 +218,9 @@ reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01
 預期兩次的輸出相同，都含
 `LanguageProfile\0x0404\{8F0A9B3C-2D4E-4F50-A1B2-C3D4E5F60718}` 與
 `Description = jc 注音`。`CTF` 不是 WOW64 轉向機碼，所以 `/reg:32` 看到的是同一份
-資料；這裡若看不到，代表該版 Windows 把它轉向了，需要改用 32 位元身分再註冊一次
-（`jc-tip-register machine-register --arch x86 ...` 從 32 位元行程執行）。
+資料；這裡若看不到，代表該版 Windows 把它轉向了，需要先確認 CTF 是不是轉向機碼
+（`reg query /reg:32` 與 `/reg:64` 的輸出不同），再決定要不要改用 32 位元身分
+重跑 `machine-register`。
 
 **4. 反安裝後兩個檢視都乾淨**
 
@@ -236,7 +244,8 @@ registry key or value。
    都不留。
 5. 升級安裝（舊版 x64-only → 新版雙架構）：舊版的 x64 註冊不會變成孤兒，
    使用者語言清單不需要重加。
-6. MSI 日誌裡 `RegisterTip` 一次收到兩個路徑，rollback 動作能反向清乾淨。
+6. MSI 日誌裡 `RegisterTip` 執行 `machine-register`（不吃參數）、`WriteRegistryValues`
+   排在它之前，rollback 動作能反向清乾淨。
 7. `i686-pc-windows-msvc` 的 crate 在 Windows 上連結得出真的 DLL（Linux 只驗到
    `cargo check`，沒有 MSVC linker）。
 8. `wix build` 的 ICE 驗證：32 位元元件（`Bitness="always32"`）裝在

@@ -285,9 +285,8 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
             registry::Verdict::Broken(message) => report.fail(
                 "7. 註冊探測",
                 format!(
-                    "{message}。修復：以管理員執行 jc-tip-register machine-register \
-                     \"%ProgramFiles%\\jc-ime\\jc-tsf.dll\" \
-                     \"%ProgramFiles%\\jc-ime\\jc-tsf-x86.dll\""
+                    "{message}。修復：CLSID 由 MSI 寫，先修復安裝（msiexec /fa <msi>）；\
+                     再以管理員執行 jc-tip-register machine-register 補 profile 與分類"
                 ),
             ),
         },

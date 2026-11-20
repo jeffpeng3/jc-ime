@@ -1,5 +1,20 @@
 //! `DllRegisterServer`／`DllUnregisterServer` 的實作。
 //!
+//! **MSI 安裝不走這條路徑。** `installer/jc-ime.wxs` 在兩個 TSF DLL 的 `File` 各
+//! 掛一個 `<Class>`，`HKCR\CLSID\{CLSID}\InprocServer32` 由 Windows Installer 的
+//! `WriteRegistryValues` 寫入（x64 元件寫 64 位元檢視，`Bitness="always32"` 的
+//! x86 元件寫 `Wow6432Node`），profile 與分類則由 `jc-tip-register machine-register`
+//! 負責。安裝期間沒有任何程式呼叫這裡的 `register()`。
+//!
+//! 這個檔案留給手動修復：`regsvr32 jc-tsf.dll`（或 `jc-tip-register` 以外的工具）
+//! 在沒有 MSI 的機器上重建同一組機碼。手動執行時它自己寫 `InprocServer32`，訊息
+//! 與 MSI 版本相同。
+//!
+//! 為什麼 MSI 不借用這個函式：rc.5／rc.6 由 `jc-tip-register` 載入 DLL、呼叫
+//! `DllRegisterServer`，結果 `RegisterCategory` 在 64 位元檢視的 CLSID 還不存在時
+//! 存取違規（`0xC0000005`）。把 CLSID 交給 MSI 之後，順序由
+//! `WriteRegistryValues` → `RegisterTip` 保證。
+//!
 //! **兩個架構共用同一個 CLSID 與 profile**（`guids.rs`）。差別只有寫入哪一個
 //! 機碼檢視：這支 DLL 依 `target_pointer_width` 明確指定 `KEY_WOW64_64KEY`
 //! （x64）或 `KEY_WOW64_32KEY`（i686），不依賴「行程位元數決定預設檢視」的
@@ -313,9 +328,9 @@ fn set_string(path: &str, name: Option<&str>, value: &str) -> Result<()> {
 /// 取得這份 DLL 的完整路徑。
 ///
 /// 不能用 `GetModuleFileNameW(None, ...)`：`hModule = NULL` 拿到的是**行程的
-/// exe**。`DllRegisterServer` 由 `jc-tip-register.exe` 載入後呼叫，寫進
-/// `InprocServer32` 的就會是那支 exe，TSF 之後載不到輸入法。這裡用本模組內的
-/// 函式位址當錨點，取得真正裝著這段程式碼的 DLL。
+/// exe**。`DllRegisterServer` 由 `regsvr32.exe`（或其他載入器）呼叫時，
+/// 寫進 `InprocServer32` 的就會是那支 exe，TSF 之後載不到輸入法。這裡用本模組內
+/// 的函式位址當錨點，取得真正裝著這段程式碼的 DLL。
 fn module_path() -> Result<String> {
     let mut module = HMODULE::default();
     // SAFETY: anchor 是本模組內的函式位址；UNCHANGED_REFCOUNT 不增加參考計數，
