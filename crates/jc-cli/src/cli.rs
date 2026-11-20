@@ -1172,7 +1172,6 @@ mod tests {
                 json: false,
                 pos: false,
                 select_model: true,
-                backend: None,
                 user_data: None,
                 mode: None,
                 pick: None,
