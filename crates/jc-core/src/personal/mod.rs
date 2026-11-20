@@ -75,6 +75,30 @@ pub(crate) const VOCAB_COST: i32 = 1;
 /// 學習權重最多折抵多少成本。
 const LIFT_CAP: i32 = 1500;
 
+/// rollback 窗口長度，毫秒。
+///
+/// 提交後的學習在這段時間內都還能補償；對照 Mozkey 的 rollback window
+/// （`docs/reports/mozkey-study-2026-11-20.md` 第 5 節與 `accepted_rollback`）。
+pub const ROLLBACK_WINDOW_MS: i64 = 5_000;
+
+/// 連續跳過幾次後，這個學習詞不再自動排第一。
+///
+/// 對照 Mozkey 的弱負向訊號：跳過只降權，不刪除，選回來就自我修復。
+pub const SKIP_LIMIT: u32 = 3;
+
+/// 每跳過一次折抵的成本（毫成本）。
+///
+/// 門檻 [`SKIP_LIMIT`] 之前只做少量降權，達到門檻才整組排到後面。
+pub const SKIP_PENALTY: i32 = 40;
+
+/// 最短觸發長度：讀音不到這個字元數時，只記錄證據，不自動改變排序。
+///
+/// 對照 Mozkey 的 feedback 最短自動套用長度（7 字元）。
+pub const MIN_TRIGGER_LEN: usize = 7;
+
+/// 跳過計數表的容量上限。
+const MAX_SKIPS: usize = 1024;
+
 /// 每個語言命名空間、每張表的容量上限。
 ///
 /// 日文學習與注音學習共用 [`Store`]，兩邊的語言資料都受這個上限約束。
@@ -336,6 +360,13 @@ pub struct Store {
     /// 分語言學習的反悔紀錄；不寫進個人資料。
     #[serde(skip)]
     pub(crate) language_notes: Vec<LanguageNote>,
+    /// 詞面 → 連續被跳過的次數（弱負向訊號）。
+    ///
+    /// 只記學過的詞；使用者再選它一次就清掉，選回來不刪除。
+    pub skips: BTreeMap<String, u32>,
+    /// 最近一次提交的學習快照，只在 rollback 窗口內存在，不寫進個人資料。
+    #[serde(skip)]
+    pub(crate) rollback: Option<Box<RollbackWindow>>,
     /// 自訂詞；前身放在 `Vocab` 而非 Store，不寫進個人資料。
     #[serde(skip)]
     pub vocab: BTreeMap<String, Vec<String>>,
@@ -375,9 +406,22 @@ impl Default for Store {
             languages: BTreeMap::new(),
             cross_language: CrossLanguage::default(),
             language_notes: Vec::new(),
+            skips: BTreeMap::new(),
+            rollback: None,
             vocab: BTreeMap::new(),
         }
     }
+}
+
+/// 一次提交的學習快照。
+///
+/// 只在記憶體中存在；[`Store::save`] 不寫入，重啟後沒有待確認的學習。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RollbackWindow {
+    /// 學習前的整份資料。
+    before: Box<Store>,
+    /// 建立時刻，Unix 毫秒。
+    at: i64,
 }
 
 /// 提交文字中的一段。
@@ -520,6 +564,9 @@ impl Store {
     pub fn cleaned(mut self) -> Self {
         self.emoji_recent = crate::emoji::clean_recent(&self.emoji_recent);
         self.symbol_recent = crate::symbols::clean_recent(&self.symbol_recent);
+        self.skips.retain(|_, count| *count > 0);
+        trim_skips(&mut self.skips);
+        self.rollback = None;
         if self.confirmed.is_empty() && self.format < 6 {
             self.seed_confirmed();
         }
@@ -527,6 +574,70 @@ impl Store {
         self.clean_languages();
         self.cross_language.clean();
         self
+    }
+
+    /// 開始一個 rollback 窗口，先記下學習前的資料。
+    ///
+    /// 提交後立刻呼叫；窗口長度見 [`ROLLBACK_WINDOW_MS`]。重複呼叫會覆蓋上
+    /// 一個窗口，因此記憶體最多只保留一份快照。
+    pub fn begin_rollback(&mut self, at: i64) {
+        let mut before = self.clone();
+        before.rollback = None;
+        self.rollback = Some(Box::new(RollbackWindow {
+            before: Box::new(before),
+            at,
+        }));
+    }
+
+    /// 是否有等待確認的學習。
+    pub fn has_pending_learning(&self) -> bool {
+        self.rollback.is_some()
+    }
+
+    /// 窗口內撤銷最近一次學習；回傳是否真的還原。
+    ///
+    /// 超出窗口時只結束窗口，學習保留。還原是整份快照換回，連同那次提交的
+    /// 跳過計數一起復原。
+    pub fn rollback_learning(&mut self, now: i64) -> bool {
+        let Some(pending) = self.rollback.take() else {
+            return false;
+        };
+        if now.saturating_sub(pending.at) > ROLLBACK_WINDOW_MS {
+            return false;
+        }
+        let mut before = *pending.before;
+        before.rollback = None;
+        *self = before;
+        true
+    }
+
+    /// 結束窗口，保留這次學習。
+    ///
+    /// 下一次輸入不是撤銷鍵，或窗口到期時呼叫。
+    pub fn accept_learning(&mut self) {
+        self.rollback = None;
+    }
+
+    /// 記一次跳過；回傳目前連續跳過次數。
+    pub fn note_skip(&mut self, word: &str) -> u32 {
+        if word.is_empty() {
+            return 0;
+        }
+        let count = self.skips.entry(word.to_string()).or_default();
+        *count = count.saturating_add(1);
+        let count = *count;
+        trim_skips(&mut self.skips);
+        count
+    }
+
+    /// 清掉跳過計數；回傳是否真的有紀錄。
+    pub fn clear_skip(&mut self, word: &str) -> bool {
+        self.skips.remove(word).is_some()
+    }
+
+    /// 連續跳過次數。
+    pub fn skip_count(&self, word: &str) -> u32 {
+        self.skips.get(word).copied().unwrap_or(0)
     }
 
     /// 加入自訂詞讀音。
@@ -578,13 +689,26 @@ impl Store {
     }
 
     /// 候選排序鍵：自訂詞與手選單字釘選，其餘依學習權重折抵成本。
+    ///
+    /// 弱負向訊號在此生效：連續跳過 [`SKIP_LIMIT`] 次的詞排到一般候選之後，
+    /// 但仍留在候選清單裡；不到門檻時每次跳過折抵 [`SKIP_PENALTY`] 毫成本。
+    /// 明確手選的釘選候選優先於弱負向訊號。
     pub fn rank_key(&self, text: &str, reading: &str, cost: i32) -> (u8, i32) {
         let single = reading.split_whitespace().count() == 1;
         let pinned =
             self.vocab_has_reading(text, reading) || (single && self.is_picked(reading, text));
-        let group = if pinned { 0 } else { 1 };
+        let skips = self.skip_count(text).min(SKIP_LIMIT);
+        let group = if pinned {
+            0
+        } else if skips >= SKIP_LIMIT {
+            2
+        } else {
+            1
+        };
         let lift = (self.uni.get(text).copied().unwrap_or(0.0) * 1000.0).round() as i32;
-        (group, cost.saturating_sub(lift.min(LIFT_CAP)))
+        let penalty = i32::try_from(skips).unwrap_or(0) * SKIP_PENALTY;
+        let lift = (lift.min(LIFT_CAP) - penalty).max(0);
+        (group, cost.saturating_sub(lift))
     }
 
     /// 某個音節是否手選過這個單字。
@@ -614,8 +738,11 @@ impl Store {
     }
 
     /// 記下一次手選：解除 tombstone，記錄單字釘選與個人讀音，累積證據。
+    ///
+    /// 手選是明確訊號，會一併清掉這個詞的跳過計數。
     pub fn note_manual(&mut self, word: &str, reading: &str, syllables: usize) {
         self.tombstones.remove(word);
+        self.skips.remove(word);
         if syllables == 1 {
             let words = self.picked.entry(reading.to_string()).or_default();
             if !words.iter().any(|item| item == word) {
@@ -635,7 +762,28 @@ impl Store {
         self.observe("", word, self.passive_weight());
     }
 
-    fn passive_weight(&self) -> f64 {
+    /// 記下一次被動提交，但只留證據、不影響排序。
+    ///
+    /// 讀音短於 [`MIN_TRIGGER_LEN`] 時走這條：`evidence_by_word` 有紀錄，
+    /// 但 `uni`／`bi`／`ctx` 不動，因此 [`Store::rank_key`] 的折抵維持 0。
+    pub fn note_passive_evidence(&mut self, word: &str, weight: f64) {
+        if self.tombstones.contains(word) || weight <= 0.0 {
+            return;
+        }
+        let entry = self
+            .evidence_by_word
+            .get(word)
+            .copied()
+            .unwrap_or_default()
+            .add(self.time, weight);
+        self.evidence_by_word.insert(word.to_string(), entry);
+    }
+
+    /// 被動提交的證據權重。
+    ///
+    /// 對照 [`Params::w_passive`] 的預設值；外殼只有 [`Store`] 時用這個入口
+    /// 取得同一個數字。
+    pub fn passive_weight(&self) -> f64 {
         0.25
     }
 
@@ -651,6 +799,7 @@ impl Store {
     pub fn forget(&mut self, word: &str) -> bool {
         let changed = self.is_learned(word) || self.is_picked_any(word);
         self.remove_word(word);
+        self.skips.remove(word);
         let inserted = self.tombstones.insert(word.to_string());
         changed || inserted
     }
@@ -835,6 +984,29 @@ impl Store {
         at: i64,
     ) {
         self.note_language_weighted(id, reading, surface, left, 1, at);
+    }
+
+    /// 在指定語言只記詞面證據，不改讀音與左文表。
+    ///
+    /// 讀音短於 [`MIN_TRIGGER_LEN`] 時使用：詞面次數照記，但日文重排讀的是
+    /// 讀音與左文表，因此候選排序不變。這筆紀錄不進反悔 journal。
+    pub fn note_language_surface(&mut self, id: LanguageId, surface: &str, weight: u32, at: i64) {
+        if id == LanguageId::Und || surface.is_empty() || weight == 0 {
+            return;
+        }
+        let at = if at > 0 { at } else { self.time };
+        let ns = self.languages.entry(id.as_str().to_string()).or_default();
+        let entry = ns.surfaces.get(surface).copied().unwrap_or_default();
+        ns.surfaces
+            .insert(surface.to_string(), add_weight(entry, weight, at));
+        ns.selections = ns.selections.saturating_add(weight);
+        ns.updated = ns.updated.max(at);
+        *self
+            .cross_language
+            .primary
+            .entry(id.as_str().to_string())
+            .or_default() += weight;
+        self.trim_language_tables(id);
     }
 
     /// 某語言選過這個詞面的次數。
@@ -1022,6 +1194,27 @@ pub fn reading_key(syls: &[Syllable]) -> String {
         .map(Syllable::as_str)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// 讀音的字元數，不計分隔空白。
+///
+/// 最短觸發長度用這個值比較；注音一個音節是 1 到 3 個符號，日文一個單位
+/// 是一個假名，兩邊都不含空白。
+pub fn reading_len(reading: &str) -> usize {
+    reading.chars().filter(|ch| !ch.is_whitespace()).count()
+}
+
+/// 跳過計數表超過上限時，先淘汰次數最少的詞。
+fn trim_skips(skips: &mut BTreeMap<String, u32>) {
+    if skips.len() <= MAX_SKIPS {
+        return;
+    }
+    let mut keys: Vec<_> = skips.keys().cloned().collect();
+    keys.sort_by_key(|key| (skips.get(key).copied().unwrap_or(0), key.clone()));
+    let drop = skips.len() - MAX_SKIPS;
+    for key in keys.into_iter().take(drop) {
+        skips.remove(&key);
+    }
 }
 
 /// 讀音鍵轉回音節序列。
@@ -1553,6 +1746,20 @@ impl Model {
 mod tests {
     use super::*;
 
+    fn ranked(reading: &str, surfaces: &[(&str, i32)]) -> Vec<crate::Candidate> {
+        surfaces
+            .iter()
+            .map(|(surface, cost)| {
+                crate::Candidate::new(
+                    *surface,
+                    reading,
+                    *cost,
+                    crate::candidate::CandidateSource::Lexicon,
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn test_note_language_weighted_counts_and_undo() {
         let mut store = Store::new();
@@ -1622,5 +1829,104 @@ mod tests {
         assert_eq!(store.language_surface_count(LanguageId::Ja, "亜"), 1);
         let kept = store.language_surface_count(LanguageId::Ja, "唖");
         assert!((40..=60).contains(&kept), "30 日後約剩一半，得到 {kept}");
+    }
+
+    #[test]
+    fn test_rollback_restores_learning_inside_window() {
+        let mut store = Store::new();
+        store.note_passive("景", "ㄐㄧㄥˇ");
+        store.begin_rollback(5_000);
+        store.note_passive("井", "ㄐㄧㄥˇ");
+        assert!(store.has_pending_learning());
+        assert!(store.is_learned("井"));
+
+        // 邊界值仍算在窗口內。
+        assert!(store.rollback_learning(5_000 + ROLLBACK_WINDOW_MS));
+        assert!(!store.is_learned("井"), "窗口內撤銷要回到提交前");
+        assert!(store.is_learned("景"), "更早的學習要保留");
+        assert!(!store.has_pending_learning());
+        assert!(!store.rollback_learning(5_001));
+    }
+
+    #[test]
+    fn test_rollback_window_expires_and_keeps_learning() {
+        let mut store = Store::new();
+        store.begin_rollback(1_000);
+        store.note_passive("井", "ㄐㄧㄥˇ");
+        assert!(!store.rollback_learning(1_000 + ROLLBACK_WINDOW_MS + 1));
+        assert!(store.is_learned("井"), "超出窗口要保留學習");
+        assert!(!store.has_pending_learning());
+    }
+
+    #[test]
+    fn test_skip_signal_penalises_without_deleting() {
+        let mut store = Store::new();
+        store.note_passive("井", "ㄐㄧㄥˇ");
+        let mut list = ranked("ㄐㄧㄥˇ", &[("井", 1000), ("景", 1000)]);
+        store.rank_candidates(&mut list, "ㄐㄧㄥˇ");
+        assert_eq!(list[0].surface, "井");
+
+        // 前兩次跳過只降權：折抵從 250 掉到 170。
+        assert_eq!(store.note_skip("井"), 1);
+        assert_eq!(store.note_skip("井"), 2);
+        assert_eq!(store.rank_key("井", "ㄐㄧㄥˇ", 1000), (1, 830));
+
+        // 第三次達到門檻：不再排第一，但仍在候選裡。
+        assert_eq!(store.note_skip("井"), SKIP_LIMIT);
+        let mut list = ranked("ㄐㄧㄥˇ", &[("井", 1000), ("景", 1000)]);
+        store.rank_candidates(&mut list, "ㄐㄧㄥˇ");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].surface, "景");
+        assert_eq!(list[1].surface, "井");
+    }
+
+    #[test]
+    fn test_selecting_skipped_word_restores_priority() {
+        let mut store = Store::new();
+        store.note_passive("井", "ㄐㄧㄥˇ");
+        for _ in 0..SKIP_LIMIT {
+            store.note_skip("井");
+        }
+        assert_eq!(store.skip_count("井"), SKIP_LIMIT);
+
+        store.note_manual("井", "ㄐㄧㄥˇ", 1);
+        assert_eq!(store.skip_count("井"), 0, "選回來就自我修復");
+        let mut list = ranked("ㄐㄧㄥˇ", &[("井", 1000), ("景", 1000)]);
+        store.rank_candidates(&mut list, "ㄐㄧㄥˇ");
+        assert_eq!(list[0].surface, "井");
+    }
+
+    #[test]
+    fn test_short_reading_records_evidence_only() {
+        let mut store = Store::new();
+        // 讀音 4 個注音符號，不到 7 字元。
+        assert!(reading_len("ㄐㄧㄥˇ") < MIN_TRIGGER_LEN);
+        store.note_passive_evidence("井", store.passive_weight());
+        assert_eq!(store.evidence_by_word["井"].short, 0.25, "證據要留");
+        assert!(!store.is_learned("井"));
+        assert_eq!(
+            store.rank_key("井", "ㄐㄧㄥˇ", 1000),
+            (1, 1000),
+            "證據-only 不改排序"
+        );
+
+        // 對照：一般被動學習會折抵成本。
+        store.note_passive("井", "ㄐㄧㄥˇ");
+        assert_eq!(store.rank_key("井", "ㄐㄧㄥˇ", 1000), (1, 750));
+    }
+
+    #[test]
+    fn test_short_reading_language_evidence_only() {
+        let mut store = Store::new();
+        store.note_language_surface(LanguageId::Ja, "京", 1, 10);
+        assert_eq!(store.language_surface_count(LanguageId::Ja, "京"), 1);
+        assert_eq!(store.language_selections(LanguageId::Ja), 1);
+        assert_eq!(
+            store.language_reading_count(LanguageId::Ja, "き ょ う", "京"),
+            0,
+            "證據不進讀音表，日文重排因此不變"
+        );
+        assert_eq!(reading_len("き ょ う"), 3);
+        assert!(reading_len("きょうははれです") >= MIN_TRIGGER_LEN);
     }
 }

@@ -124,6 +124,13 @@ pub struct SessionConfig {
     pub personal: PersonalStore,
     /// 個人化學習是否啟用；預設啟用，關閉時只讀不寫。
     pub learning: bool,
+    /// 最短觸發長度：讀音短於這個字元數時，只記錄證據，不改變候選排序。
+    ///
+    /// 對照 Mozkey 的 feedback 最短自動套用長度（7 字元），預設
+    /// [`crate::personal::MIN_TRIGGER_LEN`]。被動接受的提交受這個門檻限制；
+    /// 明確手選是使用者意圖，不受限制。注音的 `eval zh-golden` 學習案例都是
+    /// 手選，因此門檻不影響驗收。
+    pub min_trigger_len: usize,
     /// 文件層文脈是否可用；預設開啟。
     ///
     /// 目前只影響 [`Session::document_left`] 與 [`Session::committed_tail`]
@@ -169,6 +176,7 @@ impl Default for SessionConfig {
             simplified: None,
             personal: PersonalStore::new(),
             learning: true,
+            min_trigger_len: crate::personal::MIN_TRIGGER_LEN,
             document_context: true,
             style: InputStyle::default(),
         }
@@ -410,6 +418,7 @@ impl Session {
     /// 翻頁鍵、Home／End 在候選清單中移動，左右方向鍵與 Tab 也在候選間移動。
     pub fn press(&mut self, key: Key) -> Snapshot {
         self.expire_segment_view();
+        self.resolve_pending_learning(&key);
         if key.ctrl {
             self.pending_tone = None;
             self.press_ctrl(key);
@@ -647,6 +656,7 @@ impl Session {
     /// 只還原共用 store 記下的語言學習（日文與後續接上的語言），不影響注音的
     /// 階層式計數。重建中組字內容後，排序會回到學習前的狀態。
     pub fn undo_learning(&mut self) -> bool {
+        self.personal.accept_learning();
         let undone = self.personal.undo_language_note();
         if undone {
             self.rebuild();
@@ -656,6 +666,7 @@ impl Session {
 
     /// 撤銷與某個詞有關的學習；供 `forget` 協定請求使用。
     pub fn forget_word(&mut self, word: &str) -> bool {
+        self.personal.accept_learning();
         let changed = self.personal.forget(word);
         if changed {
             self.highlighted = 0;
@@ -725,6 +736,98 @@ mod tests {
         // 已無組字時再按 Enter 不得重複提交。
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "");
+    }
+
+    /// rollback window：提交後立刻退格，這次學習要補償回提交前。
+    #[test]
+    fn test_commit_then_backspace_reverts_learning() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        // 開候選窗再送出手選，確保有明確學習紀錄。
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "景");
+        assert!(s.personal().is_learned("景"));
+        assert!(s.personal().has_pending_learning());
+
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        assert!(!s.personal().is_learned("景"), "窗口內退格要撤銷學習");
+        assert!(s.personal().uni.is_empty());
+        assert!(s.personal().picked.is_empty());
+        assert!(!s.personal().has_pending_learning());
+    }
+
+    /// rollback window：下一個輸入不是撤銷鍵，就把學習留下。
+    #[test]
+    fn test_next_input_keeps_learning() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "景");
+
+        type_syllable(&mut s, "ㄈㄥ");
+        assert!(s.personal().is_learned("景"));
+        assert!(!s.personal().has_pending_learning());
+    }
+
+    /// 弱負向訊號的接線：跳過已學過的候選時記一次跳過。
+    ///
+    /// 連續跳過到門檻後如何降權由 `personal` 的排序測試涵蓋；這裡只確認
+    /// 選字路徑真的把訊號寫進個人資料。
+    #[test]
+    fn test_skipping_learned_candidate_records_signal() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("井", "ㄐㄧㄥˇ", 0, 0));
+        lex.push(LexEntry::new("景", "ㄐㄧㄥˇ", 40, 0));
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lex);
+        config.personal.note_seed("井", 1.0);
+        let mut s = Session::new(config);
+
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        assert_eq!(s.candidates()[0].surface, "井", "學過的詞先排第一");
+        let index = s
+            .candidates()
+            .iter()
+            .position(|candidate| candidate.surface == "景")
+            .expect("景 是候選");
+        s.select(index);
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "景");
+        assert_eq!(s.personal().skip_count("井"), 1, "被跳過的學習詞記一次");
+    }
+
+    /// 弱負向訊號會自我修復：選回來一次就清掉計數。
+    #[test]
+    fn test_selecting_skipped_candidate_clears_skip() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("井", "ㄐㄧㄥˇ", 0, 0));
+        lex.push(LexEntry::new("景", "ㄐㄧㄥˇ", 40, 0));
+        let mut config = SessionConfig::new(Mode::Zh);
+        config.zh_lexicon = Some(lex);
+        config.personal.note_seed("井", 1.0);
+        for _ in 0..crate::personal::SKIP_LIMIT {
+            config.personal.note_skip("井");
+        }
+        let mut s = Session::new(config);
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        assert_ne!(s.candidates()[0].surface, "井", "跳過 3 次的詞不再排第一");
+
+        // 選回被跳過的詞：清掉計數，下一次回到原本優先度。
+        let index = s
+            .candidates()
+            .iter()
+            .position(|candidate| candidate.surface == "井")
+            .expect("井 仍在候選中");
+        s.select(index);
+        assert_eq!(s.highlighted_text(), Some("井"));
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "井");
+        assert_eq!(s.personal().skip_count("井"), 0);
+
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        assert_eq!(s.candidates()[0].surface, "井");
     }
 
     #[test]
@@ -1451,6 +1554,31 @@ mod tests {
         assert_eq!(s.commit(), "今日");
         type_ja(&mut s, "kyou");
         assert_eq!(s.candidates()[0].surface, "今日");
+    }
+
+    /// 最短觸發長度：3 個假名不到 7 字元，被動接受只留證據、不改排序。
+    #[test]
+    fn test_ja_short_reading_records_evidence_only() {
+        use crate::personal::LanguageId;
+
+        let mut s = ja_learning_session(true);
+        type_ja(&mut s, "kyou");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "今日");
+        assert_eq!(
+            s.personal().language_surface_count(LanguageId::Ja, "今日"),
+            1,
+            "證據要記錄"
+        );
+        assert_eq!(
+            s.personal()
+                .language_reading_count(LanguageId::Ja, "き ょ う", "今日"),
+            0,
+            "短讀音不進讀音表"
+        );
+
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.candidates()[0].surface, "今日", "排序不變");
     }
 
     /// 沒有開啟逐字変換時，日文走原本的 nbest 流程，結果與先前相同。

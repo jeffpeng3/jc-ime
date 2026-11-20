@@ -19,6 +19,16 @@ pub(super) fn now_seconds() -> i64 {
         .unwrap_or(0)
 }
 
+/// 目前 Unix 毫秒數；時鐘早於 epoch 時回傳 0。
+///
+/// rollback 窗口以毫秒計，秒數的精度不夠。
+pub(super) fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 impl Session {
     /// 把送出的文字接到左文尾巴，長度上限對齊前身 `MaxLeftContextUnits`。
     pub(super) fn remember_committed(&mut self, text: &str) {
@@ -35,6 +45,23 @@ impl Session {
 
     pub(super) fn max_candidates(&self) -> usize {
         self.config.max_candidates.max(1)
+    }
+
+    /// 下一次輸入決定上一次提交的學習要留下還是補償。
+    ///
+    /// Backspace、Esc 與 Ctrl+Z 視為撤銷：rollback 窗口內把學習還原成提交前的
+    /// 樣子；其他按鍵或窗口到期則保留學習。對照 Mozkey 的 rollback window。
+    pub(super) fn resolve_pending_learning(&mut self, key: &Key) {
+        if !self.personal.has_pending_learning() {
+            return;
+        }
+        let undo = matches!(key.code, KeyCode::Backspace | KeyCode::Escape)
+            || (key.ctrl && key.code == KeyCode::Char('z'));
+        if undo {
+            self.personal.rollback_learning(now_millis());
+            return;
+        }
+        self.personal.accept_learning();
     }
 
     /// Ctrl 組合鍵：目前只處理啟用後的 `Ctrl+,`。
@@ -646,10 +673,14 @@ impl Session {
     }
 
     /// 把指定候選記進個人學習；數字鍵直接選取時用得到。
+    ///
+    /// 動手前先留一份快照：下一次輸入若是 Backspace／Esc／Ctrl+Z，就把這次
+    /// 學習補償掉；否則在 [`Session::press`] 開頭丟掉快照。
     pub(super) fn learn_candidate(&mut self, index: usize) {
         if !self.config.learning || self.menu.is_some() {
             return;
         }
+        self.personal.begin_rollback(now_millis());
         match self.config.mode {
             Mode::Zh => {
                 self.note_learning_event();
@@ -679,6 +710,9 @@ impl Session {
     }
 
     /// 把一次注音提交記進個人學習。
+    ///
+    /// 被動接受且讀音短於 [`SessionConfig::min_trigger_len`] 時只留證據，不改
+    /// 排序；明確手選不受門檻限制。
     pub(super) fn learn_zh_candidate(&mut self, index: usize) {
         let manual = self.candidate_window;
         let Some(candidate) = self.candidates.get(index).cloned() else {
@@ -692,6 +726,8 @@ impl Session {
         if units.is_empty() {
             return;
         }
+        self.note_candidate_skips(index, &candidate.surface);
+        let short = crate::personal::reading_len(&candidate.reading) < self.config.min_trigger_len;
         let hypothesis = self
             .last_hypotheses
             .iter()
@@ -710,6 +746,9 @@ impl Session {
                 if manual {
                     self.personal
                         .note_manual(&segment.word, &reading, syllables);
+                } else if short {
+                    self.personal
+                        .note_passive_evidence(&segment.word, self.personal.passive_weight());
                 } else {
                     self.personal.note_passive(&segment.word, &reading);
                 }
@@ -720,6 +759,9 @@ impl Session {
             if manual {
                 self.personal
                     .note_manual(&candidate.surface, &candidate.reading, syllables);
+            } else if short {
+                self.personal
+                    .note_passive_evidence(&candidate.surface, self.personal.passive_weight());
             } else {
                 self.personal
                     .note_passive(&candidate.surface, &candidate.reading);
@@ -730,12 +772,14 @@ impl Session {
     /// 把一次日文提交記進共用個人資料的 `ja` 命名空間。
     ///
     /// 優先使用這一輪 N-best 的文節切分；候選不是這一輪結果時，退化成整筆
-    /// 候選一個文節。明確手選（候選窗開著）比被動接受多一倍證據。
+    /// 候選一個文節。明確手選（候選窗開著）比被動接受多一倍證據。被動接受
+    /// 且讀音短於 [`SessionConfig::min_trigger_len`] 時只記詞面證據，不改排序。
     pub(super) fn learn_ja_candidate(&mut self, index: usize) {
         let Some(candidate) = self.candidates.get(index).cloned() else {
             return;
         };
-        let weight = if self.candidate_window {
+        let manual = self.candidate_window;
+        let weight = if manual {
             ja_personal::UNIFIED_MANUAL_WEIGHT
         } else {
             ja_personal::UNIFIED_PASSIVE_WEIGHT
@@ -753,8 +797,48 @@ impl Session {
                 cost: candidate.cost,
             }],
         };
+        self.note_ja_skips(index, &candidate.surface);
+        let at = now_seconds();
+        let short = crate::personal::reading_len(&candidate.reading) < self.config.min_trigger_len;
+        if short && !manual {
+            for clause in &clauses {
+                self.personal.note_language_surface(
+                    crate::personal::LanguageId::Ja,
+                    &clause.surface,
+                    weight,
+                    at,
+                );
+            }
+            return;
+        }
         let left = self.committed.clone();
-        ja_personal::learn_unified(&mut self.personal, &clauses, &left, weight, now_seconds());
+        ja_personal::learn_unified(&mut self.personal, &clauses, &left, weight, at);
+    }
+
+    /// 日文的弱負向訊號：選了非學習候選時，對前面被跳過的結果記一次跳過。
+    pub(super) fn note_ja_skips(&mut self, index: usize, chosen: &str) {
+        self.personal.clear_skip(chosen);
+        if self
+            .personal
+            .language_surface_count(crate::personal::LanguageId::Ja, chosen)
+            > 0
+        {
+            return;
+        }
+        let skipped: Vec<String> = self
+            .last_ja_results
+            .iter()
+            .take(index)
+            .map(|result| result.surface().to_string())
+            .filter(|surface| {
+                self.personal
+                    .language_surface_count(crate::personal::LanguageId::Ja, surface)
+                    > 0
+            })
+            .collect();
+        for surface in skipped {
+            self.personal.note_skip(&surface);
+        }
     }
 
     /// 候選窗的反悔鍵：自訂詞刪除、學到的詞忘記。
@@ -1231,13 +1315,45 @@ impl Session {
         self.last_ja_results = results;
     }
 
+    /// 弱負向訊號：選了非學習候選時，對前面被跳過的學習詞記一次跳過。
+    ///
+    /// 選到的詞若是學過的，等同使用者把它選回來，清掉跳過計數（自我修復）。
+    /// 跳過只降權，不刪除；累積到 [`crate::personal::SKIP_LIMIT`] 次才不再
+    /// 自動排第一。
+    pub(super) fn note_candidate_skips(&mut self, index: usize, chosen: &str) {
+        self.personal.clear_skip(chosen);
+        if self.personal.is_learned(chosen) {
+            return;
+        }
+        let skipped: Vec<String> = self
+            .candidates
+            .iter()
+            .take(index)
+            .filter(|candidate| self.personal.is_learned(&candidate.surface))
+            .map(|candidate| candidate.surface.clone())
+            .collect();
+        for word in skipped {
+            self.personal.note_skip(&word);
+        }
+    }
+
     /// 依共用的日文學習資料重排 N-best；學習關閉時維持統計順序。
-    pub(super) fn rank_ja_learning(&self, results: &mut [JaResult], left: &str) {
+    ///
+    /// 排序之後套用弱負向訊號：被反覆跳過的整句不再自動排第一，但仍在候選
+    /// 清單裡。加上 [`crate::personal::SKIP_LIMIT`] 的判定在個人資料層，這裡
+    /// 只負責把統計排序的第一名往後移一格。
+    pub(super) fn rank_ja_learning(&mut self, results: &mut [JaResult], left: &str) {
         if !self.config.learning {
             return;
         }
         let learning = ja_personal::UnifiedLearning::new(&self.personal);
         learning.rank_results(results, left);
+        if results.len() > 1 {
+            let top = results[0].surface().to_string();
+            if self.personal.skip_count(&top) >= crate::personal::SKIP_LIMIT {
+                results.swap(0, 1);
+            }
+        }
     }
 
     /// 逐字変換開啟時的日文重建：把讀音送進控制器，依決定畫出結果。
@@ -1286,7 +1402,8 @@ impl Session {
             if let Some(decoder) = self.config.ja.clone() {
                 let chars: Vec<char> = reading.chars().collect();
                 results = decoder.results(&chars, &JaContext::default(), self.max_candidates());
-                self.rank_ja_learning(&mut results, &self.committed);
+                let left = self.committed.clone();
+                self.rank_ja_learning(&mut results, &left);
                 candidates = results
                     .iter()
                     .map(|result| {

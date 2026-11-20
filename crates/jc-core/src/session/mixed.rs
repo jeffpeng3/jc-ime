@@ -467,7 +467,8 @@ impl Session {
     /// 把一次混打送出記進分語言學習（`language_learning.go`）。
     ///
     /// 注音片段記成中文，挑出詞面與讀音；照字面的英數片段記成英文。
-    /// 只在送出時呼叫，關閉學習時不寫入。
+    /// 只在送出時呼叫，關閉學習時不寫入。注音片段的讀音短於
+    /// [`SessionConfig::min_trigger_len`] 時只記詞面證據。
     pub(super) fn learn_mixed_languages(&mut self) {
         if !self.config.learning {
             return;
@@ -482,9 +483,19 @@ impl Session {
                     if surface.is_empty() {
                         continue;
                     }
+                    let reading = syllable.as_str();
+                    if crate::personal::reading_len(reading) < self.config.min_trigger_len {
+                        self.personal.note_language_surface(
+                            crate::personal::LanguageId::Zh,
+                            &surface,
+                            1,
+                            at,
+                        );
+                        continue;
+                    }
                     self.personal.note_language(
                         crate::personal::LanguageId::Zh,
-                        syllable.as_str(),
+                        reading,
                         &surface,
                         &left,
                         at,
