@@ -137,7 +137,7 @@ WiX v5 官方只支援 Windows，Linux 上的 `wix build` 有兩個限制：
 | repo 多一份 `legal/licenses/EXTRA.txt` 而 WXS 沒引用 | 失敗，回報「沒有被 WiX 引用」，結束碼 1 |
 | `wix build`（完整 MSI） | 這台 Linux 沒有 WiX 與 `msi.dll`，未執行；實機驗證項目見 `docs/install.md` |
 
-## 建置順序與 throw 前置條件（RC1 修正）
+## 建置順序與 throw 前置條件（RC1／RC2 修正）
 
 RC1 的 Windows job 在 `installer/build.ps1:107` 失敗，訊息是找不到
 `target\i686-pc-windows-msvc\release`。原因是 `Resolve-ReleaseDir` 在建置之前執行，
@@ -154,6 +154,8 @@ RC1 的 Windows job 在 `installer/build.ps1:107` 失敗，訊息是找不到
 `cargo build --release --target i686-pc-windows-msvc -p jc-tsf` 與
 `rustup target add i686-pc-windows-msvc`。x64 允許退回 `target\<profile>`；x86
 不允許退回，避免把 x64 的 `jc-tsf.dll` 當成 x86 DLL 打包。
+
+`jc-tsf` 是 cdylib，Cargo 的 lib target 名稱是 `jc_tsf`，建置產物是 `jc_tsf.dll`；payload 內才改名為 x64 的 `jc-tsf.dll` 與 x86 的 `jc-tsf-x86.dll`，WXS 不用改。其餘 bin target（`jc-engine.exe`、`jc-cli.exe`、`jc-settings-ui.exe`、`jc-tsf-smoke.exe`）保留連字號，已用 `cargo metadata --no-deps` 確認。
 
 ### MSI 檔名與 ProductVersion
 
@@ -175,22 +177,23 @@ workflow 的 `RELEASE_VERSION` 是完整版本，`MSI_VERSION` 是三段數字�
 | 位置 | 訊息 | 前置條件與處理 |
 |---|---|---|
 | `Invoke-Checked`（80） | `<Label> 失敗（結束碼 N）` | 被包裹的原生命令回傳非 0。PowerShell 的 `$ErrorActionPreference = 'Stop'` 不會攔原生命令，所以由 `$LASTEXITCODE` 檢查；修正該 cargo、`check-payload.py` 或簽章指令。 |
-| `Resolve-ReleaseDir`（155） | 找不到建置輸出 ... | 三個 cargo build 都執行過，但 `target\<triple>\<profile>` 不存在。x64 可退回 `target\<profile>`；x86 不行。訊息含實際 cargo 指令與 `rustup target add`。 |
-| 資料根目錄（164） | 沒有資料根目錄 | `-DataRoot` 與 `JC_DATA_ROOT` 都是空值。 |
-| 資料根目錄（167） | 資料根目錄不存在 | `$DataRoot` 非空，但 `Test-Path $DataRoot` 為 false。 |
-| 版本（173） | Cargo.toml 找不到 [workspace.package] version | `Select-String` 在 repo 根目錄 `Cargo.toml` 找不到行首 `version = "..."`。確認 `[workspace.package]` 有 `version`。 |
-| 版本格式（176） | 版本必須是 x.y.z 或 x.y.z-<pre-release> | `$Version` 不符 `^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`。 |
-| MSI 版本（183） | MSI ProductVersion 必須是 x.y.z | `$MsiVersion` 沒給時由 `$Version` 去掉 `-` 後綴；結果仍不是三段數字，或使用者傳入的值格式錯誤。 |
-| payload 程式（196） | 建置輸出缺少 `<name>` | `$ReleaseDir` 內缺 `jc-tsf.dll`、`jc-engine.exe`、`jc-cli.exe`、`jc-settings-ui.exe`、`jc-tsf-smoke.exe` 其中之一。 |
-| x86 DLL（204） | 建置輸出缺少 x86 jc-tsf.dll | `$ReleaseDirX86\jc-tsf.dll` 不存在。通常是沒有 `rustup target add i686-pc-windows-msvc`，或 x86 cargo build 失敗。 |
-| 指定 manifest（216） | 指定的資料 manifest 不存在 | 有 `-Manifest` 或 `JC_DATA_MANIFEST`，但該路徑不存在。 |
-| manifest 內容（226） | manifest 沒有任何 shipped: true 的檔案 | `manifest.json` 可解析，但 `files[].shipped` 全是 false 或缺少欄位。 |
-| manifest 檔案（231） | manifest 列出的檔案不存在 | 某個 shipped entry 的 `path` 轉成 `\` 後，在 `$DataRoot` 下找不到對應檔案。 |
-| 授權文件（247） | 缺少授權文件 `<name>` | repo 根目錄缺 `LICENSE` 或 `NOTICE`。 |
-| 授權文件（252） | 缺少授權文件 legal\THIRD-PARTY-NOTICES.md | repo 缺 `legal\THIRD-PARTY-NOTICES.md`。 |
-| 授權全文（257） | legal\licenses 沒有任何授權全文 | `legal\licenses` 目錄存在但沒有任何檔案。若目錄本身不存在，前面的 `Get-ChildItem` 會先以 terminating error 失敗。 |
-| 簽章（274） | 指定了簽章憑證但找不到 signtool.exe | 有 `-Certificate` 或 `JC_SIGN_CERT`，且沒有 `-SkipSign`，但 PATH 找不到 `signtool.exe`。 |
-| WiX（288） | 找不到 wix.exe | PATH 找不到 `wix.exe`，通常是沒有安裝 WiX v5 或 dotnet tool 目錄不在 PATH。 |
+| `Resolve-ReleaseDir`（164） | 找不到建置輸出 ... | 三個 cargo build 都執行過，但 `target\<triple>\<profile>` 不存在。x64 可退回 `target\<profile>`；x86 不行。訊息含實際 cargo 指令與 `rustup target add`。 |
+| 資料根目錄（173） | 沒有資料根目錄 | `-DataRoot` 與 `JC_DATA_ROOT` 都是空值。 |
+| 資料根目錄（176） | 資料根目錄不存在 | `$DataRoot` 非空，但 `Test-Path $DataRoot` 為 false。 |
+| 版本（182） | Cargo.toml 找不到 [workspace.package] version | `Select-String` 在 repo 根目錄 `Cargo.toml` 找不到行首 `version = "..."`。確認 `[workspace.package]` 有 `version`。 |
+| 版本格式（185） | 版本必須是 x.y.z 或 x.y.z-<pre-release> | `$Version` 不符 `^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`。 |
+| MSI 版本（192） | MSI ProductVersion 必須是 x.y.z | `$MsiVersion` 沒給時由 `$Version` 去掉 `-` 後綴；結果仍不是三段數字，或使用者傳入的值格式錯誤。 |
+| payload 程式（210） | 建置輸出缺少 `<name>` | `$ReleaseDir` 內缺 `jc-engine.exe`、`jc-cli.exe`、`jc-settings-ui.exe`、`jc-tsf-smoke.exe` 其中之一。這些 bin target 保留連字號。 |
+| x64 TSF DLL（216） | 建置輸出缺少預期的 jc_tsf.dll ... | `$ReleaseDir\jc_tsf.dll` 不存在。訊息會列出目錄中實際存在的 `.dll`，可直接看出連字號與底線不符。 |
+| x86 TSF DLL（224） | 建置輸出缺少預期的 jc_tsf.dll ... | `$ReleaseDirX86\jc_tsf.dll` 不存在。訊息會列出該目錄實際存在的 `.dll`，並提示 `rustup target add i686-pc-windows-msvc`。 |
+| 指定 manifest（236） | 指定的資料 manifest 不存在 | 有 `-Manifest` 或 `JC_DATA_MANIFEST`，但該路徑不存在。 |
+| manifest 內容（246） | manifest 沒有任何 shipped: true 的檔案 | `manifest.json` 可解析，但 `files[].shipped` 全是 false 或缺少欄位。 |
+| manifest 檔案（251） | manifest 列出的檔案不存在 | 某個 shipped entry 的 `path` 轉成 `\` 後，在 `$DataRoot` 下找不到對應檔案。 |
+| 授權文件（267） | 缺少授權文件 `<name>` | repo 根目錄缺 `LICENSE` 或 `NOTICE`。 |
+| 授權文件（272） | 缺少授權文件 legal\THIRD-PARTY-NOTICES.md | repo 缺 `legal\THIRD-PARTY-NOTICES.md`。 |
+| 授權全文（277） | legal\licenses 沒有任何授權全文 | `legal\licenses` 目錄存在但沒有任何檔案。若目錄本身不存在，前面的 `Get-ChildItem` 會先以 terminating error 失敗。 |
+| 簽章（294） | 指定了簽章憑證但找不到 signtool.exe | 有 `-Certificate` 或 `JC_SIGN_CERT`，且沒有 `-SkipSign`，但 PATH 找不到 `signtool.exe`。 |
+| WiX（308） | 找不到 wix.exe | PATH 找不到 `wix.exe`，通常是沒有安裝 WiX v5 或 dotnet tool 目錄不在 PATH。 |
 
 ### 這輪的靜態檢查
 
