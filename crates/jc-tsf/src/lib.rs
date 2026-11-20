@@ -8,6 +8,7 @@
 
 #![cfg(windows)]
 
+mod candidates;
 mod composition;
 mod engine;
 mod guids;
