@@ -12,11 +12,11 @@ on:
   workflow_dispatch:
     inputs:
       data_bundle_url:
-        description: "資料包 URL（tar.gz／tgz／zip）；留空則讀 repo variable JC_DATA_BUNDLE_URL"
+        description: "資料包 URL（tar.zst／tar.gz／tgz／zip）；留空則讀 repo secret 或 variable JC_DATA_BUNDLE_URL"
         required: false
         type: string
       data_bundle_sha256:
-        description: "資料包 SHA-256；留空則讀 repo variable JC_DATA_BUNDLE_SHA256"
+        description: "資料包 SHA-256；留空則讀 repo secret 或 variable JC_DATA_BUNDLE_SHA256"
         required: false
         type: string
 
@@ -111,8 +111,9 @@ jobs:
       signed: ${{ steps.signing.outputs.signed }}
     env:
       RELEASE_VERSION: ${{ needs.verify.outputs.version }}
-      DATA_BUNDLE_URL: ${{ github.event.inputs.data_bundle_url || vars.JC_DATA_BUNDLE_URL || secrets.JC_DATA_BUNDLE_URL }}
-      DATA_BUNDLE_SHA256: ${{ github.event.inputs.data_bundle_sha256 || vars.JC_DATA_BUNDLE_SHA256 }}
+      # 手動輸入優先，其次 repo secret，最後 repo variable。
+      DATA_BUNDLE_URL: ${{ github.event.inputs.data_bundle_url || secrets.JC_DATA_BUNDLE_URL || vars.JC_DATA_BUNDLE_URL }}
+      DATA_BUNDLE_SHA256: ${{ github.event.inputs.data_bundle_sha256 || secrets.JC_DATA_BUNDLE_SHA256 || vars.JC_DATA_BUNDLE_SHA256 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -146,13 +147,13 @@ jobs:
 
           if (-not [string]::IsNullOrWhiteSpace($env:DATA_BUNDLE_SHA256)) {
             $actual = (Get-FileHash -Algorithm SHA256 $bundle).Hash.ToLowerInvariant()
-            $expected = $env:DATA_BUNDLE_SHA256.ToLowerInvariant()
+            $expected = $env:DATA_BUNDLE_SHA256.Trim().ToLowerInvariant()
             if ($actual -ne $expected) {
               throw "資料包 SHA-256 不符：預期 $expected，實際 $actual"
             }
             Write-Host '資料包 SHA-256 通過'
           } else {
-            Write-Warning '沒有 JC_DATA_BUNDLE_SHA256；跳過資料包雜湊檢查（manifest 內的檔案雜湊仍會驗）'
+            Write-Warning '沒有設定 JC_DATA_BUNDLE_SHA256（secret／variable／輸入皆未提供）；跳過資料包雜湊檢查（manifest 內的檔案雜湊仍會驗）'
           }
 
           $root = Join-Path $env:RUNNER_TEMP 'jc-ime-data'
@@ -164,7 +165,39 @@ jobs:
           } else {
             & tar -xf $bundle -C $root
             if ($LASTEXITCODE -ne 0) {
-              throw "解開資料包失敗（tar exit $LASTEXITCODE）"
+              # Windows 內建 tar 不一定支援 zstd；有 7-Zip 就退回它。
+              if ($url -match '\.(zst|tzst)(\?|$)') {
+                Write-Warning 'Windows tar 無法解 zstd；改用 7-Zip。'
+                Remove-Item $root -Recurse -Force
+                New-Item -ItemType Directory -Path $root | Out-Null
+
+                $sevenZip = @(
+                  (Join-Path ${env:ProgramFiles} '7-Zip\7z.exe'),
+                  (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.exe')
+                ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+                if (-not $sevenZip) {
+                  throw '找不到 7-Zip，且 Windows tar 不支援 .tar.zst；請把資料包改成 .tar.gz。'
+                }
+                $sevenWork = Join-Path $env:RUNNER_TEMP 'jc-ime-data-7z'
+                if (Test-Path $sevenWork) { Remove-Item $sevenWork -Recurse -Force }
+                New-Item -ItemType Directory -Path $sevenWork | Out-Null
+
+                & $sevenZip x $bundle "-o$sevenWork" -y
+                if ($LASTEXITCODE -ne 0) {
+                  throw "7-Zip 解開 zstd 失敗（exit $LASTEXITCODE）"
+                }
+                $tarFile = Get-ChildItem -Path $sevenWork -Filter '*.tar' -File -Recurse |
+                  Select-Object -First 1
+                if (-not $tarFile) {
+                  throw '7-Zip 沒有產出 .tar；請把資料包改成 .tar.gz。'
+                }
+                & $sevenZip x $tarFile.FullName "-o$root" -y
+                if ($LASTEXITCODE -ne 0) {
+                  throw "7-Zip 解開 tar 失敗（exit $LASTEXITCODE）"
+                }
+              } else {
+                throw "解開資料包失敗（tar exit $LASTEXITCODE）"
+              }
             }
           }
 
