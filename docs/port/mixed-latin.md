@@ -38,6 +38,22 @@ Go 沒有可沿用的測試名；新測試都在 `mixed_latin.rs` 與 `mixed.rs`
 | `test_lexicon_prefers_known_word` | 詞典加分改變歧義 |
 | `test_mixed_latin_split_fixture` | Router 端到端 |
 | `test_mixed_latin_split_off_keeps_literal` | 開關關閉時行為不變 |
+| `test_mixed_latin_split_trailing_zhu_yin_final` | `5k42. g4n0 vul3` → `這都是三小`；尾端 `.` 是 ㄡ |
+| `test_mixed_latin_split_trailing_period_stays_literal` | 英文 `hello.` 的句點仍是標點 |
+| `test_latin_run_keeps_trailing_final_only_when_split_completes` | `split_latin_run` 的四種邊界 |
+
+## 尾端標點與注音韻母
+
+`split_token` 把尾端 `. , ; : ! ? ) ] } " ' >` 當英文標點剝掉，但 `.` `,` `;`
+在大千鍵盤是韻母 ㄡ ㄝ ㄤ。切分器因此看不到 `5k42.` 的句點，只收到 `5k42`
+（ㄓㄜˋ 加上缺韻母的 ㄉ），判定失敗後整段退回英文。
+
+`split_latin_run` 在剝之前先問切分器一次，條件是「最後一個片段是注音、結束在
+run 結尾、而且起點在標點之前」，也就是標點確實被前一個音節當成韻母吃掉。
+只有「整段能解析」不夠：`hello.` 也能解析成英文 `hello` 加上獨立的 `ㄡ`，
+那會把英文句點變成注音。`:` 不是注音鍵，一律不讓。
+
+開關關閉時 `split_latin_run` 直接走原本的 `split_token`，行為與改動前相同。
 | `test_mixed_latin_split_commit` | Session 逐鍵與送出 |
 
 測試用 `InMemoryLexicon` 的 `LexEntry` 成本要低於未知詞成本（8），否則解碼器
