@@ -12,6 +12,9 @@
 2. `data/manifest.json` 的每個 `shipped: true` 條目都在 payload 裡，大小與
    SHA-256 都與 manifest 相同。
 3. 每個 `shipped: true` 的 manifest 條目都被 WXS 引用；少一個就是安裝包漏檔。
+4. 授權文件清單（repo 的 `LICENSE`、`NOTICE`、`legal/THIRD-PARTY-NOTICES.md` 與
+   `legal/licenses/` 全部）每一份都在 payload、且內容與 repo 相同；repo 有的檔案
+   不能在 WXS 缺席。`legal/licenses/` 新增檔案而沒進 WXS 時會失敗。
 """
 
 from __future__ import annotations
@@ -26,6 +29,11 @@ from pathlib import Path
 # WiX v5 的命名空間；v4 之後都是這個字串。
 WIX_NS = "{http://wixtoolset.org/schemas/v4/wxs}"
 PAYLOAD_VAR = "$(var.PayloadDir)"
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# 授權文件在 repo 與 payload 使用同一個相對路徑；WXS 也照這個路徑引用。
+LEGAL_FIXED = ("LICENSE", "NOTICE", "legal/THIRD-PARTY-NOTICES.md")
 
 
 def payload_relative(source: str) -> str | None:
@@ -51,12 +59,50 @@ def wxs_files(wxs: Path) -> list[tuple[str, str, str]]:
     return result
 
 
+def legal_files() -> list[str]:
+    """授權文件的完整清單；`legal/licenses/` 以目錄實際內容為準。"""
+    licenses_dir = REPO_ROOT / "legal" / "licenses"
+    nested = sorted(
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in licenses_dir.rglob("*")
+        if path.is_file()
+    )
+    return list(LEGAL_FIXED) + nested
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def check_legal(payload: Path, referenced: set[str], errors: list[str]) -> int:
+    """比對 repo、payload 與 WXS 三邊的授權文件清單。回傳檢查過的檔案數。"""
+    required = legal_files()
+    checked = 0
+    for relative in required:
+        checked += 1
+        source = REPO_ROOT / relative
+        if not source.is_file():
+            errors.append(f"repo 缺少授權文件 {relative}")
+            continue
+        if relative not in referenced:
+            errors.append(f"授權文件 {relative} 沒有被 WiX 引用")
+        staged = payload / relative
+        if not staged.is_file():
+            errors.append(f"payload 缺少授權文件 {relative}")
+            continue
+        if staged.stat().st_size != source.stat().st_size:
+            errors.append(
+                f"授權文件 {relative} 大小不符：repo {source.stat().st_size}，"
+                f"payload {staged.stat().st_size}"
+            )
+            continue
+        if sha256(staged) != sha256(source):
+            errors.append(f"授權文件 {relative} 內容與 repo 不同")
+    return checked
 
 
 def main() -> int:
@@ -69,7 +115,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--wxs",
-        default="installer/jc-ime.wxs",
+        default=str(REPO_ROOT / "installer" / "jc-ime.wxs"),
         help="WiX 專案檔（預設 installer/jc-ime.wxs）",
     )
     args = parser.parse_args()
@@ -127,7 +173,10 @@ def main() -> int:
                 if f"data/{relative}" not in referenced:
                     errors.append(f"data/{relative} 在 manifest 內隨附，但 WiX 沒有引用")
 
+    legal_checked = check_legal(payload, referenced, errors)
+
     print(f"WXS 引用檔案：{checked}")
+    print(f"授權文件：{legal_checked}")
     if errors:
         for error in errors:
             print(f"錯誤：{error}", file=sys.stderr)

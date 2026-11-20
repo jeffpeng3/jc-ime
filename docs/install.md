@@ -28,7 +28,8 @@ msiexec /i jc-ime-0.1.0-x64.msi /qn /l*v install.log
 
 安裝器會依序做：
 
-1. 把程式放到 `%ProgramFiles%\jc-ime\`，資料放到 `%ProgramData%\jc-ime\data\`。
+1. 把程式放到 `%ProgramFiles%\jc-ime\`，授權文件放到 `%ProgramFiles%\jc-ime\legal\`，
+   資料放到 `%ProgramData%\jc-ime\data\`。
 2. 以 SYSTEM 呼叫 `jc-tsf.dll` 的 `DllRegisterServer`：寫
    `HKCR\CLSID\{7B7D6E1A-...}\InprocServer32`、呼叫
    `ITfInputProcessorProfiles::Register`＋`AddLanguageProfile`（zh-TW、`jc 注音`）、
@@ -36,7 +37,7 @@ msiexec /i jc-ime-0.1.0-x64.msi /qn /l*v install.log
 3. 註冊引擎開機啟動：`HKLM\Software\Microsoft\Windows\CurrentVersion\Run\jc-ime-engine`。
 4. 以目前使用者身分呼叫 `InstallLayoutOrTip`，把「jc 注音」加進你的語言清單。
    不改你的預設輸入法。
-5. 建立開始功能表的「jc 注音設定」捷徑。
+5. 建立開始功能表的「jc 注音設定」與「jc 注音授權」兩個捷徑。
 
 ### 安裝後
 
@@ -81,6 +82,10 @@ reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01
 | `%ProgramFiles%\jc-ime\jc-settings-ui.exe` | 設定程式 |
 | `%ProgramFiles%\jc-ime\jc-tsf-smoke.exe` | 免管理員冒煙測試 |
 | `%ProgramFiles%\jc-ime\jc-tip-register.exe` | MSI 自訂動作用；手動修復註冊；開始功能表捷徑的啟動器 |
+| `%ProgramFiles%\jc-ime\legal\LICENSE` | 本專案 AGPL-3.0-only 全文 |
+| `%ProgramFiles%\jc-ime\legal\NOTICE` | 專案 NOTICE（本專案與隨附第三方元件的關係） |
+| `%ProgramFiles%\jc-ime\legal\THIRD-PARTY-NOTICES.md` | 逐來源的授權、版本與署名 |
+| `%ProgramFiles%\jc-ime\legal\licenses\` | 授權全文 17 份：Mozc、UniDic、Apache-2.0、CC-BY-4.0、CC-BY-SA-3.0／4.0、MIT、ESDB-SCOWL 等 |
 | `%ProgramData%\jc-ime\data\manifest.json` | 資料索引（版本、大小、SHA-256、授權） |
 | `%ProgramData%\jc-ime\data\packs\ja-lexicon-mozc-v2.pack` | Mozc 日文詞典 |
 | `%ProgramData%\jc-ime\data\build-zh\lexicon.bin` | 注音詞典 |
@@ -93,6 +98,28 @@ reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01
 
 Funmula 的 `models/zh-select`、`models/zh-punct` 依授權不可隨產品散布，MSI 不含
 這兩個模型。引擎在缺檔時只警告並退回統計選字；下載流程屬於 `data-download` 任務。
+
+### 授權文件位置
+
+授權文件全部集中在 `%ProgramFiles%\jc-ime\legal\`，安裝後可直接用檔案總管或
+記事本開啟：
+
+| 路徑 | 內容 |
+|---|---|
+| `legal\LICENSE` | AGPL-3.0-only 全文 |
+| `legal\NOTICE` | 專案 NOTICE |
+| `legal\THIRD-PARTY-NOTICES.md` | 第三方逐來源聲明，含 Mozc、UniDic、注音資料、Jinen 模型與 GPUI |
+| `legal\licenses\` | 17 份授權全文與資料來源 notice |
+
+「開始功能表 → jc 注音 → jc 注音授權」會用記事本開啟
+`legal\THIRD-PARTY-NOTICES.md`。捷徑透過 `jc-tip-register.exe legal` 組合路徑，
+所以換安裝磁碟或目錄名稱都不受影響；`.md` 在乾淨的 Windows 沒有預設關聯，
+這裡不依賴檔案關聯。
+
+反安裝會連 `legal\` 整個目錄一起刪除，不留孤兒檔。使用者資料
+（`%LOCALAPPDATA%\jc-ime`）與 `data-download` 另外下載的模型不受影響。
+Funmula 兩個模型的授權說明在 `legal\licenses\MIT-Funmula.txt`，即使模型不由
+本安裝包散布，聲明仍隨安裝包提供。
 
 ### 機碼
 
@@ -127,9 +154,9 @@ msiexec /x jc-ime-0.1.0-x64.msi KEEPUSERSETTINGS=1
    `Unregister`、`UnregisterCategory`、刪 `HKCR\CLSID\{...}`。這一步在刪檔案之前，
    所以 DLL 還載入得到。DLL 已被隔離或刪除時，`jc-tip-register` 會用內建退路直接
    清 CTF 機碼，不讓 TIP 卡在系統裡。
-2. MSI 刪檔案與 `Run` 值，再移除空目錄。之後由 `data-download` 下載到
-   `%ProgramData%\jc-ime\data` 的模型不屬於 MSI，不會被刪；要完全清空需手動刪
-   該目錄。
+2. MSI 刪檔案與 `Run` 值，再移除空目錄。授權文件（`legal\` 整個目錄）也在這一步
+   刪除。之後由 `data-download` 下載到 `%ProgramData%\jc-ime\data` 的模型不屬於
+   MSI，不會被刪；要完全清空需手動刪該目錄。
 3. `InstallFinalize` 之後以目前使用者身分跑 `user-uninstall`：從你的語言清單移除
    「jc 注音」，並刪 `%LOCALAPPDATA%\jc-ime`（`KEEPUSERSETTINGS=1` 時保留）。
 
@@ -185,6 +212,7 @@ signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 ^
 | 想確認 DLL 與類廠 | `cd "%ProgramFiles%\jc-ime"` 後執行 `.\jc-tsf-smoke.exe` |
 | 想知道 TSF 內部發生什麼 | 設 `JC_TSF_LOG=1` 後重開應用程式，看 `%LOCALAPPDATA%\jc-ime\tsf.log` 與 DebugView |
 | 反安裝後還有機碼 | `reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-...}"`；用 `jc-tip-register.exe machine-unregister "%ProgramFiles%\jc-ime\jc-tsf.dll"` 補清 |
+| 找不到授權文件或捷徑打不開 | 看 `%ProgramFiles%\jc-ime\legal\`；缺檔就修復安裝 `msiexec /fa jc-ime-0.1.0-x64.msi` |
 
 ## 必須在 Windows 驗證
 
@@ -203,6 +231,9 @@ Linux 只能驗證 WiX 專案能被編譯器解析與 payload 清單一致，下
 8. 非管理員帳號只按 `Win+Space` 使用時，是否會因為 Run 項目或 ACL 出問題。
 9. 未簽章與已簽章兩種 MSI 的 SmartScreen 行為。
 10. 32 位元應用程式（例如舊版 Office）看不到這個 TIP，這是目前只建 x64 DLL 的已知限制。
+11. `%ProgramFiles%\jc-ime\legal\` 的 20 個檔案是否齊全、「jc 注音授權」捷徑是否
+    真的用記事本開啟 `THIRD-PARTY-NOTICES.md`，以及反安裝後整個 `legal\` 目錄
+    是否消失。
 
 ## 已知限制
 
@@ -216,8 +247,5 @@ Linux 只能驗證 WiX 專案能被編譯器解析與 payload 清單一致，下
   `HKCU` 不會被加到。
 - 設定變更後需要重啟引擎。
 - 注音神經選字模型（Funmula `zh-select`）依授權只能由使用者下載，安裝包不含。
-- 授權文件（`LICENSE`、`NOTICE`、`legal/`）還沒打進 MSI；`legal/README.md` 的
-  L-21（Jinen 模型）也還標著「僅本機評估」。出貨前由 `legal-notices` 任務補齊，
-  這是目前安裝包的合規缺口。
 - 沒有候選窗自繪、沒有 `ITfDisplayAttributeProvider`、沒有 32 位元版本；這些屬於
   其他任務或後續版本。

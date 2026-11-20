@@ -1,6 +1,6 @@
 //! Windows 專屬實作。
 //!
-//! 所有 `unsafe` 都集中在這裡；呼叫端（`main.rs`）只看到 [`Error`] 與五個動作。
+//! 所有 `unsafe` 都集中在這裡；呼叫端（`main.rs`）只看到 [`Error`] 與六個動作。
 
 use std::ffi::c_void;
 use std::path::Path;
@@ -182,6 +182,31 @@ pub fn open_settings() -> Result<(), Error> {
         .arg(&settings)
         .spawn()
         .map_err(|error| Error::Failure(format!("啟動 {} 失敗：{error}", ui.display())))?;
+    Ok(())
+}
+
+/// 開啟 `legal\THIRD-PARTY-NOTICES.md`。
+///
+/// 捷徑只帶 `legal` 一個字，路徑由安裝目錄組合，所以換安裝槽或目錄名稱都不受
+/// 影響。用記事本開啟：乾淨的 Windows 對 `.md` 沒有預設關聯，交給 ShellExecute
+/// 會跳出「選擇應用程式」，而授權文件本來就是純文字。
+pub fn open_legal() -> Result<(), Error> {
+    let current = std::env::current_exe()?;
+    let dir = current
+        .parent()
+        .ok_or_else(|| Error::Failure("無法取得安裝目錄".into()))?;
+    let notices = dir.join("legal").join("THIRD-PARTY-NOTICES.md");
+    if !notices.is_file() {
+        return Err(Error::Failure(format!(
+            "找不到 {}；安裝目錄不完整",
+            notices.display()
+        )));
+    }
+
+    std::process::Command::new("notepad.exe")
+        .arg(&notices)
+        .spawn()
+        .map_err(|error| Error::Failure(format!("開啟 {} 失敗：{error}", notices.display())))?;
     Ok(())
 }
 

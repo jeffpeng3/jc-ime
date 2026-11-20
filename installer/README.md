@@ -15,9 +15,9 @@
 | 檔案 | 用途 |
 |---|---|
 | `jc-ime.wxs` | MSI 本體：目錄、檔案、元件、自訂動作、`MajorUpgrade` |
-| `jc-tip-register/` | MSI 呼叫的輔助程式：`DllRegisterServer`、`InstallLayoutOrTip`、退路清理；也是設定捷徑的啟動器 |
-| `build.ps1` | Windows 上的完整建置：cargo → 暫存 payload → `wix build` → 選用簽章 |
-| `check-payload.py` | 檢查 WXS 引用的檔案、manifest 的 `shipped` 條目、大小與 SHA-256 |
+| `jc-tip-register/` | MSI 呼叫的輔助程式：`DllRegisterServer`、`InstallLayoutOrTip`、退路清理；也是設定與授權捷徑的啟動器 |
+| `build.ps1` | Windows 上的完整建置：cargo → 暫存 payload（含授權文件）→ `wix build` → 選用簽章 |
+| `check-payload.py` | 檢查 WXS 引用的檔案、manifest 的 `shipped` 條目、大小與 SHA-256，以及授權文件清單 |
 | `validate-linux.sh` | Linux 上的有限驗證：WiX 編譯與符號解析（不能綁定 MSI） |
 
 ## 建置
@@ -51,9 +51,14 @@ $env:JC_SIGN_PASSWORD = '...'
    只複製 `shipped: true` 的檔案。Funmula 的 `zh-select`、`zh-punct` 依授權不隨
    產品散布。
 3. `jc-cli data verify` 驗證暫存資料的雜湊。
-4. 有憑證時簽 `jc-tsf.dll`、`jc-engine.exe`、`jc-cli.exe`、`jc-settings-ui.exe`、
+4. 把授權文件以 repo 的相對路徑複製進 payload：`LICENSE`、`NOTICE`、
+   `legal/THIRD-PARTY-NOTICES.md`、`legal/licenses/` 全部。缺檔或
+   `legal/licenses/` 空目錄時直接失敗。
+5. `check-payload.py` 比對 WXS 引用、`shipped` 資料檔與授權文件三份清單；repo 的
+   授權文件沒進 WXS、payload 少檔或內容與 repo 不同都會失敗。
+6. 有憑證時簽 `jc-tsf.dll`、`jc-engine.exe`、`jc-cli.exe`、`jc-settings-ui.exe`、
    `jc-tsf-smoke.exe`、`jc-tip-register.exe`，再簽 MSI。沒憑證時輸出未簽章 MSI。
-5. `wix build -arch x64 -d Version=<Cargo 版本> -d PayloadDir=<暫存目錄>`。
+7. `wix build -arch x64 -d Version=<Cargo 版本> -d PayloadDir=<暫存目錄>`。
 
 版本號取自 workspace `Cargo.toml` 的 `version`；MSI 只接受 `x.y.z`，pre-release
 字串會讓腳本停下。
@@ -66,10 +71,16 @@ $env:JC_SIGN_PASSWORD = '...'
 %ProgramFiles%\jc-ime\            jc-tsf.dll、jc-engine.exe、jc-cli.exe、
                                   jc-settings-ui.exe、jc-tsf-smoke.exe、
                                   jc-tip-register.exe
+%ProgramFiles%\jc-ime\legal\      LICENSE、NOTICE、THIRD-PARTY-NOTICES.md
+%ProgramFiles%\jc-ime\legal\licenses\  legal/licenses/ 的 17 份授權全文
 %ProgramData%\jc-ime\data\        manifest.json 與 5 個 shipped 資料檔
 %LOCALAPPDATA%\jc-ime\            settings.json、personal.json、tsf.log（使用者資料，
                                   由程式建立；MSI 不寫入）
 ```
+
+授權文件在 payload 內的路徑與 repo 相同，`check-payload.py` 因此可以直接比對
+雜湊。WXS 的 `LegalFiles` 群組把它們放進 `LEGALDIR`／`LICENSEDIR`；這些是普通
+元件，反安裝跟著 `RemoveFiles` 一起刪。
 
 自訂動作：
 
@@ -88,6 +99,11 @@ $env:JC_SIGN_PASSWORD = '...'
 `RegisterTip` 用 `Return="check"`：註冊失敗就讓安裝失敗並回滾，不留半套 TIP。
 `UnregisterTip` 與兩個 `user-*` 用 `Return="ignore"`：反安裝不能被已隔離的 DLL 或
 使用者的語言設定卡住。
+
+開始功能表有兩個捷徑：`jc 注音設定`（`jc-tip-register settings`）與
+`jc 注音授權`（`jc-tip-register legal`）。後者用記事本開啟
+`%ProgramFiles%\jc-ime\legal\THIRD-PARTY-NOTICES.md`；`.md` 在乾淨的 Windows
+沒有預設關聯，所以不讓 `.lnk` 直接指向檔案。
 
 ## 建置選項
 

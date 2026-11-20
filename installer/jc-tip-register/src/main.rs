@@ -10,6 +10,7 @@
 //! | `user-install` | 目前使用者（immediate） | 安裝完成之後 |
 //! | `user-uninstall <0\|1>` | 目前使用者 | 解除安裝時 |
 //! | `settings` | 目前使用者 | 開始功能表的設定捷徑 |
+//! | `legal` | 目前使用者 | 開始功能表的「授權」捷徑 |
 //!
 //! `machine-*` 呼叫 `jc-tsf.dll` 自己的 `DllRegisterServer`／`DllUnregisterServer`，
 //! 不重抄一份註冊邏輯；只有 DLL 已不在（例如被防毒隔離）時才用內建的退路直接
@@ -37,9 +38,11 @@ fn usage() -> &'static str {
      \x20 user-install                    把 jc 注音加進目前使用者的語言清單\n\
      \x20 user-uninstall <0|1>            從目前使用者移除；1 表示保留使用者設定\n\
      \x20 settings                        以目前使用者的路徑啟動 jc-settings-ui.exe\n\
+     \x20 legal                           用記事本開啟 legal\\THIRD-PARTY-NOTICES.md\n\
      \n\
      machine-* 與 user-* 由 installer/jc-ime.wxs 的自訂動作呼叫；settings 是開始\n\
-     功能表捷徑的入口，會把 %LOCALAPPDATA% 展開後再交給設定程式。"
+     功能表捷徑的入口，會把 %LOCALAPPDATA% 展開後再交給設定程式；legal 是\n\
+     「授權」捷徑的入口。"
 }
 
 /// 解析後的子命令。
@@ -58,6 +61,8 @@ pub enum Command {
     },
     /// 啟動設定程式；路徑由程式自己展開，不依賴捷徑的環境變數。
     Settings,
+    /// 開啟授權文件（`legal\THIRD-PARTY-NOTICES.md`）。
+    Legal,
 }
 
 /// 解析命令列。
@@ -82,6 +87,10 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
         "settings" => match rest {
             [] => Ok(Command::Settings),
             _ => Err("settings 不接受參數".into()),
+        },
+        "legal" => match rest {
+            [] => Ok(Command::Legal),
+            _ => Err("legal 不接受參數".into()),
         },
         "user-uninstall" => match rest {
             [] => Ok(Command::UserUninstall {
@@ -110,6 +119,7 @@ fn run(args: &[String]) -> Result<(), platform::Error> {
         Command::UserInstall => platform::user_install(),
         Command::UserUninstall { keep_user_data } => platform::user_uninstall(keep_user_data),
         Command::Settings => platform::open_settings(),
+        Command::Legal => platform::open_legal(),
     }
 }
 
@@ -187,6 +197,12 @@ mod tests {
     fn settings_takes_no_arguments() {
         assert_eq!(parse_args(&args(&["settings"])), Ok(Command::Settings));
         assert!(parse_args(&args(&["settings", "x"])).is_err());
+    }
+
+    #[test]
+    fn legal_takes_no_arguments() {
+        assert_eq!(parse_args(&args(&["legal"])), Ok(Command::Legal));
+        assert!(parse_args(&args(&["legal", "x"])).is_err());
     }
 
     #[test]
