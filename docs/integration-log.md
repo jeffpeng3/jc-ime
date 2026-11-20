@@ -1504,3 +1504,9 @@ gate（固定工具鏈）：
 - `cargo check --workspace --all-targets` exit 0；`cargo clippy --workspace --all-targets -- -D warnings` exit 0。
 - 沒有行為改動，依指示不重跑題庫。
 - `git branch --no-merged main`：空。
+
+## 2026-11-20 18:35 release-msi-fix（UTF-8）與 0.1.0-rc.4
+
+- `release-msi-fix` `2254346` → `b904012`：Windows Python 輸出改 UTF-8（`build.ps1`、`check-payload.py`）。
+- `rc4` `0af7223` → `d3348c2`：版本 `0.1.0-rc.4`，CHANGELOG 補編碼修正；`Cargo.lock` 另以 `chore` commit 同步。
+- gate：test exit 0（54 targets、1286 passed）、clippy exit 0、fmt exit 0。依指示不重跑題庫（只改安裝器與文件）。
