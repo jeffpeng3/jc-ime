@@ -159,7 +159,7 @@ GUID 與註冊程式碼是在原處擴充。
 | `cargo check --target x86_64-pc-windows-gnu --all-targets`（同上） | 通過 |
 | `cargo clippy --target x86_64-pc-windows-msvc --all-targets`（同上） | 0 警告 |
 | `check-payload.py`（WXS 引用 34 個檔案） | 通過；拿掉 payload 的 `jc-tsf-x86.dll` 後回報「缺少 jc-tsf-x86.dll（File Id FileTsfDllX86）」、結束碼 1 |
-| WXS 結構檢查（自訂動作、FileRef、Component GUID、`Win64="no"`） | 通過：6 個自訂動作、34 個 File、37 個 Component |
+| WXS 結構檢查（自訂動作、FileRef、Component GUID、`Bitness="always32"`） | 通過：6 個自訂動作、34 個 File、37 個 Component |
 | `installer/validate-linux.sh` | **未執行**：這台機器的 .NET runtime 不見了，`wix` 起不來 |
 | `wix build`／MSI／ICE | 未執行；`wix` 需要 Windows |
 
@@ -239,9 +239,9 @@ registry key or value。
 6. MSI 日誌裡 `RegisterTip` 一次收到兩個路徑，rollback 動作能反向清乾淨。
 7. `i686-pc-windows-msvc` 的 crate 在 Windows 上連結得出真的 DLL（Linux 只驗到
    `cargo check`，沒有 MSVC linker）。
-8. `wix build` 的 ICE 驗證：32 位元元件（`Win64="no"`）裝在
+8. `wix build` 的 ICE 驗證：32 位元元件（`Bitness="always32"`）裝在
    `ProgramFiles64Folder` 底下，ICE80 可能會提出警告。這個元件沒有任何轉向的
-   檔案或機碼，實際不受影響；若驗證把警告升級成錯誤，把 `TsfDllX86` 的 `Win64`
+   檔案或機碼，實際不受影響；若驗證把警告升級成錯誤，把 `TsfDllX86` 的 `Bitness`
    拿掉即可（檔案位置只由明確的 `Directory` 決定）。
 
 ## 已知限制
