@@ -5,23 +5,35 @@
 //! `todo!()`、不會 panic。
 //!
 //! 傳輸規劃：以 `UnixStream` 連 `--socket <path>`，握手、逾時與重連策略沿用
-//! `jc-windows` 的設計。
+//! `jc-windows` 的設計；`launchd` 的 plist 與 socket 活化不屬於這個 crate。
+//!
+//! # 平台邊界
+//!
+//! - `src/unix.rs`（`#![cfg(unix)]`）是唯一的 unix 實作位置：`UnixStream`、
+//!   `UnixListener`、`std::os::unix` 只能出現在那裡。
+//! - `src/unsupported.rs`（`#![cfg(not(unix))]`）只保留回 [`Error::Unsupported`]
+//!   的公開介面，讓 `cargo check --workspace` 在 Windows 也能通過。
+//! - 這個檔案必須保持平台無關：不要在這裡引入 `std::os::unix` 或 `UnixStream`，
+//!   否則 Windows 建置會直接編不過。
+//!
+//! 之後補 Unix socket 實作時，把傳輸層寫進 `src/unix.rs`；`Client` 與 `Error`
+//! 留在這裡共用，兩個平台模組只負責提供 [`UnixSocket`]。
+
+#[cfg(unix)]
+mod unix;
+#[cfg(not(unix))]
+mod unsupported;
+
+#[cfg(unix)]
+pub use unix::UnixSocket;
+#[cfg(not(unix))]
+pub use unsupported::UnixSocket;
 
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::time::Duration;
 
 use jc_proto::{ErrorCode, Request, Response};
-
-/// 佔位的 Unix domain socket 傳輸。
-pub struct UnixSocket;
-
-impl UnixSocket {
-    /// 連線到 Unix domain socket。尚未實作，一律回 [`Error::Unsupported`]。
-    pub fn connect(_path: &str) -> Result<Self, Error> {
-        Err(Error::Unsupported)
-    }
-}
 
 /// 佔位 client。
 ///
@@ -122,6 +134,13 @@ mod tests {
     fn handshake_returns_unsupported() {
         let stream = Cursor::new(Vec::<u8>::new());
         let err = Client::handshake(stream, "test", Duration::from_millis(10)).err();
+        assert!(matches!(err, Some(Error::Unsupported)));
+    }
+
+    /// 傳輸入口也要回明確錯誤，不能 panic。
+    #[test]
+    fn transport_connect_returns_unsupported() {
+        let err = UnixSocket::connect("/tmp/jc-engine.sock").err();
         assert!(matches!(err, Some(Error::Unsupported)));
     }
 }

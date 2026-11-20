@@ -13,8 +13,9 @@ crate-type = ["cdylib"]
 # 讓 release 建置也能帶上 `jc_test_key`（冒煙測試用）；預設關閉。
 test-export = []
 
-[dependencies]
-
+# 整個 crate 在非 Windows 只剩 `#![cfg(windows)]` 的空殼（cdylib 沒有任何符號），
+# 所以相依套件全部掛在 cfg(windows) 之下：Linux 的 `cargo check --workspace`
+# 不會去編 `windows`、`jc-windows` 這些只給 Windows 用的東西。
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
   "Win32_Foundation",

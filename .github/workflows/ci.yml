@@ -29,6 +29,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          # Windows 目標的型別檢查用；不需要 MSVC 工具鏈。
+          targets: x86_64-pc-windows-msvc
       - name: 系統依賴（GPUI Kit 的 X11／Wayland／字型）
         run: |
           sudo apt-get update
@@ -50,6 +52,19 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Windows 目標型別檢查
+        # 用 Windows target 跑型別檢查，補上 Linux 建置看不到的 `cfg(windows)`
+        # 分支。只做 check、不連結，所以 Linux runner 不需要 MSVC 工具鏈。
+        #
+        # 兩個 crate 不在這裡檢查，它們的 C 相依需要 MSVC 的 C 編譯器與 Windows
+        # SDK，Linux runner 沒有：
+        # - `jc-cli`：ureq → rustls → ring
+        # - `jc-settings-ui`：GPUI（資源檔需要 resource compiler，另有 C 相依）
+        # 這兩個 crate 的 Windows 建置由 windows (msvc) job 負責。
+        run: >
+          cargo check --workspace --all-targets
+          --exclude jc-cli --exclude jc-settings-ui
+          --target x86_64-pc-windows-msvc
       - name: Test
         run: cargo test --workspace
 
