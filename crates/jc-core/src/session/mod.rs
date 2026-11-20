@@ -1544,7 +1544,31 @@ mod tests {
 
         let mut correct = english_session();
         type_keys(&mut correct, "hello");
-        assert_eq!(correct.candidates().len(), 1, "打對的字沒有其他候選");
+        let candidates = correct.candidates();
+        assert_eq!(candidates[0].surface, "hello", "原字仍是第一");
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.source != CandidateSource::Personal),
+            "沒有學習紀錄時不得出現個人化候選"
+        );
+        // 打對的完整單字不該有拼字建議；全形變體與更長的前綴補完照舊。
+        let same_length: Vec<&str> = candidates
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .filter(|text| {
+                text.chars().count() == 5
+                    && text.chars().all(|ch| ch.is_ascii_alphabetic())
+                    && !text.eq_ignore_ascii_case("hello")
+            })
+            .collect();
+        assert!(same_length.is_empty(), "拼字建議：{same_length:?}");
+        for candidate in &candidates[2..] {
+            assert!(
+                candidate.surface.to_lowercase().starts_with("hello"),
+                "補完要以原字開頭：{candidate:?}"
+            );
+        }
     }
 
     /// 混合模式的待定英文詞也能看到拼字建議，選了就取代原按鍵。

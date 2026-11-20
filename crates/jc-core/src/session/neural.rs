@@ -1002,7 +1002,10 @@ mod tests {
         let mut input = input("きょ", "", "きょ");
         assert_eq!(maybe_convert(&config, &input), NeuralDecision::Skipped);
         assert_eq!(calls.load(Ordering::SeqCst), 0, "半截讀音不得呼叫模型");
-        input.statistical = "京";
+        // 完整讀音的統計結果不會等於讀音；用「今日」當基準，模型回的「京」
+        // 才是真的替換，而不是與統計結果相同的 Unchanged。
+        input.reading = "きょう";
+        input.statistical = "今日";
         assert_eq!(
             maybe_convert(&config, &input),
             NeuralDecision::Accepted {
