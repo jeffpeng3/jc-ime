@@ -319,6 +319,19 @@ pub enum Command {
         /// 把不一致案例寫成 JSON 檔。
         cases: Option<PathBuf>,
     },
+    /// 研究用：用真實語料比對離線 DP 與正式路由的分詞差異。
+    CorpusDiff {
+        /// `0c-testdata` 目錄。
+        source: Option<PathBuf>,
+        /// 最多量測幾筆；0 表示全部。
+        limit: usize,
+        /// 每桶輸出的代表案例數。
+        top: usize,
+        /// 輸出 JSON。
+        json: bool,
+        /// 把不一致案例寫成 JSON 檔。
+        cases: Option<PathBuf>,
+    },
     /// 顯示說明。
     Help,
     /// 顯示版本。
@@ -340,6 +353,7 @@ pub fn parse(args: &[String]) -> Result<Command, CliError> {
         "data" => parse_data(&args[1..]),
         "mixed-split" => parse_mixed_split(&args[1..]),
         "mixed-diff" => parse_mixed_diff(&args[1..]),
+        "corpus-diff" => parse_corpus_diff(&args[1..]),
         other => Err(CliError::Usage(format!("不認得的子命令 {other}"))),
     }
 }
@@ -954,6 +968,57 @@ fn parse_mixed_diff(args: &[String]) -> Result<Command, CliError> {
     })
 }
 
+/// 解析 `corpus-diff`：用真實語料比對兩種分詞方式。
+fn parse_corpus_diff(args: &[String]) -> Result<Command, CliError> {
+    let mut source = None;
+    let mut limit = 0usize;
+    let mut top = 5usize;
+    let mut json = false;
+    let mut cases = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--source" => {
+                index += 1;
+                source = Some(PathBuf::from(value(args, index, "--source")?));
+            }
+            "--limit" => {
+                index += 1;
+                let text = value(args, index, "--limit")?;
+                limit = text
+                    .parse()
+                    .map_err(|_| CliError::Usage(format!("--limit 必須是整數：{text}")))?;
+            }
+            "--top" => {
+                index += 1;
+                let text = value(args, index, "--top")?;
+                top = text
+                    .parse()
+                    .map_err(|_| CliError::Usage(format!("--top 必須是整數：{text}")))?;
+                if top == 0 {
+                    return Err(CliError::Usage("--top 至少 1".to_string()));
+                }
+            }
+            "--json" => json = true,
+            "--cases" => {
+                index += 1;
+                cases = Some(PathBuf::from(value(args, index, "--cases")?));
+            }
+            other => {
+                return Err(CliError::Usage(format!("corpus-diff 不認得的參數 {other}")));
+            }
+        }
+        index += 1;
+    }
+    Ok(Command::CorpusDiff {
+        source,
+        limit,
+        top,
+        json,
+        cases,
+    })
+}
+
 /// 解析 `on`／`off` 開關。
 fn switch(value: &str, flag: &str) -> Result<bool, CliError> {
     match value {
@@ -1242,6 +1307,22 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             },
             out,
         ),
+        Command::CorpusDiff {
+            source,
+            limit,
+            top,
+            json,
+            cases,
+        } => crate::corpus_cmd::run(
+            &crate::corpus_cmd::CorpusOptions {
+                source: source.clone(),
+                limit: *limit,
+                top: *top,
+                json: *json,
+                cases: cases.clone(),
+            },
+            out,
+        ),
         Command::Help => {
             write!(out, "{}", usage())?;
             Ok(())
@@ -1425,6 +1506,7 @@ pub fn usage() -> String {
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
          jc-cli mixed-split --keys <字串>... [--testdata <dir>] [--data <dir>] [--incremental] [--repeat 1] [--json]\n  \
          jc-cli mixed-diff [--seed 1] [--count 20000] [--top 3] [--testdata <dir>] [--data <dir>] [--json] [--cases <file>]\n  \
+         jc-cli corpus-diff [--source <dir>] [--limit 0] [--top 5] [--json] [--cases <file>]\n  \
          jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--backend candle] [--user-data <dir>] [--pick <n>] [--json]\n  \
          jc-cli tokenize ja [--testdata <dir>] [--vocab <model>] [--text <字串>]... [--diff] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
