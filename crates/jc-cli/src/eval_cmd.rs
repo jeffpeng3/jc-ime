@@ -251,12 +251,26 @@ pub struct JaOptions {
     pub neural: crate::cli::NeuralMode,
     /// 是否走逐字変換（ライブ変換）。
     pub live: bool,
-    /// 逐字変換的觸發條件。
-    pub live_trigger: crate::cli::LiveTriggerSpec,
+    /// 逐字変換的觸發條件；`None` 用預設自動変換。
+    pub live_trigger: Option<crate::cli::LiveTriggerSpec>,
     /// 神經處理範圍；`None` 由觸發條件決定。
     pub live_scope: Option<crate::cli::LiveScope>,
     /// 停頓後才做神經補正。
     pub live_deferred: bool,
+    /// 強制即時補正。
+    pub live_inline: bool,
+    /// 延遲整句轉換。
+    pub live_sentence: bool,
+    /// 停頓毫秒數。
+    pub live_idle_ms: u64,
+    /// 前綴快取（對照）。
+    pub live_prefix_cache: bool,
+    /// 前綴快取保留文節數。
+    pub live_cache_keep: usize,
+    /// single-flight 非同步推論。
+    pub live_flight: bool,
+    /// single-flight 要求 generation 完全相同。
+    pub live_flight_strict: bool,
     /// 補正推論預算（毫秒）。
     pub live_budget_ms: u64,
     /// 補正的額外嚴格倍率；套用在成本差門檻上。
@@ -289,6 +303,13 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
         live_trigger,
         live_scope,
         live_deferred,
+        live_inline,
+        live_sentence,
+        live_idle_ms,
+        live_prefix_cache,
+        live_cache_keep,
+        live_flight,
+        live_flight_strict,
         live_budget_ms,
         live_correction_ratio,
         live_keep_tail,
@@ -345,27 +366,35 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
     if live {
         // 逐字変換模擬實際輸入：debounce 與時間預算都由評測的牆鐘負責，
         // 控制器本身立刻轉換，延遲才看得到逐鍵成本。
-        let trigger = if live_trigger.every_key() {
+        let sentence = live_sentence
+            || (live_trigger.is_none()
+                && live_scope.is_none()
+                && !live_prefix_cache
+                && !live_flight);
+        let spec = live_trigger.unwrap_or(crate::cli::LiveTriggerSpec {
+            min_units: 12,
+            boundary: true,
+            idle: true,
+        });
+        let trigger = if spec.every_key() {
             jc_core::ja::live::Trigger::EveryKey
         } else {
             jc_core::ja::live::Trigger::Auto(jc_core::ja::live::AutoTrigger {
-                min_units: live_trigger.min_units,
-                boundary: live_trigger.boundary,
-                idle: live_trigger.idle,
+                min_units: spec.min_units,
+                boundary: spec.boundary,
+                idle: spec.idle,
             })
         };
         let scope = match live_scope {
             Some(crate::cli::LiveScope::Whole) => jc_core::ja::live::NeuralScope::WholeTail,
             Some(crate::cli::LiveScope::Clause) => jc_core::ja::live::NeuralScope::Clause,
-            None if !live_trigger.every_key() || live_deferred => {
-                jc_core::ja::live::NeuralScope::Clause
-            }
+            None if !spec.every_key() || live_deferred => jc_core::ja::live::NeuralScope::Clause,
             None => jc_core::ja::live::NeuralScope::WholeTail,
         };
-        let timing = if live_deferred {
-            jc_core::ja::live::NeuralTiming::Deferred
-        } else {
+        let timing = if live_inline || (spec.every_key() && !live_deferred) {
             jc_core::ja::live::NeuralTiming::Inline
+        } else {
+            jc_core::ja::live::NeuralTiming::Deferred
         };
         converter = converter.with_live(jc_core::ja::live::Config {
             enabled: true,
@@ -376,6 +405,12 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
             neural_timing: timing,
             neural_budget: std::time::Duration::from_millis(live_budget_ms),
             keep_tail: live_keep_tail,
+            idle_delay: std::time::Duration::from_millis(live_idle_ms),
+            deferred_sentence: sentence,
+            prefix_cache: live_prefix_cache,
+            cache_keep: live_cache_keep,
+            neural_flight: live_flight,
+            flight_append: !live_flight_strict,
             ..jc_core::ja::live::Config::default()
         });
     }

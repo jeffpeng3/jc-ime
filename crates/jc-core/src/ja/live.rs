@@ -167,6 +167,34 @@ impl Statistical {
 pub trait NeuralGate {
     /// 判斷是否採用神經輸出。
     fn adopt(&self, request: &GateRequest<'_>) -> Option<String>;
+
+    /// 非同步送出一次請求；已有推論在跑或不需要模型時回傳 `false`。
+    fn start(&self, _request: &GateRequest<'_>) -> bool {
+        false
+    }
+
+    /// 取出已完成的非同步結果；還沒完成時回傳 `None`。
+    fn take(&self) -> Option<FlightResult> {
+        None
+    }
+
+    /// 是否還有推論在跑。
+    fn busy(&self) -> bool {
+        false
+    }
+}
+
+/// 一次非同步推論的完成結果。
+#[derive(Debug, Clone)]
+pub struct FlightResult {
+    /// 送出時的 generation。
+    pub generation: u64,
+    /// 送出時的讀音前綴。
+    pub reading: String,
+    /// 通過驗證的輸出；`None` 代表跳過、逾時或拒絕。
+    pub surface: Option<String>,
+    /// 推論耗時。
+    pub elapsed: Duration,
 }
 
 /// 一次神經採用的請求。
@@ -193,6 +221,8 @@ pub struct GateRequest<'a> {
     pub mean_candidates: f32,
     /// 這次採用是即時轉換或停頓後補正。
     pub phase: GatePhase,
+    /// 送出的輸入世代。
+    pub generation: u64,
 }
 
 impl Converter for JaDecoder {
@@ -336,6 +366,11 @@ pub struct Config {
     pub enabled: bool,
     /// 最後一次かな輸入後要等多久才轉換。0 表示立即轉換（測試用）。
     pub debounce: Duration,
+    /// 停頓多久算「一段打完」，預設 300 ms。
+    ///
+    /// 只在 [`Trigger::Auto`] 開啟 `idle` 時使用；外殼要在期限到了呼叫
+    /// [`Controller::tick`]。
+    pub idle_delay: Duration,
     /// 單次轉換的時間預算；超過就退回前次結果，不鎖定新結果。
     /// 0 表示不檢查。
     pub budget: Duration,
@@ -358,6 +393,26 @@ pub struct Config {
     /// 非同步補正的推論預算；模型超過這個時間就丟棄結果，維持統計輸出。
     /// 0 表示不檢查，只用於 [`NeuralTiming::Deferred`]。
     pub neural_budget: Duration,
+    /// single-flight：同時最多一個推論，完成後套用到送出的讀音前綴。
+    ///
+    /// 開啟時忽略長度／邊界／停頓觸發，每一鍵都會先顯示統計結果，模型在
+    /// 背景跑；期間的新輸入只增加尾巴，不排隊。
+    pub neural_flight: bool,
+    /// 延遲整句轉換：打字期間只顯示假名，停頓後才做一次完整轉換。
+    ///
+    /// 轉換後才顯示漢字；任何輸入讓目前轉換失效，回到假名。同一時間最多
+    /// 一次推論；停頓後又開始打字時，尚未完成的結果直接丟棄。
+    pub deferred_sentence: bool,
+    /// 用「前綴快取＋失效重算」取代鎖定片段。
+    ///
+    /// 快取存的是讀音前綴與已轉換文字；新按鍵只轉未快取的尾巴，左文脈用
+    /// 快取文字。前面被修改或刪除時，從共同前綴之後全部失效重算。
+    pub prefix_cache: bool,
+    /// 前綴快取保留幾個文節不進快取，預設 1。
+    pub cache_keep: usize,
+    /// 非同步回應只要求「目前讀音仍以送出前綴開頭」；`false` 時要求
+    /// generation 完全相同。
+    pub flight_append: bool,
     /// 神經採用器；`None` 時逐字路徑完全不呼叫模型，行為與關閉相同。
     ///
     /// 由 [`crate::session::neural::live_gate`] 依 `ja_neural` 建立；只有
@@ -372,6 +427,7 @@ impl std::fmt::Debug for Config {
         f.debug_struct("Config")
             .field("enabled", &self.enabled)
             .field("debounce", &self.debounce)
+            .field("idle_delay", &self.idle_delay)
             .field("budget", &self.budget)
             .field("max_boundary_changes", &self.max_boundary_changes)
             .field("hold_limit", &self.hold_limit)
@@ -381,6 +437,11 @@ impl std::fmt::Debug for Config {
             .field("neural_scope", &self.neural_scope)
             .field("neural_timing", &self.neural_timing)
             .field("neural_budget", &self.neural_budget)
+            .field("neural_flight", &self.neural_flight)
+            .field("deferred_sentence", &self.deferred_sentence)
+            .field("prefix_cache", &self.prefix_cache)
+            .field("cache_keep", &self.cache_keep)
+            .field("flight_append", &self.flight_append)
             .finish_non_exhaustive()
     }
 }
@@ -389,17 +450,23 @@ impl Default for Config {
     /// 建議值。`enabled` 保持 `false`，符合「預設關閉」。
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             debounce: Duration::from_millis(120),
+            idle_delay: Duration::from_millis(300),
             budget: Duration::from_millis(100),
             max_boundary_changes: 1,
             hold_limit: 2,
             min_units: 1,
             keep_tail: 1,
-            trigger: Trigger::EveryKey,
-            neural_scope: NeuralScope::WholeTail,
-            neural_timing: NeuralTiming::Inline,
-            neural_budget: Duration::ZERO,
+            trigger: Trigger::Auto(AutoTrigger::default()),
+            neural_scope: NeuralScope::Clause,
+            neural_timing: NeuralTiming::Deferred,
+            neural_budget: Duration::from_millis(35),
+            neural_flight: false,
+            deferred_sentence: true,
+            prefix_cache: false,
+            cache_keep: 1,
+            flight_append: true,
             neural: None,
             clock: None,
         }
@@ -504,6 +571,50 @@ struct PendingNeural {
     units: usize,
 }
 
+/// 使用者手動選過或編輯過的片段；重轉時保持固定。
+#[derive(Debug, Clone)]
+struct UserSegment {
+    start: usize,
+    units: usize,
+    reading: String,
+    surface: String,
+}
+
+/// 已轉換的讀音前綴與文字。
+#[derive(Debug, Clone, Default)]
+struct PrefixCache {
+    reading: String,
+    clauses: Vec<JaClause>,
+}
+
+impl PrefixCache {
+    fn text(&self) -> String {
+        self.clauses
+            .iter()
+            .map(|clause| clause.surface.as_str())
+            .collect()
+    }
+
+    fn units(&self) -> usize {
+        self.clauses.iter().map(clause_units).sum()
+    }
+}
+
+/// 一次 single-flight 推論的送出狀態。
+#[derive(Debug, Clone)]
+struct FlightRequest {
+    /// 送出時的完整前綴讀音（快取＋尾巴）。
+    prefix: String,
+    /// 送出的未快取尾巴讀音。
+    reading: String,
+    /// 尾巴的讀音單位數。
+    units: usize,
+    /// 尾巴的統計詞面。
+    statistical: String,
+    /// 尾巴的統計成本。
+    cost: i32,
+}
+
 /// 最後一個未鎖定文節的統計基線與文脈。
 #[derive(Debug, Clone)]
 struct ClauseRequest {
@@ -551,6 +662,7 @@ pub struct Controller {
     draft: Option<JaResult>,
     pending: bool,
     due: Option<Instant>,
+    idle_due: Option<Instant>,
     held: usize,
     /// 上一次接受的結果是神經輸出。
     ///
@@ -568,6 +680,14 @@ pub struct Controller {
     pending_neural: Option<PendingNeural>,
     /// 這次轉換是停頓觸發；先不鎖定新的文節，留給補正。
     provisional: bool,
+    /// 前綴快取：已轉換的讀音前綴與文字。
+    cache: PrefixCache,
+    /// 等待中的 single-flight 推論。
+    flight: Option<FlightRequest>,
+    /// 延遲整句模式上一次轉換的讀音；用來判斷是單純追加還是編輯。
+    sentence_reading: String,
+    /// 使用者固定的片段；重轉時不變。
+    user_segments: Vec<UserSegment>,
     /// 最近一次統計結果的總成本。
     last_cost: f64,
     /// 最近一次統計結果的分數。
@@ -594,6 +714,7 @@ impl Controller {
             draft: None,
             pending: false,
             due: None,
+            idle_due: None,
             held: 0,
             tail_neural: false,
             generation: 0,
@@ -601,6 +722,10 @@ impl Controller {
             prev_display: Vec::new(),
             pending_neural: None,
             provisional: false,
+            cache: PrefixCache::default(),
+            flight: None,
+            sentence_reading: String::new(),
+            user_segments: Vec::new(),
             last_cost: 0.0,
             last_score: 0.0,
             stats: Stats::default(),
@@ -652,7 +777,7 @@ impl Controller {
         if !self.enabled() {
             return Plan::default();
         }
-        if !self.prefix_intact(seq) {
+        if !self.cfg.prefix_cache && !self.prefix_intact(seq) {
             self.reset();
         }
         self.seq.clear();
@@ -661,6 +786,31 @@ impl Controller {
         self.generation += 1;
         if self.pending_neural.take().is_some() {
             self.stats.stale_discards += 1;
+        }
+        if self.cfg.deferred_sentence {
+            self.pending = false;
+            self.due = None;
+            let current: String = self.seq.iter().map(Unit::as_str).collect();
+            // 單純往後追加時保留已顯示的轉換與 User 片段；刪除或改中間才
+            // 讓編輯點之後的 Auto 片段失效。User 片段若被改到才退回 Auto。
+            if !self.sentence_reading.is_empty() && !current.starts_with(&self.sentence_reading) {
+                let common = common_prefix_units(&self.sentence_reading, &current);
+                self.user_segments
+                    .retain(|segment| segment.start + segment.units <= common);
+                self.invalidate_sentence();
+            }
+            self.idle_due = Some(self.now() + self.cfg.idle_delay);
+            return self.preview_plan();
+        }
+        if self.cfg.prefix_cache {
+            self.pending = false;
+            self.due = None;
+            self.idle_due = None;
+            self.sync_cache();
+            return self.convert_cache();
+        }
+        if matches!(self.cfg.trigger, Trigger::Auto(trigger) if trigger.idle) {
+            self.idle_due = Some(self.now() + self.cfg.idle_delay);
         }
 
         if self.seq.len() < self.cfg.min_units {
@@ -694,30 +844,46 @@ impl Controller {
     /// 回傳的第二個值表示這次是否真的做了轉換（或逾時退回）；期限未到、
     /// 沒有待處理輸入或功能關閉時回傳 `false`。
     pub fn tick(&mut self) -> (Plan, bool) {
-        if !self.enabled() || !self.pending {
+        if !self.enabled() {
             return (Plan::default(), false);
         }
-        let Some(due) = self.due else {
-            return (Plan::default(), false);
-        };
-        if self.now() < due {
-            return (Plan::default(), false);
+        if self.pending {
+            if let Some(due) = self.due {
+                if self.now() >= due {
+                    self.pending = false;
+                    self.due = None;
+                    return (self.convert(), true);
+                }
+            }
         }
-        self.pending = false;
-        self.due = None;
-        (self.convert(), true)
+        if let Some(due) = self.idle_due {
+            if self.now() >= due {
+                self.idle_due = None;
+                return self.idle();
+            }
+        }
+        (Plan::default(), false)
     }
 
     /// 取消尚未執行的 debounce，保留目前已顯示的結果。
     ///
     /// 回傳是否有東西被取消。
     pub fn cancel_pending(&mut self) -> bool {
-        if !self.pending {
-            return false;
-        }
+        let had = self.pending || self.idle_due.is_some();
         self.pending = false;
         self.due = None;
-        true
+        self.idle_due = None;
+        had
+    }
+
+    /// 停頓計時器是否還在等待。
+    pub fn idle_pending(&self) -> bool {
+        self.idle_due.is_some()
+    }
+
+    /// 停頓期限；外殼用它安排計時器。
+    pub fn idle_deadline(&self) -> Option<Instant> {
+        self.idle_due
     }
 
     /// 清掉所有組字、鎖定與 draft 狀態，但保留累計統計。
@@ -794,6 +960,27 @@ impl Controller {
         out
     }
 
+    /// 把指定片段標成 User；重轉時保持固定。
+    fn mark_user(&mut self, index: usize) {
+        let Some(span) = self.clause_spans().get(index).cloned() else {
+            return;
+        };
+        let reading: String = self.seq[span.start..span.end]
+            .iter()
+            .map(Unit::as_str)
+            .collect();
+        self.user_segments.retain(|segment| {
+            segment.start + segment.units <= span.start || segment.start >= span.end
+        });
+        self.user_segments.push(UserSegment {
+            start: span.start,
+            units: span.end - span.start,
+            reading,
+            surface: span.surface,
+        });
+        self.user_segments.sort_by_key(|segment| segment.start);
+    }
+
     /// 只換指定片段的詞面；讀音、鎖定範圍與其他片段都不變。
     ///
     /// 回傳是否真的換了。片段索引依 [`Controller::clause_spans`] 的順序。
@@ -815,6 +1002,7 @@ impl Controller {
         target.surface = surface;
         target.segments.clear();
         self.tail_neural = false;
+        self.mark_user(index);
         self.record_stability(&self.all_clauses());
         let cost = self.last_cost;
         let score = self.last_score;
@@ -889,6 +1077,9 @@ impl Controller {
             clause.segments.clear();
         }
         self.tail_neural = false;
+        if let Some(index) = self.clause_index_at(span) {
+            self.mark_user(index);
+        }
         self.record_stability(&self.all_clauses());
         let cost = self.last_cost;
         let score = self.last_score;
@@ -964,6 +1155,7 @@ impl Controller {
         self.draft = None;
         self.pending = false;
         self.due = None;
+        self.idle_due = None;
         self.held = 0;
         self.tail_neural = false;
         self.generation += 1;
@@ -971,6 +1163,10 @@ impl Controller {
         self.prev_display.clear();
         self.pending_neural = None;
         self.provisional = false;
+        self.cache = PrefixCache::default();
+        self.flight = None;
+        self.sentence_reading.clear();
+        self.user_segments.clear();
     }
 
     fn now(&self) -> Instant {
@@ -1020,6 +1216,10 @@ impl Controller {
         if !self.enabled() || self.seq.is_empty() {
             return (Plan::default(), false);
         }
+        if self.cfg.deferred_sentence {
+            // Enter 以外的結束不先轉；停頓到齊才轉換。
+            return (self.preview_plan(), false);
+        }
         if self.cut >= self.seq.len() || self.seq.len() <= self.converted_upto {
             return (self.preview_plan(), false);
         }
@@ -1041,6 +1241,12 @@ impl Controller {
             return (Plan::default(), false);
         }
         let mut updated = false;
+        if self.cfg.deferred_sentence {
+            self.idle_due = None;
+            let plan = self.convert_sentence();
+            let converted = plan.convert;
+            return (plan, converted);
+        }
         let idle_convert = match self.cfg.trigger {
             Trigger::Auto(trigger) => trigger.idle,
             Trigger::EveryKey => false,
@@ -1093,6 +1299,7 @@ impl Controller {
             runner_up_cost: request.runner_up_cost,
             mean_candidates: request.mean_candidates,
             phase: GatePhase::Correction,
+            generation: self.generation,
         });
         let elapsed = self.now().saturating_duration_since(started);
         self.stats.corrections += 1;
@@ -1258,6 +1465,355 @@ impl Controller {
         plan
     }
 
+    /// 讓目前的整句轉換失效，回到假名並記錄系統造成的變動。
+    fn invalidate_sentence(&mut self) {
+        if self.draft.is_some() {
+            let changed = self
+                .prev_display
+                .iter()
+                .filter(|fragment| !fragment.kana)
+                .count();
+            self.stats.fragments_shown += changed;
+            self.stats.fragments_changed += changed;
+            self.stats.settled_shown += changed;
+            self.stats.settled_changed += changed;
+            self.draft = None;
+            self.prev_display.clear();
+        }
+        self.tail.clear();
+        self.cut = 0;
+        self.converted_upto = 0;
+        self.sentence_reading.clear();
+        self.user_segments.clear();
+    }
+
+    /// 停頓後做一次完整轉換；這是延遲整句模式的唯一轉換點。
+    fn convert_sentence(&mut self) -> Plan {
+        if self.seq.is_empty() {
+            return self.preview_plan();
+        }
+        let reading: String = self.seq.iter().map(Unit::as_str).collect();
+        let chars: Vec<char> = reading.chars().collect();
+        let total = self.seq.len();
+        let mut users = self.user_segments.clone();
+        users.sort_by_key(|segment| segment.start);
+        users.retain(|segment| segment.start + segment.units <= total);
+
+        let mut clauses: Vec<JaClause> = Vec::new();
+        let mut cost = 0.0;
+        let mut score = 0.0;
+        let mut cursor = 0usize;
+        let mut elapsed = Duration::ZERO;
+        for (index, segment) in users.iter().enumerate() {
+            let gap: String = chars[cursor..segment.start].iter().collect();
+            if !gap.is_empty() {
+                let left = format!("{}{}", self.ctx.left, surface_of(&clauses));
+                let mut right = self.ctx.right.clone();
+                for later in &users[index..] {
+                    right.push_str(&later.surface);
+                }
+                let started = self.now();
+                let Some((result, _)) = self.convert_range(&gap, &JaContext { left, right }) else {
+                    return self.preview_plan();
+                };
+                elapsed += self.now().saturating_duration_since(started);
+                cost += result.cost;
+                score += result.score;
+                clauses.extend(result.clauses);
+            }
+            clauses.push(JaClause {
+                reading: segment.reading.clone(),
+                surface: segment.surface.clone(),
+                segments: Vec::new(),
+                cost: 0,
+            });
+            cursor = segment.start + segment.units;
+        }
+        if cursor < reading.len() {
+            let gap: String = chars[cursor..].iter().collect();
+            let left = format!("{}{}", self.ctx.left, surface_of(&clauses));
+            let started = self.now();
+            let Some((result, _)) = self.convert_range(
+                &gap,
+                &JaContext {
+                    left,
+                    right: self.ctx.right.clone(),
+                },
+            ) else {
+                return self.preview_plan();
+            };
+            elapsed += self.now().saturating_duration_since(started);
+            cost += result.cost;
+            score += result.score;
+            clauses.extend(result.clauses);
+        }
+        if clauses.is_empty() || clauses_units(&clauses) != total {
+            return self.preview_plan();
+        }
+        self.stats.conversions += 1;
+        self.stats.last_duration = elapsed;
+        if self.cfg.budget > Duration::ZERO && elapsed > self.cfg.budget {
+            self.stats.timeouts += 1;
+            return self.preview_plan();
+        }
+        self.last_cost = cost;
+        self.last_score = score;
+        self.tail = clauses;
+        self.tail_neural = false;
+        self.cut = 0;
+        self.converted_upto = self.seq.len();
+        self.sentence_reading = reading;
+        self.publish(0, cost, score)
+    }
+
+    /// 轉換一段讀音；神經開啟時套用現有門檻與五條驗證。
+    fn convert_range(&self, reading: &str, ctx: &JaContext) -> Option<(JaResult, bool)> {
+        let converted = if self.cfg.neural.is_some() {
+            self.conv.statistical(reading, ctx)
+        } else {
+            self.conv.convert(reading, ctx).map(Statistical::plain)
+        };
+        let statistical = converted.ok()?;
+        if statistical.result.clauses.is_empty()
+            || clauses_units(&statistical.result.clauses) != reading.chars().count()
+        {
+            return None;
+        }
+        if self.cfg.neural.is_some() {
+            Some(self.adopt_neural(statistical, reading, ctx))
+        } else {
+            Some((statistical.result, false))
+        }
+    }
+
+    /// 是否為延遲整句模式；外殼的 Enter 需要先同步轉換。
+    pub fn sentence_mode(&self) -> bool {
+        self.cfg.deferred_sentence
+    }
+
+    /// 立即做一次整句轉換；Enter 在假名狀態下使用。
+    pub fn convert_now(&mut self) -> Plan {
+        if !self.cfg.deferred_sentence {
+            return self.convert();
+        }
+        self.idle_due = None;
+        self.convert_sentence()
+    }
+
+    /// 把前綴快取裁到與目前讀音的共同前綴。
+    fn sync_cache(&mut self) {
+        let current: String = self.seq.iter().map(Unit::as_str).collect();
+        let common = common_prefix_units(&self.cache.reading, &current);
+        let mut units = 0;
+        let mut keep = 0;
+        for clause in &self.cache.clauses {
+            let size = clause_units(clause);
+            if units + size > common {
+                break;
+            }
+            units += size;
+            keep += 1;
+        }
+        self.cache.clauses.truncate(keep);
+        self.cache.reading = self
+            .cache
+            .clauses
+            .iter()
+            .map(clause_reading)
+            .collect::<String>();
+    }
+
+    /// 前綴快取路徑：只轉未快取的尾巴，結果接在快取後面。
+    fn convert_cache(&mut self) -> Plan {
+        if self.cache.units() > self.seq.len() {
+            self.cache = PrefixCache::default();
+        }
+        let start = self.cache.units();
+        let suffix = &self.seq[start..];
+        if suffix.is_empty() {
+            return self.preview_plan();
+        }
+        let reading: String = suffix.iter().map(Unit::as_str).collect();
+        let mut ctx = self.ctx.clone();
+        ctx.left = format!("{}{}", self.cache.text(), ctx.left);
+        let started = self.now();
+        let converted = self.conv.convert(&reading, &ctx);
+        let elapsed = self.now().saturating_duration_since(started);
+        let timed_out = self.cfg.budget > Duration::ZERO && elapsed > self.cfg.budget;
+        self.stats.conversions += 1;
+        self.stats.last_duration = elapsed;
+        if timed_out {
+            self.stats.timeouts += 1;
+            let mut plan = self.preview_plan();
+            plan.timed_out = true;
+            return plan;
+        }
+        let result = match converted {
+            Ok(result)
+                if !result.clauses.is_empty() && clauses_units(&result.clauses) == suffix.len() =>
+            {
+                result
+            }
+            _ => return self.preview_plan(),
+        };
+        self.last_cost = result.cost;
+        self.last_score = result.score;
+        let mut clauses = result.clauses;
+        if self.flight.is_some() {
+            // 推論中：統計結果只當畫面，不快取，讓送出的前綴保持可套用。
+            self.tail = clauses;
+            let plan = self.publish(0, self.last_cost, self.last_score);
+            self.pump_flight(true);
+            return plan;
+        }
+        let keep = self.cfg.cache_keep.min(clauses.len());
+        let cache_n = clauses.len() - keep;
+        let tail = clauses.split_off(cache_n);
+        self.cache.clauses.extend(clauses);
+        self.cache.reading = self
+            .cache
+            .clauses
+            .iter()
+            .map(clause_reading)
+            .collect::<String>();
+        self.tail = tail;
+        let plan = self.publish(0, self.last_cost, self.last_score);
+        self.pump_flight(true);
+        plan
+    }
+
+    /// 輪詢 single-flight 結果；套用後回傳新的顯示計畫。
+    pub fn poll_flight(&mut self) -> Option<Plan> {
+        if !self.cfg.neural_flight {
+            return None;
+        }
+        self.pump_flight(true)
+    }
+
+    /// 取出結果、套用，並在需要時再送一次。
+    fn pump_flight(&mut self, start_new: bool) -> Option<Plan> {
+        let Some(gate) = self.cfg.neural.clone() else {
+            return None;
+        };
+        let mut plan = None;
+        if let Some(result) = gate.take() {
+            plan = self.apply_flight(result);
+        }
+        if start_new && !gate.busy() {
+            self.start_flight();
+        }
+        plan
+    }
+
+    /// 送出目前未快取尾巴的推論；已有請求時不做事。
+    fn start_flight(&mut self) {
+        let Some(gate) = self.cfg.neural.clone() else {
+            return;
+        };
+        if gate.busy() || self.tail.is_empty() {
+            return;
+        }
+        let reading: String = self.tail.iter().map(clause_reading).collect();
+        if reading.is_empty() {
+            return;
+        }
+        let mut ctx = self.ctx.clone();
+        ctx.left = format!("{}{}", self.cache.text(), ctx.left);
+        let Ok(statistical) = self.conv.statistical(&reading, &ctx) else {
+            return;
+        };
+        if statistical.result.clauses.is_empty() {
+            return;
+        }
+        let baseline = statistical.result.surface();
+        let units: usize = self.tail.iter().map(clause_units).sum();
+        let prefix = format!("{}{}", self.cache.reading, reading);
+        let request = GateRequest {
+            reading: &reading,
+            left: &ctx.left,
+            right: &ctx.right,
+            statistical: &baseline,
+            statistical_cost: statistical.result.conversion().cost,
+            runner_up_cost: statistical.runner_up_cost,
+            mean_candidates: statistical.mean_candidates,
+            phase: GatePhase::Live,
+            generation: self.generation,
+        };
+        self.stats.neural_requests += 1;
+        if gate.start(&request) {
+            self.flight = Some(FlightRequest {
+                prefix,
+                reading,
+                units,
+                statistical: baseline,
+                cost: statistical
+                    .result
+                    .clauses
+                    .iter()
+                    .map(|clause| clause.cost)
+                    .fold(0, i32::saturating_add),
+            });
+        }
+    }
+
+    /// 套用 single-flight 結果；只改尚未快取的尾巴。
+    fn apply_flight(&mut self, result: FlightResult) -> Option<Plan> {
+        let flight = self.flight.take()?;
+        if !self.cfg.flight_append && result.generation != self.generation {
+            self.stats.stale_discards += 1;
+            return None;
+        }
+        let current: String = self.seq.iter().map(Unit::as_str).collect();
+        let sent = format!("{}{}", flight.prefix, flight.reading);
+        if !current.starts_with(&sent) || self.cache.reading != flight.prefix {
+            self.stats.stale_discards += 1;
+            return None;
+        }
+        let Some(surface) = result.surface else {
+            return None;
+        };
+        if surface == flight.statistical {
+            return None;
+        }
+        let mut covered = 0;
+        let mut index = 0;
+        while index < self.tail.len() && covered < flight.units {
+            covered += clause_units(&self.tail[index]);
+            index += 1;
+        }
+        if covered != flight.units {
+            self.stats.stale_discards += 1;
+            return None;
+        }
+        let read: String = self.tail[..index].iter().map(clause_reading).collect();
+        if read != flight.reading {
+            self.stats.stale_discards += 1;
+            return None;
+        }
+        let neural = JaClause {
+            reading: flight.reading.clone(),
+            surface,
+            segments: Vec::new(),
+            cost: flight.cost,
+        };
+        let mut clauses = vec![neural];
+        clauses.extend(self.tail[index..].iter().cloned());
+        let keep = self.cfg.cache_keep.min(clauses.len());
+        let cache_n = clauses.len() - keep;
+        let tail = clauses.split_off(cache_n);
+        self.cache.clauses.extend(clauses);
+        self.cache.reading = self
+            .cache
+            .clauses
+            .iter()
+            .map(clause_reading)
+            .collect::<String>();
+        self.tail = tail;
+        self.stats.neural_adopted += 1;
+        self.last_cost = flight.cost as f64;
+        Some(self.publish(0, self.last_cost, self.last_score))
+    }
+
     /// 呼叫神經採用器；只有通過門檻與五條驗證時才換掉整段尾端。
     ///
     /// 神經輸出沒有詞邊界，替換時整段當一個文節，與一般轉換相同。門檻與
@@ -1287,6 +1843,7 @@ impl Controller {
             runner_up_cost: statistical.runner_up_cost,
             mean_candidates: statistical.mean_candidates,
             phase: GatePhase::Live,
+            generation: self.generation,
         };
         let Some(surface) = gate.adopt(&request) else {
             return (statistical.result, false);
@@ -1425,6 +1982,7 @@ impl Controller {
             runner_up_cost: request.runner_up_cost,
             mean_candidates: request.mean_candidates,
             phase,
+            generation: self.generation,
         });
         let elapsed = self.now().saturating_duration_since(started);
         if self.cfg.neural_budget > Duration::ZERO && elapsed > self.cfg.neural_budget {
@@ -1737,6 +2295,22 @@ fn display_fragments(clauses: &[JaClause]) -> Vec<DisplayFragment> {
     out
 }
 
+/// 文節序列的詞面串接。
+fn surface_of(clauses: &[JaClause]) -> String {
+    clauses
+        .iter()
+        .map(|clause| clause.surface.as_str())
+        .collect()
+}
+
+/// 兩段讀音的共同前綴單位數。
+fn common_prefix_units(a: &str, b: &str) -> usize {
+    a.chars()
+        .zip(b.chars())
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
 /// 讀音結尾是否為句讀或標點。
 fn ends_with_punctuation(reading: &str) -> bool {
     matches!(
@@ -2010,26 +2584,33 @@ mod tests {
     fn test_config(clock: &FakeClock) -> Config {
         Config {
             enabled: true,
+            trigger: Trigger::EveryKey,
+            neural_scope: NeuralScope::WholeTail,
+            neural_timing: NeuralTiming::Inline,
+            deferred_sentence: false,
+            prefix_cache: false,
             clock: Some(clock.closure()),
             ..Config::default()
         }
     }
 
     #[test]
-    fn test_disabled_by_default() {
+    fn test_default_config_enables_auto_live() {
         let clock = FakeClock::new();
         let conv = FakeConverter::new(split_every(2)).with_clock(&clock);
         let state = conv.state();
-        let mut controller = Controller::new(conv, Config::default());
-        assert!(!controller.enabled(), "Config::default 必須預設關閉");
+        let cfg = test_config(&clock);
+        assert!(cfg.enabled, "測試設定要開啟");
+        let mut controller = Controller::new(conv, cfg);
+        // 預設設定是 120 ms debounce＋自動変換：短讀音不會每鍵轉換。
         let plan = controller.input(&units("きょう"), &JaContext::default());
-        assert!(!plan.convert && !plan.preview && !plan.pending, "{plan:?}");
-        assert!(!controller.tick().1, "關閉時 tick 不得轉換");
-        let cands = controller
-            .candidates(JaSpan::new(0, 1))
-            .expect("關閉時不得報錯");
-        assert!(cands.is_empty(), "關閉時不得產生候選");
-        assert_eq!(state.borrow().calls, 0, "關閉時呼叫了轉換器");
+        assert!(!plan.convert, "自動変換不應在短讀音每鍵轉換：{plan:?}");
+        assert_eq!(state.borrow().calls, 0, "未到觸發條件不得呼叫轉換器");
+        // 停頓到期後仍會補一次統計結果。
+        clock.advance(Duration::from_millis(400));
+        let (plan, converted) = controller.tick();
+        assert!(converted && plan.convert, "{plan:?}");
+        assert_eq!(state.borrow().calls, 1);
     }
 
     #[test]
@@ -2341,9 +2922,13 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_config_is_disabled() {
-        let mut controller = Controller::new(FakeConverter::new(split_every(2)), Config::default());
-        assert!(!controller.enabled(), "零值 Config 必須關閉");
+    fn test_disabled_config_is_noop() {
+        let config = Config {
+            enabled: false,
+            ..Config::default()
+        };
+        let mut controller = Controller::new(FakeConverter::new(split_every(2)), config);
+        assert!(!controller.enabled(), "enabled=false 必須關閉");
         let plan = controller.input(&units("き"), &JaContext::default());
         assert!(!plan.convert && !plan.pending, "{plan:?}");
     }

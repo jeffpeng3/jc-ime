@@ -457,6 +457,8 @@ impl NeuralRuntime {
     /// 啟動 worker；模型已載入時才呼叫。
     pub fn spawn(engine: Box<dyn NeuralEngine>) -> Self {
         let (tx, rx) = mpsc::channel::<Job>();
+        let stats = Arc::new(Mutex::new(NeuralStatsSnapshot::default()));
+        let worker_stats = Arc::clone(&stats);
         let spawned = std::thread::Builder::new()
             .name("jc-jinen".to_string())
             .spawn(move || {
@@ -465,7 +467,12 @@ impl NeuralRuntime {
                     while let Ok(newer) = rx.try_recv() {
                         job = newer;
                     }
+                    let started = std::time::Instant::now();
                     let result = engine.convert(&job.request);
+                    if let Ok(mut stats) = worker_stats.lock() {
+                        stats.inferences += 1;
+                        stats.busy_ms += started.elapsed().as_millis() as u64;
+                    }
                     let _ = job.reply.send(result);
                 }
             });
@@ -474,7 +481,7 @@ impl NeuralRuntime {
         }
         Self {
             tx: Mutex::new(tx),
-            stats: Arc::new(Mutex::new(NeuralStatsSnapshot::default())),
+            stats,
         }
     }
 
@@ -501,6 +508,27 @@ impl NeuralRuntime {
                 Err(NeuralError::Unavailable("worker 已結束".to_string()))
             }
         }
+    }
+
+    /// 送出請求但不等結果；回傳的回應通道由呼叫端輪詢。
+    ///
+    /// worker 本身仍會丟掉佇列中較舊的請求；single-flight 模式由呼叫端保證
+    /// 同時最多一筆。
+    pub fn start(
+        &self,
+        request: &NeuralRequest,
+    ) -> Result<mpsc::Receiver<Result<String, NeuralError>>, NeuralError> {
+        let (reply, rx) = mpsc::channel();
+        let job = Job {
+            request: request.clone(),
+            reply,
+        };
+        self.tx
+            .lock()
+            .map_err(|_| NeuralError::Unavailable("worker 鎖壞掉".to_string()))?
+            .send(job)
+            .map_err(|_| NeuralError::Unavailable("worker 已結束".to_string()))?;
+        Ok(rx)
     }
 
     /// 目前的統計快照。
@@ -543,6 +571,10 @@ pub struct NeuralStatsSnapshot {
     pub accepted: u64,
     /// 各驗證原因的拒絕次數。
     pub rejected: BTreeMap<RejectReason, u64>,
+    /// 模型推論執行次數（含結果被丟棄的推論）。
+    pub inferences: u64,
+    /// 模型執行緒累計忙碌毫秒。
+    pub busy_ms: u64,
 }
 
 impl NeuralStatsSnapshot {
@@ -564,14 +596,16 @@ impl NeuralStatsSnapshot {
             .collect();
         format!(
             "neural：calls {}，accepted {}，unchanged {}，skipped {}，timeout {}，\
-             unavailable {}，rejected [{}]",
+             unavailable {}，rejected [{}]，inferences {}，busy {} ms",
             self.calls(),
             self.accepted,
             self.unchanged,
             self.skipped,
             self.timeouts,
             self.unavailable,
-            rejected.join("、")
+            rejected.join("、"),
+            self.inferences,
+            self.busy_ms
         )
     }
 }
@@ -1051,6 +1085,7 @@ mod tests {
             runner_up_cost: Some(1_100),
             mean_candidates: 8.0,
             phase: crate::ja::live::GatePhase::Live,
+            generation: 0,
         };
         assert_eq!(gate.adopt(&half), None);
         assert_eq!(calls.load(Ordering::SeqCst), 0);

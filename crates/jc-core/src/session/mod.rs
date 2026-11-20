@@ -709,7 +709,9 @@ impl Session {
                 .is_some_and(|live| live.transform_clause(index, transform));
             if changed {
                 if let Some(live) = self.live.as_mut() {
-                    live.lock_through(index);
+                    if !live.sentence_mode() {
+                        live.lock_through(index);
+                    }
                 }
                 self.finish_ja_script_edit(index);
             }
@@ -728,7 +730,9 @@ impl Session {
                 .is_some_and(|live| live.toggle_script(span).is_some());
             if changed {
                 if let Some(live) = self.live.as_mut() {
-                    live.lock_through(index);
+                    if !live.sentence_mode() {
+                        live.lock_through(index);
+                    }
                 }
                 self.finish_ja_script_edit(index);
             }
@@ -785,12 +789,38 @@ impl Session {
 
     /// debounce 是否還在等待；外殼據此安排計時器。
     pub fn ja_live_pending(&self) -> bool {
-        self.live.as_ref().is_some_and(LiveController::pending)
+        self.live
+            .as_ref()
+            .is_some_and(|live| live.pending() || live.idle_pending())
     }
 
     /// debounce 到期時間；沒有待處理轉換時為 `None`。
     pub fn ja_live_deadline(&self) -> Option<std::time::Instant> {
-        self.live_plan.as_ref().and_then(|plan| plan.deadline)
+        let idle = self.live.as_ref().and_then(LiveController::idle_deadline);
+        let debounce = self.live_plan.as_ref().and_then(|plan| plan.deadline);
+        match (debounce, idle) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
+    }
+
+    /// 立即觸發日文停頓轉換；外殼計時器與測試共用。
+    pub fn ja_live_idle(&mut self) -> Snapshot {
+        let plan = match &mut self.live {
+            Some(live) => {
+                let (plan, changed) = live.idle();
+                changed.then_some(plan)
+            }
+            None => None,
+        };
+        if let Some(plan) = plan {
+            let units = self.romaji.units().to_vec();
+            let reading: String = units.iter().map(Unit::as_str).collect();
+            self.apply_live_plan(&plan, &units, &reading);
+        }
+        self.snapshot()
     }
 
     /// 檢查日文逐字変換的 debounce 期限；到期就轉換並更新組字狀態。
@@ -1871,6 +1901,53 @@ mod tests {
         }
     }
 
+    /// 使用者手選的片段在後續停頓重轉時保持不變。
+    #[test]
+    fn test_ja_deferred_sentence_keeps_user_segment_on_reconvert() {
+        let source = LiveTestSource(vec![
+            ja_entry("今日", "きょう", 1_000),
+            ja_entry("は", "は", 500),
+            ja_entry("いい", "いい", 500),
+            ja_entry("天気", "てんき", 900),
+            ja_entry("です", "です", 500),
+            ja_entry("ね", "ね", 500),
+        ]);
+        let mut config = SessionConfig::new(Mode::Ja);
+        config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_live = live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            idle_delay: std::time::Duration::ZERO,
+            deferred_sentence: true,
+            ..live::Config::default()
+        };
+        let mut s = Session::new(config);
+        type_ja(&mut s, "kyouhaiitenki");
+        let first = s.ja_live_idle();
+        assert_eq!(first.preedit, "今日はいい天気");
+
+        // 游標移到「天気」片段，手動切換成平假名。
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        let picked = s.ja_toggle_script();
+        assert_eq!(picked.preedit, "今日はいい てんき".replace(' ', ""));
+        assert!(picked.preedit.ends_with("てんき"));
+
+        // 繼續打「ですね」，停頓重轉；手選的てんき必須保留。
+        type_ja(&mut s, "desune");
+        let again = s.ja_live_idle();
+        assert!(
+            again.preedit.ends_with("てんきですね"),
+            "重轉洗掉手選片段：{}",
+            again.preedit
+        );
+        assert!(!again.preedit.contains("天気"), "{}", again.preedit);
+        assert_eq!(
+            again.preedit,
+            "今日はいい てんきですね".replace(' ', ""),
+            "手選片段保留率應為 100%"
+        );
+    }
+
     /// 讀音 `とうきょう` 的候選含漢字、平假名、片假名與半角かな。
     #[test]
     fn test_ja_live_candidates_include_all_kana_scripts() {
@@ -1884,6 +1961,7 @@ mod tests {
             enabled: true,
             debounce: std::time::Duration::ZERO,
             trigger: live::Trigger::EveryKey,
+            deferred_sentence: false,
             ..live::Config::default()
         };
         let mut s = Session::new(config);
@@ -1912,6 +1990,7 @@ mod tests {
         let mut s = ja_live_session(live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
+            deferred_sentence: false,
             ..live::Config::default()
         });
         type_ja(&mut s, "kyou");
@@ -1926,6 +2005,7 @@ mod tests {
         let mut s = ja_live_session(live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
+            deferred_sentence: false,
             ..live::Config::default()
         });
         type_ja(&mut s, "kyou");
@@ -1947,6 +2027,7 @@ mod tests {
         config.ja_live = live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
+            deferred_sentence: false,
             ..live::Config::default()
         };
         let mut s = Session::new(config);
@@ -1967,6 +2048,7 @@ mod tests {
             enabled: true,
             debounce: std::time::Duration::ZERO,
             trigger: live::Trigger::EveryKey,
+            deferred_sentence: false,
             ..live::Config::default()
         };
         let mut s = Session::new(config);
@@ -1989,6 +2071,7 @@ mod tests {
             enabled: true,
             debounce: std::time::Duration::ZERO,
             trigger: Trigger::EveryKey,
+            deferred_sentence: false,
             ..live::Config::default()
         };
         config.neural = None;
@@ -2116,7 +2199,10 @@ mod tests {
     /// 沒有開啟逐字変換時，日文走原本的 nbest 流程，結果與先前相同。
     #[test]
     fn test_ja_live_disabled_by_default_keeps_plain_conversion() {
-        let mut s = ja_live_session(live::Config::default());
+        let mut s = ja_live_session(live::Config {
+            enabled: false,
+            ..live::Config::default()
+        });
         assert!(!s.ja_live_enabled());
         type_ja(&mut s, "kyou");
         assert_eq!(s.snapshot().preedit, "今日");
@@ -2130,6 +2216,7 @@ mod tests {
         let config = live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
+            deferred_sentence: false,
             ..live::Config::default()
         };
         let mut s = ja_live_session(config);
@@ -2314,6 +2401,7 @@ mod tests {
         config.ja_live = live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
+            deferred_sentence: false,
             ..live::Config::default()
         };
         Session::new(config)
@@ -2347,6 +2435,7 @@ mod tests {
         config.ja_live = live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
+            deferred_sentence: false,
             ..live::Config::default()
         };
         let mut s = Session::new(config);
@@ -2365,6 +2454,7 @@ mod tests {
         config.ja_live = live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
+            deferred_sentence: false,
             ..live::Config::default()
         };
         let mut s = Session::new(config);

@@ -831,6 +831,24 @@ impl Session {
     }
 
     pub(super) fn finish_composition(&mut self) {
+        // 延遲整句模式：還在假名就同步轉換一次再提交，不默默送出假名。
+        if self.config.mode == Mode::Ja {
+            let pending = self
+                .live_plan
+                .as_ref()
+                .map_or(true, |plan| plan.result.is_none());
+            let has_units = !self.romaji.units().is_empty();
+            if pending && has_units {
+                if let Some(live) = self.live.as_mut() {
+                    if live.sentence_mode() {
+                        let plan = live.convert_now();
+                        let units = self.romaji.units().to_vec();
+                        let reading: String = units.iter().map(Unit::as_str).collect();
+                        self.apply_live_plan(&plan, &units, &reading);
+                    }
+                }
+            }
+        }
         // 日文逐字変換：Enter 先把游標所在片段的候選套上去，不送出整段。
         if self.config.mode == Mode::Ja
             && self.candidate_window

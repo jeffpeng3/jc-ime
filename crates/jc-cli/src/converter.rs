@@ -318,7 +318,9 @@ impl JaConverter {
         let mut controller = LiveController::new(self.decoder.clone(), config.clone());
         let mut plan = LivePlan::default();
         let auto_idle = matches!(config.trigger, live::Trigger::Auto(trigger) if trigger.idle);
-        let needs_idle = auto_idle || config.neural_timing == live::NeuralTiming::Deferred;
+        let needs_idle = config.deferred_sentence
+            || auto_idle
+            || config.neural_timing == live::NeuralTiming::Deferred;
         let mut question_sync = 0.0f64;
         let mut idle_events = 0usize;
         let mut key_latencies = Vec::with_capacity(units.len());
@@ -373,7 +375,7 @@ impl JaConverter {
             segments,
             cost: 0,
         }];
-        for conversion in self.statistical_nbest(reading, n) {
+        for conversion in self.statistical_nbest_plain(reading, n) {
             if out.len() >= n {
                 break;
             }
@@ -390,6 +392,20 @@ impl JaConverter {
 
     /// 純統計的 N-best；第一名會依門檻換成 Jinen 的輸出。
     fn statistical_nbest(&self, reading: &str, n: usize) -> Vec<jc_core::decode::Conversion> {
+        self.statistical_nbest_inner(reading, n, true)
+    }
+
+    /// 逐字路徑補 top-5 用；不再問一次模型，避免重複計算推論次數。
+    fn statistical_nbest_plain(&self, reading: &str, n: usize) -> Vec<jc_core::decode::Conversion> {
+        self.statistical_nbest_inner(reading, n, false)
+    }
+
+    fn statistical_nbest_inner(
+        &self,
+        reading: &str,
+        n: usize,
+        allow_neural: bool,
+    ) -> Vec<jc_core::decode::Conversion> {
         let ctx = self.context();
         let chars: Vec<char> = reading.chars().collect();
         // 一次解到至少兩條：候選清單與 gating 的 top-2 共用同一次搜尋。
@@ -405,7 +421,7 @@ impl JaConverter {
         let baseline = best.surface();
         // 門檻只用統計轉換已經有的資訊；平均候選數在這裡一次算好，
         // 不在等候模型的路徑上重新解碼或查詞典。
-        let needs_neural = self.neural.enabled && self.neural.runtime.is_some();
+        let needs_neural = allow_neural && self.neural.enabled && self.neural.runtime.is_some();
         let statistical_cost = best.conversion().cost;
         let (runner_up_cost, mean) = if needs_neural {
             (

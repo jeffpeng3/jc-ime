@@ -1,23 +1,44 @@
 # live-default：逐字変換、自動変換與片段選字（2026-11-20）
 
-## 結論
+## 結論（2026-11-20 修訂）
 
-**這輪不建議直接改預設。** 最穩定的自動変換設定是「邊界觸發＋只補最後片段」：
-`top-1 88.2%`、每題模型呼叫 `1.85` 次、每鍵 p95 `22.3 ms`、每題同步累積 p95
-`95.4 ms`、已穩定片段變動率 `0%`。五項驗收中四項達標，`top-1` 差 `1.8` 點。
+**預設改為「延遲整句轉換」（方案 A）。** 打字期間只顯示假名，停止輸入後做一次
+完整轉換。`modern-500` 的 top-1 是 **92.2%**，與整句模式完全相同；每題推論
+0.21 次，每鍵 p95 0 ms，停頓到轉換完成 p50 2.6 ms／p95 50.4 ms，已顯示文字被
+系統改掉的比率 0%。`--no-live` 可以回到原本的手動整句轉換，仍為 92.2%／93.6%。
 
-要達到 `top-1 ≥ 90%` 只剩兩條路，但都破壞另一項指標：
+三個方案在 `modern-500` 的對照：
 
-| 路線 | top-1 | 模型呼叫／題 | 每題累積 p95 | 已穩定片段變動率 | 未達標 |
-|---|---:|---:|---:|---:|---|
-| 邊界觸發＋只補最後片段 | 88.2% | 1.85 | 95.4 ms | 0% | top-1 差 1.8 點 |
-| 邊界觸發＋整段尾巴問模型 | **90.8%** | 4.56 | 258.4 ms | 0% | 呼叫超標 1.56 次、累積超標 108 ms |
-| 邊界觸發＋保留 2 個片段 | **91.8%** | 1.86 | 107.9 ms | 9.55% | 穩定度超標 4.55 點 |
-| 保留 2 片段＋停頓補正 | 90.4% | 0.31 | 18.6 ms | 10.92% | 穩定度超標 5.92 點 |
+| 方案 | top-1 | 推論次數／題 | 每鍵 p95 | 每題同步累積 p95 | 已穩定片段變動 |
+|---|---:|---:|---:|---:|---:|
+| **A 延遲整句（新預設）** | **92.2%** | 0.21 | 0.00 ms | 0.01 ms | 0% |
+| B prefix cache（統計） | 86.0% | 0 | 8.3–12.4 ms | 2.1–6.5 ms | 0%（keep 0） |
+| C 邊界觸發＋片段鎖定 | 88.2% | 1.64 | 22.3 ms | 95.4 ms | 0% |
 
-缺的那一塊是「低呼叫次數下能提升片段品質的模型或重排」。目前把模型限制在最後
-一個未鎖定片段時，`modern-500` 的 top-1 是 `88.2%`，和完全關閉模型一模一樣；
-模型對這個位置沒有貢獻。整段尾巴問模型才有 `+2.6` 點，代價是每題 4.56 次呼叫。
+A 的停頓延遲：`modern-500` p50 2.60 ms／p95 50.36 ms；`ajimee-200` 因為句子較長
+且標點較多，p50 20.44 ms／p95 147.85 ms；`hard-cases` p50 3.68 ms／p95 36.53 ms。
+
+`ajimee-200` 的 top-1 是 69.0%，和整句模式相同，沒有退步；`hard-cases` 是
+77.1%，也和整句模式相同。A 沒有用題庫或門檻調整分數。
+
+A 的缺點是「停頓後已顯示的轉換，繼續打字再停頓重轉」時，`ajimee-200` 有
+34.0% 的已穩定片段被系統改掉（整句模式沒有這個問題，因為只轉一次）。單句、
+只在句尾停頓的 `modern-500` 與 `hard-cases` 是 0%。長文多停頓的情境仍需
+「User 片段固定」與右文脈來壓低這個數字。
+
+## 使用者手動選字的保留率
+
+`User` 片段（手選漢字／假名、F6–F10、拆回讀音）會固定在 `user_segments`；
+後續停頓只重轉 Auto 的連續區段，User 片段當固定文字傳給左右文脈。
+
+| 指標 | 結果 |
+|---|---:|
+| 手動選字保留率（後續停頓重轉） | **100%（1/1）** |
+| 指定情境輸出 | `今日はいいてんきですね`（`てんき` 維持平假名） |
+
+指定情境「きょうはいいてんき → てんき 選成平假名 → 繼續打 ですね → 重轉」的
+測試是 `test_ja_deferred_sentence_keeps_user_segment_on_reconvert`。語料沒有
+手動選字段，這個指標只在單元測試驗證，沒有 corpus 數字。
 
 ## 量測環境
 
@@ -184,55 +205,68 @@ generation，使用者一打字就丟棄；模型超過 `neural_budget` 也丟�
 
 ## 驗收門檻對照
 
-| 指標 | 目標 | 最佳穩定設定 | 最佳品質設定 | 判定 |
-|---|---:|---:|---:|---|
-| 每鍵 p95 | ≤ 50 ms | 22.3 ms | 45.8 ms | 達標 |
-| 每題累積 p95 | ≤ 150 ms | 95.4 ms | 258.4 ms | 穩定設定達標 |
-| 每句模型呼叫 | ≤ 3 次 | 1.85 | 4.56 | 穩定設定達標 |
-| 已顯示片段變動率 | ≤ 5% | 0% | 0% | 達標（保留 2 片段時 9.55%，不達標） |
-| `modern-500` top-1 | ≥ 90% | 88.2% | 90.8% | 兩者無法同時達標 |
+| 指標 | 目標 | A 延遲整句（預設） | 判定 |
+|---|---:|---:|---|
+| 每鍵 p95 | ≤ 50 ms | 0.00 ms | 達標 |
+| 每題累積 p95 | ≤ 150 ms | 0.01 ms（同步）；停頓轉換另計 p95 50.4 ms | 達標 |
+| 每句模型呼叫 | ≤ 3 次 | 0.21 | 達標 |
+| 已顯示片段變動率 | ≤ 5% | 0%（modern-500／hard-cases）；ajimee 多停頓 34.0% | 單句達標，多停頓未達標 |
+| `modern-500` top-1 | ≥ 90% | **92.2%** | 達標 |
 
 ## 建議設計
 
-### 可以預設開的版本（需使用者接受 88.2%）
+### 目前預設（方案 A）
 
 ```rust
 live::Config {
     enabled: true,
+    deferred_sentence: true,
+    idle_delay: Duration::from_millis(300), // 250／300／400 可調
     debounce: Duration::from_millis(120),
-    trigger: Trigger::Auto(AutoTrigger {
-        min_units: 12,   // 備援；邊界通常先觸發
-        boundary: true,
-        idle: true,
-    }),
-    neural_scope: NeuralScope::Clause,
-    neural_timing: NeuralTiming::Deferred,
-    neural_budget: Duration::from_millis(35),
-    keep_tail: 1,
+    neural_timing: NeuralTiming::Inline,
     ..Config::default()
 }
 ```
 
-`NeuralConfig` 用預設 `auto`。這個組合：top-1 88.2%、1.85 次／題、每鍵 p95
-22 ms、累積 95 ms、穩定片段 0%。比現在的 `--live` 54.4% 高 33.8 點，也比
-「一般路徑關閉模型」的 86.0% 高 2.2 點。
+流程：
 
-### 要跨過 90% 的缺塊
+1. 打字時 `input` 只更新 `seq`，回傳 preview（假名）。
+2. `idle_delay` 到期時 `tick` → `idle` → `convert_sentence`。
+3. `convert_sentence` 把讀音依 User 片段切成 Auto 區段；每個 Auto 區段做
+   統計＋現有門檻＋神經，User 片段原樣插入。
+4. 左文脈是目前已轉出的文字，右文脈是目前已知的 User 片段文字。
+5. 任何輸入讓尚未固定的 Auto 轉換失效，下一次停頓重轉；User 片段不動。
 
-1. **片段層模型品質**：目前 clause scope 模型對 top-1 貢獻 0。需要能判斷
-   「這個片段換掉會不會更好」的訊號，或改用詞層 rerank（`ja::decode` 的
-   `JaReranker`）而不是 seq2seq 整段輸出。
-2. **可回復的尾巴**：top-1 91.8% 的設定需要保留 2 個片段，代價是穩定度
-   9.55%。要同時達標，必須在「第二個片段被改」時先顯示かな，或提供 undo，
-   不能直接改已顯示的漢字。
-3. **候選層重排**：把 `unconvert` 後的讀音重新丟進 N-best，再依文脈重排，
-   可能比模型直接改寫片段穩定。
+`--no-live` 把 `ja_conversion` 設為 `sentence`，回到手動整句轉換，
+`modern-500` 92.2%、`--neural quality` 93.6%。
+
+### 與 B／C 的取捨
+
+- A 的 top-1 與整句模式相同，推論次數只有 0.21 次／題，是所有方案最低。
+- A 的停頓延遲是唯一的成本：`modern-500` p95 50 ms，`ajimee-200` p95 148 ms。
+  這是整句推論時間，不是每鍵延遲。
+- B prefix cache 的統計 top-1 是 86.0%，比 A 低 6.2 點，且 keep 1 時片段幾乎
+  每鍵都會被改寫。不採用。
+- C 的 88.2% 比 A 低 4 點，推論次數 1.64 次／題，優點是每鍵就有轉換；
+  現在保留為 `--live-trigger boundary --live-scope clause --live-inline` 對照。
+
+### 仍要補的一塊
+
+多停頓長文的已穩定片段變動率（`ajimee-200` 34.0%）還沒有壓到 5%。原因是
+每次停頓重轉會改掉前一次顯示的 Auto 片段。下一步應在重轉前比對畫面：
+只有當新結果的漢字片段真的變好時才替換，或把前一次顯示的 Auto 片段降級成
+User（先顯示かな再轉）並提供 undo。
 
 ## 實作拆解
 
 | 檔案 | 函式／型別 | 改動 |
 |---|---|---|
-| `crates/jc-core/src/ja/live.rs` | `Config::{trigger,neural_scope,neural_timing,neural_budget,keep_tail}` | 新增量測與自動変換開關，預設值不變 |
+| `crates/jc-core/src/ja/live.rs` | `Config::{deferred_sentence,idle_delay,prefix_cache,neural_flight,flight_append,cache_keep}` | A／B 與 single-flight 開關；預設 `deferred_sentence = true` |
+| 同上 | `Controller::{convert_sentence,convert_range,invalidate_sentence,convert_now}` | 延遲整句轉換與 Enter 同步轉換 |
+| 同上 | `UserSegment`、`Controller::{mark_user,user_segments}` | User 片段固定與重轉保留 |
+| 同上 | `PrefixCache`、`Controller::{sync_cache,convert_cache,start_flight,apply_flight,pump_flight}` | prefix cache 與 single-flight 對照 |
+| 同上 | `FlightResult`、`NeuralGate::{start,take,busy}` | 非同步推論介面；`LiveGate` 尚未實作 start/take |
+| 同上 | `Config::{trigger,neural_scope,neural_timing,neural_budget,keep_tail}` | 邊界／停頓觸發與片段模型（C 對照） |
 | 同上 | `Trigger`、`AutoTrigger`、`NeuralScope`、`NeuralTiming`、`GatePhase` | 新設定型別 |
 | 同上 | `Controller::convert_auto` | 自動変換主路徑：統計先轉、保留文節邊界、可延後模型 |
 | 同上 | `Controller::is_boundary`、`ends_with_particle`、`ends_with_punctuation`、`Converter::is_complete_word` | 邊界觸發 |
@@ -241,7 +275,9 @@ live::Config {
 | 同上 | `Controller::publish`、`record_stability`、`Stats` | 穩定度與量測 |
 | 同上 | `Controller::{clause_spans,replace_clause,transform_clause,toggle_script,unconvert,lock_through}` | 片段選字、假名變換、拆回讀音 |
 | 同上 | `KanaTransform`、`ClauseSpan` | 純字串轉換 API |
-| `crates/jc-core/src/session/neural.rs` | `NeuralConfig::correction_gap_ratio`、`LiveGate::adopt` | 補正階段收緊門檻 |
+| `crates/jc-core/src/session/neural.rs` | `NeuralRuntime::start`、`NeuralStatsSnapshot::{inferences,busy_ms}`、`NeuralConfig::correction_gap_ratio` | 非阻塞送出與推論忙碌統計 |
+| `crates/jc-settings/src/settings.rs` | `ja_conversion`、`effective_ja_conversion`、`ja_live_enabled` | 新設定欄位與舊 `ja_live_conversion` 遷移 |
+| `crates/jc-engine/src/config.rs` | `ja_live` 映射 | 用 `settings.ja_live_enabled()` |
 | `crates/jc-core/src/session/mod.rs` | `Session::{ja_transform,ja_toggle_script,ja_unconvert,open_ja_candidates,apply_ja_candidate,refresh_ja_live,move_ja_cursor}` | 外殼入口與片段游標 |
 | 同上 | `SessionConfig::ja_toggle_key` | 預設 `F7`，可設定 |
 | `crates/jc-core/src/session/core.rs` | `Session::navigate`、`Session::space`、`Session::finish_composition` | 左右鍵、Space、Enter 接日文片段 |

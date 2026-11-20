@@ -17,6 +17,9 @@
 
 ## 預設值
 
-`live::Config::default()` 仍是 `enabled: false`、`trigger: EveryKey`、
-`neural_scope: WholeTail`、`neural_timing: Inline`、`keep_tail: 1`。
-本輪沒有改產品預設；研究結論與建議參數在報告裡。
+`live::Config::default()` 現在是 `enabled: true`、`deferred_sentence: true`、
+`idle_delay: 300 ms`。日文打字期間只顯示假名，停頓後做一次完整轉換；
+`ja_conversion = sentence` 或 CLI `--no-live` 回到手動整句轉換。
+
+`trigger`／`neural_scope`／`keep_tail` 仍保留給邊界觸發對照，預設不參與
+延遲整句路徑。完整數據見 `docs/reports/live-default-2026-11-20.md`。
