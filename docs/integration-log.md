@@ -104,6 +104,7 @@
 | `session-g5-misc` | `12f161f` | `7379047` | 通過（fmt／clippy／test／三個 eval） | 2026-11-20 07:16 |
 | `session-g6-core` | `ffccac1` | `b7af358` | 通過（fmt／clippy／test／四個 eval） | 2026-11-20 07:37 |
 | `session-g4-mixed`（CI 修正） | `6b76ce1` | `fb4e7ab` | 通過（clippy＋全量 test） | 2026-11-20 07:58 |
+| `session-backfill` | `ade1479` | `610498c` | 通過（fmt／clippy／test／四個 eval） | 2026-11-20 08:07 |
 
 ## 衝突與修正
 
@@ -985,3 +986,14 @@
 
   根因：該測試原本靠 `JC_TESTDATA` 的真實英文詞表，CI 沒有資料時走注音路徑，`display_pending("hi")` 就變成「ㄘㄛ」，
   測試在不同環境得到不同結果。改成在測試內注入詞表後，不再依賴外部資料。
+
+- `session-backfill`（合併 `610498c`，含 `ade1479`）：無衝突。補回 G2 的五個 n/a：新按鍵（`Down`／`Up`／`PageUp`／`PageDown`／`Home`／`End`）、
+  組字游標（`cursor_rune`）、`navigating`／`suggestion`／`label` 三個 Snapshot 欄位、擋聲調（`tone_blocked`）。
+  另有 owned paths 外的必要修改：`SessionConfig::zhuyin_error_hint`、`ToneGate` 改 `Arc` 閉包、`ZhInput` 手寫 `Debug`。`PROTOCOL_VERSION` 未變。
+
+  gate：fmt exit 0、clippy exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（45 targets、1070 passed、0 failed）。
+  實測：`eval mixed` **6/6**、`eval zh-golden` **45/45**、`eval ja modern-500` **86.0%**（p50 3.281 ms）、`eval fuzzy` 注音 **44.5%**（319 題）。
+
+  仍 n/a／部分：`displayed.go` 的失效模式在本埠不存在（`Lattice::build` 每個音節都有未知詞邊）；
+  `phonetic_hint` 的同音替換排名需要 `decode.Window` 與 `SuggestionEdit`；`keepCandidates` 重開、候選格線與 `j`／`k` 換詞仍缺狀態；
+  `related` label 需要 bigram，目前 `build-zh`／`build-zh-bigram` 的資料差異不影響測試。
