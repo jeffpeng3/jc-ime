@@ -1482,3 +1482,11 @@ gate（固定工具鏈）：
 ### CI（push `9cc570a`，run 44750225315）
 
 - linux (core)：success；windows (msvc)：success。
+
+## 2026-11-20 18:05 release-msi-fix（`253b451` → `c54afd4`）
+
+- `1c578a3`：安裝器改用 cdylib 實際產物 `jc_tsf.dll`，payload 內改名。
+- `253b451`：`crt-static` 移到 `.cargo/config.toml`（x86_64／i686 兩個 target），release workflow 移除 Windows 重複建置；
+  與先前 `+fp16` 設定放在同一份檔案，避免 RUSTFLAGS 變動造成重編。
+- 驗證：`ci.yml`／`release.yml` YAML 有效；`cargo check --workspace --all-targets` exit 0；
+  `cargo test --workspace --no-fail-fast --exclude jc-settings-ui` exit 0（54 targets、1286 passed）。
