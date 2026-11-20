@@ -242,6 +242,17 @@ fallback，程序見下面的「快取與發版流程」。
 `"false"`，再不夠才關 `ci-linux` 的；release 的三個 job 維持只快取依賴。細節與清理
 指令見 `docs/port/ci-cache.md`。
 
+快取清理由 `scripts/cache-prune.sh` 執行：先照 family 上限與閒置天數算出刪除清單，再看執行後
+預估是否超過總量上限 8 GB。超標時從剩下的快取依建立時間由舊到新追加刪除，直到低於 8 GB
+或沒有可刪的為止。`cache-prune.yml` 每天 03:00 UTC 真的刪一次，手動 dispatch 預設 dry-run。
+
+總量壓力下改用 `PROTECTED_HOURS`（預設 1 小時）當保護窗。原本 6 小時的保護窗適合一週一版，
+不適合每天多次發版：rc.4／rc.5／rc.7 在 1～5 小時內接連產生，六個 tag 快取全部落在 6 小時
+保護窗裡，清理完全沒作用，總量卡在 9.58 GB / 10 GB。1 小時只擋住並行 run 正在寫入的項目，
+其餘照新舊釋出空間。`MAX_TOTAL_GB` 設 0 或 -1 可關閉總量規則，也可改用
+`--max-total-gb N`、`--protected-hours N` 覆寫。判定與結果會寫入 step summary，
+`ci.yml` 即使 `continue-on-error` 也看得到。
+
 ## 快取與發版流程
 
 ### 發現：tag 觸發的 Windows job 每次都 miss

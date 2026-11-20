@@ -1,10 +1,10 @@
 name: Cache prune
 
 # 快取清理的備援入口。主要清理掛在 ci.yml／release.yml 的收尾步驟，這裡只處理
-# 漏網的項目：手動 dispatch 預設 dry-run，排程每週一真的刪。
+# 漏網的項目：手動 dispatch 預設 dry-run，排程每天真的刪。
 on:
   schedule:
-    - cron: "0 3 * * 1" # 每週一 03:00 UTC
+    - cron: "0 3 * * *" # 每天 03:00 UTC
   workflow_dispatch:
     inputs:
       dry_run:
@@ -28,9 +28,10 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      KEEP_PER_FAMILY: "2"
+      KEEP_PER_FAMILY: "1"
       MAX_IDLE_DAYS: "7"
-      SKIP_RECENT_HOURS: "6"
+      SKIP_RECENT_HOURS: "1"
+      MAX_TOTAL_GB: "8"
     steps:
       - uses: actions/checkout@v5
 

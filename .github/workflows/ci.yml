@@ -85,14 +85,16 @@ jobs:
         run: cargo test --workspace
 
       # 收尾清理舊快取：只在 main 跑，PR 不動快取。清理失敗不讓 build 變紅。
-      # 並行 run 可能正在使用既有快取，腳本預設跳過建立未滿 6 小時的項目。
+      # 並行 run 可能正在使用既有快取，所以跳過建立未滿 1 小時的項目；
+      # 保護窗再長會讓每日多次發版的 tag 快取永遠清不掉。
+      # 腳本會把判定與結果寫入 $GITHUB_STEP_SUMMARY，continue-on-error 也看得到。
       - name: 清理舊快取
         if: github.ref == 'refs/heads/main'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: bash scripts/cache-prune.sh --skip-recent-hours 6
+        run: bash scripts/cache-prune.sh --skip-recent-hours 1
 
   windows:
     name: windows (msvc)
