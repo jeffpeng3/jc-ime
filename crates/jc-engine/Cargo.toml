@@ -10,13 +10,15 @@ jc-core = { path = "../jc-core" }
 jc-data = { path = "../jc-data" }
 jc-model = { path = "../jc-model" }
 jc-proto = { path = "../jc-proto" }
+jc-settings = { path = "../jc-settings" }
 anyhow.workspace = true
 thiserror.workspace = true
 log.workspace = true
 env_logger.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 jc-testdata = { path = "../jc-testdata" }
 
 # Windows named pipe 的 blocking Win32 API；只在 Windows 目標編譯。
