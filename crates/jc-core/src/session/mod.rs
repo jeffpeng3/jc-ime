@@ -38,7 +38,7 @@ use crate::key::{Key, KeyCode};
 use crate::lang::Mode;
 use crate::lattice::{InMemoryLexicon, Lattice};
 use crate::mixed::{space_text, Spacing};
-use crate::output::{rune_len, utf16_len, HansConverter, SharedPunctuator, Snapshot};
+use crate::output::{rune_offset, utf16_offset, HansConverter, SharedPunctuator, Snapshot};
 use crate::personal::PersonalStore;
 use crate::punct::{self, Edit};
 use crate::reading::Unit;
@@ -101,6 +101,11 @@ pub struct SessionConfig {
     pub ja_live: live::Config,
     /// 聲調選填：沒有聲調的音節展開成五個聲調再解碼。
     pub toneless: bool,
+    /// 打錯注音時擋聲調：沒有字的讀音按聲調時不收，留在暫存等使用者改。
+    ///
+    /// 對照上游 `ZhuyinErrorHint`。預設關閉，讓沒有詞典的情境仍能原樣留下
+    /// 注音；由外殼依設定開啟。
+    pub zhuyin_error_hint: bool,
     /// Ctrl 標點：`Ctrl+,` 輸出全形逗號。
     pub ctrl_punct: bool,
     /// 模糊音配對；每一項是兩個可互換的注音符號。預設四組全開。
@@ -156,6 +161,7 @@ impl Default for SessionConfig {
             ja_rerank: false,
             ja_live: live::Config::default(),
             toneless: false,
+            zhuyin_error_hint: false,
             ctrl_punct: false,
             fuzzy_pairs: DEFAULT_FUZZY_PAIRS.to_vec(),
             rerank: None,
@@ -323,7 +329,7 @@ impl Session {
         } else {
             None
         };
-        Self {
+        let mut session = Self {
             config,
             zh: ZhInput::standard(),
             romaji: RomajiInput::new(),
@@ -367,7 +373,9 @@ impl Session {
             style,
             full_width: false,
             symbol_prefix: false,
-        }
+        };
+        session.install_tone_gate();
+        session
     }
 
     /// 目前模式。
@@ -618,10 +626,12 @@ impl Session {
 
     /// 目前的完整快照。
     pub fn snapshot(&self) -> Snapshot {
+        let preedit = self.base_with_highlight();
+        let byte = self.cursor_byte();
         Snapshot {
-            preedit: self.base_with_highlight(),
-            cursor_utf16: self.cursor_utf16(),
-            cursor_rune: rune_len(&self.preedit_string()),
+            cursor_utf16: utf16_offset(&preedit, byte),
+            cursor_rune: rune_offset(&preedit, byte),
+            preedit,
             segments: self.segments(),
             candidates: self.candidates.clone(),
             highlighted: self.highlighted,
@@ -633,7 +643,7 @@ impl Session {
 
     /// 游標位置，以 UTF-16 code unit 計算。
     pub fn cursor_utf16(&self) -> usize {
-        utf16_len(&self.preedit_string())
+        utf16_offset(&self.base_with_highlight(), self.cursor_byte())
     }
 
     /// 反悔最近一次分語言學習；回傳是否有可反悔的紀錄。

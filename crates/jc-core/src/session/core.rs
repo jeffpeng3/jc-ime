@@ -8,6 +8,9 @@ use crate::score::BigramLm;
 /// 「常用」候選標示的系統詞頻門檻，對照上游 `commonLabelProbability`。
 pub(super) const COMMON_LABEL_PROBABILITY: f64 = 1e-4;
 
+/// 「關聯」候選標示所需的鄰詞機率提升倍數，對照上游 `relatedLabelLift`。
+pub(super) const RELATED_LABEL_LIFT: f64 = 2.0;
+
 /// 目前 Unix 秒數；時鐘早於 epoch 時回傳 0。
 pub(super) fn now_seconds() -> i64 {
     std::time::SystemTime::now()
@@ -297,18 +300,28 @@ impl Session {
         self.move_highlight(1);
     }
 
-    /// 上鍵：候選窗開著時往上換一項並進入選取模式。
+    /// 上鍵：候選窗開著時往上換一項並進入選取模式；還沒開窗時先開窗。
     pub(super) fn up(&mut self) {
-        if self.candidates.is_empty() || !self.candidate_window {
+        if self.candidates.is_empty() {
+            return;
+        }
+        if !self.candidate_window {
+            self.candidate_window = true;
+            self.navigating = true;
             return;
         }
         self.navigating = true;
         self.move_highlight(-1);
     }
 
-    /// `PageDown`／`PageUp`：換頁，頁碼頭尾相接。
+    /// `PageDown`／`PageUp`：換頁，頁碼頭尾相接；還沒開窗時先開窗。
     pub(super) fn page_step(&mut self, delta: isize) {
-        if self.candidates.is_empty() || !self.candidate_window {
+        if self.candidates.is_empty() {
+            return;
+        }
+        if !self.candidate_window {
+            self.candidate_window = true;
+            self.navigating = true;
             return;
         }
         let size = self.page_size().max(1);
@@ -321,10 +334,18 @@ impl Session {
 
     /// `Home`／`End`：選取模式中移到候選清單的第一項或最後一項。
     ///
-    /// 只是顯示候選時這兩個鍵在上游移動組字游標；本埠沒有組字游標，因此
-    /// 不動作，也不把反白跳到別項。
+    /// 只是顯示候選時（例如空白開窗、還沒按 ↓）這兩個鍵移動組字游標到
+    /// 開頭／結尾，對照上游 `moveShownCandidateCursor`；游標不動候選內容，
+    /// 也不會進入選取模式。
     pub(super) fn candidate_edge(&mut self, end: bool) {
-        if self.candidates.is_empty() || !self.candidate_window || !self.navigating {
+        if self.candidates.is_empty() || !self.candidate_window {
+            return;
+        }
+        if !self.navigating {
+            if self.config.mode == Mode::Zh {
+                let cells = self.zh.cells() as isize;
+                self.zh.cursor_move(if end { cells } else { -cells });
+            }
             return;
         }
         self.highlighted = if end { self.candidates.len() - 1 } else { 0 };
@@ -347,10 +368,11 @@ impl Session {
         (!rest.is_empty()).then(|| rest.to_string())
     }
 
-    /// 高亮候選的顯示原因；只標個人詞彙與常用詞，不影響排序。
+    /// 高亮候選的顯示原因；只標個人詞彙、關聯與常用詞，不影響排序。
     ///
-    /// 對照上游 `candidateLabels`：個人標示看使用者詞彙與手選紀錄，常用
-    /// 標示看系統 unigram 機率。關聯標示需要鄰詞機率，尚未接上。
+    /// 對照上游 `candidateLabels`：個人標示看使用者詞彙與使用證據，關聯標示
+    /// 看已送出左文最後一個詞的 bigram 提升，常用標示看系統 unigram 機率。
+    /// 每列只給一個標示，優先序是個人、關聯、常用。
     pub(super) fn highlighted_label(&self) -> Option<&'static str> {
         if self.config.mode != Mode::Zh || self.menu.is_some() {
             return None;
@@ -368,7 +390,29 @@ impl Session {
             }
         }
         let lm = self.zh_lm.as_ref()?;
-        (lm.uni(&candidate.surface) >= COMMON_LABEL_PROBABILITY).then_some("common")
+        let word = candidate.surface.as_str();
+        let base = lm.uni(word);
+        if let Some(left) = self.committed_context_word() {
+            let context =
+                self.ctx.bigram_mu * lm.bi(left, word) + (1.0 - self.ctx.bigram_mu) * base;
+            if base > 0.0 && context >= RELATED_LABEL_LIFT * base {
+                return Some("related");
+            }
+        }
+        (base >= COMMON_LABEL_PROBABILITY).then_some("common")
+    }
+
+    /// 已送出左文尾巴的連續漢字（最多四個字）；當作鄰詞機率的左文。
+    fn committed_context_word(&self) -> Option<&str> {
+        let start = self
+            .committed
+            .char_indices()
+            .rev()
+            .take_while(|(_, ch)| is_han(*ch))
+            .take(4)
+            .last()
+            .map(|(index, _)| index)?;
+        Some(&self.committed[start..])
     }
 
     pub(super) fn finish_composition(&mut self) {
@@ -585,12 +629,17 @@ impl Session {
         }
     }
 
-    /// 方向鍵：候選窗還沒開時先開啟並停在目前候選，不立刻移動。
+    /// 方向鍵：只是顯示候選時移動組字游標，選取模式中換項；還沒開窗時先開窗。
     ///
-    /// 前身把「只是顯示」與「明確選取」分開；Down 第一次只進入選取模式，
-    /// 第二次才換下一項。這裡用同一個規則簡化兩顆方向鍵。
+    /// 對照上游 `shownCandidateKey`：候選窗顯示中但還沒按 ↓ 時，左右鍵移動
+    /// 組字游標；進入選取模式後才在候選間移動。本埠的候選清單固定是整段
+    /// 組字，因此換游標不會把清單換成該片段的候選。
     pub(super) fn navigate(&mut self, delta: isize) {
         if self.candidates.is_empty() {
+            return;
+        }
+        if self.candidate_window && !self.navigating && self.config.mode == Mode::Zh {
+            self.zh.cursor_move(delta);
             return;
         }
         self.navigating = true;
@@ -736,6 +785,7 @@ impl Session {
     /// 自訂詞變動後重建詞典。
     pub(super) fn refresh_lexicon(&mut self) {
         self.lexicon = self.personal.augment_lexicon(&self.base_lexicon);
+        self.install_tone_gate();
     }
 
     pub(super) fn move_highlight(&mut self, delta: isize) {
@@ -816,24 +866,32 @@ impl Session {
         format!("{}{}", self.insert_literal(&self.base), self.pending)
     }
 
-    /// 顯示用字串：高亮候選反映在組字區。
-    pub(super) fn base_with_highlight(&self) -> String {
+    /// 顯示用的轉換結果：接受的補全或高亮候選，混合模式維持中文片段。
+    pub(super) fn displayed_base(&self) -> &str {
         if self.menu.is_some() {
             // 選單開啟時組字區維持原樣，候選只是待選清單。
-            return self.preedit_string();
+            return &self.base;
         }
-        let base = match (
+        match (
             &self.accepted_completion,
             self.candidates.get(self.highlighted),
         ) {
             (Some(text), _) => text.as_str(),
             // 混合模式的候選只取代待定英數按鍵，`base` 已含前面的中文片段；
             // 直接拿候選當整個組字字串會把中文吃掉。
-            (None, _) if self.config.mode == Mode::Mixed => self.base.as_str(),
+            (None, _) if self.config.mode == Mode::Mixed => &self.base,
             (None, Some(candidate)) => candidate.surface.as_str(),
-            (None, None) => self.base.as_str(),
-        };
-        format!("{}{}", self.insert_literal(base), self.pending)
+            (None, None) => &self.base,
+        }
+    }
+
+    /// 顯示用字串：高亮候選反映在組字區。
+    pub(super) fn base_with_highlight(&self) -> String {
+        format!(
+            "{}{}",
+            self.insert_literal(self.displayed_base()),
+            self.pending
+        )
     }
 
     /// 把字面按鍵插回轉換結果的對應位置。
@@ -1606,5 +1664,28 @@ mod tests {
         let mut s = session();
         type_syllable(&mut s, "ㄨㄛˇ");
         assert_eq!(s.snapshot().label, None);
+    }
+
+    /// 關聯標示的左文只取尾巴的連續漢字；沒有 bigram 模型時不捏造 related。
+    #[test]
+    fn test_label_context_uses_trailing_han_only() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "我");
+        assert_eq!(s.committed_context_word(), Some("我"));
+
+        s.remember_committed("，");
+        assert_eq!(s.committed_context_word(), None, "標點不是鄰詞");
+
+        s.remember_committed("一二三四五六");
+        assert_eq!(
+            s.committed_context_word(),
+            Some("三四五六"),
+            "只取最後四個漢字"
+        );
+
+        type_syllable(&mut s, "ㄒㄧㄤˇ");
+        assert_ne!(s.snapshot().label.as_deref(), Some("related"));
     }
 }
