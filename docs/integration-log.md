@@ -1354,3 +1354,15 @@ gate：test exit 0（54 targets、1231 passed、0 failed）、clippy exit 0、fm
 - `RUST_FONTCONFIG_DLOPEN=1 cargo check --workspace --all-targets`：exit 0。
 - `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：exit 0（54 targets、1231 passed、0 failed）。
 - `git branch --no-merged main`：rc-prep（等它完成後再合）。
+
+## 2026-11-20 15:05 rc-prep（`ff4c1c1` → `ac080e5`）
+
+內容：workspace 版本 `0.1.0-rc.1`、CHANGELOG、`docs/status.md`、README、`docs/wrapper.md`、
+`docs/port/README.md` 索引（含 x86-tip）。
+
+- `RUST_FONTCONFIG_DLOPEN=1 cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：exit 0（54 targets、1231 passed、0 failed）。
+- `RUST_FONTCONFIG_DLOPEN=1 cargo clippy --workspace --all-targets -- -D warnings`：exit 0。
+- `cargo fmt --all -- --check`：exit 0。
+- `git branch --no-merged main`：空。
+- `cargo check --workspace --all-targets --target x86_64-pc-windows-msvc`：本機失敗（`ring v0.17.14` build script 需要 MSVC 工具鏈），
+  留給 CI 的 windows (msvc) job 驗。
