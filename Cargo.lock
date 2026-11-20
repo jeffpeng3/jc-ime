@@ -893,6 +893,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "jc-linux"
+version = "0.1.0"
+dependencies = [
+ "jc-proto",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "jc-mac"
+version = "0.1.0"
+dependencies = [
+ "jc-proto",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "jc-model"
 version = "0.1.0"
 dependencies = [
@@ -944,6 +960,15 @@ dependencies = [
 [[package]]
 name = "jc-testdata"
 version = "0.1.0"
+
+[[package]]
+name = "jc-windows"
+version = "0.1.0"
+dependencies = [
+ "jc-proto",
+ "thiserror 2.0.21",
+ "windows-sys",
+]
 
 [[package]]
 name = "jiff"
