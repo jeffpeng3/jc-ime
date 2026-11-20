@@ -210,6 +210,13 @@ OnKeyDown
 - `JC_TSF_LOG=1` 時另外附加到 `%LOCALAPPDATA%\jc-ime\tsf.log`；開檔或寫檔失敗
   直接吞掉，不影響輸入。
 - 每行都有 `[jc-tsf <pid> <level>]` 前綴。
+- `Activate` 的每一步（class 註冊、`CreateWindowExW`、兩個 sink 的 QI 與
+  `Advise*`）都有固定格式的 `debug`／`warn` 行，`0x80070057` 這類「不知道哪一行
+  壞掉」的失敗可以直接從日誌定位；細節見 `docs/port/activate-diagnose.md`。
+
+訊息視窗的 `HINSTANCE` 用 `GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS)`
+取得**這份 DLL**，不是 `GetModuleHandleW(None)`（那是宿主 exe）。TSF 會把 TIP 載進
+任意程式，class 掛在 exe 模組上會讓之後的 class 查詢與卸載對不上。
 
 ## 驗證
 

@@ -60,6 +60,14 @@ pub fn info(args: impl Into<String>) {
     write("info", format_args!("{}", args.into()));
 }
 
+/// 把 `HRESULT` 印成固定寬度的十六進位（`0x80070057`）。
+///
+/// 失敗路徑的日誌都用這個格式，貼進報告或比對 `E_INVALIDARG` 這類常數時不用
+/// 自己換算。
+pub fn hresult(code: windows::core::HRESULT) -> String {
+    format!("0x{:08X}", code.0 as u32)
+}
+
 /// 需要注意但不致命的訊息。
 pub fn warn(args: impl Into<String>) {
     write("warn", format_args!("{}", args.into()));

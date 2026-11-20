@@ -16,9 +16,15 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use jc_proto::{CandidateDetail, Key, KeyCode, Request, Response};
-use windows::core::{implement, IUnknownImpl, Interface, Ref, Result, PCWSTR};
-use windows::Win32::Foundation::{E_FAIL, FALSE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::core::{implement, IUnknown, IUnknownImpl, Interface, Ref, Result, PCWSTR};
+use windows::Win32::Foundation::{
+    GetLastError, ERROR_CLASS_ALREADY_EXISTS, E_FAIL, FALSE, HINSTANCE, HMODULE, HWND, LPARAM,
+    LRESULT, WPARAM,
+};
+use windows::Win32::System::LibraryLoader::{
+    GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+};
 use windows::Win32::System::Variant::{VARIANT, VT_I4};
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
@@ -183,6 +189,10 @@ impl Control {
         thread_sink: ITfThreadMgrEventSink,
     ) -> Result<Box<Self>> {
         let pointer = &*control as *const Control;
+        logging::debug(format!(
+            "Activate：建立訊息視窗（client_id = {}）",
+            control.client_id
+        ));
         control.hwnd = create_message_window(pointer)?;
         control.queue.attach(control.hwnd.0 as isize);
         control.sink_state.attach(pointer);
@@ -349,6 +359,9 @@ impl Control {
     }
 
     /// 註冊 key sink 與 thread manager 事件 sink。
+    ///
+    /// 每一步都單獨記一次 HRESULT：`Activate` 失敗時 `0x80070057` 可能來自這裡
+    /// 任一呼叫，也可能是 `CreateWindowExW` 的 `GetLastError`，日誌要能分辨。
     fn advise(
         &mut self,
         key_sink: &ITfKeyEventSink,
@@ -356,15 +369,76 @@ impl Control {
     ) -> Result<()> {
         // SAFETY: sink 的存活期由 Control 持有，反註冊在 shutdown。
         unsafe {
-            let keystroke: ITfKeystrokeMgr = self.thread_mgr.cast()?;
-            keystroke.AdviseKeyEventSink(self.client_id, key_sink, true)?;
+            let keystroke: ITfKeystrokeMgr = match self.thread_mgr.cast() {
+                Ok(keystroke) => {
+                    logging::debug("advise：cast ITfKeystrokeMgr = 0x00000000");
+                    keystroke
+                }
+                Err(error) => {
+                    logging::warn(format!(
+                        "advise：cast ITfKeystrokeMgr = {}",
+                        logging::hresult(error.code())
+                    ));
+                    return Err(error);
+                }
+            };
+
+            if let Err(error) = keystroke.AdviseKeyEventSink(self.client_id, key_sink, true) {
+                logging::warn(format!(
+                    "advise：AdviseKeyEventSink = {}（client_id = {}）",
+                    logging::hresult(error.code()),
+                    self.client_id
+                ));
+                return Err(error);
+            }
+            logging::debug(format!(
+                "advise：AdviseKeyEventSink = 0x00000000（client_id = {}）",
+                self.client_id
+            ));
             self.keystroke = Some(keystroke);
 
-            let source: ITfSource = self.thread_mgr.cast()?;
-            let unknown: windows::core::IUnknown = thread_sink.cast()?;
-            let cookie = source.AdviseSink(&<ITfThreadMgrEventSink as Interface>::IID, &unknown)?;
-            self.source = Some(source);
-            self.source_cookie.set(cookie);
+            let source: ITfSource = match self.thread_mgr.cast() {
+                Ok(source) => {
+                    logging::debug("advise：cast ITfSource = 0x00000000");
+                    source
+                }
+                Err(error) => {
+                    logging::warn(format!(
+                        "advise：cast ITfSource = {}",
+                        logging::hresult(error.code())
+                    ));
+                    return Err(error);
+                }
+            };
+
+            let unknown: IUnknown = match thread_sink.cast() {
+                Ok(unknown) => unknown,
+                Err(error) => {
+                    logging::warn(format!(
+                        "advise：cast IUnknown = {}",
+                        logging::hresult(error.code())
+                    ));
+                    return Err(error);
+                }
+            };
+            // riid 必須是 sink 自己的 IID（`IID_ITfThreadMgrEventSink`）；傳
+            // `IID_IUnknown` 之類的泛型值會被 msctf 當成「不支援的 sink 類型」拒絕。
+            match source.AdviseSink(&<ITfThreadMgrEventSink as Interface>::IID, &unknown) {
+                Ok(cookie) => {
+                    logging::debug(format!(
+                        "advise：AdviseSink = 0x00000000（IID_ITfThreadMgrEventSink，cookie = {cookie}）"
+                    ));
+                    self.source = Some(source);
+                    self.source_cookie.set(cookie);
+                }
+                Err(error) => {
+                    logging::warn(format!(
+                        "advise：AdviseSink = {}（IID_ITfThreadMgrEventSink）",
+                        logging::hresult(error.code())
+                    ));
+                    return Err(error);
+                }
+            }
         }
         Ok(())
     }
@@ -840,22 +914,62 @@ impl ITfEditSession_Impl for ApplySession_Impl {
     }
 }
 
+/// 取得**這份 DLL** 的 `HINSTANCE`。
+///
+/// `GetModuleHandleW(None)` 拿到的是宿主行程的 exe：TSF 會把 TIP 載進任意程式，
+/// 用 exe 的 handle 註冊視窗 class，class 就會掛在錯的模組上（`GCLP_HMODULE`、
+/// 之後的 `UnregisterClassW` 都對不上）。`GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS`
+/// 用本模組內的函式位址反查，才是真正裝著這段程式碼的 DLL。
+fn module_instance() -> Result<HINSTANCE> {
+    let mut module = HMODULE::default();
+    // SAFETY: anchor 是本模組內的函式位址；UNCHANGED_REFCOUNT 不增加參考計數，
+    // 所以不需要（也不能）對 module 呼叫 FreeLibrary。
+    unsafe {
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            PCWSTR(module_instance as *const () as *const u16),
+            &mut module,
+        )?;
+    }
+    Ok(HINSTANCE(module.0))
+}
+
 /// 建立訊息視窗。
+///
+/// 每一步都留日誌：這個函式失敗時 `Activate` 只會看到
+/// `HRESULT_FROM_WIN32(GetLastError)`，事後猜不出是哪一步。
 fn create_message_window(control: *const Control) -> Result<HWND> {
     let class_name = crate::wide(WINDOW_CLASS);
+    let instance = module_instance()?;
     // SAFETY: 視窗與 class 都只在這個執行緒建立與註冊。
     unsafe {
-        let instance = GetModuleHandleW(None)?;
         let class = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
-            hInstance: windows::Win32::Foundation::HINSTANCE(instance.0),
+            hInstance: instance,
             lpszClassName: PCWSTR(class_name.as_ptr()),
             ..Default::default()
         };
-        // 已經註冊過會回 0，這是正常情況，不用處理。
-        let _ = RegisterClassW(&class);
+        // 回 0 代表「這次沒註冊成功」，兩種情形：class 已存在（同一個行程重複
+        // Activate，正常）或真的失敗。成功時 `GetLastError` 沒有意義，照樣印出
+        // 實際值，方便比對。
+        let registered = RegisterClassW(&class);
+        let register_error = GetLastError();
+        if registered == 0 && register_error != ERROR_CLASS_ALREADY_EXISTS {
+            logging::warn(format!(
+                "create_message_window：RegisterClassW = 0x{registered:04X}，GetLastError = {}",
+                register_error.0
+            ));
+        } else {
+            logging::debug(format!(
+                "create_message_window：RegisterClassW = 0x{registered:04X}，GetLastError = {}",
+                register_error.0
+            ));
+        }
 
-        let hwnd = CreateWindowExW(
+        // 訊息視窗不需要任何樣式（`WINDOW_STYLE(0)` 就是 `WS_OVERLAPPED`）；
+        // 加 `WS_POPUP` 或 `WS_CHILD` 都不會讓它更正確，`WS_CHILD` 反而會讓
+        // `CreateWindowExW` 直接失敗。
+        let result = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             PCWSTR(class_name.as_ptr()),
             PCWSTR(class_name.as_ptr()),
@@ -866,9 +980,24 @@ fn create_message_window(control: *const Control) -> Result<HWND> {
             0,
             Some(HWND_MESSAGE),
             None,
-            Some(windows::Win32::Foundation::HINSTANCE(instance.0)),
+            Some(instance),
             None,
-        )?;
+        );
+        let hwnd = match result {
+            Ok(hwnd) => hwnd,
+            Err(error) => {
+                logging::warn(format!(
+                    "create_message_window：CreateWindowExW 失敗，GetLastError = {}（HRESULT {}）",
+                    GetLastError().0,
+                    logging::hresult(error.code())
+                ));
+                return Err(error);
+            }
+        };
+        logging::debug(format!(
+            "create_message_window：CreateWindowExW = {:?}",
+            hwnd.0
+        ));
         // 32 位元 Windows 的 `SetWindowLongPtrW` 就是 `SetWindowLongW`，第三個
         // 參數是 `i32`；64 位元才是 `isize`。指標只當不透明值傳遞，不是真的截斷
         // （32 位元的指標本來就是 32 位元）。
