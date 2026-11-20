@@ -94,17 +94,22 @@ TSF DLL）。
 |---|---|---|---|---|
 | `RegisterTip` | deferred | SYSTEM | `WriteRegistryValues` 之後 | `machine-register`；`RegisterProfile` 與三個 `RegisterCategory`。CLSID 已由 `<Class>` 寫好 |
 | `RollbackRegisterTip` | rollback | SYSTEM | `RegisterTip` 之前 | `machine-unregister` |
-| `UnregisterTip` | deferred | SYSTEM | 反安裝、`RemoveFiles` 之前 | `machine-unregister`；清 profile 與分類，CLSID 機碼留給 MSI |
+| `UnregisterTip` | deferred | SYSTEM | 反安裝、`RemoveRegistryValues` 之前 | `machine-unregister`；清 profile 與分類，CLSID 機碼留給 MSI |
 | `RollbackUnregisterTip` | rollback | SYSTEM | `UnregisterTip` 之前 | `machine-register` |
 | `InstallTipLayout` | immediate | 使用者 | `InstallFinalize` 之後 | `user-install`（`InstallLayoutOrTip(ILOT_INSTALL)`） |
-| `RemoveTipLayout` | immediate | 使用者 | 反安裝的 `InstallFinalize` 之後 | `user-uninstall [KEEPUSERSETTINGS]`；只刪使用者資料，不呼叫 `ILOT_UNINSTALL` |
+| `RemoveTipLayout` | immediate | 使用者 | 反安裝的 `InstallFinalize` 之後 | `user-uninstall [KEEPUSERSETTINGS]`；只清使用者資料，語言清單那一步是 no-op |
 
 `machine-*` 必須是 SYSTEM：CTF 機碼在 HKLM。`user-*` 必須是使用者：`InstallLayoutOrTip`
 只寫呼叫者的 HKCU，在 SYSTEM 執行會加到 SYSTEM 的語言清單。
 
-CLSID 由 WXS 的 `<Class>` 註冊，不是由 DLL 的 `DllRegisterServer`：Windows Installer
-在 `WriteRegistryValues` 把 `HKCR\CLSID\{...}\InprocServer32` 的兩個檢視都寫好，
+CLSID 由 WXS 的 `<Class Advertise="no">` 註冊，不是由 DLL 的 `DllRegisterServer`。
+`Advertise="no"` 讓 WiX 產生 Registry table 的資料列，`WriteRegistryValues` 在
+`RegisterTip` 之前把 `HKCR\CLSID\{...}\InprocServer32` 的兩個檢視都寫好，
 `RegisterCategory` 才不會拿到不存在的類別工廠（rc.5／rc.6 的 `0xC0000005`）。
+反安裝時這批資料列由 `RemoveRegistryValues`（標準順序 2600）移除，所以
+`UnregisterTip` 排 `Before="RemoveRegistryValues"`，`UnregisterProfile` 執行時
+CLSID 還在。`RegisterClassInfo`／`UnregisterClassInfo` 只處理 Class table，這裡
+沒有用到。
 
 `RegisterTip` 用 `Return="check"`：註冊失敗就讓安裝失敗並回滾，不留半套 TIP。
 `UnregisterTip` 與兩個 `user-*` 用 `Return="ignore"`：反安裝不能被已隔離的 DLL 或

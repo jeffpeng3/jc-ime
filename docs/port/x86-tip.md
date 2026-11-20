@@ -71,7 +71,7 @@ CLSID，清單就會出現兩個「jc 注音」，而且只有架構相符的那
 分類：
 
 ```text
-WriteRegistryValues
+WriteRegistryValues（標準順序 5000）
   <Class Id="7B7D6E1A-…" Context="InprocServer32" ThreadingModel="apartment">
     TsfDll      → HKCR\CLSID\{…}\InprocServer32             = …\jc-tsf.dll
     TsfDllX86   → HKCR\Wow6432Node\CLSID\{…}\InprocServer32 = …\jc-tsf-x86.dll
@@ -118,19 +118,20 @@ profile 之後只有一組：
 ## 反安裝流程
 
 ```text
+UnregisterTip      machine-unregister                                  （deferred、SYSTEM，
+                                                                        Before RemoveRegistryValues）
 RemoveRegistryValues（既定順序 2600）                                  <Class> 移除兩個檢視
-UnregisterTip      machine-unregister                                  （deferred、SYSTEM）
 RemoveFiles（3500）
 InstallFinalize
 RemoveTipLayout    user-uninstall [KEEPUSERSETTINGS]
 ```
 
 `machine-unregister` 只做 `UnregisterCategory` 三次與 `UnregisterProfile`。
-`HKCR\CLSID` 兩個檢視由 MSI 的 `<Class>` 登錄資料移除：`RemoveRegistryValues`
-（2600）與 `UnregisterClassInfo`（2700）都在 `UnregisterTip` 之前，自訂動作再去
-刪只會跟 MSI 搶。`UnregisterProfile`／`UnregisterCategory` 只碰
-`HKLM\SOFTWARE\Microsoft\CTF`，不需要 CLSID。DLL 被防毒隔離時，
-`machine-unregister` 完全不碰檔案，反安裝不會卡住。
+`HKCR\CLSID` 兩個檢視由 MSI 的 `<Class>` 登錄資料移除：`Advertise="no"` 產生的是
+Registry table 的資料列，移除發生在 `RemoveRegistryValues`（2600），比
+`UnregisterClassInfo`（2700）與 `RemoveFiles`（3500）都早，所以 `UnregisterTip`
+排 `Before="RemoveRegistryValues"`，`UnregisterProfile` 執行時 CLSID 還在。DLL 被
+防毒隔離時，`machine-unregister` 完全不碰檔案，反安裝不會卡住。
 
 反安裝**不呼叫** `InstallLayoutOrTip(ILOT_UNINSTALL)`：移除語系的最後一個 layout
 會讓 Windows 把系統地區改成英文（windows-chewing-tsf issue 553）。

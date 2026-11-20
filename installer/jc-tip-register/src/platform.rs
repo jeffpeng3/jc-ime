@@ -11,8 +11,9 @@
 //!
 //! CLSID 交給 MSI 是 rc.7 的修正：rc.5／rc.6 由 `DllRegisterServer` 自己寫，當時
 //! 64 位元檢視的 CLSID 在 `RegisterCategory` 執行時還不存在，msctf 直接存取違規
-//! （`0xC0000005`）。MSI 的 `RegisterClassInfo` 表保證自訂動作開跑前兩個檢視都
-//! 已經寫好，這支程式因此完全不需要 DLL 路徑與架構判斷。
+//! （`0xC0000005`）。`<Class Advertise="no">` 產生 Registry table 的資料列，
+//! `WriteRegistryValues` 排在 `RegisterTip` 之前，這支程式因此完全不需要 DLL
+//! 路徑與架構判斷。
 //!
 //! `HKLM\SOFTWARE\Microsoft\CTF` 不是 WOW64 轉向機碼，兩個架構讀寫同一份資料，
 //! 所以 profile 與分類只註冊一次、也只移除一次。

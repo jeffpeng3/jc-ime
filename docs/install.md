@@ -165,9 +165,9 @@ msiexec /x jc-ime-0.1.0-x64.msi KEEPUSERSETTINGS=1
 順序：
 
 1. 反安裝的 deferred 動作先跑 `machine-unregister`：`UnregisterCategory` 三次與
-   `UnregisterProfile`。CLSID 機碼不歸它管，留給 MSI 的 `RemoveRegistryValues`
-   把兩個檢視（64 位元與 `Wow6432Node`）一起移除。這一步在刪檔案之前，執行時
-   完全不碰 DLL，被隔離也不影響。
+   `UnregisterProfile`。它排在 `RemoveRegistryValues` 之前，所以 CLSID 還在；
+   之後 MSI 用同一個動作把兩個檢視（64 位元與 `Wow6432Node`）的 CLSID 機碼一起
+   移除。`machine-unregister` 完全不碰 DLL，被隔離也不影響。
 2. MSI 刪檔案與 `Run` 值，再移除空目錄。授權文件（`legal\` 整個目錄）也在這一步
    刪除。之後由 `data-download` 下載到 `%ProgramData%\jc-ime\data` 的模型不屬於
    MSI，不會被刪；要完全清空需手動刪該目錄。

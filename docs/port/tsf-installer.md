@@ -70,22 +70,25 @@ RC4 的錯誤是 `Component` 的 `Win64`：WiX v5 schema 沒有這個屬性，�
 ### 反安裝順序
 
 ```text
-RemoveRegistryValues（標準順序 2600）    由 <Class> 移除兩個檢視的 CLSID 機碼
 RollbackUnregisterTip（rollback，SYSTEM）
 UnregisterTip（deferred，SYSTEM）        UnregisterCategory ×3 / UnregisterProfile
+RemoveRegistryValues（標準順序 2600）    由 <Class> 移除兩個檢視的 CLSID 機碼
 RemoveFiles（3500）                      刪程式、資料、Run 值
 InstallFinalize
 RemoveTipLayout（immediate，使用者）      只刪 %LOCALAPPDATA%\jc-ime
                                           不呼叫 InstallLayoutOrTip(ILOT_UNINSTALL)
 ```
 
-先移除 profile 再刪檔案；反過來會留下刪不掉的 `CTF\TIP` 機碼。`jc-tip-register.exe`
-本身到 `RemoveFiles` 才刪，因為 `UnregisterTip` 要用它。CLSID 機碼由 MSI 的
-`<Class>` 登錄資料負責：`RemoveRegistryValues`（2600）與 `UnregisterClassInfo`
-（2700）都在 `UnregisterTip` 之前，Windows Installer 自己把 64 位元與
-`Wow6432Node` 兩份一起移除。`UnregisterProfile`／`UnregisterCategory` 只操作
-`HKLM\SOFTWARE\Microsoft\CTF`，不需要 CLSID；rc.5 的真機反安裝就是這個順序，
-結果正常。
+`UnregisterTip` 排 `Before="RemoveRegistryValues"`（WiX 會排在 2600 之前）。
+`<Class Advertise="no">` 產生的是 Registry table 的資料列，CLSID 機碼由
+`RemoveRegistryValues` 移除，不是 `UnregisterClassInfo`（2700，只處理 Class
+table）；排 `Before="RemoveFiles"`（3500）會太晚，那時機碼已經被刪掉。rc.5 的
+真機反安裝之所以看起來沒問題，是因為當時 CLSID 是 helper 自己寫的、MSI 不擁有，
+所以 `UnregisterProfile` 執行時它還存在。
+
+`jc-tip-register.exe` 本身到 `RemoveFiles` 才刪，因為 `UnregisterTip` 要用它。
+兩個檢視的 CLSID 由 Windows Installer 自己移除，`machine-unregister` 不碰，
+兩邊不會互搶。
 
 升級時 `RemoveTipLayout` 的條件排除 `UPGRADINGPRODUCTCODE`，使用者的語言清單項目
 不會在版本交替的空檔被移除。
@@ -396,16 +399,20 @@ msctf 拿不到類別工廠，這就是崩因。
 
 | 機碼 | 誰寫 | 時機 |
 |---|---|---|
-| `HKCR\CLSID\{CLSID}` 與 `...\InprocServer32`（64 位元檢視） | WXS 的 `<Class>`（`TsfDll` 元件） | `WriteRegistryValues` |
-| 同一組機碼（`Wow6432Node`） | WXS 的 `<Class>`（`TsfDllX86`，`Bitness="always32"`） | `WriteRegistryValues` |
+| `HKCR\CLSID\{CLSID}` 與 `...\InprocServer32`（64 位元檢視） | WXS 的 `<Class Advertise="no">`（`TsfDll` 元件） | `WriteRegistryValues`（Registry table 的資料列） |
+| 同一組機碼（`Wow6432Node`） | 同上（`TsfDllX86`，`Bitness="always32"`） | `WriteRegistryValues` |
 | `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}` | `machine-register` 的 `RegisterProfile` | `RegisterTip`，在 `WriteRegistryValues` 之後 |
 | `HKLM\SOFTWARE\Microsoft\CTF\Category` | `machine-register` 的三次 `RegisterCategory` | 同上 |
 | 使用者語言清單 | `user-install` 的 `InstallLayoutOrTip(ILOT_INSTALL)` | `InstallFinalize` 之後，使用者身分 |
 
+`Advertise="no"` 是關鍵：WiX 文件寫明它會「generate Registry rows that perform
+similar registration」，而不是 Class table。`RegisterClassInfo`／
+`UnregisterClassInfo` 只處理 Class table，這份 WXS 沒有那些資料列。
+
 ```text
 InstallFiles
-WriteRegistryValues
-  ├─ <Class Id="7B7D6E1A-…" Context="InprocServer32" ThreadingModel="apartment">
+WriteRegistryValues（標準順序 5000）
+  ├─ <Class Id="7B7D6E1A-…" Context="InprocServer32" ThreadingModel="apartment" Advertise="no">
   │    TsfDll       → HKCR\CLSID\{…}\InprocServer32          = …\jc-tsf.dll
   │    TsfDllX86    → HKCR\Wow6432Node\CLSID\{…}\InprocServer32 = …\jc-tsf-x86.dll
   └─ RegisterTip（deferred、SYSTEM）  machine-register
@@ -421,11 +428,11 @@ InstallTipLayout（immediate、使用者）  user-install → InstallLayoutOrTip
 反安裝：
 
 ```text
-RemoveRegistryValues（2600）與 UnregisterClassInfo（2700）  移除兩個檢視的 CLSID
-UnregisterTip（deferred、SYSTEM）  machine-unregister
+UnregisterTip（deferred、SYSTEM，Before="RemoveRegistryValues"）  machine-unregister
   UnregisterCategory ×3
   UnregisterProfile(CLSID, 0x0404, PROFILE, 0)
   （不刪 HKCR\CLSID，也不刪 Wow6432Node 那一份）
+RemoveRegistryValues（2600）    移除兩個檢視的 CLSID
 RemoveFiles（3500）
 InstallFinalize
 RemoveTipLayout（immediate、使用者）  user-uninstall
@@ -434,9 +441,11 @@ RemoveTipLayout（immediate、使用者）  user-uninstall
 
 ### 為什麼 CLSID 交給 MSI
 
-1. **順序保證**：`RegisterClassInfo` 讓 Windows Installer 在
-   `WriteRegistryValues` 把所有 `<Class>` 的機碼寫完，`RegisterTip` 排在它之後，
-   `RegisterCategory` 執行時兩個檢視都查得到類別工廠。
+1. **順序保證**：`Advertise="no"` 的 `<Class>` 由 WiX 展開成 Registry table 的
+   資料列，`WriteRegistryValues` 負責寫入；`RegisterTip` 排在它之後，
+   `RegisterCategory` 執行時兩個檢視都查得到類別工廠。反安裝則反過來：
+   `UnregisterTip` 排在 `RemoveRegistryValues` 之前，`UnregisterProfile` 執行時
+   CLSID 還在。
 2. **少一層 API 表面**：不用載入 DLL、不用判斷 PE 架構，也就不需要在安裝器裡重寫
    `InprocServer32`。`machine-register` 因此沒有參數，`arch.rs`、
    `write_com_registration`、`register_in_store`、`Target`、`delete_clsid_tree`
