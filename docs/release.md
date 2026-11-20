@@ -192,24 +192,28 @@ Windows 建置必須指定 target（`--target x86_64-pc-windows-msvc`），否�
 
 ## 建置快取
 
-release 與 CI 都用 `Swatinem/rust-cache@v2`，只快取依賴（candle、GPUI 等），
-不快取 workspace crate 的產物，避免拿到過期的自家 binary。
+release 與 CI 都用 `Swatinem/rust-cache@v2`。
 
-| Workflow | Job | shared-key |
-|---|---|---|
-| `ci.yml` | `linux` | `ci-linux` |
-| `ci.yml` | `windows` | `ci-windows` |
-| `release.yml` | `verify` | `release-linux` |
-| `release.yml` | `linux` | `release-linux`（與 `verify` 共用） |
-| `release.yml` | `windows` | `release-windows` |
+| Workflow | Job | shared-key | cache-all-crates |
+|---|---|---|---|
+| `ci.yml` | `linux` | `ci-linux` | `true` |
+| `ci.yml` | `windows` | `ci-windows` | `true` |
+| `release.yml` | `verify` | `release-linux` | `false` |
+| `release.yml` | `linux` | `release-linux`（與 `verify` 共用） | `false` |
+| `release.yml` | `windows` | `release-windows` | `false` |
+
+CI 連 workspace crate 的產物一起快取：每個 commit 通常只改幾個 crate，還原後 cargo 只
+重編改到的。release 只快取依賴，release 產物一份太大，每個 tag 存一份會擠掉其他快取。
 
 `verify` 與 `linux（tar.gz）` 同為 ubuntu-24.04、同為 release profile、同一次 run、
 同一份 `Cargo.lock`，因此共用 `release-linux`：`verify` 先跑並寫入快取，打包 job
 直接命中。CI 是 debug profile，`target/debug` 與 `target/release` 的產物不能互換，
 所以 `ci-*` 與 `release-*` 不共用。
 
-第一次跑一定不會命中，這是正常的：job 照常編譯，結束後才存檔。第二次（key 相同）
-開始變快。
+第一次跑一定不會命中，這是正常的：job 照常編譯，結束後才存檔。CI 的第一個 commit 存
+一份新快取；之後的 commit key 不變（key 不含 commit SHA），還原同一份再增量重建，後續
+存檔會被跳過（cache 不可覆寫，post step 只印 warning）。`Cargo.lock` 或 rustc 版本
+一變，key 才改變、存新的一份。
 
 確認命中與否，開 run 的 log 找這幾行：
 
@@ -220,13 +224,14 @@ Cache saved with key: ...                # 存檔
 Cache Size: ~NNN MB (NNNNNNNN B)         # 這次存了多大
 ```
 
-改 `Cargo.lock` 或 rustc 版本會 miss 一次，之後再命中。`release-*` 的快取綁 tag：
-不同 tag 互不相通，`v0.1.1` 讀不到 `v0.1.0` 存的快取，只有重跑同一個 tag 才省得到。
+`release-*` 的快取綁 tag：不同 tag 互不相通，`v0.1.1` 讀不到 `v0.1.0` 存的快取，只有
+重跑同一個 tag 才省得到。
 
-快取上限是每個 repo 10 GB（超過按最久未存取淘汰，7 天沒用到自動刪）。接近上限時，
-先把最大的那一組改成 `cache-targets: "false"`，只留 `~/.cargo` 的 registry／git；
-取捨是依賴每次重編、只省下載。查看用量與清理指令見
-`docs/port/ci-cache.md`。
+快取上限是每個 repo 10 GB（超過按最久未存取淘汰，7 天沒用到自動刪）。本機 debug 建置
+量到 38 個測試執行檔共 4.5 GB，CI 的快取估計每個 OS 2–4 GB（壓縮後），Linux 加 Windows
+可能吃掉一半以上的額度。接近上限時先把 `ci-windows` 的 `cache-all-crates` 改成
+`"false"`，再不夠才關 `ci-linux` 的；release 的三個 job 維持只快取依賴。細節與清理
+指令見 `docs/port/ci-cache.md`。
 
 ## Artifact 內容
 

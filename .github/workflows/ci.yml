@@ -38,13 +38,15 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev \
             libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
             libxcb-shape0-dev libxcb-xfixes0-dev libasound2-dev
-      # 依賴建置快取。rust-cache 只留依賴的產物，workspace crate 每次重編，
-      # 也一併快取 ~/.cargo 的 registry／git，因此不再另外用 actions/cache。
+      # 依賴建置快取。CI 連 workspace crate 的產物一起快取：每個 commit 通常只改
+      # 幾個 crate，還原後 cargo 只重編有變的。key 不含 commit SHA，同一份
+      # Cargo.lock／rustc 下只會存第一次，之後都是還原後增量重建。
       # 第一次跑不會命中（見 docs/release.md 的快取章節）。
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-linux
           cache-targets: "true"
+          cache-all-crates: "true"
           cache-on-failure: "true"
       - name: Format
         run: cargo fmt --all -- --check
@@ -74,10 +76,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       # 與 ci-linux 分開的 key，避免 Linux／Windows 互相覆蓋快取。
+      # 快取量大，總量接近 10 GB 時優先關掉這個 job 的 cache-all-crates。
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-windows
           cache-targets: "true"
+          cache-all-crates: "true"
           cache-on-failure: "true"
       # 只跑 test（debug）。原本先 build --release 再 test，等於同一份程式編兩次；
       # release 建置改由 release workflow 在標籤上做。
