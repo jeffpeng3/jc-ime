@@ -2,6 +2,11 @@
 
 Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
 
+> **現況（2026-11-21）**：Funmula 的 `zh_punct` 已從 catalog 移除，資料根目錄的
+> `manifest.json` 由 10 筆改成 8 筆（6 個 `shipped: true`、2 個 `zh_select` 下載項）。
+> 本文是移植歷史：配置、真實 manifest JSON、role 列舉與 `zh-punct` 範例保留舊值供
+> 回溯；現行的 `data verify` 人讀輸出見下方「驗證」。
+
 ## 目標
 
 把「安裝版資料根目錄長什麼樣、哪些檔要帶、帶的檔對不對」固定下來：
@@ -27,7 +32,7 @@ Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
 
 ## 佈局
 
-目前 `/mnt/work/jc/jc-ime-data` 的實際佈局：
+2026-11-20 的 `/mnt/work/jc/jc-ime-data` 佈局（歷史，現況見頂端註記）：
 
 ```text
 <mnt/work/jc/jc-ime-data>/
@@ -43,10 +48,10 @@ Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
   models/quant/jinen-v2-xsmall/tokenizer.json   # Jinen tokenizer（small 沿用 xsmall）
   models/zh-select/model.onnx            # 下載項
   models/zh-select/vocab.json            # 下載項
-  models/zh-punct/model.onnx             # 下載項，程式自 2026-11-20 起不載入
-  models/zh-punct/vocab.json             # 下載項
+  models/zh-punct/model.onnx             # 歷史下載項；2026-11-21 已從 catalog 移除
+  models/zh-punct/vocab.json             # 歷史下載項；2026-11-21 已從 catalog 移除
   opencc/*.txt
-  manifest.json                          # 由工具產生；目前尚未寫進這個目錄
+  manifest.json                          # 由工具產生；本文撰寫時尚未寫進這個目錄（現況見資料根目錄）
 ```
 
 `models/external/jinen-v2-small/` 是 `jc-engine` 的預設路徑（`JA_NEURAL_GGUF`）。
@@ -70,13 +75,13 @@ Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
 | `files[].path` | string | 相對資料根目錄，一律用 `/`；不可絕對路徑或含 `..` |
 | `files[].bytes` | integer | 檔案大小 |
 | `files[].sha256` | string | 64 個小寫十六進位字元 |
-| `files[].role` | string | `ja_lexicon`、`zh_lexicon`、`zh_lm`、`english`、`ja_neural`、`ja_tokenizer`、`zh_select`、`zh_punct` |
+| `files[].role` | string | 現行 7 個：`ja_lexicon`、`zh_lexicon`、`zh_lm`、`english`、`ja_neural`、`ja_tokenizer`、`zh_select`（`zh_punct` 曾存在，2026-11-21 從 catalog 移除） |
 | `files[].license` | string[] | `legal/README.md` 的 `L-xx` 條目 |
 | `files[].shipped` | bool | `true` 隨產品散布；`false` 由使用者下載 |
 | `files[].url` | string? | 下載項的來源 URL；隨附檔沒有這個欄位 |
 
-`zh_punct` 是額外角色，用來標記 Funmula 的標點模型。程式已不載入它，但檔案
-仍在資料目錄，manifest 要能表達「這是哪個授權的下載項」。
+`zh_punct` 是歷史角色，用來標記 Funmula 的標點模型。程式自 2026-11-20 起不載入它，
+2026-11-21 也從 catalog 移除；檔案仍在資料目錄供回溯，新的 manifest 不再收錄。
 
 ## 真實 manifest
 
@@ -209,7 +214,8 @@ cargo run -p jc-cli --release -- data verify /mnt/work/jc/jc-ime-data \
   --manifest /tmp/opencode/manifest.json
 ```
 
-對現有資料的實測結果：
+2026-11-21 起 catalog 移除 `zh_punct`，manifest 為 8 筆（6 個隨附檔、2 個
+`zh_select` 下載項）。下載項缺席時，人讀輸出不顯示這些項目，也不計入警告：
 
 ```text
 通過      packs/ja-lexicon-mozc-v2.pack（ja_lexicon）
@@ -218,14 +224,11 @@ cargo run -p jc-cli --release -- data verify /mnt/work/jc/jc-ime-data \
 通過      english/words.bin（english）
 通過      models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf（ja_neural）
 通過      models/quant/jinen-v2-xsmall/tokenizer.json（ja_tokenizer）
-通過      models/zh-select/model.onnx（zh_select）
-通過      models/zh-select/vocab.json（zh_select）
-通過      models/zh-punct/model.onnx（zh_punct）
-通過      models/zh-punct/vocab.json（zh_punct）
-驗證 /tmp/opencode/manifest.json：通過 10/10，錯誤 0，警告 0
+驗證 /tmp/opencode/manifest.json：通過 6/6，錯誤 0，警告 0
 ```
 
-`--manifest` 省略時讀 `<root>/manifest.json`；`--json` 輸出逐檔狀態。
+`--manifest` 省略時讀 `<root>/manifest.json`；`--json` 仍輸出完整 report，共 8 筆
+checks（含 2 筆 `zh_select` 的 `missing`）。引擎啟動日誌也仍逐項提示缺席的下載項。
 
 ### 失敗判定
 
@@ -234,12 +237,13 @@ cargo run -p jc-cli --release -- data verify /mnt/work/jc/jc-ime-data \
 | `shipped: true` 的檔缺少 | 錯誤，`data verify` 回傳非零，引擎拒絕啟動；`ja_tokenizer` 例外，引擎只警告並降級 |
 | 任何已存在檔案的大小不符 | 錯誤 |
 | 任何已存在檔案的 SHA-256 不符 | 錯誤 |
-| `shipped: false` 的檔缺少 | 警告，`data verify` 仍回傳 0，引擎只記警告後降級 |
+| `shipped: false` 的檔缺少 | report 記警告，`data verify` 仍回傳 0，引擎降級；人讀輸出不顯示（見上） |
 
-實測：把 `english/words.bin` 複製到暫存根目錄並改 1 個位元組，`data verify`
-回報 `雜湊不符`、`通過 9/10，錯誤 1`、exit 1。移除一個 zh-punct 下載項後，
-回報 `缺少 …（下載項，警告）`、`錯誤 0，警告 1`、exit 0。移除
-`english/words.bin` 後，回報 `缺少 …（隨附檔，錯誤）`、exit 1。
+歷史實測（2026-11-20，舊版 `data verify` 行為）：把 `english/words.bin` 複製到
+暫存根目錄並改 1 個位元組，`data verify` 回報 `雜湊不符`、`通過 9/10，錯誤 1`、
+exit 1。移除一個 zh-punct 下載項後，回報 `缺少 …（下載項，警告）`、
+`錯誤 0，警告 1`、exit 0。移除 `english/words.bin` 後，回報
+`缺少 …（隨附檔，錯誤）`、exit 1。現行行為見上方「驗證」。
 
 ## 引擎啟動檢查
 
@@ -292,15 +296,15 @@ jc-engine: 載入資料失敗：… 資料 manifest 檢查失敗：1 個致命�
 
 ### 下載（`shipped: false`）
 
-Funmula 的兩個模型都是第三方權重，依 `legal/README.md` 的散布邊界只允許
-使用者另外下載，不進 git、release 或安裝包。
+Funmula 的下載項是第三方權重，依 `legal/README.md` 的散布邊界只允許使用者
+另外下載，不進 git、release 或安裝包；`zh_punct` 已於 2026-11-21 從 catalog 移除。
 
 | 路徑 | 角色 | 授權 | 理由 |
 |---|---|---|---|
 | `models/zh-select/model.onnx` | `zh_select` | L-11 | Funmula `0c-sequence-d512`，rev `3533e34e`，MIT，僅下載 |
 | `models/zh-select/vocab.json` | `zh_select` | L-11 | 同上 |
-| `models/zh-punct/model.onnx` | `zh_punct` | L-12 | Funmula `0c-punct-d512`，rev `105c2770`，MIT，僅下載；程式已不載入 |
-| `models/zh-punct/vocab.json` | `zh_punct` | L-12 | 同上 |
+| `models/zh-punct/model.onnx` | `zh_punct` | L-12 | 已移除（2026-11-21）：Funmula `0c-punct-d512`，rev `105c2770`，MIT；檔案保留供回溯，程式不載入 |
+| `models/zh-punct/vocab.json` | `zh_punct` | L-12 | 已移除（2026-11-21），同上 |
 
 `url` 直接指向 Hugging Face 的固定 revision。下載器要驗 manifest 的 `bytes` 與
 `sha256`，不能只信 HTTP 成功。

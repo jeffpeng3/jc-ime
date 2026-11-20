@@ -4,8 +4,8 @@
 起標點模型已從程式移除，`zh-punct` 與 `ja-punct` 只保留歷史紀錄，模型檔仍在
 資料目錄，不再被載入，也不隨安裝包出貨。資料來源：
 
-- 注音：`jc-ime-data/models/zh-select/manifest.json`、`zh-punct/manifest.json`
-  （下載時追加的 `download` 區塊）。
+- 注音：`jc-ime-data/models/zh-select/manifest.json`；`zh-punct/manifest.json` 是
+  歷史來源，2026-11-21 從 catalog 移除，仍保留供回溯（下載時追加的 `download` 區塊）。
 - 日文 reranker：`jc-ime-data/models/manifest.json` 的角色對應，以及前身固定的
   `ref/0c-ime/models/pairing.lock.json`。
 - 日文神經轉換：`jc-ime-data/models/external/jinen-v2-small/manifest.json`。
@@ -33,7 +33,8 @@ release 或安裝包。日文 reranker 不再是預設路徑：`SessionConfig::j
 兩筆都標 `shipped: true`、授權 `L-21`；引擎優先用 manifest 解析這兩條路徑，
 manifest 沒有對應項目時才退回寫死的候選路徑。
 
-標點模型的資料檔案保留在原目錄，方便回溯；程式與資料 manifest 都不再引用它們。
+標點模型的資料檔案保留在原目錄，方便回溯；程式與資料 manifest 都不再引用它們
+（2026-11-21 重新產生 manifest 後生效）。
 
 ## 推論 runtime
 
@@ -143,7 +144,8 @@ Jinen 的 GGUF 與 tokenizer 另由資料根目錄的 `manifest.json` 記錄：
 
 ## 散布檢查
 
-1. `models/zh-select`、`models/zh-punct` 不得出現在 release、安裝包或 git。
+1. `models/zh-select`、`models/zh-punct` 不得出現在 release、安裝包或 git
+   （`zh-punct` 已於 2026-11-21 從 catalog 移除）。
 2. Jinen v2 small 隨安裝包出貨，資料 manifest 標 `shipped: true`。散布時附
    `legal/licenses/CC-BY-SA-4.0.txt` 與 `legal/THIRD-PARTY-NOTICES.md` 第 15 節，
    保留作者 Hitoshi Togasaki 與國立國會圖書館的署名；衍生權重同樣採 CC-BY-SA-4.0。

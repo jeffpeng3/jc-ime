@@ -83,7 +83,8 @@ manifest 內每個檔案的雜湊。正式發版建議一定要鎖 SHA-256。
 沒有時請改用 `.tar.gz`。
 
 用 `scripts/data-bundle.sh` 打包。它只收 manifest 的 `shipped: true` 項目與
-`manifest.json`，不會把 Funmula 的 `models/zh-select`、`models/zh-punct` 放進去：
+`manifest.json`，不會把 Funmula 的下載項放進去。catalog 目前只有 `zh-select`
+是下載項；`zh-punct` 已於 2026-11-21 從 catalog 移除：
 
 ```sh
 # 1. 產生完整 manifest。資料根目錄可以唯讀，manifest 放 repo 外。
@@ -387,7 +388,8 @@ release workflow 只能證明「建置與打包成功」，下面這些要在第
 - [ ] 資料包 `manifest.json` 包含 Jinen tokenizer
       （`models/quant/jinen-v2-xsmall/tokenizer.json`）。依 `docs/models.md`，這筆
       出貨前要補進 `jc-data` 的 catalog／manifest；沒列就不會進 MSI。
-- [ ] `models/zh-select`、`models/zh-punct` 沒有出現在資料包、MSI 或 Release assets。
+- [ ] `models/zh-select` 沒有出現在資料包、MSI 或 Release assets（`zh-punct` 已於
+      2026-11-21 從 catalog 移除）。
 - [ ] `LICENSE`、`NOTICE`、`legal/` 已打進 MSI（`installer-payload` 的缺口）。
 - [ ] `Cargo.toml` 版本符合 `x.y.z` 或 `x.y.z-<pre-release>`，`v<version>` 標籤
       與它完全一致；RC 的 MSI `ProductVersion` 是去掉後綴的三段數字。

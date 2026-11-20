@@ -52,8 +52,8 @@ TSF DLL）。
    載入 explorer 與任意程式，不能依賴 `vcruntime140.dll`（`docs/history.md` 的
    既有決策）；兩個 Windows target 的 rustflags 都放在 `.cargo/config.toml`。
 2. 用建置出來的 `jc-cli.exe data manifest` 對資料根目錄產生 `manifest.json`，
-   只複製 `shipped: true` 的檔案。Funmula 的 `zh-select`、`zh-punct` 依授權不隨
-   產品散布。
+   只複製 `shipped: true` 的檔案。Funmula 的 `zh-select` 是唯一的下載項，依授權
+   不隨產品散布；`zh-punct` 已於 2026-11-21 從 catalog 移除。
 3. `jc-cli data verify` 驗證暫存資料的雜湊。
 4. 把授權文件以 repo 的相對路徑複製進 payload：`LICENSE`、`NOTICE`、
    `legal/THIRD-PARTY-NOTICES.md`、`legal/licenses/` 全部。缺檔或
