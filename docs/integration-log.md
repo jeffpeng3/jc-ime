@@ -1524,3 +1524,26 @@ gate（固定工具鏈）：
 ### CI（push `3f2b343`，run 44771900689）
 
 - linux (core)：success；windows (msvc)：success。
+
+## 2026-11-21 02:20 0.1.0-rc.6 與 TSF 註冊存取違規修正（`7b43b83` → `6e1633a`、`4da4f08` → `b7588eb`）
+
+背景：rc.5 真機安裝時自訂動作 `RegisterTip` 以 `0xC0000005` 結束。bisect 顯示 `Register` 與
+`AddLanguageProfile` 都成功寫入機碼，但分類（CategoryMgr）沒寫、ACL 也沒改，崩點在 CategoryMgr 段。
+
+| Branch | Commit | Merge commit |
+|---|---|---|
+| `register-crash`（路徑／圖示指標＋安裝日誌） | `2694dbe` | `6e1633a` |
+| `register-crash`（跳過 AppContainer ACL、細分 CategoryMgr 日誌） | `7b43b83` | `6e1633a` |
+| `rc6` | `4da4f08` | `b7588eb` |
+
+- `crates/jc-tsf/src/register.rs`：修正 `module_path()` 取得的 DLL 路徑與圖示指標型別；分類註冊日誌細分。
+- `installer/jc-tip-register`：新增 `log.rs`，ACL 寫入移出關鍵路徑（預設跳過 AppContainer ACL）。
+- `Cargo.lock` 以 `42b6eaa` 同步到 `0.1.0-rc.6`（`installer/jc-tip-register` 是獨立 workspace，版本仍 `0.1.0`，不隨 workspace 升版）。
+
+gate：
+- `cargo check --workspace --all-targets` exit 0；clippy exit 0；fmt exit 0。
+- `cargo test`（`installer/jc-tip-register`，獨立 crate，不在 workspace 內）：**15 passed、0 failed**。
+- 補驗 Windows 目標：`cargo check -p jc-tsf --target x86_64-pc-windows-msvc` 與
+  `cargo check --target x86_64-pc-windows-msvc`（tip-register）都 exit 0。
+- 依指示只改安裝器與 TSF 註冊程式，未重跑題庫。
+- `git branch --no-merged main`：空。
