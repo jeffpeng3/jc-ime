@@ -150,6 +150,7 @@ Public Domain，`ja/ajimee_200.json` 是 CC-BY-SA-3.0。若要隨產品散布題
 | L-23 | `Miwa-Keita/zenz-v3.2-xsmall-gguf` | rev `42cab8392a3727d1cf80932cf2275b7d523fbb9f` | CC-BY-SA-4.0 | 日文かな漢字変換 spike | **否，僅本機評估** | `models/external/zenz-v3.2-xsmall/`；[`licenses/CC-BY-SA-4.0.txt`](licenses/CC-BY-SA-4.0.txt) |
 | L-24 | `jcbutter/duet-ja-kana-kanji-9m` | rev `18585dad1e2fc6cdc28e590b013a3e016df05b95` | CC-BY-SA-4.0 | edge かな漢字変換 spike（ExecuTorch） | **否，僅本機評估** | `models/external/duet-ja-kana-kanji-9m/`；[`licenses/CC-BY-SA-4.0.txt`](licenses/CC-BY-SA-4.0.txt) |
 | L-25 | `rinna/japanese-gpt2-xsmall`（Shizuku judge 權重） | rev `8e91527b3276e0565154935e84a08bf0137ed99f`；本地 q8_0 轉檔 | MIT；產生程式 `n-seiji/shizuku-ime` 為 GPL-3.0-or-later | reranker fusion spike | **否，僅本機評估** | `models/external/shizuku-judge/`；[`licenses/MIT.txt`](licenses/MIT.txt) |
+| L-26 | GPUI Kit 與 GPUI（`longbridge/gpui-kit`、Zed 的 `gpui-pre`／`gpui-base`／`gpui-component`） | `gpui-kit` 0.10.0、`gpui-pre` 0.3.12、`gpui-base` 0.10.0、`gpui-component` 0.10.0 | Apache-2.0；文件 CC-BY-4.0 | 設定程式的視窗與 UI 元件 | 是（cargo 依賴，程式碼不進 git） | `crates/jc-settings-ui/`；[`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt) |
 
 
 ## 維護規則
