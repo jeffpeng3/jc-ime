@@ -259,6 +259,10 @@ pub struct Options {
     pub en_common_bonus: i32,
     /// 分數相同時偏好日文。
     pub prefer_ja: bool,
+    /// 允許英文詞後面接一個單字母尾巴（`hellp` 的 `p`）。
+    ///
+    /// 尾巴後面還有空白時不適用：那一個字母通常是下一聲音節的一聲。
+    pub single_letter_en_tail: bool,
     /// 前一個拉丁 run 的語言當 DP 的起始狀態。
     ///
     /// 相鄰的 run 因此有連貫性：`xi`、`wu` 這種兩邊都合法的短音節不會因為
@@ -280,6 +284,7 @@ impl Default for Options {
             en_common_weight: 100.0,
             en_common_bonus: 4,
             prefer_ja: true,
+            single_letter_en_tail: false,
             initial_lang: None,
         }
     }
@@ -418,6 +423,8 @@ struct Cell {
     prev_pos: u32,
     /// 前一個語言：0 是日文，1 是注音。
     prev_lang: u8,
+    /// 最後一個片段是不是詞表英文詞；用來限制單字母尾巴只接在英文詞後面。
+    en_word: bool,
 }
 
 const JA: usize = 0;
@@ -501,7 +508,7 @@ fn compute_cell(
         let keys = &chars[start..j];
         if let Some(kana) = ja_grammar().lookup(keys) {
             let piece = syllable_score(JA, kana, true, opts, lexicon);
-            consider(&mut best, cells, start, JA, piece, opts);
+            consider(&mut best, cells, start, JA, piece, opts, false);
         }
         if let Some((reading, toned)) = zh_grammar().parse(keys) {
             // R3：標點只有接在缺韻母的音節尾巴時才是韻母。注音音節的韻母
@@ -509,7 +516,7 @@ fn compute_cell(
             let starts_with_punct = keys.first().is_some_and(|ch| is_final_punct(*ch));
             if !starts_with_punct {
                 let piece = syllable_score(ZH, &reading, toned, opts, lexicon);
-                consider(&mut best, cells, start, ZH, piece, opts);
+                consider(&mut best, cells, start, ZH, piece, opts, false);
             }
         }
     }
@@ -520,6 +527,11 @@ fn compute_cell(
         if !chars[start].is_ascii_lowercase() {
             break;
         }
+        // 英文錯字的最後一個字母（`hellp` 的 `p`）留在英文片段，交給補完，
+        // 不要被注音的單字母音節吃掉。
+        if opts.single_letter_en_tail && j - start == 1 {
+            consider_en_tail(&mut best, cells, start, opts.en_word_cost, opts);
+        }
         let word: String = chars[start..j].iter().collect();
         if word.chars().count() < 3 || !lexicon.english(&word) {
             continue;
@@ -528,7 +540,7 @@ fn compute_cell(
         if lexicon.english_weight(&word) >= opts.en_common_weight {
             piece += opts.en_common_bonus;
         }
-        consider(&mut best, cells, start, EN, piece, opts);
+        consider(&mut best, cells, start, EN, piece, opts, true);
     }
     if chars[j - 1].is_whitespace() {
         // 停頓：空白不產生片段，語言不變。日文段尾的空白就是走這條。
@@ -540,6 +552,7 @@ fn compute_cell(
                     pieces,
                     prev_pos: (j - 1) as u32,
                     prev_lang: lang as u8,
+                    en_word: false,
                 };
                 if better(cell.score, pieces, lang, best[lang], opts) {
                     best[lang] = Some(cell);
@@ -556,11 +569,38 @@ fn compute_cell(
                     continue;
                 };
                 let piece = syllable_score(ZH, &reading, true, opts, lexicon);
-                consider(&mut best, cells, start, ZH, piece, opts);
+                consider(&mut best, cells, start, ZH, piece, opts, false);
             }
         }
     }
     cells[j] = best;
+}
+
+/// 把一個只能接在英文片段後面的單字母候選併進 `best[EN]`。
+fn consider_en_tail(
+    best: &mut [Option<Cell>; LANGS],
+    cells: &[[Option<Cell>; LANGS]],
+    start: usize,
+    piece_score: i32,
+    opts: &Options,
+) {
+    let Some(prev) = cells[start][EN] else {
+        return;
+    };
+    if !prev.en_word {
+        return;
+    }
+    let score = prev.score + piece_score;
+    let pieces = prev.pieces.saturating_add(1);
+    if better(score, pieces, EN, best[EN], opts) {
+        best[EN] = Some(Cell {
+            score,
+            pieces,
+            prev_pos: start as u32,
+            prev_lang: EN as u8,
+            en_word: false,
+        });
+    }
 }
 
 /// 把「從 `start` 開始、語言 `lang`」的候選併進 `best[lang]`。
@@ -571,6 +611,7 @@ fn consider(
     lang: usize,
     piece_score: i32,
     opts: &Options,
+    en_word: bool,
 ) {
     for prev_lang in [JA, ZH, EN] {
         let Some(prev) = cells[start][prev_lang] else {
@@ -593,6 +634,7 @@ fn consider(
                 pieces,
                 prev_pos: start as u32,
                 prev_lang: prev_lang as u8,
+                en_word: en_word && lang == EN,
             });
         }
     }
@@ -734,6 +776,7 @@ impl Dp {
             pieces: 0,
             prev_pos: 0,
             prev_lang: JA as u8,
+            en_word: false,
         };
         let cells = match opts.initial_lang {
             None => vec![[Some(start), Some(start), Some(start)]],
@@ -864,8 +907,8 @@ pub fn split_preview(text: &str, opts: &Options, lexicon: &dyn SplitLexicon) -> 
 
 /// 回報 `text` 的尾端空白是否為一聲（R2）。
 ///
-/// 條件：整段 run 加上空白後，DP 的最佳解是注音而且空白被最後一個音節
-/// 吃掉。這樣 `hello `、`sa ` 不會被吃掉空白，`vul3 ` 已有聲調也不會。
+/// 條件：run 加上空白後，DP 的最後一個片段是注音、空白被它吃掉，而且該
+/// 音節原本沒有聲調鍵。前面的片段可以是英文或日文，不要求整段都是注音。
 pub fn space_is_first_tone(text: &str, opts: &Options, lexicon: &dyn SplitLexicon) -> bool {
     if !text.ends_with(' ') {
         return false;
@@ -873,13 +916,17 @@ pub fn space_is_first_tone(text: &str, opts: &Options, lexicon: &dyn SplitLexico
     let Some(split) = split(text, opts, lexicon) else {
         return false;
     };
-    if split.is_empty() || split.pieces.iter().any(|piece| piece.lang != SplitLang::Zh) {
+    let Some(last) = split.pieces.last() else {
+        return false;
+    };
+    // R2 看最後一個片段，不要求整段 run 都是注音：`helloji ` 是英文
+    // `hello` 加注音 `ji `，空白仍被 `ji` 的一聲吃掉。
+    if last.lang != SplitLang::Zh || last.end != text.len() {
         return false;
     }
-    split
-        .pieces
-        .last()
-        .is_some_and(|piece| piece.end == text.len())
+    let keys: Vec<char> = text[last.start..text.len() - 1].chars().collect();
+    let low = keys.len().saturating_sub(MAX_SYLLABLE_CHARS);
+    (low..keys.len()).any(|start| matches!(zh_grammar().parse(&keys[start..]), Some((_, false))))
 }
 
 /// 可逐鍵增量的切分器。

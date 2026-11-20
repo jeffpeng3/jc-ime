@@ -2514,7 +2514,11 @@ fn push_token_run(
         let text = format!("{run} ");
         let lexicon: &dyn crate::mixed_latin::SplitLexicon =
             split_lex.unwrap_or(&crate::mixed_latin::NoLexicon);
-        if crate::mixed_latin::space_is_first_tone(&text, &split_options(*last_lang), lexicon) {
+        if crate::mixed_latin::space_is_first_tone(
+            &text,
+            &split_options(*last_lang, &text),
+            lexicon,
+        ) {
             push_run_text(
                 atoms, &text, offset, lookup, cfg, split_lex, last_lang, trace,
             );
@@ -2537,7 +2541,7 @@ fn push_run_text(
     last_lang: &mut Option<crate::mixed_latin::SplitLang>,
     mut trace: Option<&mut Explain>,
 ) {
-    let opts = split_options(*last_lang);
+    let opts = split_options(*last_lang, text);
     let lexicon: &dyn crate::mixed_latin::SplitLexicon =
         split_lex.unwrap_or(&crate::mixed_latin::NoLexicon);
     if is_latin_split_input(text) {
@@ -2582,9 +2586,14 @@ fn push_run_text(
     *last_lang = Some(crate::mixed_latin::SplitLang::En);
 }
 
-fn split_options(initial: Option<crate::mixed_latin::SplitLang>) -> crate::mixed_latin::Options {
+fn split_options(
+    initial: Option<crate::mixed_latin::SplitLang>,
+    text: &str,
+) -> crate::mixed_latin::Options {
     crate::mixed_latin::Options {
         initial_lang: initial,
+        // 尾巴後面還有空白時，最後一個字母通常是下一聲音節的一聲。
+        single_letter_en_tail: !text.ends_with(' '),
         ..crate::mixed_latin::Options::default()
     }
 }
@@ -2733,7 +2742,7 @@ fn push_latin_segment(
     last_lang: &mut Option<crate::mixed_latin::SplitLang>,
     trace: Option<&mut Explain>,
 ) {
-    let opts = split_options(*last_lang);
+    let opts = split_options(*last_lang, core);
     let lexicon: &dyn crate::mixed_latin::SplitLexicon =
         split_lex.unwrap_or(&crate::mixed_latin::NoLexicon);
     if is_latin_split_input(core) {
@@ -4296,5 +4305,28 @@ mod tests {
         assert_eq!(carried.len(), 2);
         assert_eq!(carried[0].mode, Mode::Zh);
         assert_eq!(carried[1].mode, Mode::Zh);
+    }
+
+    #[test]
+    fn test_r2_space_follows_last_piece_not_whole_run() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("窩", "ㄨㄛ", 0, crate::lattice::UNKNOWN_POS));
+        let ctx = ScoreContext::default();
+        let dict = Dictionary::new(vec![Word::new("hello", 288.0)]);
+        let e = English::new(Some(dict));
+        let r = Router::new().with_zh(&lex, &ctx).with_english(&e);
+        // `hello` 是英文、`ji` 是注音；空白只被最後一個片段吃掉。
+        assert_eq!(r.convert("helloji ").expect("轉換").surface, "hello窩");
+    }
+
+    #[test]
+    fn test_single_letter_english_tail_stays_literal() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, crate::lattice::UNKNOWN_POS));
+        let ctx = ScoreContext::default();
+        let dict = Dictionary::new(vec![Word::new("hello", 288.0), Word::new("hell", 288.0)]);
+        let e = English::new(Some(dict));
+        let r = Router::new().with_zh(&lex, &ctx).with_english(&e);
+        assert_eq!(r.convert("ji3hellp").expect("轉換").surface, "我hellp");
     }
 }

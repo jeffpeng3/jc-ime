@@ -1461,16 +1461,12 @@ mod tests {
     }
 
     /// 對照 `TestMixedCompleteEnglishWordKeepsSpace`：完整英文詞接空白保留
-    /// 空白。
-    ///
-    /// 統一管線後 `helloji ` 的空白不屬於 `ji` 的一聲（R2 要求整段 run 可
-    /// 完整解析成注音），所以 `ji` 留在日文，預期從 `hello窩` 改成
-    /// `helloじ `。
+    /// 空白，組得成注音的字尾讓給中文。
     #[test]
     fn test_mixed_complete_english_word_keeps_space() {
         for (keys, want) in [
             ("hello ", "hello "),
-            ("helloji ", "helloじ "),
+            ("helloji ", "hello窩"),
             ("ji3hello ji3", "我hello 我"),
         ] {
             let mut s = mixed_session();
@@ -1488,8 +1484,7 @@ mod tests {
         config.english_autocomplete = true;
         let mut s = Session::new(config);
         type_keys(&mut s, "ji3hellp");
-        // 統一管線把 `p` 解成 ㄣ；英文補完仍以原始按鍵流為準。
-        assert_eq!(s.snapshot().preedit, "我hellㄣ");
+        assert_eq!(s.snapshot().preedit, "我hellp");
         s.press(Key::new(KeyCode::Tab, None, false));
         assert_eq!(s.snapshot().preedit, "我hello");
         s.press(Key::new(KeyCode::Enter, None, false));

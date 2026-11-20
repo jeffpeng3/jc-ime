@@ -15,7 +15,7 @@ Go 參考實作沒有對應的切分器；這個 task 只重組既有 Rust 程�
 | 規則 | 內容 | 實作位置 |
 |---|---|---|
 | R1 切段 | 注音、日文假名／漢字、英數 run、符號、空白；大寫與全角不進 DP | `build_atoms`、`is_latin_split_input` |
-| R2 空白是一聲 | 前一個英數 run 加空白能完整解析成注音，且最後一個音節原本沒有聲調鍵時，空白併進 run | `space_is_first_tone`、`push_token_run`、`AsciiInput::space` |
+| R2 空白是一聲 | run 加空白後，DP 的**最後一個片段**是注音、空白被它吃掉，且該音節原本沒有聲調鍵；前面的片段可以是英文或日文 | `space_is_first_tone`、`push_token_run`、`AsciiInput::space` |
 | R3 標點當韻母 | `. , ; / -` 在 run 開頭，或前面不是缺韻母的合法音節時，是符號 atom | `compute_cell` 的開頭標點限制、`split_at_symbol_punct`、`punct_is_final` |
 | R4 語言連貫 | `Options::initial_lang` 接住前一個 run 的語言，切換成本照算 | `Dp::new`、`build_atoms` 的 `last_lang` |
 | R5 後處理 | `group_words` 是唯一的片語合併；英文詞判定只用 `is_english_word` | `plan_input`、`LexiconAdapter::english` |
@@ -44,7 +44,7 @@ Go 參考實作沒有對應的切分器；這個 task 只重組既有 Rust 程�
 | `test_unify_segment_nine_cases` | 任務書的九個案例 |
 | `test_symbol_punctuation_stays_symbol` | R3 的開頭、中間與尾端標點 |
 | `test_language_carries_between_latin_runs` | R4 的 `xi`／`wu` 連續性 |
-| `test_r2_space_is_first_tone_only_when_run_parses` | R2 的三個條件 |
+| `test_r2_space_is_first_tone_only_when_run_parses` | R2 的 per-piece 條件（`helloji ` 也可吃空白） |
 | `test_initial_lang_carries_previous_run_language` | `Options::initial_lang` |
 | `test_punct_at_run_start_is_not_a_final` | run 開頭標點不產生注音 |
 | `test_incremental_matches_router` | 532 筆按鍵流，session 增量與路由逐位元組一致 |
@@ -55,5 +55,7 @@ Go 參考實作沒有對應的切分器；這個 task 只重組既有 Rust 程�
 |---|---|---|---|
 | `test_mixed_latin_split_off_keeps_literal` | `rishireej/ savul3` 照字面 | 改名為 `test_mixed_latin_split_is_default`，輸出 `りしれ供さ小` | 開關移除，DP 成為唯一路徑 |
 | `test_latin_run_keeps_trailing_final_only_when_split_completes` | 直接呼叫 `split_latin_run` | 改名 `test_symbol_punctuation_stays_symbol`，改測路由片段 | `split_latin_run` 已被 R3 的 tokenize 規則取代 |
-| `test_mixed_complete_english_word_keeps_space` 的 `helloji ` | `hello窩` | `helloじ ` | R2 要求整段 run 可解析；`helloji ` 不符，空白是分隔 |
-| `test_mixed_english_suggestion_and_completion` 的 `ji3hellp` | `我hellp` | `我hellㄣ` | 統一管線把 `p` 解成 ㄣ；英文補完仍用原始按鍵流 |
+| `test_mixed_complete_english_word_keeps_space` 的 `helloji ` | `hello窩` | **已還原** `hello窩` | R2 改為 per-piece：`hello` 留英文、`ji` 吃空白變一聲 |
+| `test_mixed_english_suggestion_and_completion` 的 `ji3hellp` | `我hellp` | **已還原** `我hellp` | 英文詞後面的單字母尾巴留在英文，交給 autocomplete |
+
+前兩筆是開關與 tokenize 重構造成的必要變更；後兩筆已修改實作還原原始期望值。
