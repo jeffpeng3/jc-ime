@@ -1784,3 +1784,43 @@ gate：
 
 gate：test exit 0（54 targets、1303 passed、0 failed）、clippy exit 0、fmt exit 0；
 題庫 zh-golden **45/45**、ja **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+
+### CI（push `41e81d8`，run 44819844056；docs-consistency）
+
+- linux (core)：success；windows (msvc)：success。
+
+## 2026-11-21 06:10 unify-segment（`4b6928f`／`f0a68c7`／`1809a18`／`276b402` → `7e4ecb3`）
+
+分支 rebase 到 main `41e81d8`，automerge 無衝突。把 `mixed_latin::split`（A）與 `Router::convert`（B）
+合成單一管線，移除 `Config::mixed_latin_split` 開關，DP 成為唯一路徑。
+
+五條規則：
+- R1 切段：注音／假名漢字／英數 run／符號／空白；大寫與全角不進 DP。
+- R2 空白是一聲：看 run **最後一個片段**（注音、空白被吃掉、原音節無聲調鍵）；前面可是英文或注音。
+  限制：一聲只能接在 run 開頭、注音或英文片段後，不能接在日本 kana 後（見下方回歸）。
+- R3 標點當韻母：`. , ; / -` 在 run 開頭、或前面不是缺韻母的合法音節時是符號 atom。
+- R4 語言連貫：`Options::initial_lang` 帶前一段語言，切換成本照算。
+- R5 後處理：只保留 `group_words`。
+
+既有期望值變更：開關移除的 `test_mixed_latin_split_off_keeps_literal` 改名為
+`test_mixed_latin_split_is_default`；`split_latin_run` 被 R3 取代，
+`test_latin_run_keeps_trailing_final_only_when_split_completes` 改名
+`test_symbol_punctuation_stays_symbol` 並改測路由片段；
+`helloji `（`hello窩`）與 `ji3hellp`（`我hellp`）兩條已還原原始期望值，改的是實作。
+
+增量路徑與路由一致性 property test **532 筆**通過（`test_incremental_matches_router`）。
+
+### 第一次合併的回歸與修正
+
+第一次合併（`6af9270`）mixed golden 從 6/6 掉到 4/6：`scenario-a-primary-ja`／
+`scenario-b-primary-zh` 的 `desu` 被 DP 算成 `で(ja) + su(zh 一聲)`，高分於整段 `です`，
+R2 per-piece 又讓一聲接在日文 kana 後，切成 `で` + `尼`。
+`276b402` 限制一聲只能接在 run 開頭、注音或英文片段後，不能接在 kana 後（`mixed.rs` +12、
+`mixed_latin.rs` +23、文件 +7），修正後 mixed 回到 6/6。
+
+gate：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、
+  **1313 passed、0 failed**，比合併前的 1303 多 10 筆）。
+- clippy exit 0；fmt exit 0。
+- 題庫（逐項與合併前相同）：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：空。
