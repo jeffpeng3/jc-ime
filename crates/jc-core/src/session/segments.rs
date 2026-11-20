@@ -101,6 +101,9 @@ impl Session {
     /// 組字游標在顯示字串中的 UTF-8 位元組位置。
     pub(super) fn cursor_byte(&self) -> usize {
         let text = self.base_with_highlight();
+        if self.config.mode == Mode::Ja {
+            return self.ja_cursor.min(text.len());
+        }
         if self.config.mode != Mode::Zh {
             return text.len();
         }

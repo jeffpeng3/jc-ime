@@ -155,6 +155,8 @@ pub struct SessionConfig {
     pub document_context: bool,
     /// 輸入風格與鍵位；預設零規則，沿用既有鍵位。
     pub style: InputStyle,
+    /// 日文片段假名切換鍵；預設 F7。
+    pub ja_toggle_key: KeyCode,
 }
 
 /// 固定替身重排設定。
@@ -197,6 +199,7 @@ impl Default for SessionConfig {
             min_trigger_len: crate::personal::MIN_TRIGGER_LEN,
             document_context: true,
             style: InputStyle::default(),
+            ja_toggle_key: KeyCode::F(7),
         }
     }
 }
@@ -255,6 +258,11 @@ pub struct Session {
     ///
     /// 對外一律換算成 rune 位移；內部用音節格才能對應讀音與鎖定。
     pub(super) cursor: usize,
+    /// 日文逐字変換的組字游標（顯示字串的位元組位置）。
+    ///
+    /// 注音路徑用音節格 [`Session::cursor`]；日文沒有音節格，另外記在
+    /// 顯示字串上，左右鍵與片段候選共用同一個位置。
+    pub(super) ja_cursor: usize,
     /// 游標所在片段的編輯視窗；有值時候選清單只算這一段。
     pub(super) edit: Option<EditWindow>,
     /// 換字後是否保留候選窗，直到 Esc 或游標離開目前片段。
@@ -386,6 +394,7 @@ impl Session {
             zh: ZhInput::standard(),
             syllables: Vec::new(),
             cursor: 0,
+            ja_cursor: 0,
             edit: None,
             keep_candidates: false,
             romaji: RomajiInput::new(),
@@ -494,6 +503,21 @@ impl Session {
                     }
                     KeyCode::Delete => self.delete_forward(),
                     KeyCode::Backspace => self.backspace(),
+                    KeyCode::F(n) if KeyCode::F(n) == self.config.ja_toggle_key => {
+                        self.ja_toggle_script();
+                    }
+                    KeyCode::F(6) => {
+                        self.ja_transform(live::KanaTransform::Hiragana);
+                    }
+                    KeyCode::F(8) => {
+                        self.ja_transform(live::KanaTransform::HalfwidthKana);
+                    }
+                    KeyCode::F(9) => {
+                        self.ja_transform(live::KanaTransform::FullwidthLatin);
+                    }
+                    KeyCode::F(10) => {
+                        self.ja_transform(live::KanaTransform::HalfwidthLatin);
+                    }
                     KeyCode::Space => self.space(),
                     KeyCode::Down => self.down(),
                     KeyCode::Up => self.up(),
@@ -673,6 +697,88 @@ impl Session {
     }
 
     /// 日文逐字変換是否開啟。
+    /// 對游標所在的日文片段套用假名或英數轉換。
+    ///
+    /// 純字串轉換，不呼叫統計解碼或模型；其他片段與讀音都不變。外殼把
+    /// `F6`／`F7`／`F8`／`F9`／`F10` 對到 [`live::KanaTransform`] 即可。
+    pub fn ja_transform(&mut self, transform: live::KanaTransform) -> Snapshot {
+        if let Some((index, _)) = self.ja_active_span() {
+            let changed = self
+                .live
+                .as_mut()
+                .is_some_and(|live| live.transform_clause(index, transform));
+            if changed {
+                if let Some(live) = self.live.as_mut() {
+                    live.lock_through(index);
+                }
+                self.finish_ja_script_edit(index);
+            }
+        }
+        self.snapshot()
+    }
+
+    /// 切換游標所在片段的平假名／全角片假名。
+    ///
+    /// 漢字片段先還原成讀音；切換後鎖定該片段，後續輸入不會改回去。
+    pub fn ja_toggle_script(&mut self) -> Snapshot {
+        if let Some((index, span)) = self.ja_active_span() {
+            let changed = self
+                .live
+                .as_mut()
+                .is_some_and(|live| live.toggle_script(span).is_some());
+            if changed {
+                if let Some(live) = self.live.as_mut() {
+                    live.lock_through(index);
+                }
+                self.finish_ja_script_edit(index);
+            }
+        }
+        self.snapshot()
+    }
+
+    /// 把游標所在片段還原成讀音，並搬回未鎖定的尾巴。
+    ///
+    /// 後續按鍵會從這個讀音重新切分與轉換；已鎖定的前綴保持不變。
+    pub fn ja_unconvert(&mut self) -> Snapshot {
+        if let Some((index, span)) = self.ja_active_span() {
+            let changed = self
+                .live
+                .as_mut()
+                .is_some_and(|live| live.unconvert(span).is_some());
+            if changed {
+                self.refresh_ja_live();
+                let end = self
+                    .segments()
+                    .get(index)
+                    .map(|segment| segment.end)
+                    .unwrap_or_else(|| self.base.len());
+                self.ja_cursor = end.min(self.base.len());
+            }
+        }
+        self.snapshot()
+    }
+
+    /// 游標所在日文片段的索引與讀音範圍。
+    fn ja_active_span(&self) -> Option<(usize, crate::ja::decode::JaSpan)> {
+        if self.config.mode != Mode::Ja {
+            return None;
+        }
+        let index = self.active_segment()?;
+        let span = self.live.as_ref()?.clause_spans().get(index).cloned()?;
+        Some((index, crate::ja::decode::JaSpan::new(span.start, span.end)))
+    }
+
+    /// 片段選字或變換後重畫，游標停在該片段結尾。
+    fn finish_ja_script_edit(&mut self, index: usize) {
+        self.refresh_ja_live();
+        let end = self
+            .segments()
+            .get(index)
+            .map(|segment| segment.end)
+            .unwrap_or_else(|| self.base.len());
+        self.ja_cursor = end.min(self.base.len());
+    }
+
     pub fn ja_live_enabled(&self) -> bool {
         self.live.as_ref().is_some_and(LiveController::enabled)
     }
@@ -1763,6 +1869,157 @@ mod tests {
             cost,
             split: crate::ja::lexicon::Split::C,
         }
+    }
+
+    /// 讀音 `とうきょう` 的候選含漢字、平假名、片假名與半角かな。
+    #[test]
+    fn test_ja_live_candidates_include_all_kana_scripts() {
+        let source = LiveTestSource(vec![
+            ja_entry("東京", "とうきょう", 1_000),
+            ja_entry("とうきょう", "とうきょう", 2_000),
+        ]);
+        let mut config = SessionConfig::new(Mode::Ja);
+        config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_live = live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            trigger: live::Trigger::EveryKey,
+            ..live::Config::default()
+        };
+        let mut s = Session::new(config);
+        type_ja(&mut s, "toukyou");
+        assert_eq!(s.snapshot().preedit, "東京");
+        let shown = s.press(Key::new(KeyCode::Space, None, false));
+        let surfaces: Vec<&str> = shown
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        for want in ["東京", "とうきょう", "トウキョウ", "ﾄｳｷｮｳ"] {
+            assert!(surfaces.contains(&want), "缺少 {want}：{surfaces:?}");
+        }
+        let kanji = surfaces.iter().position(|text| *text == "東京").unwrap();
+        let hira = surfaces
+            .iter()
+            .position(|text| *text == "とうきょう")
+            .unwrap();
+        assert!(kanji < hira, "假名候選要排在漢字後面：{surfaces:?}");
+    }
+
+    /// 漢字片段按一次 F7 變平假名，再按變全角片假名。
+    #[test]
+    fn test_ja_toggle_script_from_kanji() {
+        let mut s = ja_live_session(live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            ..live::Config::default()
+        });
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.snapshot().preedit, "今日");
+        assert_eq!(s.ja_toggle_script().preedit, "きょう");
+        assert_eq!(s.ja_toggle_script().preedit, "キョウ");
+    }
+
+    /// 平假名片段切到片假名，再切回平假名。
+    #[test]
+    fn test_ja_toggle_script_from_hiragana() {
+        let mut s = ja_live_session(live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            ..live::Config::default()
+        });
+        type_ja(&mut s, "kyou");
+        s.ja_toggle_script();
+        assert_eq!(s.snapshot().preedit, "きょう");
+        assert_eq!(s.ja_toggle_script().preedit, "キョウ");
+        assert_eq!(s.ja_toggle_script().preedit, "きょう");
+    }
+
+    /// 拆回讀音後，讀音回到尾巴，補上後續輸入可重新切分。
+    #[test]
+    fn test_ja_unconvert_returns_reading_to_tail() {
+        let source = LiveTestSource(vec![
+            ja_entry("東京", "とうきょう", 1_000),
+            ja_entry("東京都", "とうきょうと", 100),
+        ]);
+        let mut config = SessionConfig::new(Mode::Ja);
+        config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_live = live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            ..live::Config::default()
+        };
+        let mut s = Session::new(config);
+        type_ja(&mut s, "toukyou");
+        assert_eq!(s.snapshot().preedit, "東京");
+        assert_eq!(s.ja_unconvert().preedit, "とうきょう", "片段拆回讀音");
+        type_ja(&mut s, "to");
+        assert_eq!(s.snapshot().preedit, "東京都", "讀音回到尾巴後可重新切分");
+    }
+
+    /// 讀音本身就是平假名時，候選不重複同一字串。
+    #[test]
+    fn test_ja_live_candidates_dedup_hiragana() {
+        let source = LiveTestSource(vec![ja_entry("とうきょう", "とうきょう", 1_000)]);
+        let mut config = SessionConfig::new(Mode::Ja);
+        config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_live = live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            trigger: live::Trigger::EveryKey,
+            ..live::Config::default()
+        };
+        let mut s = Session::new(config);
+        type_ja(&mut s, "toukyou");
+        let shown = s.press(Key::new(KeyCode::Space, None, false));
+        let count = shown
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.surface == "とうきょう")
+            .count();
+        assert_eq!(count, 1, "平假名候選不得重複");
+    }
+
+    /// 逐字変換的片段游標、Space 開片段候選與 Enter 套用。
+    #[test]
+    fn test_ja_live_cursor_and_segment_candidates() {
+        use crate::ja::live::{KanaTransform, Trigger};
+
+        let mut config = live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            trigger: Trigger::EveryKey,
+            ..live::Config::default()
+        };
+        config.neural = None;
+        let mut s = ja_live_session(config);
+        type_ja(&mut s, "kyou");
+        assert_eq!(s.snapshot().preedit, "今日");
+
+        let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(left.cursor_rune, 1, "← 移動日文組字游標");
+        assert_eq!(left.preedit, "今日", "移動游標不改組字");
+
+        let shown = s.press(Key::new(KeyCode::Space, None, false));
+        assert!(!shown.navigating, "第一次 Space 只開片段候選");
+        assert!(shown
+            .candidates
+            .iter()
+            .any(|candidate| candidate.surface == "きょう"));
+        assert!(shown
+            .candidates
+            .iter()
+            .any(|candidate| candidate.surface == "キョウ"));
+
+        let picked = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(picked.preedit, "きょう", "選字只換游標所在片段");
+        let right = s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(right.preedit, "きょう", "游標移出後維持新結果");
+
+        let kata = s.ja_transform(KanaTransform::Katakana);
+        assert_eq!(kata.preedit, "キョウ", "F7 由片段讀音轉全角片假名");
+        let hira = s.ja_transform(KanaTransform::Hiragana);
+        assert_eq!(hira.preedit, "きょう", "F6 轉回平假名");
     }
 
     /// 同讀音、成本差距可被學習翻盤的日文 session。

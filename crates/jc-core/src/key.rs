@@ -38,6 +38,8 @@ pub enum KeyCode {
     ShiftTab,
     /// 刪除。
     Delete,
+    /// 功能鍵 F1–F24。
+    F(u8),
 }
 
 /// 一個按鍵事件。

@@ -108,6 +108,11 @@ pub struct NeuralConfig {
     pub timeout_ms: u64,
     /// 左右文脈長度上限。
     pub max_context_chars: ContextChars,
+    /// 停頓後補正的額外嚴格倍率；套用在 `gap_threshold` 上。
+    ///
+    /// 補正會改寫使用者已看過的尾巴，只接受比即時轉換更確定的片段。
+    /// `1.0` 表示與即時轉換同一門檻。
+    pub correction_gap_ratio: f32,
     /// 已載入的模型執行環境；`None` 時不呼叫模型。
     pub runtime: Option<Arc<NeuralRuntime>>,
 }
@@ -121,6 +126,7 @@ impl Default for NeuralConfig {
             model: NeuralModel::Small,
             timeout_ms: DEFAULT_TIMEOUT_MS,
             max_context_chars: ContextChars::default(),
+            correction_gap_ratio: 0.5,
             runtime: None,
         }
     }
@@ -157,6 +163,7 @@ impl fmt::Debug for NeuralConfig {
             .field("model", &self.model)
             .field("timeout_ms", &self.timeout_ms)
             .field("max_context_chars", &self.max_context_chars)
+            .field("correction_gap_ratio", &self.correction_gap_ratio)
             .field("runtime", &self.runtime.is_some())
             .finish()
     }
@@ -680,8 +687,18 @@ impl fmt::Debug for LiveGate {
 
 impl crate::ja::live::NeuralGate for LiveGate {
     fn adopt(&self, request: &crate::ja::live::GateRequest<'_>) -> Option<String> {
+        // 停頓補正會改寫已看過的尾巴；用更嚴的成本差門檻，只接受統計
+        // 本身也高度歧義的片段。
+        let config = if request.phase == crate::ja::live::GatePhase::Correction {
+            NeuralConfig {
+                gap_threshold: self.config.gap_threshold * self.config.correction_gap_ratio,
+                ..self.config.clone()
+            }
+        } else {
+            self.config.clone()
+        };
         let decision = maybe_convert(
-            &self.config,
+            &config,
             &NeuralInput {
                 reading: request.reading,
                 left: request.left,
@@ -1033,6 +1050,7 @@ mod tests {
             statistical_cost: 1_000,
             runner_up_cost: Some(1_100),
             mean_candidates: 8.0,
+            phase: crate::ja::live::GatePhase::Live,
         };
         assert_eq!(gate.adopt(&half), None);
         assert_eq!(calls.load(Ordering::SeqCst), 0);

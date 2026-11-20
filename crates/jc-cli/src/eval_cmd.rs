@@ -251,6 +251,20 @@ pub struct JaOptions {
     pub neural: crate::cli::NeuralMode,
     /// 是否走逐字変換（ライブ変換）。
     pub live: bool,
+    /// 逐字変換的觸發條件。
+    pub live_trigger: crate::cli::LiveTriggerSpec,
+    /// 神經處理範圍；`None` 由觸發條件決定。
+    pub live_scope: Option<crate::cli::LiveScope>,
+    /// 停頓後才做神經補正。
+    pub live_deferred: bool,
+    /// 補正推論預算（毫秒）。
+    pub live_budget_ms: u64,
+    /// 補正的額外嚴格倍率；套用在成本差門檻上。
+    pub live_correction_ratio: f32,
+    /// 尾端保留幾個文節不鎖定。
+    pub live_keep_tail: usize,
+    /// 印出逐字変換的詳細量測。
+    pub live_report: bool,
     /// 輸出聚合報告 JSON。
     pub json: bool,
     /// 輸出含逐題結果的 JSON。
@@ -272,6 +286,13 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
         left,
         neural,
         live,
+        live_trigger,
+        live_scope,
+        live_deferred,
+        live_budget_ms,
+        live_correction_ratio,
+        live_keep_tail,
+        live_report,
         json,
         items,
     } = options;
@@ -287,6 +308,7 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
             jc_core::session::NeuralConfig::off()
         }
     };
+    neural_config.correction_gap_ratio = live_correction_ratio;
     if neural != crate::cli::NeuralMode::Off {
         match data::load_ja_neural(&root) {
             Ok(runtime) => {
@@ -323,10 +345,37 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
     if live {
         // 逐字変換模擬實際輸入：debounce 與時間預算都由評測的牆鐘負責，
         // 控制器本身立刻轉換，延遲才看得到逐鍵成本。
+        let trigger = if live_trigger.every_key() {
+            jc_core::ja::live::Trigger::EveryKey
+        } else {
+            jc_core::ja::live::Trigger::Auto(jc_core::ja::live::AutoTrigger {
+                min_units: live_trigger.min_units,
+                boundary: live_trigger.boundary,
+                idle: live_trigger.idle,
+            })
+        };
+        let scope = match live_scope {
+            Some(crate::cli::LiveScope::Whole) => jc_core::ja::live::NeuralScope::WholeTail,
+            Some(crate::cli::LiveScope::Clause) => jc_core::ja::live::NeuralScope::Clause,
+            None if !live_trigger.every_key() || live_deferred => {
+                jc_core::ja::live::NeuralScope::Clause
+            }
+            None => jc_core::ja::live::NeuralScope::WholeTail,
+        };
+        let timing = if live_deferred {
+            jc_core::ja::live::NeuralTiming::Deferred
+        } else {
+            jc_core::ja::live::NeuralTiming::Inline
+        };
         converter = converter.with_live(jc_core::ja::live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
             budget: std::time::Duration::ZERO,
+            trigger,
+            neural_scope: scope,
+            neural_timing: timing,
+            neural_budget: std::time::Duration::from_millis(live_budget_ms),
+            keep_tail: live_keep_tail,
             ..jc_core::ja::live::Config::default()
         });
     }
@@ -395,6 +444,74 @@ pub fn ja(options: JaOptions, out: &mut dyn Write) -> Result<(), CliError> {
             eprint!("{line}");
         } else {
             write!(out, "{line}")?;
+        }
+        if live_report {
+            let report = converter.live_report();
+            let calls = converter
+                .neural_stats()
+                .map(|stats| stats.calls())
+                .unwrap_or(0);
+            let n = report.questions.len().max(1);
+            let key_p99 = percentile(&report.keys, 99.0);
+            let key_max = report.keys.iter().fold(0.0f64, |acc, v| acc.max(*v));
+            let fragment_rate = if report.fragments_shown == 0 {
+                0.0
+            } else {
+                report.fragments_changed as f64 * 100.0 / report.fragments_shown as f64
+            };
+            let settled_rate = if report.settled_shown == 0 {
+                0.0
+            } else {
+                report.settled_changed as f64 * 100.0 / report.settled_shown as f64
+            };
+            let idle_rate = report.idle_events as f64 / n as f64;
+            let correction_rate = report.corrections as f64 / n as f64;
+            let replaced_rate = if report.corrections == 0 {
+                0.0
+            } else {
+                report.correction_adopted as f64 * 100.0 / report.corrections as f64
+            };
+            let lines = format!(
+                "live-report：模型呼叫 {calls} 次（{:.2}／題），統計轉換 {} 次（{:.2}／題），\
+                 神經請求 {} 次，採用 {}\n\
+                 live-report：每鍵 p50 {:.2} ms，p95 {:.2} ms，p99 {:.2} ms，max {:.2} ms\n\
+                 live-report：每題同步累積 p50 {:.2} ms，p95 {:.2} ms\n\
+                 live-report：停頓 {:.2} 次／題，閒置處理 p50 {:.2} ms／p95 {:.2} ms\n\
+                 live-report：補正嘗試 {:.2} 次／題，替換 {} 次（{:.1}%），\
+                 過期丟棄 {}，超預算丟棄 {}\n\
+                 live-report：已顯示片段變動率 {:.2}%（{}／{}），\
+                 已穩定片段變動率 {:.2}%（{}／{}）\n",
+                calls as f64 / n as f64,
+                report.conversions,
+                report.conversions as f64 / n as f64,
+                report.neural_requests,
+                report.neural_adopted,
+                percentile(&report.keys, 50.0),
+                percentile(&report.keys, 95.0),
+                key_p99,
+                key_max,
+                percentile(&report.questions, 50.0),
+                percentile(&report.questions, 95.0),
+                idle_rate,
+                percentile(&report.idles, 50.0),
+                percentile(&report.idles, 95.0),
+                correction_rate,
+                report.correction_adopted,
+                replaced_rate,
+                report.stale_discards,
+                report.late_discards,
+                fragment_rate,
+                report.fragments_changed,
+                report.fragments_shown,
+                settled_rate,
+                report.settled_changed,
+                report.settled_shown,
+            );
+            if json {
+                eprint!("{lines}");
+            } else {
+                write!(out, "{lines}")?;
+            }
         }
     }
     Ok(())

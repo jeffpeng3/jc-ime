@@ -393,6 +393,17 @@ impl Session {
                 self.candidate_window = true;
                 self.navigating = false;
             }
+            Mode::Ja if self.live.is_some() => {
+                if self.candidate_window {
+                    if self.navigating && !self.candidates.is_empty() {
+                        self.move_highlight(1);
+                    } else {
+                        self.navigating = true;
+                    }
+                } else {
+                    self.open_ja_candidates();
+                }
+            }
             _ if self.candidate_window && !self.candidates.is_empty() => {
                 if self.edit.is_some() {
                     self.select_window_candidate(self.highlighted);
@@ -409,6 +420,130 @@ impl Session {
             Mode::Mixed => self.ascii.space(&self.lexicon),
             _ => {}
         }
+    }
+
+    /// 打開日文逐字変換片段的候選。
+    ///
+    /// 只針對游標所在片段，其他片段保持鎖定。清單由
+    /// [`crate::ja::live::Controller::candidates`] 產生，包含字典候選、
+    /// 目前詞面與原讀音的平假名／片假名版本。
+    pub(super) fn open_ja_candidates(&mut self) -> bool {
+        let Some(index) = self.active_segment() else {
+            return false;
+        };
+        let Some(live) = self.live.as_ref() else {
+            return false;
+        };
+        let spans = live.clause_spans();
+        let Some(span) = spans.get(index) else {
+            return false;
+        };
+        let Ok(candidates) = live.candidates(crate::ja::decode::JaSpan::new(span.start, span.end))
+        else {
+            return false;
+        };
+        if candidates.is_empty() {
+            return false;
+        }
+        let mut list: Vec<Candidate> = candidates
+            .into_iter()
+            .map(|candidate| {
+                Candidate::new(
+                    candidate.surface,
+                    candidate.reading,
+                    candidate.cost,
+                    CandidateSource::Lexicon,
+                )
+            })
+            .collect();
+        if let Some(at) = list
+            .iter()
+            .position(|candidate| candidate.surface == span.surface)
+        {
+            let current = list.remove(at);
+            list.insert(0, current);
+        }
+        self.candidates = list;
+        self.highlighted = 0;
+        self.candidate_window = true;
+        self.navigating = false;
+        self.keep_candidates = true;
+        true
+    }
+
+    /// 把候選套到游標所在片段，其他片段不變。
+    pub(super) fn apply_ja_candidate(&mut self, index: usize) -> bool {
+        let Some(segment) = self.active_segment() else {
+            return false;
+        };
+        let Some(candidate) = self.candidates.get(index).cloned() else {
+            return false;
+        };
+        let Some(live) = self.live.as_mut() else {
+            return false;
+        };
+        if !live.replace_clause(segment, candidate.surface.clone()) {
+            return false;
+        }
+        self.refresh_ja_live();
+        if let Some(segment) = self.segments().get(segment) {
+            self.ja_cursor = segment.end.min(self.base.len());
+        }
+        self.candidate_window = false;
+        self.navigating = false;
+        self.keep_candidates = false;
+        true
+    }
+
+    /// 依控制器目前的結果重畫日文組字字串與片段，不動游標以外的狀態。
+    pub(super) fn refresh_ja_live(&mut self) {
+        let Some(result) = self.live.as_ref().and_then(|live| live.draft().cloned()) else {
+            return;
+        };
+        let units = self.romaji.units().to_vec();
+        let mut base = String::new();
+        let mut segments = Vec::new();
+        for clause in &result.clauses {
+            let start = base.len();
+            base.push_str(&clause.surface);
+            segments.push(Segment::new(start, base.len(), Mode::Ja, Script::Kana));
+        }
+        let covered: usize = result
+            .clauses
+            .iter()
+            .map(|clause| clause.reading.chars().count())
+            .sum();
+        if covered < units.len() {
+            let start = base.len();
+            base.extend(units[covered..].iter().map(Unit::as_str));
+            segments.push(Segment::new(start, base.len(), Mode::Ja, Script::Kana));
+        }
+        self.base = base;
+        self.segments = segments;
+        self.ja_cursor = self.ja_cursor.min(self.base.len());
+    }
+
+    /// 日文組字游標往左或往右移一個字元。
+    fn move_ja_cursor(&mut self, delta: isize) -> bool {
+        let text = self.base.clone();
+        if text.is_empty() {
+            return false;
+        }
+        let mut at = self.ja_cursor.min(text.len());
+        if delta < 0 {
+            at = text[..at]
+                .char_indices()
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+        } else if delta > 0 && at < text.len() {
+            at += text[at..].chars().next().map(char::len_utf8).unwrap_or(0);
+        }
+        if at == self.ja_cursor {
+            return false;
+        }
+        self.ja_cursor = at;
+        true
     }
 
     pub(super) fn backspace(&mut self) {
@@ -696,6 +831,14 @@ impl Session {
     }
 
     pub(super) fn finish_composition(&mut self) {
+        // 日文逐字変換：Enter 先把游標所在片段的候選套上去，不送出整段。
+        if self.config.mode == Mode::Ja
+            && self.candidate_window
+            && !self.candidates.is_empty()
+            && self.apply_ja_candidate(self.highlighted)
+        {
+            return;
+        }
         // 游標在片段中且候選窗開著：Enter 先把候選套到這一段，不送出整段。
         if self.config.mode == Mode::Zh
             && self.edit.is_some()
@@ -913,6 +1056,9 @@ impl Session {
     /// 組字游標；進入選取模式後才在候選間移動。游標移動後，候選清單改成
     /// 游標所在片段的候選。
     pub(super) fn navigate(&mut self, delta: isize) {
+        if self.config.mode == Mode::Ja && self.live.is_some() && self.move_ja_cursor(delta) {
+            return;
+        }
         if self.config.mode == Mode::Zh && self.candidate_window && !self.navigating {
             let target = self.cursor.saturating_add_signed(delta);
             if self.move_cursor_to(target) {
@@ -1200,6 +1346,7 @@ impl Session {
         self.zh.reset();
         self.syllables.clear();
         self.cursor = 0;
+        self.ja_cursor = 0;
         self.edit = None;
         self.keep_candidates = false;
         self.romaji.reset();
@@ -1865,6 +2012,7 @@ impl Session {
         }
         self.base = base;
         self.segments = segments;
+        self.ja_cursor = self.base.len();
 
         let mut candidates = Vec::new();
         let mut results = Vec::new();

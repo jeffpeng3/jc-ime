@@ -131,6 +131,58 @@ impl Converter for ZhConverter {
     }
 }
 
+/// 逐字変換的量測結果；`--live-report` 用。
+#[derive(Debug, Clone, Default)]
+pub struct LiveReport {
+    /// 每次按鍵 `input()` 的牆鐘毫秒。
+    pub keys: Vec<f64>,
+    /// 每題所有按鍵的同步延遲總和（毫秒）；不含停頓補正。
+    pub questions: Vec<f64>,
+    /// 每次停頓觸發的處理時間（毫秒）。
+    pub idles: Vec<f64>,
+    /// 停頓事件數。
+    pub idle_events: usize,
+    /// 統計轉換次數。
+    pub conversions: usize,
+    /// 送進神經採用器的請求數。
+    pub neural_requests: usize,
+    /// 神經輸出替換次數。
+    pub neural_adopted: usize,
+    /// 停頓補正嘗試次數。
+    pub corrections: usize,
+    /// 停頓補正替換次數。
+    pub correction_adopted: usize,
+    /// 使用者繼續輸入而丟棄的補正數。
+    pub stale_discards: usize,
+    /// 超過補正預算而丟棄的次數。
+    pub late_discards: usize,
+    /// 已顯示片段數。
+    pub fragments_shown: usize,
+    /// 已顯示片段改變數。
+    pub fragments_changed: usize,
+    /// 已穩定片段數。
+    pub settled_shown: usize,
+    /// 已穩定片段改變數。
+    pub settled_changed: usize,
+}
+
+impl LiveReport {
+    /// 合併一題的控制器統計。
+    fn merge(&mut self, stats: jc_core::ja::live::Stats) {
+        self.conversions += stats.conversions;
+        self.neural_requests += stats.neural_requests;
+        self.neural_adopted += stats.neural_adopted;
+        self.corrections += stats.corrections;
+        self.correction_adopted += stats.correction_adopted;
+        self.stale_discards += stats.stale_discards;
+        self.late_discards += stats.late_discards;
+        self.fragments_shown += stats.fragments_shown;
+        self.fragments_changed += stats.fragments_changed;
+        self.settled_shown += stats.settled_shown;
+        self.settled_changed += stats.settled_changed;
+    }
+}
+
 /// 日文轉換器。
 ///
 /// `rolling_left` 開啟時，每次轉換把上一次的輸出接到左文尾巴，模擬連續
@@ -146,6 +198,8 @@ pub struct JaConverter {
     live: Option<live::Config>,
     /// 逐字路徑每次按鍵轉換的牆鐘毫秒，供評測印出 p50／p95。
     live_keystrokes: Rc<RefCell<Vec<f64>>>,
+    /// 逐字路徑的累計量測。
+    live_report: Rc<RefCell<LiveReport>>,
 }
 
 /// 左文保留的字元上限，與 `jc_core::session` 相同（前身 `MaxLeftContextUnits`）。
@@ -161,6 +215,7 @@ impl JaConverter {
             neural: NeuralConfig::default(),
             live: None,
             live_keystrokes: Rc::new(RefCell::new(Vec::new())),
+            live_report: Rc::new(RefCell::new(LiveReport::default())),
         }
     }
 
@@ -185,6 +240,11 @@ impl JaConverter {
     /// 逐字路徑每次按鍵轉換的延遲（毫秒）；沒開逐字変換時為空。
     pub fn live_latency(&self) -> Vec<f64> {
         self.live_keystrokes.borrow().clone()
+    }
+
+    /// 逐字路徑的累計量測；沒開逐字変換時為預設值。
+    pub fn live_report(&self) -> LiveReport {
+        self.live_report.borrow().clone()
     }
 
     /// 神經轉換的累計統計；模型未載入時為 `None`。
@@ -257,13 +317,55 @@ impl JaConverter {
         let ctx = self.context();
         let mut controller = LiveController::new(self.decoder.clone(), config.clone());
         let mut plan = LivePlan::default();
-        let mut latencies = self.live_keystrokes.borrow_mut();
+        let auto_idle = matches!(config.trigger, live::Trigger::Auto(trigger) if trigger.idle);
+        let needs_idle = auto_idle || config.neural_timing == live::NeuralTiming::Deferred;
+        let mut question_sync = 0.0f64;
+        let mut idle_events = 0usize;
+        let mut key_latencies = Vec::with_capacity(units.len());
         for end in 1..=units.len() {
             let started = Instant::now();
             plan = controller.input(&units[..end], &ctx);
-            latencies.push(started.elapsed().as_secs_f64() * 1000.0);
+            let key_ms = started.elapsed().as_secs_f64() * 1000.0;
+            key_latencies.push(key_ms);
+            question_sync += key_ms;
+            let last = end == units.len();
+            if last {
+                // 使用者停止輸入：先補齊統計結果，再讓停頓補正有機會套用。
+                let started = Instant::now();
+                let (flush_plan, changed) = controller.flush();
+                question_sync += started.elapsed().as_secs_f64() * 1000.0;
+                if changed {
+                    plan = flush_plan;
+                }
+                idle_events += 1;
+                let started = Instant::now();
+                let (idle_plan, changed) = controller.idle();
+                let idle_ms = started.elapsed().as_secs_f64() * 1000.0;
+                if changed {
+                    plan = idle_plan;
+                }
+                self.live_report.borrow_mut().idles.push(idle_ms);
+            } else if needs_idle && is_punctuation(units[end - 1].as_str()) {
+                idle_events += 1;
+                let started = Instant::now();
+                let (idle_plan, changed) = controller.idle();
+                let idle_ms = started.elapsed().as_secs_f64() * 1000.0;
+                if changed {
+                    plan = idle_plan;
+                }
+                self.live_report.borrow_mut().idles.push(idle_ms);
+            }
         }
-        drop(latencies);
+        self.live_keystrokes
+            .borrow_mut()
+            .extend(key_latencies.iter().copied());
+        {
+            let mut report = self.live_report.borrow_mut();
+            report.keys.extend(key_latencies);
+            report.questions.push(question_sync);
+            report.idle_events += idle_events;
+            report.merge(controller.stats());
+        }
 
         let (surface, segments) = live_display(&plan, reading, &units);
         let mut out = vec![jc_core::decode::Conversion {
@@ -371,6 +473,14 @@ fn segment(start: usize, end: usize) -> jc_core::segment::Segment {
         end,
         jc_core::lang::Mode::Ja,
         jc_core::segment::Script::Kana,
+    )
+}
+
+/// 這個かな是否為句讀或標點；評測用它模擬使用者停頓。
+fn is_punctuation(unit: &str) -> bool {
+    matches!(
+        unit.chars().next(),
+        Some('、' | '。' | '，' | '．' | '！' | '？' | '!' | '?' | ',' | '.' | '…')
     )
 }
 
