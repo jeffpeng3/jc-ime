@@ -1121,3 +1121,51 @@
   題庫（與前一版相同）：`zh-golden` **45/45**、`ja modern-500` **92.2%**（第一次受負載影響量到 90.8／timeout 2.8%，
   重跑回到 92.2／0%）、`hard-cases` **77.1%**、`ajimee-200` **69.0%**（一次負載下量到 67.0，重跑 69.0）、
   `fuzzy` **44.5%**、`mixed` **6/6**。
+
+## 2026-11-20 12:15 drop-ort 之後：data-pack、english-personal、tsf-skeleton、candidate-pos、composition-cursor、settings-ui
+
+依序合併（每條合完都跑 `cargo check --workspace --all-targets`）：
+
+| Branch | Commit | Merge commit | 備註 |
+|---|---|---|---|
+| `drop-ort` | `9ba142f` | `04c4be8` | 移除 ONNX Runtime：`crates/` 已無 `onnxruntime` 與 `--backend ort`（`--backend` 只接受 `candle`）；`scripts/legacy/` 保留歸檔腳本 |
+| `data-pack` | `c076115` | `38d882e` | 新增資料 manifest 格式與 `data manifest`／`data verify`；`jc-engine` 啟動驗存在與大小 |
+| `english-personal` | `08db287` | `7d73e3e` | 英文拼字修正接個人化學習 |
+| `tsf-skeleton` | `5b31564` | `9d59c64` | 新 crate `jc-tsf`（cdylib）；Windows 實作、Linux 空殼，Windows 編譯由 CI 負責 |
+| `candidate-pos` | `c75debd` | `d02d3a7` | 日文候選帶 POS；只加欄位傳遞，沒有動排序或成本（比對 `core.rs` diff 只有 `with_pos`／`clear_pos`） |
+| `composition-cursor` | `631c384` | `714f9f8` | 組字游標、任意位置插入刪除、換詞長、片段換字、keepCandidates |
+| `settings-ui` | `941a6e1` | `8b8c0ae` | 新 crate `jc-settings-ui`（GPUI Kit），帶入大量 `Cargo.lock` 變更 |
+
+整合修正：`6fa6e62`（candidate-pos 的 `Convert` fixture 移除 drop-ort 已刪的 `backend` 欄位）。
+
+資料驗證：`data manifest /mnt/work/jc/jc-ime-data --out /tmp/opencode/jc-data-manifest.json` 產生 9 個檔案索引，
+`data verify` **9/9 通過、0 錯誤、0 警告**（packs、build-zh、english、jinen small GGUF、zh-select、zh-punct）。
+
+### 目前阻塞
+
+1. `cargo clippy -D warnings` 失敗：`crates/jc-core/src/session/core.rs:692` `clippy::collapsible_if`，來自 composition-cursor。
+2. `cargo test --workspace` 2 個失敗，皆已確認在各自 branch 單獨重跑也失敗（不是合併造成）：
+   - `session::tests::test_english_without_learning_keeps_existing_order`（english-personal）：`hello` 的候選數 3，期望 1。
+   - `session::segments::tests::test_manual_segments_expire_on_next_key`（composition-cursor）：手動片段過期後數量 2，期望 1。
+3. `jc-settings-ui` 的**測試**在這台機器無法連結：缺 `libxcb`／`libxkbcommon` 開發套件（`ld: cannot find -lxcb`）；
+   `cargo check` 需要在環境加 `RUST_FONTCONFIG_DLOPEN=1`（系統沒有 `fontconfig.pc`）。這是環境限制，不是程式錯。
+
+### 題庫（本機，load average 14–18）
+
+| 項目 | 目標 | 實測 |
+|---|---|---|
+| `zh-golden` | 45/45 | **45/45** |
+| `ja modern-500 --neural quality` | 93.6% | **93.6%** |
+| `ja modern-500 --neural off` | 86.0% | **86.0%** |
+| `fuzzy` 注音 | 44.5% | **44.5%** |
+| `mixed` | 6/6 | **6/6** |
+| `ja modern-500` auto | 92.2%（機器空閒時） | 負載高時 89.8%，依指示本輪不當門檻 |
+
+### 待辦（不要現在做）
+
+- **legal 帳本 L-21**：`legal/README.md` 的 L-21 還寫 Jinen「僅本機評估、暫不散布」，但 Jinen 是自家訓練、要隨產品散布，
+  出貨前必須改帳本（散布欄位、NOTICE 與 `docs/models.md` 一起更新）。
+- **settings-ui 兩個已知缺口**：`--neural` 三態與 `rerank` 在 UI 是唯讀，因為 `Settings` 沒有對應欄位；
+  「重新啟動引擎」要等安裝器提供。
+- **tsf-skeleton 的 14 項未實機驗證清單**在 `docs/port/tsf-skeleton.md`，不要當成已驗證。
+- deal with `jc-settings-ui` 的 Linux 連結依賴（`libxcb`、`libxkbcommon`、`fontconfig` 或 `RUST_FONTCONFIG_DLOPEN=1`）在 CI 映像補齊。
