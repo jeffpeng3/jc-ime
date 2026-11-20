@@ -1339,3 +1339,7 @@ gate：test exit 0（54 targets、1231 passed、0 failed）、clippy exit 0、fm
 ### CI（push `fbb76f0`，run 44689671075）
 
 - linux (core)：success；windows (msvc)：success。
+
+### CI（push `b2a1f87`，run 44691123049）
+
+- linux (core)：success；windows (msvc)：success（只有文件變更，作為最後一次確認）。
