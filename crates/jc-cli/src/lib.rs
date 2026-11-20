@@ -11,6 +11,7 @@ pub mod data;
 pub mod download_cmd;
 pub mod eval_cmd;
 pub mod manifest_cmd;
+pub mod split_cmd;
 pub mod tokenize;
 
 pub use cli::{run, CliError, Command};

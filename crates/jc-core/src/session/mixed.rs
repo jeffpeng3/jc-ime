@@ -4,6 +4,7 @@
 //! `finishMixedTone` 與 `mixedBoundary`。
 
 use super::*;
+use crate::composition::{CompSegment, Lang, Owner};
 use crate::lattice::Lexicon;
 use crate::mixed::{default_english, prototype, English, MAX_WORD_BYTES};
 use crate::zh::keyboard::Keyboard;
@@ -578,7 +579,22 @@ impl Session {
             self.composition.clear();
             return;
         }
-        self.base = self.mixed_surface();
+        let mut split_used = false;
+        if self.config.mixed_latin_split {
+            if let Some((split, tail)) = self.incremental_latin_split() {
+                self.apply_latin_split(&split, &tail);
+                split_used = true;
+            }
+        }
+        if !split_used {
+            self.rebuild_mixed_legacy();
+        }
+        self.rebuild_mixed_candidates();
+    }
+
+    /// 沒有啟用拉丁切分時的原路徑：照原本的片段推斷組字。
+    fn rebuild_mixed_legacy(&mut self) {
+        self.base = self.mixed_surface_legacy();
         let mut at = 0usize;
         self.segments = self
             .ascii
@@ -608,6 +624,10 @@ impl Session {
             self.segments.push(Segment::new(start, at, mode, script));
         }
         self.sync_composition_mixed();
+    }
+
+    /// 混合模式的候選：原按鍵、注音本身與英文前綴補完。
+    fn rebuild_mixed_candidates(&mut self) {
         // 待定按鍵是英文詞時，候選先放原按鍵，再放注音顯示與英文前綴補完。
         // 同一個拼法有學過的修正時，修正直接排第一，原按鍵留在第二項。
         let raw = self.ascii.pending().to_string();
@@ -660,20 +680,21 @@ impl Session {
 
     /// 已完成的注音音節轉成字面。
     pub(super) fn decode_syllable(&self, syllable: &Syllable) -> String {
-        let reading = syllable.as_str();
-        let units = [reading];
-        match Lattice::build(&units, &self.lexicon, &self.ctx) {
-            Ok(lattice) => {
-                let decoder = Decoder::new(&self.lexicon, &self.ctx);
-                let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
-                decoder.conversion(&lattice, &segs, Mode::Zh).surface
-            }
-            Err(_) => reading.to_string(),
-        }
+        self.decode_reading(syllable.as_str())
     }
 
     /// 混合模式的完整字面：注音片段解碼，英數照字面，待定按鍵照顯示。
     pub(super) fn mixed_surface(&self) -> String {
+        if self.config.mixed_latin_split {
+            if let Some(text) = self.latin_surface() {
+                return text;
+            }
+        }
+        self.mixed_surface_legacy()
+    }
+
+    /// 沒有啟用拉丁切分時的字面組合。
+    fn mixed_surface_legacy(&self) -> String {
         let mut out = String::new();
         let mut run: Vec<String> = Vec::new();
         let flush = |run: &mut Vec<String>, out: &mut String| {
@@ -708,6 +729,197 @@ impl Session {
         out.push_str(&self.ascii.display_pending(&self.lexicon));
         out
     }
+
+    /// 拉丁切分器的輸入文字：所有照字面的片段加上待定按鍵。
+    ///
+    /// 一旦出現已完成的注音片段就交給原路徑，避免把兩種來源混在一起重排。
+    fn latin_run_text(&self) -> Option<String> {
+        if self
+            .ascii
+            .pieces()
+            .iter()
+            .any(|piece| matches!(piece, AsciiPiece::Zh(_)))
+        {
+            return None;
+        }
+        let mut text = String::new();
+        for piece in self.ascii.pieces() {
+            if let AsciiPiece::Literal(part) = piece {
+                text.push_str(part);
+            }
+        }
+        text.push_str(self.ascii.pending());
+        if text.is_empty() || !text.chars().any(|ch| ch.is_ascii_alphabetic()) {
+            return None;
+        }
+        Some(text)
+    }
+
+    /// 逐鍵增量：只把新增的字元餵給切分器。
+    fn incremental_latin_split(&mut self) -> Option<(crate::mixed_latin::Split, String)> {
+        let text = self.latin_run_text()?;
+        let lexicon = crate::mixed_latin::LexiconAdapter {
+            zh: Some(&self.lexicon),
+            english: Some(default_english()),
+        };
+        let latin = self.latin.as_mut()?;
+        latin.set_text(&text, &lexicon);
+        let (split, tail) = latin.preview();
+        if split.is_empty() {
+            return None;
+        }
+        self.latin_split_text = text;
+        self.latin_split = Some(split.clone());
+        self.latin_tail = tail.clone();
+        Some((split, tail))
+    }
+
+    /// 沒有增量結果時重算一次；提交路徑會用到。
+    fn latin_surface(&self) -> Option<String> {
+        let text = self.latin_run_text()?;
+        let (split, tail) = if self.latin_split_text == text {
+            (self.latin_split.clone()?, self.latin_tail.clone())
+        } else {
+            let mut splitter =
+                crate::mixed_latin::LatinSplitter::new(crate::mixed_latin::Options::default());
+            splitter.set_text(
+                &text,
+                &crate::mixed_latin::LexiconAdapter {
+                    zh: Some(&self.lexicon),
+                    english: Some(default_english()),
+                },
+            );
+            splitter.preview()
+        };
+        if split.is_empty() {
+            return None;
+        }
+        let mut out = String::new();
+        for piece in self.render_latin_split(&split) {
+            out.push_str(&piece.surface);
+        }
+        out.push_str(&tail);
+        Some(out)
+    }
+
+    /// 把切分片段轉成顯示字面與讀音。
+    fn render_latin_split(&self, split: &crate::mixed_latin::Split) -> Vec<RenderedPiece> {
+        split
+            .pieces
+            .iter()
+            .map(|piece| match piece.lang {
+                crate::mixed_latin::SplitLang::Ja => RenderedPiece {
+                    surface: self.decode_kana(&piece.reading),
+                    mode: Mode::Ja,
+                    reading: piece.reading.clone(),
+                    units: piece.reading.chars().count(),
+                },
+                crate::mixed_latin::SplitLang::Zh => {
+                    let syllables =
+                        crate::mixed_latin::toned_syllables(&piece.reading, &self.lexicon);
+                    let reading = syllables.join(" ");
+                    RenderedPiece {
+                        surface: self.decode_reading(&reading),
+                        mode: Mode::Zh,
+                        reading,
+                        units: syllables.len(),
+                    }
+                }
+                crate::mixed_latin::SplitLang::En => RenderedPiece {
+                    surface: piece.reading.clone(),
+                    mode: Mode::En,
+                    reading: String::new(),
+                    units: 0,
+                },
+            })
+            .collect()
+    }
+
+    /// 把切分結果寫進 `base`、`segments` 與 [`Composition`]。
+    ///
+    /// 片段是 [`Owner::Auto`]，之後的轉換可以整段重算；日文與注音各自是
+    /// 一個連續讀音區段。
+    fn apply_latin_split(&mut self, split: &crate::mixed_latin::Split, tail: &str) {
+        let rendered = self.render_latin_split(split);
+        let mut text = String::new();
+        let mut segments = Vec::new();
+        let mut pieces = Vec::new();
+        for item in rendered {
+            if item.surface.is_empty() {
+                continue;
+            }
+            let start = text.len();
+            text.push_str(&item.surface);
+            let end = text.len();
+            segments.push(Segment::new(start, end, item.mode, Script::Latin));
+            let rune_start = crate::output::rune_len(&text[..start]);
+            let rune_end = crate::output::rune_len(&text[..end]);
+            let lang = match item.mode {
+                Mode::Ja => Lang::Ja,
+                Mode::Zh => Lang::Zh,
+                _ => Lang::Literal,
+            };
+            pieces.push(CompSegment::new(
+                rune_start..rune_end,
+                item.reading,
+                item.units,
+                lang,
+                Owner::Auto,
+            ));
+        }
+        if !tail.is_empty() {
+            let start = text.len();
+            text.push_str(tail);
+            let end = text.len();
+            segments.push(Segment::new(start, end, Mode::En, Script::Latin));
+            let rune_start = crate::output::rune_len(&text[..start]);
+            let rune_end = crate::output::rune_len(&text[..end]);
+            pieces.push(CompSegment::new(
+                rune_start..rune_end,
+                "",
+                0,
+                Lang::Literal,
+                Owner::Auto,
+            ));
+        }
+        let cursor = crate::output::rune_len(&text);
+        self.composition
+            .replace_segments(text.clone(), cursor, pieces);
+        self.base = text;
+        self.segments = segments;
+    }
+
+    /// 切分器產生的かな照原樣輸出。
+    ///
+    /// かな漢字変換留給後續候選；自動轉換會把非詞彙的組字（`りしれ`）誤轉成
+    /// 單字（`里`），原型先不套用。
+    fn decode_kana(&self, kana: &str) -> String {
+        kana.to_string()
+    }
+
+    /// 已完成的注音讀音轉成字面；`reading` 以空白分隔音節。
+    fn decode_reading(&self, reading: &str) -> String {
+        let units: Vec<&str> = reading.split_whitespace().collect();
+        if units.is_empty() {
+            return reading.to_string();
+        }
+        match Lattice::build(&units, &self.lexicon, &self.ctx) {
+            Ok(lattice) => {
+                let decoder = Decoder::new(&self.lexicon, &self.ctx);
+                let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
+                decoder.conversion(&lattice, &segs, Mode::Zh).surface
+            }
+            Err(_) => reading.to_string(),
+        }
+    }
+}
+
+/// 一個切分片段轉成顯示字面後的結果。
+struct RenderedPiece {
+    surface: String,
+    mode: Mode,
+    reading: String,
+    units: usize,
 }
 
 /// 英文片段的候選：學過的修正先排，前綴補完次之，拼字建議接在後面。
@@ -952,6 +1164,28 @@ mod tests {
             s.personal().language_surface_count(LanguageId::En, "hello"),
             1
         );
+    }
+
+    /// 拉丁切分器開啟時，`rishireej/ savul3` 送出 `りしれ供さ小`。
+    #[test]
+    fn test_mixed_latin_split_commit() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("供", "ㄍㄨㄥ", 0, 0));
+        lex.push(LexEntry::new("小", "ㄒㄧㄠˇ", 0, 0));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(lex);
+        config.mixed_latin_split = true;
+        let mut s = Session::new(config);
+        for ch in "rishireej/".chars() {
+            s.press(Key::char(ch, false));
+        }
+        s.press(Key::new(KeyCode::Space, None, false));
+        for ch in "savul3".chars() {
+            s.press(Key::char(ch, false));
+        }
+        assert_eq!(s.snapshot().preedit, "りしれ供さ小");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "りしれ供さ小");
     }
 
     /// 對照 `openMixedCandidates`：原按鍵之外列注音本身與結尾聲調的注音。

@@ -17,6 +17,7 @@ pub mod lang;
 pub mod lattice;
 pub mod lm;
 pub mod mixed;
+pub mod mixed_latin;
 pub mod output;
 pub mod personal;
 pub mod punct;

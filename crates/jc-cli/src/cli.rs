@@ -287,6 +287,21 @@ pub enum Command {
         /// 不印進度。
         quiet: bool,
     },
+    /// 研究用：把一段拉丁輸入切成羅馬字與注音，並量測逐鍵延遲。
+    MixedSplit {
+        /// 要切分的輸入；`--keys` 可重複指定。
+        keys: Vec<String>,
+        /// `0c-testdata` 目錄。
+        testdata: Option<PathBuf>,
+        /// 注音二進位資料包目錄；未指定時依序找 `<資料根>/build-zh` 與 golden 固定詞庫。
+        data: Option<PathBuf>,
+        /// 逐鍵量測延遲。
+        incremental: bool,
+        /// 每個前綴重複次數。
+        repeat: usize,
+        /// 輸出 JSON。
+        json: bool,
+    },
     /// 顯示說明。
     Help,
     /// 顯示版本。
@@ -306,6 +321,7 @@ pub fn parse(args: &[String]) -> Result<Command, CliError> {
         "tokenize" => parse_tokenize(&args[1..]),
         "bench" => parse_bench(&args[1..]),
         "data" => parse_data(&args[1..]),
+        "mixed-split" => parse_mixed_split(&args[1..]),
         other => Err(CliError::Usage(format!("不認得的子命令 {other}"))),
     }
 }
@@ -795,6 +811,62 @@ fn parse_convert_mode(value: &str) -> Result<Mode, CliError> {
     }
 }
 
+/// 解析 `mixed-split`：研究用的拉丁切分與逐鍵延遲量測。
+fn parse_mixed_split(args: &[String]) -> Result<Command, CliError> {
+    let mut keys = Vec::new();
+    let mut testdata = None;
+    let mut data = None;
+    let mut incremental = false;
+    let mut repeat = 1usize;
+    let mut json = false;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--keys" => {
+                index += 1;
+                keys.push(value(args, index, "--keys")?.to_string());
+            }
+            "--testdata" => {
+                index += 1;
+                testdata = Some(PathBuf::from(value(args, index, "--testdata")?));
+            }
+            "--data" => {
+                index += 1;
+                data = Some(PathBuf::from(value(args, index, "--data")?));
+            }
+            "--incremental" => incremental = true,
+            "--repeat" => {
+                index += 1;
+                let text = value(args, index, "--repeat")?;
+                repeat = text
+                    .parse()
+                    .map_err(|_| CliError::Usage(format!("--repeat 必須是整數：{text}")))?;
+                if repeat == 0 {
+                    return Err(CliError::Usage("--repeat 至少 1".to_string()));
+                }
+            }
+            "--json" => json = true,
+            other => {
+                return Err(CliError::Usage(format!("mixed-split 不認得的參數 {other}")));
+            }
+        }
+        index += 1;
+    }
+    if keys.is_empty() {
+        return Err(CliError::Usage(
+            "mixed-split 需要至少一個 --keys".to_string(),
+        ));
+    }
+    Ok(Command::MixedSplit {
+        keys,
+        testdata,
+        data,
+        incremental,
+        repeat,
+        json,
+    })
+}
+
 /// 解析 `on`／`off` 開關。
 fn switch(value: &str, flag: &str) -> Result<bool, CliError> {
     match value {
@@ -1047,6 +1119,22 @@ pub fn run(args: &[String], out: &mut dyn Write) -> Result<(), CliError> {
 /// 執行已解析的命令。
 pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliError> {
     match command {
+        Command::MixedSplit {
+            keys,
+            testdata,
+            data,
+            incremental,
+            repeat,
+            json,
+        } => crate::split_cmd::run(
+            keys,
+            testdata.clone(),
+            data.clone(),
+            *incremental,
+            *repeat,
+            *json,
+            out,
+        ),
         Command::Help => {
             write!(out, "{}", usage())?;
             Ok(())
@@ -1228,6 +1316,7 @@ pub fn usage() -> String {
          [--live-correction-ratio <0..1>] [--live-keep-tail <n>] [--live-report] [--json] [--items]\n  \
          jc-cli eval fuzzy --testdata <dir> [--json]\n  \
          jc-cli eval mixed --testdata <dir> [--data <dir>] [--json]\n  \
+         jc-cli mixed-split --keys <字串>... [--testdata <dir>] [--data <dir>] [--incremental] [--repeat 1] [--json]\n  \
          jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--backend candle] [--user-data <dir>] [--pick <n>] [--json]\n  \
          jc-cli tokenize ja [--testdata <dir>] [--vocab <model>] [--text <字串>]... [--diff] [--json]\n  \
          jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
