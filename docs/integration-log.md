@@ -1203,3 +1203,9 @@
 
 `models/quant/jinen-v2-xsmall/tokenizer.json` 是 Jinen 執行時必要檔（小模型沿用 xsmall 的 tokenizer），
 但目前不在資料 manifest 內；出貨前要補 `shipped: true`，否則 `data verify` 不會涵蓋它。
+
+### 待辦：tsf-installer 三個已知缺口（branch `f4f4ae1`，排在 legal-update 之後合）
+
+- **x86 TIP 未做**：只有 64 位元 TIP，32 位元程式無法使用這個輸入法。
+- **授權文件未打進 MSI**：安裝包內沒有 `LICENSE`／`NOTICE`／`legal/` 內容。
+- **引擎啟動沒有監督程式**：靠 `HKLM\...\Run` 拉起，掛掉不會自動重啟。
