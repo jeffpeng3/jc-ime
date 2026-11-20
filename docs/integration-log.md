@@ -1510,3 +1510,13 @@ gate（固定工具鏈）：
 - `release-msi-fix` `2254346` → `b904012`：Windows Python 輸出改 UTF-8（`build.ps1`、`check-payload.py`）。
 - `rc4` `0af7223` → `d3348c2`：版本 `0.1.0-rc.4`，CHANGELOG 補編碼修正；`Cargo.lock` 另以 `chore` commit 同步。
 - gate：test exit 0（54 targets、1286 passed）、clippy exit 0、fmt exit 0。依指示不重跑題庫（只改安裝器與文件）。
+
+## 2026-11-21 00:20 0.1.0-rc.5 與 WiX Bitness 修正（`283a0b7` → `ec6a986`、`49f23d9` → `b757c8a`）
+
+- `rc5` `283a0b7` → `ec6a986`：版本 `0.1.0-rc.5`、CHANGELOG 補 WiX v5 說明；`Cargo.lock` 以 `67b29c2` 同步。
+- `release-msi-fix` `49f23d9` → `b757c8a`：`installer/jc-ime.wxs` 的 x86 元件由 WiX v3 的 `Win64="no"` 改為
+  `Bitness="always32"`（WiX v5 寫法），另更新 `installer/README.md`、`docs/port/tsf-installer.md`、`docs/port/x86-tip.md`。
+  先前的 rc.5 CHANGELOG 已提前描述此修正，現在程式與文件一致。
+- gate：`cargo check --workspace --all-targets` exit 0、clippy exit 0、fmt exit 0；`release.yml`／`ci.yml` YAML 有效。
+- 依指示只改安裝器與文件，未重跑題庫。
+- `git branch --no-merged main`：空。
