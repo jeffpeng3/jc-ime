@@ -25,8 +25,17 @@ jc-testdata = { path = "../jc-testdata" }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_Console",
     "Win32_System_IO",
+    "Win32_System_LibraryLoader",
     "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 ] }
+
+# 監督者送 SIGTERM 給子行程；Windows 用 console 事件，不需要這個。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

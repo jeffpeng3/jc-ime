@@ -12,6 +12,7 @@ use jc_core::{KeyCode, Mode, Snapshot};
 
 pub mod config;
 pub mod loader;
+pub mod supervise;
 use jc_proto::message::{read_message, ProtoError};
 use jc_proto::{write_message, ErrorCode, Request, Response, PROTOCOL_VERSION};
 
