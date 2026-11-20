@@ -166,6 +166,18 @@ Windows job 不再先跑 `cargo build --workspace`。「驗證資料包」只用
 
 Windows target tree 的 `cc` 只用於 GPUI 的 `embed-resource` 前置處理 `.rc`，沒有自行編譯 C/C++ 靜態庫。`cargo check -p jc-settings-ui --target x86_64-pc-windows-msvc` 與 `cargo check -p jc-tsf --target i686-pc-windows-msvc` 都通過；MSVC 連結本身只能在 Windows CI 或實機驗證。
 
+### Windows 的 Python 輸出
+
+Windows 上執行的 Python 腳本，stdout／stderr 必須使用 UTF-8。Windows 的 Python 3.12 預設是 cp1252，`check-payload.py` 印中文會直接 `UnicodeEncodeError`，Linux 的 UTF-8 環境看不出來。
+
+目前有三層保護：
+
+1. `installer/check-payload.py` 開頭呼叫 `force_utf8_stdio()`；有 `reconfigure` 就用，舊版 Python 改用 `TextIOWrapper` 包住 `buffer`。
+2. `installer/build.ps1` 呼叫 python 前設 `PYTHONUTF8=1` 與 `PYTHONIOENCODING=utf-8`。
+3. `.github/workflows/release.yml` 的 Windows job 設 `PYTHONUTF8=1`。
+
+Windows job 目前唯一呼叫的 Python 腳本是 `installer/check-payload.py`；`scripts/` 下的模型轉檔與評測工具使用 Linux 路徑，不在 Windows job 內。
+
 ### MSI 檔名與 ProductVersion
 
 | 項目 | 來源 | RC1 的值 |
@@ -201,8 +213,8 @@ workflow 的 `RELEASE_VERSION` 是完整版本，`MSI_VERSION` 是三段數字�
 | 授權文件（267） | 缺少授權文件 `<name>` | repo 根目錄缺 `LICENSE` 或 `NOTICE`。 |
 | 授權文件（272） | 缺少授權文件 legal\THIRD-PARTY-NOTICES.md | repo 缺 `legal\THIRD-PARTY-NOTICES.md`。 |
 | 授權全文（277） | legal\licenses 沒有任何授權全文 | `legal\licenses` 目錄存在但沒有任何檔案。若目錄本身不存在，前面的 `Get-ChildItem` 會先以 terminating error 失敗。 |
-| 簽章（294） | 指定了簽章憑證但找不到 signtool.exe | 有 `-Certificate` 或 `JC_SIGN_CERT`，且沒有 `-SkipSign`，但 PATH 找不到 `signtool.exe`。 |
-| WiX（308） | 找不到 wix.exe | PATH 找不到 `wix.exe`，通常是沒有安裝 WiX v5 或 dotnet tool 目錄不在 PATH。 |
+| 簽章（298） | 指定了簽章憑證但找不到 signtool.exe | 有 `-Certificate` 或 `JC_SIGN_CERT`，且沒有 `-SkipSign`，但 PATH 找不到 `signtool.exe`。 |
+| WiX（312） | 找不到 wix.exe | PATH 找不到 `wix.exe`，通常是沒有安裝 WiX v5 或 dotnet tool 目錄不在 PATH。 |
 
 ### 這輪的靜態檢查
 
@@ -214,6 +226,7 @@ workflow 的 `RELEASE_VERSION` 是完整版本，`MSI_VERSION` 是三段數字�
 - `.cargo/config.toml` 的 x86_64 與 i686 Windows target 都設 `+crt-static`；`build.ps1` 已移除 `$env:RUSTFLAGS`。
 - `cargo check -p jc-settings-ui --target x86_64-pc-windows-msvc` 與 `cargo check -p jc-tsf --target i686-pc-windows-msvc` 通過；Linux 沒有 MSVC 連結器，連結留給 Windows CI。
 - `release.yml` 的 Windows job 已移除 `cargo build --workspace`，資料驗證只建 `jc-cli`。
+- `check-payload.py` 在 `PYTHONIOENCODING=cp1252` 下仍能輸出中文；`reconfigure` 與舊版 `TextIOWrapper` 兩條路徑都測過。
 - `$msi` 用 `$Version`（完整版本）命名，`wix build` 的 `-d Version` 用 `$MsiVersion`（三段數字）。
 - `$Version`、`$MsiVersion`、`$ReleaseDir`、`$ReleaseDirX86` 都在第一次使用前賦值；`Set-StrictMode -Version Latest` 下沒有未定義變數。
 - `git diff --check` 通過。

@@ -190,6 +190,8 @@ Windows 建置必須指定 target（`--target x86_64-pc-windows-msvc`），否�
 
 `+crt-static` 是 Windows 出貨條件，TSF DLL 不能依賴 `vcruntime140.dll`。旗標統一放在 `.cargo/config.toml` 的 `[target.x86_64-pc-windows-msvc]` 與 `[target.i686-pc-windows-msvc]`；workflow 的 `cargo run` 與 `build.ps1` 共用同一組 rustflags，不會因 `RUSTFLAGS` 變動而全量重編。
 
+Windows 的 Python 輸出必須是 UTF-8。Windows job 設 `PYTHONUTF8=1`，`build.ps1` 另外設 `PYTHONIOENCODING=utf-8`，避免 Python 3.12 的 cp1252 讓 `check-payload.py` 印中文時失敗。
+
 `release.yml` 不跑 `cargo fmt`、clippy；那些由 `ci.yml` 在日常 push／PR 負責。
 
 ## Artifact 內容

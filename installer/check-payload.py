@@ -21,10 +21,51 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+
+def force_utf8_stdio() -> None:
+    """讓 Windows 的 stdout／stderr 用 UTF-8，避免 cp1252 遇到中文就爆。
+
+    Python 3.7 以上有 TextIOWrapper.reconfigure；更舊的版本改用 buffer 重新
+    包一層。stdout 被替換成沒有 buffer 的物件時（例如測試工具）就維持原狀。
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+                continue
+            except (AttributeError, OSError, ValueError):
+                pass
+        buffer = getattr(stream, "buffer", None)
+        detach = getattr(stream, "detach", None)
+        if detach is not None:
+            try:
+                buffer = detach()
+            except (AttributeError, OSError, ValueError):
+                pass
+        if buffer is None:
+            continue
+        line_buffering = getattr(stream, "line_buffering", False)
+        setattr(
+            sys,
+            name,
+            io.TextIOWrapper(
+                buffer,
+                encoding="utf-8",
+                errors="replace",
+                line_buffering=line_buffering,
+            ),
+        )
+
+
+force_utf8_stdio()
 
 # WiX v5 的命名空間；v4 之後都是這個字串。
 WIX_NS = "{http://wixtoolset.org/schemas/v4/wxs}"
