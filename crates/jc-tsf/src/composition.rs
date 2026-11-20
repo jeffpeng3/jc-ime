@@ -10,6 +10,7 @@
 use std::cell::{Cell, RefCell};
 use std::mem::ManuallyDrop;
 use std::ptr;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -32,7 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowLongPtrW, GWLP_USERDATA, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
 };
 
-use crate::candidates::{CandidateHost, CandidateItem, CandidateSnapshot};
+use crate::candidates::{CandidateActions, CandidateHost, CandidateItem, CandidateSnapshot};
 use crate::display;
 use crate::engine::{self, Job, Queue};
 use crate::keys;
@@ -96,7 +97,8 @@ pub struct Control {
     /// 目前的組字物件。
     composition: RefCell<Option<ITfComposition>>,
     last: Cell<LastState>,
-    generation: Cell<u64>,
+    /// 按鍵世代；與候選元素的滑鼠點選共用，過期的 `State` 才會被丟棄。
+    generation: Rc<Cell<u64>>,
     /// 已送出但還沒回覆的選取導覽鍵世代；用來避免快速連打時重複補 `Down`。
     navigation_armed: Cell<Option<u64>>,
     hwnd: HWND,
@@ -143,18 +145,26 @@ impl Control {
         // 底線沒有 atom 就畫不出來；失敗只影響外觀，其他輸入照常。
         let display_atom = display::try_register_guid_atom();
 
+        // 滑鼠點選與一般按鍵共用同一個世代計數器與請求通道。
+        let generation = Rc::new(Cell::new(0));
+        let actions = Rc::new(CandidateActions::new(
+            jobs.clone(),
+            Rc::clone(&generation),
+            Arc::clone(&queue),
+        ));
+
         Self {
             thread_mgr,
             client_id,
             context: RefCell::new(None),
             composition: RefCell::new(None),
             last: Cell::new(LastState::default()),
-            generation: Cell::new(0),
+            generation,
             navigation_armed: Cell::new(None),
             hwnd: HWND::default(),
             queue,
             jobs,
-            candidate: RefCell::new(CandidateHost::new(ui_manager)),
+            candidate: RefCell::new(CandidateHost::new(ui_manager, actions)),
             display_atom,
             sink_state,
             sink,
@@ -428,6 +438,7 @@ impl Control {
             CandidateSnapshot {
                 items,
                 highlighted: state.highlighted,
+                navigating: state.navigating,
             },
             document,
         );
