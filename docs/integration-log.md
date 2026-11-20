@@ -108,6 +108,7 @@
 | `drop-punct` | `859f6d1` | `dacb52b` | 通過（fmt／clippy／test／兩個 eval；無殘留） | 2026-11-20 08:28 |
 | `jinen-gating-v2` | `81e0cbe` | `83152fc` | test 通過；clippy 1 個錯 | 2026-11-20 08:31 |
 | `candle-zh` | `131f606` | `d8da98f` | 通過（fmt／test／兩個 eval）；clippy 剩 jinen-gate | 2026-11-20 08:37 |
+| `proto-compat` | `a622acd` | `06b4d5b` | 通過（fmt／test）；clippy 剩 jinen-gate | 2026-11-20 08:48 |
 
 ## 衝突與修正
 
@@ -1043,3 +1044,14 @@
   作者量測（Q8_0）：golden **45/45**、逐對排序一致 **99.51%**（5439/5466）、單次推論 p50 **9.36 ms**（fp32 14.05 ms）、
   常駐 RSS **45.3 MiB**、端到端峰值 RSS **74.7 MiB**（ORT fp32 309.7 MiB）。
   結論：注音選字在 candle 上比 ORT 更快也更省記憶體（Q8_0 p50 9.4–9.8 ms 對 ORT 11.8–12.6 ms）。
+
+- `proto-compat`（合併 `06b4d5b`，含 `a622acd`）：主 checkout 先前有一份未追蹤的 `docs/proto.md`，先以
+  `diff <(git show proto-compat:docs/proto.md) docs/proto.md` 確認只有第 133 行不同（branch 多一句「改線格式前先更新
+  `crates/jc-proto/tests/fixtures/` 的手寫 fixture」），確認 branch 是超集後刪掉未追蹤檔，merge 才沒有被擋下。
+
+  gate：fmt exit 0、`cargo test --workspace --no-fail-fast` **exit 0**（45 targets、1068 passed、0 failed）。
+  clippy 仍只有 `jinen-gate.rs:1376` 的 `unnecessary_sort_by`（jinen-gating-v2 待修）。
+
+  內容：`crates/jc-proto/tests/fixtures/` 共 **11 個手寫 JSON**（6 個 request、5 個 response）；新增 `tests/fixtures.rs`，
+  涵蓋各訊息往返、**v1 形狀可解析**（舊欄位缺漏仍能解），以及 **PROTOCOL_VERSION 與 fixture 宣告的版本號一致性守門**。
+  不改任何欄位名稱或型別。
