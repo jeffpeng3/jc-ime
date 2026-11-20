@@ -30,11 +30,23 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # 版本由 rust-toolchain.toml 決定；這裡寫死同一版，因為 action 不會讀
+      # 該檔案。兩邊要一起改（見 docs/port/toolchain-pin.md）。
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.100.0
           components: rustfmt, clippy
           # Windows 目標的型別檢查用；不需要 MSVC 工具鏈。
           targets: x86_64-pc-windows-msvc
+      - name: 工具鏈版本與 rust-toolchain.toml 一致
+        run: |
+          pinned=$(python3 -c 'import tomllib,pathlib;print(tomllib.loads(pathlib.Path("rust-toolchain.toml").read_text())["toolchain"]["channel"])')
+          active=$(rustc --version | cut -d' ' -f2)
+          if [[ "${active}" != "${pinned}" ]]; then
+            echo "::error::rustc ${active} 與 rust-toolchain.toml 的 ${pinned} 不一致"
+            exit 1
+          fi
+          echo "rustc ${active}（rust-toolchain.toml）"
       - name: 系統依賴（GPUI Kit 的 X11／Wayland／字型）
         run: |
           sudo apt-get update
@@ -88,7 +100,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # 與 rust-toolchain.toml 同一版（action 不讀該檔案）。
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          components: rustfmt, clippy
       # 與 ci-linux 分開的 key，避免 Linux／Windows 互相覆蓋快取。
       # 快取量大，總量接近 10 GB 時優先關掉這個 job 的 cache-all-crates。
       - uses: Swatinem/rust-cache@v2

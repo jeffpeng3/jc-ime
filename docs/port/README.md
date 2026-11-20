@@ -137,6 +137,7 @@
 | [`fix-tests.md`](fix-tests.md) | 全量測試修到綠 |
 | [`fix-windows-cfg.md`](fix-windows-cfg.md) | Windows 編譯的 `cfg` 邊界 |
 | [`ci-clippy.md`](ci-clippy.md) | 清掉 workspace 的 clippy 與 fmt 問題 |
+| [`toolchain-pin.md`](toolchain-pin.md) | 固定 Rust 工具鏈版本與升級流程 |
 | [`ci-lint.md`](ci-lint.md) | 修掉 `zh-symbols` 之後的 clippy 錯誤 |
 | [`candidate-paging.md`](candidate-paging.md) | 候選分頁、數字選字與 `CANDIDATE_PAGE_SIZE` |
 | [`composition-cursor.md`](composition-cursor.md) | 組字游標、任意位置編輯與片段換字 |
