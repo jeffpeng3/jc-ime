@@ -5,8 +5,8 @@
 
 use jc_settings::{
     Settings, JA_AMBIGUOUS_BOTH, JA_AMBIGUOUS_ENGLISH, JA_AMBIGUOUS_KANA, JA_INPUT_KANA,
-    JA_INPUT_ROMAJI, NEURAL, START_ENGLISH, START_ZHUYIN, STATISTICAL, TOGGLE_BOTH, TOGGLE_LEFT,
-    TOGGLE_NONE, TOGGLE_RIGHT,
+    JA_INPUT_ROMAJI, JA_NEURAL_AUTO, JA_NEURAL_OFF, JA_NEURAL_QUALITY, NEURAL, START_ENGLISH,
+    START_ZHUYIN, STATISTICAL, TOGGLE_BOTH, TOGGLE_LEFT, TOGGLE_NONE, TOGGLE_RIGHT,
 };
 
 /// 下拉選項：設定檔內的值與畫面文字。
@@ -120,6 +120,21 @@ const JA_AMBIGUOUS_CHOICES: &[Choice] = &[
     },
 ];
 
+const JA_NEURAL_CHOICES: &[Choice] = &[
+    Choice {
+        value: JA_NEURAL_AUTO,
+        label: "自動",
+    },
+    Choice {
+        value: JA_NEURAL_QUALITY,
+        label: "品質優先",
+    },
+    Choice {
+        value: JA_NEURAL_OFF,
+        label: "關閉",
+    },
+];
+
 /// 注音分頁：模糊音。
 pub const FUZZY: [Opt; 4] = [
     Opt {
@@ -165,17 +180,29 @@ pub const ZH: [Opt; 2] = [
 ];
 
 /// 日文分頁。
-pub const JA: [Opt; 5] = [
+pub const JA: [Opt; 7] = [
     Opt {
         key: "ja-model",
         title: "神經模型（Jinen）",
-        help: "轉換時使用神經かな漢字変換；本版引擎以「選字模型」為準，這個值會保留。",
+        help: "轉換時使用神經かな漢字変換；與「神經轉換模式」一起決定是否呼叫模型。",
         kind: Kind::Switch,
+    },
+    Opt {
+        key: "ja-neural-mode",
+        title: "神經轉換模式",
+        help: "自動：差距小才呼叫模型；品質優先：放寬呼叫門檻；關閉：只走統計。",
+        kind: Kind::Choice(JA_NEURAL_CHOICES),
     },
     Opt {
         key: "ja-live-conversion",
         title: "逐字変換",
         help: "邊打邊轉換，不等空白鍵；本版尚未接上神經模型。",
+        kind: Kind::Switch,
+    },
+    Opt {
+        key: "ja-rerank",
+        title: "候選重排（實驗）",
+        help: "用日文 reranker 重排候選；實測可能退步，預設不開。",
         kind: Kind::Switch,
     },
     Opt {

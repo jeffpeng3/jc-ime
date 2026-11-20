@@ -39,7 +39,9 @@ Go 參考實作把設定接到引擎的程式碼集中在 server 啟動流程，
 
 | `Settings` 欄位 | 影響 | 狀態 |
 |---|---|---|
-| `selection` | `ja_neural.enabled`（`neural` → true、`statistical` → false） | 生效 |
+| `ja_neural_mode` | `NeuralConfig`：`auto` ＝ 低呼叫門檻（`gap < 472.5` 且平均候選數 > 5.98）、`quality` ＝ 只看 `gap < 460`、`off` ＝ `enabled=false` | 生效 |
+| `ja_rerank` | `SessionConfig::ja_rerank`；預設 `false`，開啟後日文候選走 reranker | 生效 |
+| `selection` | 舊欄位：`statistical` 遷移成 `ja_neural_mode = off`、`neural` 遷移成 `auto`；兩者都在且語意不同時以 `ja_neural_mode` 為準並記一則警告，一致時不警告 | 遷移用 |
 | `punctuation` | `punct_mark = Some('，')`；本版以全形逗號代表「送出前補一個標點」 | 生效（簡化） |
 | `document_context` | `SessionConfig::document_context` | 生效 |
 | `mixed_input` | 啟動模式改 `mixed`；`style.mixed_input` | 生效 |
@@ -72,7 +74,7 @@ Go 參考實作把設定接到引擎的程式碼集中在 server 啟動流程，
 | `ja_input_method` | 日文只有羅馬字（`RomajiInput`），沒有直接かな | 本版忽略 |
 | `ja_ambiguous` | 解碼器在建構時固定 `both`，`SessionConfig` 沒有欄位 | 本版忽略 |
 | `ja_symbols` | 候選是否列記号／顔文字；解碼器開關未接線 | 本版忽略 |
-| `ja_model` | 與 `selection` 重複；本版以 `selection` 決定神經轉換 | 本版忽略 |
+| `ja_model` | 引擎不讀；神經轉換由 `ja_neural_mode` 決定，這個值只保留給 UI | 本版忽略 |
 | `model_mode`／`model_residency_mb`／`allow_placeholders` | 載入器啟動即載入固定資料，不做常駐調度或 placeholder | 本版忽略 |
 | 未知欄位 | 由 `jc-settings` 原樣保留，引擎不讀 | 不適用 |
 
@@ -88,9 +90,10 @@ Go 參考實作把設定接到引擎的程式碼集中在 server 啟動流程，
 
 ## 優先序
 
-1. CLI：`--mode`、`--neural`（`on`／`off`）。
-2. `settings.json`。
-3. 平台預設值（`Settings::default_for_platform`；缺檔時是 `fresh_settings`，
+1. CLI：`--mode`、`--neural`（`on`／`off`；`on` 對應 `auto`，`off` 對應 `off`）。
+2. `settings.json` 的 `ja_neural_mode`（`auto`／`quality`／`off`）。
+3. 舊欄位 `selection` 的遷移結果。
+4. 平台預設值（`Settings::default_for_platform`；缺檔時是 `fresh_settings`，
    已套用內建 `0c` 輸入習慣）。
 
 `--max-frame` 是協定層參數，不屬於 `SessionConfig`，不受設定檔影響。
@@ -99,12 +102,13 @@ Go 參考實作把設定接到引擎的程式碼集中在 server 啟動流程，
 
 輸出 `PrintedSettings`：`settings_path`、`settings_state`（`ok`／`missing`／
 `corrupt`／`unreadable`）與展開後的生效值。欄位包含 `mode`、`max_candidates`、
-`selection`、`neural`、`mixed_input`、`english_autocomplete`、`esc_clear`、
-`space_selects`、`advance_after_select`、`toggle_key`、`left_shift`、
-`start_mode`、`document_context`、`punctuation`、`punct_mark`、`toneless`、
-`zhuyin_error_hint`、`ctrl_punctuation`、`cjk_latin_space`、`fuzzy_pairs`、
-`ja_live`、`learning`、`selection_keys`、`emoji_shortcut`、
-`shift_symbol_halfwidth`。`selection` 已反映 `--neural`，所以與 `neural` 一致。
+`selection`、`neural`、`ja_neural_mode`、`ja_rerank`、`mixed_input`、
+`english_autocomplete`、`esc_clear`、`space_selects`、`advance_after_select`、
+`toggle_key`、`left_shift`、`start_mode`、`document_context`、`punctuation`、
+`punct_mark`、`toneless`、`zhuyin_error_hint`、`ctrl_punctuation`、
+`cjk_latin_space`、`fuzzy_pairs`、`ja_live`、`learning`、`selection_keys`、
+`emoji_shortcut`、`shift_symbol_halfwidth`。`selection` 已反映 `--neural` 與
+`ja_neural_mode`，所以與 `neural` 一致。
 
 ## 測試
 

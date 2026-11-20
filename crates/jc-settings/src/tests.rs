@@ -58,6 +58,91 @@ fn test_defaults_missing_fields_and_round_trip() {
 }
 
 #[test]
+fn test_legacy_selection_migrates_to_neural_mode() {
+    let dir = tmpdir("legacy-selection");
+    let path = dir.join("settings.json");
+
+    write_settings(&path, r#"{"selection":"statistical"}"#);
+    let report = read(&path, "linux");
+    assert_eq!(report.settings.ja_neural_mode, crate::JA_NEURAL_OFF);
+    assert_eq!(report.settings.selection, crate::STATISTICAL);
+    assert!(report.notes.is_empty(), "{:?}", report.notes);
+
+    write_settings(&path, r#"{"selection":"neural"}"#);
+    let report = read(&path, "linux");
+    assert_eq!(report.settings.ja_neural_mode, crate::JA_NEURAL_AUTO);
+    assert_eq!(report.settings.selection, crate::NEURAL);
+
+    // 設定舊鍵時也要推出新欄位。
+    let mut settings = Settings::default();
+    settings
+        .set("selection", crate::STATISTICAL, "linux")
+        .expect("設定");
+    assert_eq!(settings.ja_neural_mode, crate::JA_NEURAL_OFF);
+    settings
+        .set("selection", crate::NEURAL, "linux")
+        .expect("設定");
+    assert_eq!(settings.ja_neural_mode, crate::JA_NEURAL_AUTO);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_selection_and_mode_use_mode_with_one_warning() {
+    let dir = tmpdir("selection-mode");
+    let path = dir.join("settings.json");
+
+    write_settings(
+        &path,
+        r#"{"selection":"statistical","ja_neural_mode":"quality","punctuation":true}"#,
+    );
+    let report = read(&path, "linux");
+    assert_eq!(
+        report.settings.ja_neural_mode,
+        crate::JA_NEURAL_QUALITY,
+        "兩者都在時以 ja_neural_mode 為準"
+    );
+    assert_eq!(report.settings.selection, crate::NEURAL);
+    assert_eq!(report.notes.len(), 1, "{:?}", report.notes);
+    assert!(
+        report.notes[0].contains("ja-neural-mode"),
+        "{:?}",
+        report.notes
+    );
+    assert!(report.notes[0].contains("selection"), "{:?}", report.notes);
+
+    // 存檔後只留一致的投影，下次讀取不再警告。
+    save(&path, &report.settings).expect("存檔");
+    let back = read(&path, "linux");
+    assert_eq!(back.settings.ja_neural_mode, crate::JA_NEURAL_QUALITY);
+    assert_eq!(back.settings.selection, crate::NEURAL);
+    assert!(back.notes.is_empty(), "{:?}", back.notes);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_ja_neural_mode_and_rerank_persist() {
+    let dir = tmpdir("ja-neural");
+    let path = dir.join("settings.json");
+    let mut settings = Settings::default();
+    assert_eq!(settings.value("ja-neural-mode").as_deref(), Some("auto"));
+    assert_eq!(settings.value("ja-rerank").as_deref(), Some("off"));
+    settings
+        .set("ja-neural-mode", crate::JA_NEURAL_QUALITY, "linux")
+        .expect("設定");
+    settings.set("ja-rerank", "on", "linux").expect("設定");
+    save(&path, &settings).expect("存檔");
+    let text = read_text(&path);
+    assert!(text.contains("\"ja_neural_mode\": \"quality\""), "{text}");
+    assert!(text.contains("\"ja_rerank\": true"), "{text}");
+    let (back, error) = load(&path, "linux");
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(back.ja_neural_mode, crate::JA_NEURAL_QUALITY);
+    assert!(back.ja_rerank);
+    assert_eq!(back, settings, "來回不一致");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn test_punctuation_keeps_explicit_preference() {
     for (name, body, enabled) in [
         ("off", r#"{"schema":1,"punctuation":false}"#, false),

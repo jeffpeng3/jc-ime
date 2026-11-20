@@ -23,10 +23,21 @@ use crate::atomic_file::write_atomic;
 use crate::paths;
 use crate::profiles::fresh_settings;
 
-/// 神經模型依前文重排統計引擎的候選。
+/// 舊欄位 `selection` 的值：神經模型。
+///
+/// 新檔改由 [`JA_NEURAL_AUTO`]／[`JA_NEURAL_OFF`] 表示；這個值只在讀舊檔與
+/// 相容投影時使用。
 pub const NEURAL: &str = "neural";
-/// 只用統計引擎。
+/// 舊欄位 `selection` 的值：只用統計引擎。
 pub const STATISTICAL: &str = "statistical";
+
+/// 日文神經轉換：低呼叫門檻（預設）。
+pub const JA_NEURAL_AUTO: &str = "auto";
+/// 日文神經轉換：品質優先，只看 `gap < 460`。
+pub const JA_NEURAL_QUALITY: &str = "quality";
+/// 日文神經轉換：完全關閉。
+pub const JA_NEURAL_OFF: &str = "off";
+
 /// 設定檔名。
 pub const FILE_NAME: &str = paths::FILE_NAME;
 
@@ -368,7 +379,8 @@ impl<'de> Deserialize<'de> for Fuzzy {
 /// 使用者可切換的引擎設定。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
-    /// 選字方式：`neural`（預設）或 `statistical`。
+    /// 舊欄位：`neural` 或 `statistical`；由 [`Settings::ja_neural_mode`] 推出，
+    /// 讀舊檔時反過來決定新欄位。
     pub selection: String,
     /// 提交時補標點。
     pub punctuation: bool,
@@ -437,6 +449,10 @@ pub struct Settings {
     pub ja_learning: bool,
     /// 日文候選使用神經模型重排。
     pub ja_model: bool,
+    /// 日文神經轉換模式：`auto`（預設）／`quality`／`off`。
+    pub ja_neural_mode: String,
+    /// 日文候選使用 reranker 重排；預設關閉，可手動開。
+    pub ja_rerank: bool,
     /// 模型常駐模式。
     pub model_mode: String,
     /// 主要語言：`zh`（預設）或 `ja`。
@@ -450,6 +466,8 @@ pub struct Settings {
     extra: BTreeMap<String, Value>,
     /// `input_profile` 的內容；存檔時原樣寫回。
     pub(crate) profiles: Option<Value>,
+    /// 舊欄位 `selection` 與 `ja_neural_mode` 同時出現且語意不同。
+    pub(crate) selection_conflict: bool,
     /// 檔案的 schema 比本版新，或不是整數，所以不覆寫。
     pub(crate) read_only: bool,
     pub(crate) profile_invalid: bool,
@@ -464,7 +482,7 @@ impl Default for Settings {
 type BoolSetter = fn(&mut Settings, bool);
 type StringSetter = fn(&mut Settings, &str);
 
-const BOOL_FIELDS: [(&str, BoolSetter); 22] = [
+const BOOL_FIELDS: [(&str, BoolSetter); 23] = [
     ("punctuation", |s, v| s.punctuation = v),
     ("document_context", |s, v| s.document_context = v),
     ("mixed_input", |s, v| s.mixed_input = v),
@@ -488,10 +506,11 @@ const BOOL_FIELDS: [(&str, BoolSetter); 22] = [
     ("ja_symbols", |s, v| s.ja_symbols = v),
     ("ja_learning", |s, v| s.ja_learning = v),
     ("ja_model", |s, v| s.ja_model = v),
+    ("ja_rerank", |s, v| s.ja_rerank = v),
     ("allow_placeholders", |s, v| s.allow_placeholders = v),
 ];
 
-const STRING_FIELDS: [(&str, StringSetter, &[&str]); 13] = [
+const STRING_FIELDS: [(&str, StringSetter, &[&str]); 14] = [
     (
         "candidate_cursor",
         |s, v| s.candidate_cursor = v.to_string(),
@@ -541,6 +560,11 @@ const STRING_FIELDS: [(&str, StringSetter, &[&str]); 13] = [
         "ja_ambiguous",
         |s, v| s.ja_ambiguous = v.to_string(),
         &[JA_AMBIGUOUS_BOTH, JA_AMBIGUOUS_ENGLISH, JA_AMBIGUOUS_KANA],
+    ),
+    (
+        "ja_neural_mode",
+        |s, v| s.ja_neural_mode = v.to_string(),
+        &[JA_NEURAL_AUTO, JA_NEURAL_QUALITY, JA_NEURAL_OFF],
     ),
     (
         "model_mode",
@@ -629,12 +653,15 @@ impl Settings {
             ja_symbols: true,
             ja_learning: true,
             ja_model: true,
+            ja_neural_mode: JA_NEURAL_AUTO.to_string(),
+            ja_rerank: false,
             model_mode: MODEL_MODE_AUTO.to_string(),
             primary_language: LANGUAGE_ZH.to_string(),
             model_residency_mb: MODEL_RESIDENCY_AUTO_MB,
             allow_placeholders: false,
             extra: BTreeMap::new(),
             profiles: None,
+            selection_conflict: false,
             read_only: false,
             profile_invalid: false,
         };
@@ -660,17 +687,10 @@ impl Settings {
         let has_toggle = members.contains_key("toggle_key");
         let has_primary_language = members.contains_key("primary_language");
         let has_output_variant = members.contains_key("output_variant");
+        let has_ja_neural_mode = members.contains_key("ja_neural_mode");
+        // 舊欄位：等新欄位讀完再遷移，兩者都在時以新欄位為準。
+        let legacy_selection = members.remove("selection");
 
-        if let Some(raw) = members.remove("selection") {
-            match raw.as_str() {
-                Some(value) if value == NEURAL || value == STATISTICAL => {
-                    settings.selection = value.to_string();
-                }
-                _ => {
-                    kept.insert("selection".to_string(), raw);
-                }
-            }
-        }
         for (key, setter) in BOOL_FIELDS {
             if let Some(raw) = members.remove(key) {
                 match raw.as_bool() {
@@ -700,6 +720,30 @@ impl Settings {
                 }
             }
         }
+        // 舊欄位 selection 遷移：statistical → off、neural → auto。
+        // 兩個都寫且語意不同時以 ja_neural_mode 為準，只記一次警告。
+        if let Some(raw) = legacy_selection {
+            match raw.as_str() {
+                Some(value) if value == NEURAL || value == STATISTICAL => {
+                    let implied = Settings::mode_for_selection(value);
+                    if has_ja_neural_mode {
+                        // 兩者都在：關／不關的結論不同才算衝突，quality 與 neural
+                        // 都代表啟用，不警告。
+                        let selection_off = value == STATISTICAL;
+                        let mode_off = settings.effective_ja_neural_mode() == JA_NEURAL_OFF;
+                        if selection_off != mode_off {
+                            settings.selection_conflict = true;
+                        }
+                    } else {
+                        settings.ja_neural_mode = implied.to_string();
+                    }
+                }
+                _ => {
+                    kept.insert("selection".to_string(), raw);
+                }
+            }
+        }
+        settings.selection = settings.selection_projection().to_string();
         // 舊檔沒有 primary_language 時沿用既有的 language。
         if let Some(legacy) = members.remove("language") {
             if !has_primary_language
@@ -767,6 +811,32 @@ impl Settings {
         match self.ja_ambiguous.as_str() {
             JA_AMBIGUOUS_ENGLISH | JA_AMBIGUOUS_KANA => &self.ja_ambiguous,
             _ => JA_AMBIGUOUS_BOTH,
+        }
+    }
+
+    /// 收斂過的日文神經轉換模式；不認得的值退回 `auto`。
+    pub fn effective_ja_neural_mode(&self) -> &str {
+        match self.ja_neural_mode.as_str() {
+            JA_NEURAL_QUALITY | JA_NEURAL_OFF => &self.ja_neural_mode,
+            _ => JA_NEURAL_AUTO,
+        }
+    }
+
+    /// `selection` 的舊值所對應的神經模式。
+    fn mode_for_selection(value: &str) -> &'static str {
+        if value == STATISTICAL {
+            JA_NEURAL_OFF
+        } else {
+            JA_NEURAL_AUTO
+        }
+    }
+
+    /// `selection` 的相容投影：關閉時是 `statistical`，其餘是 `neural`。
+    fn selection_projection(&self) -> &'static str {
+        if self.effective_ja_neural_mode() == JA_NEURAL_OFF {
+            STATISTICAL
+        } else {
+            NEURAL
         }
     }
 
@@ -913,6 +983,11 @@ impl Settings {
         if self.fuzzy.has_unknown() {
             out.push("fuzzy：含本版不認得的成員，存檔時原樣保留".to_string());
         }
+        if self.selection_conflict {
+            out.push(
+                "ja-neural-mode 與舊欄位 selection 語意不同；以 ja-neural-mode 為準".to_string(),
+            );
+        }
         if self.read_only {
             out.push(SettingsError::ReadOnly.to_string());
         }
@@ -925,7 +1000,7 @@ impl Settings {
 }
 
 /// 存檔時的固定欄位順序。
-const SAVE_ORDER: [&str; 38] = [
+const SAVE_ORDER: [&str; 40] = [
     "selection",
     "punctuation",
     "document_context",
@@ -959,6 +1034,8 @@ const SAVE_ORDER: [&str; 38] = [
     "ja_symbols",
     "ja_learning",
     "ja_model",
+    "ja_neural_mode",
+    "ja_rerank",
     "model_mode",
     "primary_language",
     "model_residency_mb",
@@ -988,7 +1065,12 @@ impl Serialize for Settings {
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("schema", &SCHEMA_VERSION)?;
         let text = |value: &str| Value::String(value.to_string());
-        put_known(&mut map, &mut kept, "selection", text(&self.selection))?;
+        put_known(
+            &mut map,
+            &mut kept,
+            "selection",
+            text(self.selection_projection()),
+        )?;
         put_known(
             &mut map,
             &mut kept,
@@ -1156,6 +1238,18 @@ impl Serialize for Settings {
             Value::Bool(self.ja_learning),
         )?;
         put_known(&mut map, &mut kept, "ja_model", Value::Bool(self.ja_model))?;
+        put_known(
+            &mut map,
+            &mut kept,
+            "ja_neural_mode",
+            text(self.effective_ja_neural_mode()),
+        )?;
+        put_known(
+            &mut map,
+            &mut kept,
+            "ja_rerank",
+            Value::Bool(self.ja_rerank),
+        )?;
         put_known(&mut map, &mut kept, "model_mode", text(&self.model_mode))?;
         put_known(
             &mut map,
@@ -1584,6 +1678,12 @@ pub(crate) fn language_specs() -> Vec<Spec> {
         spec("ja-symbols", &["on", "off"], |s| on_off(s.ja_symbols)),
         spec("ja-learning", &["on", "off"], |s| on_off(s.ja_learning)),
         spec("ja-model", &["on", "off"], |s| on_off(s.ja_model)),
+        spec(
+            "ja-neural-mode",
+            &[JA_NEURAL_AUTO, JA_NEURAL_QUALITY, JA_NEURAL_OFF],
+            |s| s.effective_ja_neural_mode().to_string(),
+        ),
+        spec("ja-rerank", &["on", "off"], |s| on_off(s.ja_rerank)),
     ]
 }
 
@@ -1729,8 +1829,11 @@ impl Settings {
         }
         match key {
             "selection" => {
-                self.selection = value.to_string();
+                self.ja_neural_mode = Settings::mode_for_selection(value).to_string();
+                self.selection = self.selection_projection().to_string();
+                self.selection_conflict = false;
                 self.forget("selection");
+                self.forget("ja_neural_mode");
             }
             "punctuation" => {
                 self.punctuation = value == "on";
@@ -1851,6 +1954,17 @@ impl Settings {
             "ja-model" => {
                 self.ja_model = value == "on";
                 self.forget("ja_model");
+            }
+            "ja-neural-mode" => {
+                self.ja_neural_mode = value.to_string();
+                self.selection = self.selection_projection().to_string();
+                self.forget("ja_neural_mode");
+                self.forget("selection");
+                self.selection_conflict = false;
+            }
+            "ja-rerank" => {
+                self.ja_rerank = value == "on";
+                self.forget("ja_rerank");
             }
             "model-mode" => {
                 self.model_mode = value.to_string();

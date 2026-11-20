@@ -140,29 +140,33 @@ fn zh_page(this: &Entity<SettingsView>, view: &SettingsView) -> SettingPage {
 }
 
 fn ja_page(this: &Entity<SettingsView>, view: &SettingsView) -> SettingPage {
-    let toggle_items = options::JA
+    let conversion_items = options::JA
         .iter()
-        .filter(|opt| opt.key == "ja-model" || opt.key == "ja-live-conversion")
+        .filter(|opt| {
+            matches!(
+                opt.key,
+                "ja-model" | "ja-neural-mode" | "ja-live-conversion" | "ja-rerank"
+            )
+        })
         .map(|opt| option_item(this, view, opt));
     let dictionary_items = options::JA
         .iter()
-        .filter(|opt| opt.key != "ja-model" && opt.key != "ja-live-conversion")
+        .filter(|opt| {
+            !matches!(
+                opt.key,
+                "ja-model" | "ja-neural-mode" | "ja-live-conversion" | "ja-rerank"
+            )
+        })
         .map(|opt| option_item(this, view, opt));
 
     SettingPage::new("日文")
         .resettable(false)
         .description("日文かな漢字変換的路徑與候選。")
-        .group(
-            SettingGroup::new()
-                .title("轉換")
-                .items(toggle_items)
-                .item(neural_mode_item()),
-        )
+        .group(SettingGroup::new().title("轉換").items(conversion_items))
         .group(
             SettingGroup::new()
                 .title("候選與詞庫")
-                .items(dictionary_items)
-                .item(rerank_item()),
+                .items(dictionary_items),
         )
 }
 
@@ -388,24 +392,6 @@ fn model_item(
         Some(path) => info_item(title, description, path.display().to_string(), false),
         None => info_item(title, description, missing.to_string(), true),
     }
-}
-
-fn neural_mode_item() -> SettingItem {
-    info_item(
-        "神經轉換模式（--neural）",
-        "引擎啟動參數，不寫進 settings.json。auto 由選字方式決定，quality 強制品質路徑，off 完全走統計；本版引擎只收 on／off，等 gating 任務接上三態。預設值：auto",
-        "auto（目前由「選字模型」決定）".to_string(),
-        false,
-    )
-}
-
-fn rerank_item() -> SettingItem {
-    info_item(
-        "候選重排（實驗）",
-        "日文 reranker 權重存在，但 SessionConfig::ja_rerank 預設 false，引擎沒有啟動參數；確認有效前不開放。預設值：關",
-        "實驗中，目前關閉".to_string(),
-        false,
-    )
 }
 
 fn rescan_item(this: &Entity<SettingsView>) -> SettingItem {
