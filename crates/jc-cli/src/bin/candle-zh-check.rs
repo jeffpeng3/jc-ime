@@ -1,22 +1,21 @@
-//! 注音選字模型的 ORT／candle 對照與延遲量測。
+//! 注音選字模型的 candle fp32／量化對照與延遲量測。
 //!
-//! 用 fuzzy 題庫的注音題組出 N-best 候選，對同一份 `prepare()` 結果跑三個
-//! 後端：ORT fp32、candle fp32、candle Q8_0，比對每個候選的模型分數、排序
-//! 一致率與單次推論延遲。
+//! 用 fuzzy 題庫的注音題組出 N-best 候選，對同一份 `prepare()` 結果跑兩個
+//! 權重：candle fp32（`model.safetensors`）與 candle 量化（`model.gguf`），
+//! 比對每個候選的模型分數、排序一致率與單次推論延遲。
 //!
 //! ```sh
 //! # 第一次：把 ONNX 轉成 candle 的 fp32 safetensors，再匯出 Q8_0
 //! cargo run -p jc-cli --release --bin candle-zh-check -- --convert --quant q8_0
-//! # 量測（ORT 需要 ORT_DYLIB_PATH）
-//! ORT_DYLIB_PATH=/path/libonnxruntime.so \
-//!   cargo run -p jc-cli --release --bin candle-zh-check -- --groups 200
+//! # 量測
+//! cargo run -p jc-cli --release --bin candle-zh-check -- --groups 200
 //! ```
 //!
-//! `--only quant` 只載入 Q8_0，用來看單一權重檔的常駐記憶體；三個模型同時
-//! 載入時 VmRSS 會疊加，不能拿來比單一後端。
+//! `--only quant` 只載入 Q8_0，用來看單一權重檔的常駐記憶體；兩個模型同時
+//! 載入時 VmRSS 會疊加，不能拿來比單一權重。
 //!
-//! 門檻：candle fp32 對 ORT fp32 的 `max |Δ| < 1e-3`、逐對排序一致
-//! `>= 98%`、單次推論 p50 `<= 30 ms`。不通過時 exit code 1。
+//! 門檻：量化對 fp32 的逐對排序一致 `>= 98%`、單次推論 p50 `<= 30 ms`。
+//! 不通過時 exit code 1。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -26,7 +25,6 @@ use std::time::Instant;
 use jc_core::zh::select::{prepare, Request, SelectManifest, Vocabulary};
 use jc_model::candle::zh::{convert_onnx, export_gguf, weights_path, ZhInput, ZhSelect};
 use jc_model::candle::{QuantDtype, QuantZhSelect};
-use jc_model::Backend;
 use serde::Deserialize;
 
 /// 預設模型目錄。
@@ -35,8 +33,6 @@ const DEFAULT_MODEL_DIR: &str = "/mnt/work/jc/jc-ime-data/models/zh-select";
 const DEFAULT_DEV: &str = "/mnt/work/jc/jc-ime-data/0c-testdata/fuzzy/fuzzy-input.json";
 /// 預設注音詞庫。
 const DEFAULT_DATA: &str = "/mnt/work/jc/jc-ime-data/build-zh";
-/// logits 誤差上限。
-const MAX_ABS_DIFF: f64 = 1e-3;
 /// 排序一致率下限。
 const MIN_RANK_AGREEMENT: f64 = 0.98;
 /// 單次推論 p50 上限，毫秒。
@@ -61,7 +57,6 @@ struct Args {
     convert: bool,
     quant: QuantDtype,
     only: Only,
-    ort_lib: Option<PathBuf>,
     latency: usize,
     /// 只載入一個權重檔並跑固定輸入，用來量單一模型的常駐記憶體。
     load_only: bool,
@@ -78,7 +73,6 @@ impl Default for Args {
             convert: false,
             quant: QuantDtype::Q8_0,
             only: Only::All,
-            ort_lib: None,
             latency: 200,
             load_only: false,
         }
@@ -123,7 +117,7 @@ fn run() -> Result<bool, String> {
             report.file_bytes as f64 / 1024.0 / 1024.0,
             report.quantized_bits_per_weight()
         );
-        // 轉檔與量測分開跑，避免沒設 ORT_DYLIB_PATH 時多一個誤導的錯誤。
+        // 轉檔與量測分開跑。
         return Ok(true);
     }
     let weights = weights_path(&args.model_dir).or(weights).ok_or_else(|| {
@@ -154,7 +148,7 @@ fn run() -> Result<bool, String> {
     let manifest = SelectManifest::load(args.model_dir.join("manifest.json"))
         .map_err(|err| format!("讀取 manifest.json 失敗：{err}"))?;
 
-    // 先把每組的 Arrays 準備好；ORT 與 candle 吃完全相同的輸入。
+    // 先把每組的 Arrays 準備好；兩個權重吃完全相同的輸入。
     let mut prepared = Vec::with_capacity(groups.len());
     for group in &groups {
         let texts: Vec<&str> = group
@@ -229,24 +223,8 @@ fn run() -> Result<bool, String> {
         }
     }
 
-    let mut ort_fp32 = None;
-    if args.only == Only::All {
-        jc_model::set_default_backend(Backend::Ort);
-        let model =
-            jc_core::zh::select::SelectModel::load(&args.model_dir, args.ort_lib.as_deref())
-                .map_err(|err| format!("載入 ORT fp32 失敗：{err}"))?;
-        ort_fp32 = Some(model);
-    }
-
     // 分數：同一組候選、同一份 Arrays。
     let mut rows: HashMap<&str, Vec<Vec<f64>>> = HashMap::new();
-    if let Some(model) = &ort_fp32 {
-        let mut scores = Vec::with_capacity(groups.len());
-        for (group, arrays) in groups.iter().zip(&prepared) {
-            scores.push(run_ort(model, group, arrays)?);
-        }
-        rows.insert("ort fp32", scores);
-    }
     if let Some(model) = &candle_fp32 {
         let mut scores = Vec::with_capacity(groups.len());
         for (group, arrays) in groups.iter().zip(&prepared) {
@@ -262,36 +240,7 @@ fn run() -> Result<bool, String> {
         rows.insert("candle quant", scores);
     }
 
-    let reference = rows.get("ort fp32").cloned();
-    if let Some(reference) = &reference {
-        for name in ["candle fp32", "candle quant"] {
-            let Some(scores) = rows.get(name) else {
-                continue;
-            };
-            let stats = compare(reference, scores);
-            println!(
-                "{name} vs ort fp32：max |Δ| {:.3e}，mean |Δ| {:.3e}，\
-                 逐對排序一致 {}/{}（{:.2}%），top-1 {}/{}",
-                stats.max_abs,
-                stats.mean_abs,
-                stats.pairs_agree,
-                stats.pairs,
-                stats.rank_agreement() * 100.0,
-                stats.top1_agree,
-                groups.len()
-            );
-            if name == "candle fp32" {
-                if stats.max_abs >= MAX_ABS_DIFF {
-                    println!("FAIL：candle fp32 的 max |Δ| 超過 {MAX_ABS_DIFF:e}");
-                    pass = false;
-                }
-                if stats.rank_agreement() < MIN_RANK_AGREEMENT {
-                    println!("FAIL：排序一致率低於 {:.0}%", MIN_RANK_AGREEMENT * 100.0);
-                    pass = false;
-                }
-            }
-        }
-    } else if let (Some(a), Some(b)) = (rows.get("candle fp32"), rows.get("candle quant")) {
+    if let (Some(a), Some(b)) = (rows.get("candle fp32"), rows.get("candle quant")) {
         let stats = compare(a, b);
         println!(
             "candle quant vs candle fp32：max |Δ| {:.3e}，mean |Δ| {:.3e}，\
@@ -304,6 +253,13 @@ fn run() -> Result<bool, String> {
             stats.top1_agree,
             groups.len()
         );
+        if stats.rank_agreement() < MIN_RANK_AGREEMENT {
+            println!(
+                "FAIL：量化排序一致率低於 {:.0}%",
+                MIN_RANK_AGREEMENT * 100.0
+            );
+            pass = false;
+        }
     }
 
     // 延遲：每次一個 forward，與 `eval zh-golden` 的統計同尺度。
@@ -329,13 +285,6 @@ fn run() -> Result<bool, String> {
             pass = false;
         }
     }
-    if let Some(model) = &ort_fp32 {
-        let durations = measure(limit, |index| {
-            run_ort(model, &groups[index], &prepared[index]).map(|_| ())
-        })?;
-        report_latency("ort fp32", &durations);
-    }
-
     if args.only != Only::All {
         println!(
             "VmRSS 量測：基準 {:.1} MiB，載入後 {:.1} MiB，{} 次推論後 {:.1} MiB",
@@ -347,7 +296,7 @@ fn run() -> Result<bool, String> {
     }
 
     println!(
-        "{}：max |Δ| < {MAX_ABS_DIFF:e}、排序一致 >= {:.0}%、p50 <= {MAX_P50_MS} ms",
+        "{}：排序一致 >= {:.0}%、p50 <= {MAX_P50_MS} ms",
         if pass { "PASS" } else { "FAIL" },
         MIN_RANK_AGREEMENT * 100.0
     );
@@ -467,21 +416,6 @@ const fn build_fixed_mask() -> [bool; 81] {
     mask[8 * 9 + 6] = true;
     mask[8 * 9 + 8] = true;
     mask
-}
-
-fn run_ort(
-    model: &jc_core::zh::select::SelectModel,
-    group: &Group,
-    _arrays: &jc_core::zh::select::Arrays,
-) -> Result<Vec<f64>, String> {
-    let texts: Vec<&str> = group
-        .valid
-        .iter()
-        .map(|index| group.candidates[*index].text.as_str())
-        .collect();
-    model
-        .score("", &group.syllables, &texts)
-        .map_err(|err| format!("ORT 推論失敗：{err}"))
 }
 
 /// candle 的 `ZhInput` 借用整平的 `target_*`；用這個容器把擁有權留在呼叫端。
@@ -825,10 +759,6 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
                     "quant" => Only::Quant,
                     other => return Err(format!("--only 只接受 all、fp32、quant，實際為 {other}")),
                 };
-                index += 1;
-            }
-            "--ort-lib" => {
-                options.ort_lib = Some(PathBuf::from(value(index, "--ort-lib")?));
                 index += 1;
             }
             other => return Err(format!("不認得的參數 {other}")),

@@ -32,6 +32,23 @@ release 或安裝包。日文 reranker 不再是預設路徑：`SessionConfig::j
 
 標點模型的資料檔案保留在原目錄，方便回溯；程式與 manifest 不再引用它們。
 
+## 推論 runtime
+
+2026-11-20 起只有 candle 一個推論後端，權重是 safetensors（fp32）或 GGUF
+（量化）：
+
+```text
+jc-core / jc-cli / jc-engine
+        │
+        └── jc-model ── candle-core（CPU，Rayon）── safetensors／GGUF
+```
+
+- `models/<角色>/model.safetensors` 走 fp32。
+- `models/<角色>/model.gguf` 走量化；副檔名自動分派。
+- `JC_RERANK_WEIGHTS`、`JC_ZH_SELECT_WEIGHTS` 可覆寫權重路徑。
+- ONNX Runtime 與 `--backend ort` 已移除；資料目錄的 `*.onnx` 保留，只當
+  `candle-zh-check --convert` 的轉檔來源。
+
 ## 檔案雜湊
 
 以下雜湊是實際檔案紀錄。標點的檔案仍留在資料目錄，但程式不再使用。
@@ -102,6 +119,10 @@ Q8_0 是量測與建議使用的注音選字權重：33.9 MiB、推論 p50 9.36 
   }
 }
 ```
+
+`model` 欄位只決定模型集合的可用性判定；實際載入的權重由 candle 的
+`weights_path` 找 `model.safetensors` 或 `model.gguf`。未填 `model` 時預設
+`model.safetensors`。
 
 `zh-punct` 與 `ja-punct` 已於 2026-11-20 從程式移除；本專案的 manifest 範本
 不再列出。資料目錄的既有 `manifest.json` 仍可能保留這兩個鍵，載入時會忽略

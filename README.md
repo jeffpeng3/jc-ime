@@ -28,7 +28,7 @@ Windows named pipe、client crate）完成，Windows TSF 尚未開始；設定�
 |---|---|
 | `jc-core` | 鍵序列、注音音節與鍵盤、lattice／Viterbi、注音解碼、日文輸入與解碼、Mixed 路由、session、神經 runtime、輸出 |
 | `jc-data` | 日文 `0CJADIC` pack v1／v2 與注音 `lexicon.bin`／`lm.bin` 的零拷貝讀取、manifest 驗證 |
-| `jc-model` | 推論接線：manifest、tokenizer、reranker、Jinen（candle）、注音選字（candle Q8_0 與 ORT 對照） |
+| `jc-model` | 推論接線：manifest、tokenizer、candle reranker、注音選字（Q8_0）與 Jinen |
 | `jc-proto` | 引擎與 wrapper 的 v3 訊框、請求／回應、版本握手、候選明細 |
 | `jc-platform` | 平台抽象：`InputHost`、`HostEvent`、`Clock`、`Scheduler` |
 | `jc-engine` | 引擎行程，載入資料與模型，處理協定並把按鍵交給 `jc-core::Session` |
@@ -49,9 +49,8 @@ cargo build --workspace
 cargo check --workspace --all-targets
 ```
 
-模型推論不再有編譯期 feature。`ort` 以 `load-dynamic` 載入，缺少 ONNX
-Runtime 時執行期探測為不可用，全部維持統計排序。Jinen 走 candle；注音
-選字可用 candle Q8_0（`JC_RERANK_BACKEND=candle`），ORT fp32 保留作對照。
+模型推論使用 candle，讀模型目錄的 `model.safetensors` 或 `model.gguf`，
+不需要外部動態庫。需要驗證 reranker 時用：
 
 ## 快速開始
 
@@ -62,6 +61,9 @@ cargo run -p jc-engine --release -- --data /mnt/work/jc/jc-ime-data --socket /tm
 # Windows 上同一個參數走 named pipe；只取最後一段掛到 \\.\pipe\
 # cargo run -p jc-engine --release -- --data <資料根> --socket jc-engine
 
+## 跑評測
+
+```sh
 # 注音 golden（45 例）
 cargo run -p jc-cli --release -- eval zh-golden
 

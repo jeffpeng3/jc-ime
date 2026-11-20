@@ -1,7 +1,7 @@
-//! candle 版日文 reranker 推論。
+//! candle 推論：日文 reranker、注音選字與 Jinen。
 //!
-//! 這個模組是 ORT 退場的試金石：同一個 checkpoint、同一組 token id、同一份
-//! 部署佈局，只把 forward 換成 candle。模型是 pre-LN transformer encoder：
+//! 同一個 checkpoint、同一組 token id、同一份部署佈局，只把 forward 換成
+//! candle。模型是 pre-LN transformer encoder：
 //!
 //! ```text
 //! <bos> left(60) <eos> candidate <eos> right(60)
@@ -32,8 +32,6 @@
 //! 量化路徑。
 
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
-use std::sync::atomic::{AtomicU8, Ordering};
 
 use candle_core::{DType, Device, Module, Tensor, D};
 use candle_nn::{ops::layer_norm, ops::softmax, Embedding, Linear, VarBuilder};
@@ -59,83 +57,12 @@ pub const BACKEND_NAME: &str = "candle";
 pub const DEFAULT_WEIGHTS_FILE: &str = "model.safetensors";
 /// 覆寫 reranker 權重路徑的環境變數。
 pub const WEIGHTS_ENV: &str = "JC_RERANK_WEIGHTS";
-/// 覆寫 reranker 預設後端的環境變數；值為 `ort` 或 `candle`。
-pub const BACKEND_ENV: &str = "JC_RERANK_BACKEND";
 /// LayerNorm 的 epsilon，與 PyTorch `nn.LayerNorm` 預設值一致。
 const LAYER_NORM_EPS: f32 = 1e-5;
 /// 位置嵌入的列數；訓練設定 `max_positions = 512`。
 const MAX_POSITIONS: usize = 512;
 /// 被遮罩的 attention key 加上這個負值；`exp` 後為 0，避免 `-inf` 產生 NaN。
 const MASK_PENALTY: f32 = -1e9;
-
-/// 推論後端。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend {
-    /// 現行 ONNX Runtime 路徑。
-    Ort,
-    /// candle 路徑。
-    Candle,
-}
-
-impl Backend {
-    /// 後端名稱，與 `--backend` 的值一致。
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Ort => "ort",
-            Self::Candle => "candle",
-        }
-    }
-}
-
-impl Default for Backend {
-    /// 預設仍走 ONNX Runtime；candle 是本輪的試金石。
-    fn default() -> Self {
-        Self::Ort
-    }
-}
-
-impl FromStr for Backend {
-    type Err = String;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        match value {
-            "ort" => Ok(Self::Ort),
-            "candle" => Ok(Self::Candle),
-            other => Err(format!("後端只接受 ort 或 candle，實際為 {other}")),
-        }
-    }
-}
-
-/// 尚未指定時的值。
-const UNSET: u8 = 2;
-static DEFAULT_BACKEND: AtomicU8 = AtomicU8::new(UNSET);
-
-/// 設定本行程的預設推論後端。
-///
-/// 這是行程層級的設定，讓 `jc-core` 不必為後端選擇改介面：`--backend` 在
-/// 載入模型前呼叫一次，之後 [`crate::Reranker::load_with_spec`] 都照這個值。
-/// 明確傳 [`Backend`] 的 `load_with_backend` 不受影響。
-pub fn set_default_backend(backend: Backend) {
-    let value = match backend {
-        Backend::Ort => 0,
-        Backend::Candle => 1,
-    };
-    DEFAULT_BACKEND.store(value, Ordering::Relaxed);
-}
-
-/// 目前的預設後端。
-///
-/// 沒設定過時讀 [`BACKEND_ENV`]，預設 [`Backend::Ort`]。
-pub fn default_backend() -> Backend {
-    match DEFAULT_BACKEND.load(Ordering::Relaxed) {
-        0 => Backend::Ort,
-        1 => Backend::Candle,
-        _ => std::env::var(BACKEND_ENV)
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(Backend::Ort),
-    }
-}
 
 /// 架構參數；與 `oc_training.model.reranker.RerankerConfig` 對應。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -717,11 +644,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backend_names_roundtrip() {
-        for backend in [Backend::Ort, Backend::Candle] {
-            assert_eq!(backend.as_str().parse::<Backend>(), Ok(backend));
-        }
-        assert!("tensorrt".parse::<Backend>().is_err());
+    fn backend_name_is_candle() {
+        assert_eq!(BACKEND_NAME, "candle");
     }
 
     #[test]
