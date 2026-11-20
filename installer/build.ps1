@@ -4,10 +4,10 @@
     建置 jc 注音的可攜 payload 與 WiX v5 MSI。
 
 .DESCRIPTION
-    步驟：cargo build（含 jc-tip-register）→ 產生資料 manifest → 暫存 payload
-    （程式、資料、授權文件）→ wix build → 選用簽章。版本號取自 workspace
-    Cargo.toml 的 [workspace.package] version；MSI 只接受 x.y.z，pre-release
-    會被擋下。
+    步驟：cargo build（含 jc-tip-register）→ 使用或產生資料 manifest → 暫存
+    payload（程式、資料、授權文件）→ wix build → 選用簽章。版本號取自
+    workspace Cargo.toml 的 [workspace.package] version；MSI 只接受 x.y.z，
+    pre-release 會被擋下。
 
     需要：
       - Visual Studio 2022 的 MSVC 工具鏈（Rust 的 x86_64-pc-windows-msvc target）
@@ -17,10 +17,15 @@
 
 .PARAMETER DataRoot
     資料根目錄，內含 build-zh、english、packs、models 與選用的 manifest.json。
-    預設讀環境變數 JC_DATA_ROOT。
+    預設讀環境變數 JC_DATA_ROOT。搭配 -Manifest 時只需保留 shipped: true 的檔案。
 
 .PARAMETER Certificate
     簽章用的 PFX 路徑。預設讀 JC_SIGN_CERT；沒給就輸出未簽章的 MSI。
+
+.PARAMETER Manifest
+    選用的既有資料 manifest。給定時直接複製這份 manifest，不再用
+    `jc-cli data manifest` 重算；適合 CI 只帶 shipped: true 檔案、但仍要保留
+    shipped: false 下載項 URL 的情況。預設讀 JC_DATA_MANIFEST。
 
 .EXAMPLE
     .\installer\build.ps1 -DataRoot Z:\mnt\work\jc\jc-ime-data
@@ -33,6 +38,7 @@ param(
     [string]$TimestampUrl = 'http://timestamp.digicert.com',
     [string]$Certificate = $env:JC_SIGN_CERT,
     [string]$CertificatePassword = $env:JC_SIGN_PASSWORD,
+    [string]$Manifest = $env:JC_DATA_MANIFEST,
     [switch]$SkipSign
 )
 
@@ -116,12 +122,17 @@ New-Item -ItemType Directory -Path $dataStage | Out-Null
 
 $cli = Join-Path $ReleaseDir 'jc-cli.exe'
 $manifestPath = Join-Path $dataStage 'manifest.json'
-Invoke-Checked '產生資料 manifest' {
-    & $cli data manifest $DataRoot --out $manifestPath
+if ($Manifest) {
+    if (-not (Test-Path $Manifest)) { throw "指定的資料 manifest 不存在：$Manifest" }
+    Invoke-Checked '複製既有資料 manifest' { Copy-Item $Manifest $manifestPath -Force }
+} else {
+    Invoke-Checked '產生資料 manifest' {
+        & $cli data manifest $DataRoot --out $manifestPath
+    }
 }
 
-$manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
-$shipped = @($manifest.files | Where-Object { $_.shipped })
+$manifestData = Get-Content $manifestPath -Raw | ConvertFrom-Json
+$shipped = @($manifestData.files | Where-Object { $_.shipped })
 if ($shipped.Count -eq 0) { throw 'manifest 沒有任何 shipped: true 的檔案' }
 foreach ($entry in $shipped) {
     $relative = $entry.path -replace '/', '\'
