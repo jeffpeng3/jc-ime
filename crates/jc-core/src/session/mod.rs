@@ -64,8 +64,9 @@ pub const DEFAULT_MAX_CANDIDATES: usize = PAGE_SIZE * 2;
 
 /// 候選視窗一頁幾項；核心唯一的頁面大小，固定 9。
 ///
-/// 由 [`crate::candidate::PAGE_SIZE`] 轉出，避免 `session` 內外各留一份常數。
-pub use crate::candidate::PAGE_SIZE;
+/// 由 [`crate::output::CANDIDATE_PAGE_SIZE`] 轉出，避免 `session` 內外各留
+/// 一份常數。
+pub use crate::output::CANDIDATE_PAGE_SIZE as PAGE_SIZE;
 
 /// 聲調選填最多展開幾種組合；超過就維持原讀音。
 pub(super) const TONELESS_COMBINATIONS: usize = 256;
@@ -716,8 +717,6 @@ impl Session {
             segments: self.segments(),
             candidates: self.candidates.clone(),
             highlighted: self.highlighted,
-            page: self.current_page(),
-            page_size: self.page_size(),
             suggestion: self.snapshot_suggestion(),
             label: self.highlighted_label().map(str::to_string),
             navigating: self.navigating,

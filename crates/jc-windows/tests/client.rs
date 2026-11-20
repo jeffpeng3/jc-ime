@@ -149,8 +149,6 @@ fn empty_state() -> Response {
         details: Vec::new(),
         segments: Vec::new(),
         highlighted: 0,
-        page: 0,
-        page_size: 9,
         cursor_rune: 0,
         suggestion: None,
         label: None,

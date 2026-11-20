@@ -22,7 +22,7 @@ pub struct Tab {
 pub const RECENT: &str = "最近";
 
 /// 「最近」分頁保存的符號數，剛好一頁。
-pub const MAX_RECENT: usize = crate::candidate::PAGE_SIZE;
+pub const MAX_RECENT: usize = crate::output::CANDIDATE_PAGE_SIZE;
 
 /// 符號候選 ID 的起點，讓它與其他候選分開；ID 不隨最近順序或分頁改變。
 pub const ID_BASE: usize = 3 << 20;
