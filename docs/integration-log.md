@@ -1765,3 +1765,22 @@ gate：
   `bash scripts/test-cache-prune.sh` 全部通過、兩個 workflow YAML 有效。
 - 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
 - `git branch --no-merged main`：`docs-consistency`、`unify-segment`（都還在跑／待處理）。
+
+### CI（push `ba6e93f`，run 44818846314；cache-prune-fix）
+
+- linux (core)：success；windows (msvc)：success。
+
+## 2026-11-21 05:55 docs-consistency（`21a5ae5`＋`0b5ee4b` → `1989a6d`）
+
+只改文件，沒動程式碼、CI、版本號、`CHANGELOG.md` 或本紀錄。
+
+- 現況文件 `docs/release.md`、`docs/install.md`、`installer/README.md`、`docs/port/tsf-installer.md`：
+  zh-punct 從現行下載項改成已移除（zh_select 保留）。
+- `docs/status.md`：更新到 11-21，補 rc.7／profile 啟用／量測工具／workflow 升級／快取規則／catalog 現況，
+  重算 `jc-core` 行數與 1301 passed；另補「Node 20 annotation 待下次 run 驗證」與
+  「x86 TSF DLL 已隨 MSI 出貨，32 位元載入待實機驗證」。
+- 移植歷史文件 `docs/port/data-pack.md`、`data-download.md`、`legal-update.md`、`zh-models.md`、
+  `docs/models.md`：加現況註記、保留歷史表格；data-pack 的 data verify 範例改成 6/6、0 警告。
+
+gate：test exit 0（54 targets、1303 passed、0 failed）、clippy exit 0、fmt exit 0；
+題庫 zh-golden **45/45**、ja **92.2%**、fuzzy **44.5%**、mixed **6/6**。
