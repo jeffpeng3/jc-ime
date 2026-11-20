@@ -1368,16 +1368,11 @@ impl Controller {
         match self.cfg.trigger {
             Trigger::EveryKey => true,
             Trigger::Auto(trigger) => {
-                if trigger.min_units > 0 {
+                let reached_min_units = trigger.min_units > 0 && {
                     let from = self.cut.max(self.converted_upto);
-                    if self.seq.len().saturating_sub(from) >= trigger.min_units {
-                        return true;
-                    }
-                }
-                if trigger.boundary && self.is_boundary() {
-                    return true;
-                }
-                false
+                    self.seq.len().saturating_sub(from) >= trigger.min_units
+                };
+                reached_min_units || (trigger.boundary && self.is_boundary())
             }
         }
     }
