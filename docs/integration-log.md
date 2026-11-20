@@ -1547,3 +1547,7 @@ gate：
   `cargo check --target x86_64-pc-windows-msvc`（tip-register）都 exit 0。
 - 依指示只改安裝器與 TSF 註冊程式，未重跑題庫。
 - `git branch --no-merged main`：空。
+
+### CI（push `ad9038d`，run 44791173536；`0.1.0-rc.6`）
+
+- linux (core)：success；windows (msvc)：success。
