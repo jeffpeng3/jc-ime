@@ -1724,3 +1724,24 @@ gate：
 - gate：test exit 0（54 targets、1301 passed、0 failed）、clippy exit 0、fmt exit 0。
 - 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
 - `git branch --no-merged main`：`payload-warnings`（還在跑）、`unify-segment`（使用者自行處理）。
+
+### CI（push `829e0ad`，run 44817233222；workflow-modernize）
+
+- linux (core)：success；windows (msvc)：success。Node 20 annotation 已消失。
+
+## 2026-11-21 05:25 payload-warnings（`6a73db7` → `cf49224`）
+
+分支 tip 是 `6a73db7`（你給的 `73c8202` 是 rebase 前 hash；parent 實際為 `dffee88`，
+與 main 的 `docs/release.md` 自動合併無衝突）。
+
+- 移除 `DataRole::ZhPunct` 與 catalog 兩筆 `models/zh-punct/*`；`zh_select` 保留。
+- `jc-cli data verify` 人讀輸出略過 `Missing && !shipped`，summary 只算顯示的 check；
+  `--json` 仍是完整 8 項（含 2 個 zh_select missing），`DataManifest::verify` 回傳值沒動，
+  引擎啟動降級警示保留。
+- `docs/release.md` 補一句說明；agent 實測「通過 6/6，錯誤 0，警告 0」。
+
+gate：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、1303 passed、0 failed）。
+- clippy exit 0；fmt exit 0；`cargo check -p jc-data -p jc-cli --all-targets` exit 0。
+- 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：`cache-prune-fix`、`docs-consistency`、`unify-segment`（待處理）。
