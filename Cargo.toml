@@ -16,6 +16,7 @@ members = [
     "crates/jc-jadic",
     "crates/jc-englishpack",
     "crates/jc-settings",
+    "crates/jc-tsf",
 ]
 
 [workspace.package]
