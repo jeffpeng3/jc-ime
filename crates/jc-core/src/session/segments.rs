@@ -104,8 +104,8 @@ impl Session {
         if self.config.mode != Mode::Zh {
             return text.len();
         }
-        let cells = self.zh.cells();
-        let at = self.zh.cursor().min(cells);
+        let cells = self.syllables.len();
+        let at = self.cursor.min(cells);
         if at >= cells {
             return text.len();
         }
@@ -113,6 +113,10 @@ impl Session {
         let Some(mut byte) = self.cell_byte(base, at) else {
             return text.len();
         };
+        // 未完成的注音插在游標位置；游標在它後面。
+        if !self.pending.is_empty() {
+            byte += self.pending.len();
+        }
         // 字面按鍵插在 `base` 中間；游標在插入點之後就加上字面長度。
         if !self.literal.is_empty() {
             let mut at_literal = self.literal_offset.min(base.len());
@@ -130,7 +134,7 @@ impl Session {
     ///
     /// 只在目前路徑對得上顯示字串時換算；對不上（例如接受的補全）回傳
     /// `None`，由呼叫端把游標放在結尾。
-    fn cell_byte(&self, base: &str, cell: usize) -> Option<usize> {
+    pub(super) fn cell_byte(&self, base: &str, cell: usize) -> Option<usize> {
         let path = self
             .last_hypotheses
             .iter()
@@ -318,7 +322,7 @@ impl Session {
             KeyCode::Char(ch) => {
                 if ch == '\'' && !self.zh.pending().is_empty() && self.config.toneless {
                     // 對照 `untonedSeparator`：組字中按 ' 只切音節，不送出頓號。
-                    self.zh.press(Key::new(KeyCode::Space, None, false));
+                    self.complete_pending();
                     self.pending_tone = None;
                     return true;
                 }
@@ -409,7 +413,7 @@ impl Session {
     /// 沒有注音組字、只有字面內容時，空白照字面留下。
     fn literal_space(&mut self) -> bool {
         if !self.zh.pending().is_empty()
-            || !self.zh.syllables().is_empty()
+            || !self.syllables.is_empty()
             || self.literal.is_empty()
             || self.candidate_window
             || self.menu.is_some()
@@ -447,7 +451,7 @@ impl Session {
         if !has_class && last_class < class && crate::zh::pinyin::legal_prefix(&extended) {
             return false;
         }
-        self.zh.press(Key::new(KeyCode::Space, None, false));
+        self.complete_pending();
         true
     }
 
@@ -459,7 +463,7 @@ impl Session {
         if !Syllable::from_raw(self.zh.pending()).legal() {
             return false;
         }
-        self.zh.press(Key::new(KeyCode::Space, None, false));
+        self.complete_pending();
         true
     }
 
@@ -469,7 +473,7 @@ impl Session {
     /// 8 個音節，只換一個聲母／介音／韻母，聲調與音節邊界固定。這是明確列出
     /// 的候選，不會自己改字。
     pub(super) fn phonetic_candidates(&self, path: &[crate::decode::Seg]) -> Vec<Candidate> {
-        let syllables = self.zh.syllables();
+        let syllables = &self.syllables;
         if syllables.len() < 4 {
             return Vec::new();
         }
@@ -566,7 +570,7 @@ impl Session {
         let mut at: usize = 0;
         let mut start = None;
         let mut end = None;
-        for (position, syllable) in self.zh.syllables().iter().enumerate() {
+        for (position, syllable) in self.syllables.iter().enumerate() {
             let length = syllable.text().len();
             if target.start < at.saturating_add(length) && at < target.end {
                 start.get_or_insert(position);

@@ -232,6 +232,15 @@ pub(super) struct Menu {
 pub struct Session {
     pub(super) config: SessionConfig,
     pub(super) zh: ZhInput,
+    /// 已完成的注音音節；組字游標與片段編輯都以這份清單為準。
+    ///
+    /// `ZhInput` 只負責尚未完成的注音；音節打完就搬進這裡，才能在中間插入
+    /// 與刪除。對照上游 `s.syls`。
+    pub(super) syllables: Vec<Syllable>,
+    /// 組字游標位置（音節格，`0..=syllables.len()`）。
+    ///
+    /// 對外一律換算成 rune 位移；內部用音節格才能對應讀音與鎖定。
+    pub(super) cursor: usize,
     pub(super) romaji: RomajiInput,
     pub(super) lexicon: InMemoryLexicon,
     /// 不含自訂詞的原始詞典；自訂詞變動時由它重建 [`Session::lexicon`]。
@@ -352,6 +361,8 @@ impl Session {
         let mut session = Self {
             config,
             zh: ZhInput::standard(),
+            syllables: Vec::new(),
+            cursor: 0,
             romaji: RomajiInput::new(),
             lexicon,
             base_lexicon,
@@ -1721,6 +1732,30 @@ mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "今日");
+    }
+
+    /// 組字中的半截讀音不送 Jinen；完整讀音才送一次。
+    #[test]
+    fn test_ja_neural_not_called_for_incomplete_reading() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let runtime = stub_runtime("京", std::time::Duration::ZERO, &calls);
+        let (mut s, _) = ja_neural_session(1_400, Some(runtime), 180);
+
+        type_ja(&mut s, "ky");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "半截讀音不呼叫神經模型"
+        );
+
+        type_ja(&mut s, "ou");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "完整讀音才送模型"
+        );
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "京");
     }
 
     /// 平均候選數沒有超過下限時不呼叫模型；就算 gap 很小也一樣。
