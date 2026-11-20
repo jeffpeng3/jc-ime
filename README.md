@@ -120,6 +120,7 @@ Hugging Face 下載後記下 revision 與 SHA-256。每個檔案都要能對回�
 - [`docs/status.md`](docs/status.md)：目前數字與缺口，每個里程碑更新這一頁。
 - [`docs/history.md`](docs/history.md)：為什麼重寫、前身學到什麼、M0–M2 的紀錄。
 - [`docs/architecture.md`](docs/architecture.md)：核心、引擎與 wrapper 的邊界。
+- [`docs/wrapper.md`](docs/wrapper.md)：wrapper 作者規格，接引擎不用讀 Rust。
 - [`docs/port/`](docs/port/)：逐 task 的 Go → Rust 對照表。
 - [`docs/integration-log.md`](docs/integration-log.md)：合併順序、衝突與量測。
 
