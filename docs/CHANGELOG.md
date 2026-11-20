@@ -4,6 +4,21 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.6 - 2026-11-21
+
+### 修正
+
+- Windows 安裝：TSF 註冊的自訂動作在真機上以存取違規結束（`0xC0000005`），
+  導致 MSI 回報 1722 並回滾。`DllRegisterServer` 取模組路徑時用的是行程的 exe，
+  使 `InprocServer32` 指到 `jc-tip-register.exe`；已改為以模組位址錨定取得 DLL
+  自己的路徑。
+- Windows 安裝：`AddLanguageProfile` 的 `pchIconFile` 原本傳空 slice，指標落在
+  對齊用的 `0x2`；改為指向真正的 NUL。
+- Windows 安裝：AppContainer 的目錄 ACL 預設不再執行（需 `JC_IME_APP_CONTAINER=1`），
+  把它移出安裝關鍵路徑。
+- Windows 安裝：註冊流程逐步寫入 `%TEMP%\jc-ime-install.log`，失敗時可直接看出
+  停在哪一個 TSF 呼叫。
+
 ## 0.1.0-rc.5 - 2026-11-20
 
 ### 修正
