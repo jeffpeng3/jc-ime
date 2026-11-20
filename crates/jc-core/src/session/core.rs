@@ -1318,17 +1318,25 @@ impl Session {
                 )
             };
         // 統計結果先算好；只有門檻命中且通過驗證才換成神經輸出。
-        let decision = neural::maybe_convert(
-            &self.config.ja_neural,
-            &NeuralInput {
-                reading: &reading,
-                left: &ctx.left,
-                right: &ctx.right,
-                statistical: &baseline,
-                statistical_cost,
-                runner_up_cost,
-            },
-        );
+        //
+        // 組字中的未知詞 fallback 會讓半截讀音（例如「きょ」）也產生一條
+        // 路徑；那不是完整轉換，送模型只會每鍵呼叫一次。統計結果等於讀音
+        // 時直接跳過，等最後的完整讀音再問模型。
+        let decision = if baseline == reading {
+            NeuralDecision::Skipped
+        } else {
+            neural::maybe_convert(
+                &self.config.ja_neural,
+                &NeuralInput {
+                    reading: &reading,
+                    left: &ctx.left,
+                    right: &ctx.right,
+                    statistical: &baseline,
+                    statistical_cost,
+                    runner_up_cost,
+                },
+            )
+        };
         let replaced = decision.accepted_surface().map(str::to_string);
         self.base = replaced.clone().unwrap_or(baseline);
         self.segments = if replaced.is_some() {
