@@ -10,7 +10,7 @@ debug 測試與 clippy。兩邊刻意分開：發佈前唯一一次 release 測�
 | push tag `v<version>` | `verify` → `windows` → `linux` → `publish` | 是 |
 | Actions → Release → Run workflow | `verify` → `windows` → `linux` | 否，只留 artifact |
 
-手動觸發可以填 `data_bundle_url`、`data_bundle_sha256` 覆寫 repo variable，
+手動觸發可以填 `data_bundle_url`、`data_bundle_sha256` 覆寫 repo secret／variable，
 適合第一次試跑或換資料包來源。手動觸發的版本號取自 `Cargo.toml`。
 
 ## 版本號規則
@@ -32,58 +32,89 @@ debug 測試與 clippy。兩邊刻意分開：發佈前唯一一次 release 測�
 資料根目錄，因此 release workflow 會下載一個預先打包的資料包。沒有資料包 URL
 時 `windows` job 會直接失敗，不會產出缺資料的 MSI。
 
-設定下列其中一個來源：
+設定下列其中一個來源，優先序是 workflow_dispatch 輸入、repo secret、repo
+variable：
 
-- repo variable `JC_DATA_BUNDLE_URL`（建議）
-- repo secret `JC_DATA_BUNDLE_URL`（URL 需要保密時）
+- repo secret `JC_DATA_BUNDLE_URL`（建議）
+- repo variable `JC_DATA_BUNDLE_URL`
 - `workflow_dispatch` 輸入 `data_bundle_url`
 
-可選：`JC_DATA_BUNDLE_SHA256`（variable）或 `data_bundle_sha256` 輸入。有給就
-在下載後比對；沒給只會警告，稍後仍由 `jc-cli data verify` 驗每個檔案的雜湊。
+`JC_DATA_BUNDLE_SHA256` 同樣支援 secret、variable 與輸入，建議設成 repo secret。
+workflow 下載後會實際算 SHA-256；不一致就讓 `windows` job 失敗，錯誤訊息會印出
+預期與實際值。沒有提供這個值時只警告並繼續，之後仍由 `jc-cli data verify` 驗
+manifest 內每個檔案的雜湊。正式發版建議一定要鎖 SHA-256。
 
-資料包格式可以是 `.tar.gz`、`.tgz` 或 `.zip`，內容是資料根目錄；上層多一層
-`jc-ime-data/` 也可以，workflow 會自動找有 `manifest.json` 的那一層。
+資料包格式可以是 `.tar.zst`、`.tzst`、`.tar.gz`、`.tgz` 或 `.zip`，內容是資料
+根目錄；上層多一層 `jc-ime-data/` 也可以，workflow 會自動找有 `manifest.json`
+的那一層。Windows runner 的 `tar` 若不支援 zstd，workflow 會退回 7-Zip；兩者都
+沒有時請改用 `.tar.gz`。
 
-只打包 `shipped: true` 的檔案，不要把 Funmula 的 `models/zh-select`、
-`models/zh-punct` 放進去：
+用 `scripts/data-bundle.sh` 打包。它只收 manifest 的 `shipped: true` 項目與
+`manifest.json`，不會把 Funmula 的 `models/zh-select`、`models/zh-punct` 放進去：
 
 ```sh
-# 1. 產生完整 manifest（下載項不存在也會標記，但不會複製）
+# 1. 產生完整 manifest。資料根目錄可以唯讀，manifest 放 repo 外。
 cargo run -p jc-cli --release -- data manifest /mnt/work/jc/jc-ime-data \
   --out /tmp/opencode/jc-ime-data-manifest.json
 
-# 2. 只複製 shipped: true 的檔案到暫存根目錄
-python3 - <<'PY'
-import json
-import shutil
-from pathlib import Path
-
-source = Path("/mnt/work/jc/jc-ime-data")
-stage = Path("/tmp/opencode/jc-ime-data")
-manifest = json.loads(Path("/tmp/opencode/jc-ime-data-manifest.json").read_text())
-stage.mkdir(parents=True, exist_ok=True)
-shutil.copy2("/tmp/opencode/jc-ime-data-manifest.json", stage / "manifest.json")
-for entry in manifest["files"]:
-    if entry.get("shipped"):
-        target = stage / entry["path"]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source / entry["path"], target)
-PY
-
-# 3. 打包並記下雜湊
-tar -C /tmp/opencode -czf /tmp/opencode/jc-ime-data.tar.gz jc-ime-data
-sha256sum /tmp/opencode/jc-ime-data.tar.gz
+# 2. 打包。腳本會先印檔案清單、總大小與 bundle SHA-256。
+JC_DATA_MANIFEST=/tmp/opencode/jc-ime-data-manifest.json \
+OUT_DIR=/tmp/opencode \
+scripts/data-bundle.sh /mnt/work/jc/jc-ime-data
 ```
 
-把檔案上傳到 runner 讀得到的位置，再設定 `JC_DATA_BUNDLE_URL`。workflow 會把
-`-Manifest <資料根>/manifest.json` 傳給 `build.ps1`，直接複製這份對完整資料根
-目錄產生的 manifest；因此安裝包會保留 `shipped: false` 的下載項與 URL，但
-payload 仍只複製 `shipped: true` 的檔案，Funmula 權重不會進 MSI 或 Release。
-如果沒有 `-Manifest`，`build.ps1` 會退回原本行為，用 `jc-cli data manifest`
-重新掃描資料根目錄；那種情況資料包必須含下載項，否則安裝後的 `data download`
-會找不到 URL。
+腳本用 `tar --sort=name`、固定 mtime、固定 UID/GID 與 `gzip -n`／`zstd -n`
+讓同一份 manifest 產生相同 SHA-256。沒有 `zstd` 時會退回 `.tar.gz` 並在輸出
+說明。檔名預設是 `jc-ime-data-<manifest version>.tar.zst`。
 
-### 2. 簽章（選用）
+workflow 會把 `-Manifest <資料根>/manifest.json` 傳給 `build.ps1`，直接複製這份
+對完整資料根目錄產生的 manifest；因此安裝包會保留 `shipped: false` 的下載項與
+URL，但 payload 仍只複製 `shipped: true` 的檔案，Funmula 權重不會進 MSI 或
+Release。如果沒有 `-Manifest`，`build.ps1` 會退回原本行為，用
+`jc-cli data manifest` 重新掃描資料根目錄；那種情況資料包必須含下載項，否則
+安裝後的 `data download` 會找不到 URL。
+
+### 2. 資料 bundle 託管
+
+建議把 bundle 放在 Hugging Face 的 `jeffpeng3/jc-ime-data` repo。若是 dataset
+repo，URL 前面要加 `/datasets`。用固定 commit 的 URL，不要用 `main` 或可移動的
+tag：
+
+```text
+https://huggingface.co/jeffpeng3/jc-ime-data/resolve/<commit>/jc-ime-data-<data-version>.tar.zst
+```
+
+HF 會把 `resolve` 轉到 CDN，`Invoke-WebRequest` 會跟隨 redirect。`<commit>` 是
+上傳後的 commit SHA，內容不會因為之後 push 而改變。workflow 目前不帶 HF token，
+所以 repo 必須允許 runner 匿名讀取；私有 repo 要先公開或另外加認證。
+
+資料版本命名規則：
+
+- 版本來源是 manifest 的 `version`，預設是產生當天的 UTC 日期 `YYYY-MM-DD`。
+- 檔名用 `jc-ime-data-<data-version>.tar.zst`，版本字元只留英數、`.`、`_`、`-`。
+- 同一天要換資料時，重新產生 manifest 並指定遞增版本，例如
+  `--version 2026-11-20.2`，不要覆蓋同名的舊 bundle。
+- HF 上的 commit message 或 tag 可以用 `data-<data-version>` 方便人看，但 workflow
+  的 URL 必須指向 commit。
+
+資料變更時的步驟：
+
+1. 用新的 `--version` 重新產生 manifest，確認 `shipped: true` 清單正確。
+2. 跑 `scripts/data-bundle.sh`，記下輸出的 SHA-256、檔案大小與資料版本。
+3. 上傳到 `jeffpeng3/jc-ime-data`，取得上傳後的 commit SHA。
+4. 更新 repo secret `JC_DATA_BUNDLE_URL` 為
+   `https://huggingface.co/jeffpeng3/jc-ime-data/resolve/<commit>/jc-ime-data-<data-version>.tar.zst`。
+5. 更新 repo secret `JC_DATA_BUNDLE_SHA256` 為腳本印出的 SHA-256。
+6. 手動觸發 Release workflow 驗一次，確認 log 沒有「跳過資料包雜湊檢查」的警告，
+   且 MSI 內的 `data/manifest.json` 版本正確。
+7. 如果資料版本會影響使用者，更新 `docs/CHANGELOG.md` 與相關資料文件。
+
+平常程式改版不需要換 bundle。只有 shipped 檔案內容、`shipped` 清單、manifest
+版本或壓縮方式改變時才需要重新打包並更新上面兩個 secret。只改 Rust 程式、文件
+或 CI 時，重用同一個 commit URL 與 SHA-256 即可。bundle 一旦上傳就不要原地重壓；
+重壓會產生新檔與新 SHA，應視為新的資料版本。
+
+### 3. 簽章（選用）
 
 沒有簽章 secret 時流程照常完成，Release 說明會標「未簽章」。要開啟簽章，設定：
 
@@ -118,7 +149,7 @@ signtool verify /pa /v jc-ime-<version>-x64.msi
 | Job | 產出 |
 |---|---|
 | `verify` | 檢查 tag／`Cargo.toml` 版本一致且是 `x.y.z`；跑 `cargo test --workspace --release` |
-| `windows` | 下載資料包 → `cargo build --workspace --release` → `jc-cli data verify` → 安裝 WiX v5 → `installer/build.ps1` → MSI、checksum、`data-manifest.json` |
+| `windows` | 下載資料包並比對 SHA-256 → `cargo build --workspace --release` → `jc-cli data verify` → 安裝 WiX v5 → `installer/build.ps1` → MSI、checksum、`data-manifest.json` |
 | `linux` | 安裝 GPUI 系統依賴 → `cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui` → 打包 tar.gz 與 checksum |
 | `publish` | 只在 tag push 執行；下載兩個 artifact，建立或更新 GitHub Release |
 
@@ -200,6 +231,8 @@ artifact，不會建立 Release。
 release workflow 只能證明「建置與打包成功」，下面這些要在第一次 tag 前確認：
 
 - [ ] `JC_DATA_BUNDLE_URL` 已設定，且資料包只含 `shipped: true` 的檔案。
+- [ ] `JC_DATA_BUNDLE_SHA256` 已設成 repo secret，值與 `scripts/data-bundle.sh`
+      印出的 SHA-256 相同；手動觸發時 log 沒有「跳過資料包雜湊檢查」警告。
 - [ ] 資料包 `manifest.json` 包含 Jinen tokenizer
       （`models/quant/jinen-v2-xsmall/tokenizer.json`）。依 `docs/models.md`，這筆
       出貨前要補進 `jc-data` 的 catalog／manifest；沒列就不會進 MSI。
@@ -218,6 +251,7 @@ release workflow 只能證明「建置與打包成功」，下面這些要在第
 
 ```sh
 python3 -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml'))"
+bash -n scripts/data-bundle.sh
 bash installer/validate-linux.sh                # 需要 wix；沒有就跳過
 cargo build --release -p jc-engine -p jc-cli
 ```
