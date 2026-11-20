@@ -1324,3 +1324,14 @@ CI 耗時對照：
   依指示不算阻擋，Windows 目標由 CI 的 windows (msvc) job 驗。
 - 題庫：zh-golden **45/45**、quality **93.6%**、off **86.0%**、fuzzy **44.5%**、mixed **6/6**。
 - `git branch --no-merged main`：**空**。
+
+### CI（push `ebf9774`，run 44687853660）
+
+- linux (core)：success；windows (msvc)：success。
+
+## 2026-11-20 14:35 release-flow 追加（`5135a8e` → `0bf50d1`）
+
+內容：資料包 SHA-256 驗證、Hugging Face 託管文件、`scripts/data-bundle.sh`。
+gate：test exit 0（54 targets、1231 passed、0 failed）、clippy exit 0、fmt exit 0；
+題庫 zh-golden **45/45**、quality **93.6%**、off **86.0%**、fuzzy **44.5%**、mixed **6/6**；
+`git branch --no-merged main` 空。
