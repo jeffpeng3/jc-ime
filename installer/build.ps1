@@ -281,6 +281,10 @@ Write-Host "    授權全文 $($licenseFiles.Count) 份"
 
 $python = Get-Command python -ErrorAction SilentlyContinue
 if ($python) {
+    # Windows 的 Python 3.12 預設用 cp1252 輸出，腳本印中文會 UnicodeEncodeError。
+    # 這兩個變數讓 stdout／stderr 走 UTF-8；腳本本身也有 reconfigure 保護。
+    $env:PYTHONUTF8 = '1'
+    $env:PYTHONIOENCODING = 'utf-8'
     Invoke-Checked '檢查 WXS 引用與 payload 一致' {
         & $python.Source (Join-Path $PSScriptRoot 'check-payload.py') $Payload
     }

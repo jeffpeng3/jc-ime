@@ -136,6 +136,9 @@ jobs:
       # MSI_VERSION 只有三段數字，給 MSI ProductVersion。
       RELEASE_VERSION: ${{ needs.verify.outputs.version }}
       MSI_VERSION: ${{ needs.verify.outputs.msi_version }}
+      # Windows 的 Python 3.12 預設 cp1252；build.ps1 呼叫 check-payload.py 時
+      # 印中文不能爆，統一用 UTF-8。
+      PYTHONUTF8: "1"
       # 手動輸入優先，其次 repo secret，最後 repo variable。
       DATA_BUNDLE_URL: ${{ github.event.inputs.data_bundle_url || secrets.JC_DATA_BUNDLE_URL || vars.JC_DATA_BUNDLE_URL }}
       DATA_BUNDLE_SHA256: ${{ github.event.inputs.data_bundle_sha256 || secrets.JC_DATA_BUNDLE_SHA256 || vars.JC_DATA_BUNDLE_SHA256 }}
