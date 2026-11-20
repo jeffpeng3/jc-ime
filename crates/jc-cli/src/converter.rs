@@ -14,6 +14,7 @@ use jc_core::ja::personal::{
 use jc_core::lattice::{InMemoryLexicon, Lattice};
 use jc_core::personal::PersonalStore;
 use jc_core::score::ScoreContext;
+use jc_core::session::neural::{maybe_convert, NeuralConfig, NeuralDecision, NeuralInput};
 use jc_core::zh::syllable::class_of;
 use jc_eval::Converter;
 use serde_json::json;
@@ -135,6 +136,7 @@ pub struct JaConverter {
     decoder: JaDecoder,
     rolling_left: bool,
     left: std::cell::RefCell<String>,
+    neural: NeuralConfig,
 }
 
 /// 左文保留的字元上限，與 `jc_core::session` 相同（前身 `MaxLeftContextUnits`）。
@@ -147,7 +149,19 @@ impl JaConverter {
             decoder,
             rolling_left: false,
             left: std::cell::RefCell::new(String::new()),
+            neural: NeuralConfig::default(),
         }
+    }
+
+    /// 接上日文神經轉換設定；沒有 runtime 時與統計路徑完全相同。
+    pub fn with_neural(mut self, neural: NeuralConfig) -> Self {
+        self.neural = neural;
+        self
+    }
+
+    /// 神經轉換的累計統計；模型未載入時為 `None`。
+    pub fn neural_stats(&self) -> Option<jc_core::session::NeuralStatsSnapshot> {
+        self.neural.runtime.as_ref().map(|runtime| runtime.stats())
     }
 
     /// 開啟滾動左文：把每次的第一名接到下一次轉換的左文。
@@ -181,8 +195,51 @@ impl JaConverter {
     }
 
     /// 前 `n` 條轉換結果。
+    ///
+    /// 統計結果永遠保留；第一名只有在成本差命中門檻、且輸出通過五條
+    /// 驗證時才換成 Jinen 的結果。
     pub fn nbest(&self, reading: &str, n: usize) -> Vec<jc_core::decode::Conversion> {
-        self.decoder.nbest(reading, &self.context(), n)
+        let ctx = self.context();
+        let mut conversions = self.decoder.nbest(reading, &ctx, n);
+        let Some(first) = conversions.first() else {
+            return conversions;
+        };
+        let baseline = first.surface.clone();
+        let (statistical_cost, runner_up_cost) =
+            if self.neural.enabled && self.neural.runtime.is_some() {
+                // 門檻只取兩條統計路徑，與 gating 實驗的 `gap` 定義一致。
+                let chars: Vec<char> = reading.chars().collect();
+                let gate = self.decoder.results(&chars, &ctx, 2);
+                match gate.first() {
+                    Some(result) => (
+                        result.conversion().cost,
+                        gate.get(1).map(|second| second.conversion().cost),
+                    ),
+                    None => (first.cost, None),
+                }
+            } else {
+                (
+                    first.cost,
+                    conversions.get(1).map(|conversion| conversion.cost),
+                )
+            };
+        let decision = maybe_convert(
+            &self.neural,
+            &NeuralInput {
+                reading,
+                left: &ctx.left,
+                right: &ctx.right,
+                statistical: &baseline,
+                statistical_cost,
+                runner_up_cost,
+            },
+        );
+        if let NeuralDecision::Accepted { surface } = decision {
+            // 神經輸出沒有詞邊界；清空 segments，只留下整體字串。
+            conversions[0].surface = surface;
+            conversions[0].segments.clear();
+        }
+        conversions
     }
 }
 

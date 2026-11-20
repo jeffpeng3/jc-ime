@@ -86,6 +86,8 @@ pub enum Command {
         backend: jc_model::Backend,
         /// 左文來源：`off` 不給左文，`rolling` 用前一題的輸出當左文。
         left: LeftMode,
+        /// 是否啟用 Jinen 神經轉換；`--neural off` 完全回到統計路徑。
+        neural: bool,
         /// 輸出 JSON。
         json: bool,
         /// 輸出含逐題結果的 JSON。
@@ -203,6 +205,7 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     let mut gate = None;
     let mut backend = None;
     let mut left = LeftMode::Off;
+    let mut neural = None;
     let mut json = false;
     let mut items = false;
     let mut select_model = None;
@@ -277,6 +280,10 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                     }
                 };
             }
+            "--neural" => {
+                index += 1;
+                neural = Some(switch(value(rest, index, "--neural")?, "--neural")?);
+            }
             "--json" => json = true,
             "--items" => items = true,
             other => return Err(CliError::Usage(format!("eval 不認得的參數 {other}"))),
@@ -285,7 +292,8 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
     }
     match kind {
         "zh-golden" => {
-            reject_ja_flags(rerank, gate, left, "eval zh-golden")?;
+            reject_ja_flags(rerank, gate, left, neural, "eval zh-golden")?;
+            reject_backend(backend, "eval zh-golden")?;
             reject_items(items, "eval zh-golden")?;
             Ok(Command::EvalZhGolden {
                 testdata,
@@ -308,19 +316,20 @@ fn parse_eval(args: &[String]) -> Result<Command, CliError> {
                 gate: gate.unwrap_or(DEFAULT_WORD_RERANK_GATE),
                 backend: backend.unwrap_or(jc_model::Backend::Ort),
                 left,
+                neural: neural.unwrap_or(true),
                 json,
                 items,
             })
         }
         "fuzzy" => {
             reject_zh_flags(data, lm, mu, stats, "eval fuzzy")?;
-            reject_ja_flags(rerank, gate, left, "eval fuzzy")?;
+            reject_ja_flags(rerank, gate, left, neural, "eval fuzzy")?;
             reject_backend(backend, "eval fuzzy")?;
             reject_items(items, "eval fuzzy")?;
             Ok(Command::EvalFuzzy { testdata, json })
         }
         "mixed" => {
-            reject_ja_flags(rerank, gate, left, "eval mixed")?;
+            reject_ja_flags(rerank, gate, left, neural, "eval mixed")?;
             reject_backend(backend, "eval mixed")?;
             reject_items(items, "eval mixed")?;
             Ok(Command::EvalMixed {
@@ -362,6 +371,7 @@ fn reject_ja_flags(
     rerank: Option<bool>,
     gate: Option<WordGate>,
     left: LeftMode,
+    neural: Option<bool>,
     command: &str,
 ) -> Result<(), CliError> {
     if rerank.is_some() {
@@ -372,6 +382,9 @@ fn reject_ja_flags(
     }
     if left != LeftMode::Off {
         return Err(CliError::Usage(format!("{command} 不接受 --left")));
+    }
+    if neural.is_some() {
+        return Err(CliError::Usage(format!("{command} 不接受 --neural")));
     }
     Ok(())
 }
@@ -686,6 +699,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             gate,
             backend,
             left,
+            neural,
             json,
             items,
         } => crate::eval_cmd::ja(
@@ -697,6 +711,7 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
                 gate: rerank.then_some(*gate),
                 backend: *backend,
                 left: *left,
+                neural: *neural,
                 json: *json,
                 items: *items,
             },
@@ -839,10 +854,32 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
+                neural: true,
                 json: false,
                 items: false,
             }
         );
+    }
+
+    #[test]
+    fn parses_ja_neural_switch() {
+        assert_eq!(
+            parse(&args(&["eval", "ja", "--neural", "off"])).unwrap(),
+            Command::EvalJa {
+                testdata: None,
+                corpus: "modern-500".to_string(),
+                pack: None,
+                rerank: false,
+                gate: DEFAULT_WORD_RERANK_GATE,
+                backend: jc_model::Backend::Ort,
+                left: LeftMode::Off,
+                neural: false,
+                json: false,
+                items: false,
+            }
+        );
+        assert!(parse(&args(&["eval", "ja", "--neural", "maybe"])).is_err());
+        assert!(parse(&args(&["eval", "fuzzy", "--neural", "off"])).is_err());
     }
 
     #[test]
@@ -865,6 +902,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
+                neural: true,
                 json: false,
                 items: false,
             }
@@ -883,6 +921,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
+                neural: true,
                 json: false,
                 items: false,
             }
@@ -911,6 +950,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 backend: jc_model::Backend::Candle,
                 left: LeftMode::Off,
+                neural: true,
                 json: false,
                 items: false,
             }
@@ -931,6 +971,7 @@ mod tests {
                 gate: DEFAULT_WORD_RERANK_GATE,
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
+                neural: true,
                 json: false,
                 items: true,
             }
@@ -951,6 +992,7 @@ mod tests {
                 gate: WordGate::Gap(200),
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
+                neural: true,
                 json: false,
                 items: false,
             }
@@ -965,6 +1007,7 @@ mod tests {
                 gate: WordGate::Candidates(3),
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
+                neural: true,
                 json: false,
                 items: false,
             }
@@ -979,6 +1022,7 @@ mod tests {
                 gate: WordGate::Off,
                 backend: jc_model::Backend::Ort,
                 left: LeftMode::Off,
+                neural: true,
                 json: false,
                 items: false,
             }

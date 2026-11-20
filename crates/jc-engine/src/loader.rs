@@ -17,8 +17,10 @@ use jc_core::ja::lexicon::{JaEntry, JaLexicon, SingleColumnCost};
 use jc_core::ja::rerank::NeuralReranker;
 use jc_core::lattice::{InMemoryLexicon, LexEntry};
 use jc_core::score::{BigramLm, ScoreContext, ZhLm};
+use jc_core::session::neural::{NeuralEngine, NeuralError, NeuralRequest, NeuralRuntime};
 use jc_core::session::SessionConfig;
 use jc_core::Mode;
+use jc_model::candle::jinen::Jinen;
 
 /// 注音詞典資料包目錄（相對於資料根目錄）。
 pub const ZH_DIR: &str = "build-zh";
@@ -34,6 +36,35 @@ pub const FALLBACK_JA_PACK: &str = "packs/ja-lexicon-public-core.pack";
 
 /// 預設的日文 tokenizer（相對於資料根目錄）。
 pub const JA_TOKENIZER: &str = "models/ja-tokenizer/public_core_ja.model";
+
+/// 預設的 Jinen small GGUF（相對於資料根目錄）。
+pub const JA_NEURAL_GGUF: &str = "models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf";
+
+/// 覆寫 Jinen GGUF 路徑的環境變數。
+pub const JA_NEURAL_GGUF_ENV: &str = "JC_JINEN_GGUF";
+
+/// 覆寫 Jinen tokenizer 路徑的環境變數。
+pub const JA_NEURAL_TOKENIZER_ENV: &str = "JC_JINEN_TOKENIZER";
+
+/// Jinen tokenizer 的候選路徑，依序嘗試。
+pub const JA_NEURAL_TOKENIZERS: [&str; 3] = [
+    "models/external/jinen-v2-small/tokenizer.json",
+    "models/external/jinen-v2-xsmall/tokenizer.json",
+    "models/quant/jinen-v2-xsmall/tokenizer.json",
+];
+
+/// Jinen 推論一次最多產生幾個 token，與離線評測相同。
+pub const JA_NEURAL_MAX_NEW_TOKENS: usize = jc_model::candle::jinen::DEFAULT_MAX_NEW_TOKENS;
+
+/// 關閉引擎預設神經轉換的環境變數；值為 `off` 時完全不載入模型。
+pub const JA_NEURAL_ENV: &str = "JC_JINEN";
+
+/// Jinen 推論的執行緒數。
+///
+/// 180 ms 的預算下 8 threads 是量測到的甜蜜點：4 threads 在 ajimee-200 有
+/// 34／148 次逾時，20 threads 會因為 candle 的 barrier pool 過度競爭而
+/// 全部逾時。宿主已設定環境變數時尊重宿主的選擇。
+pub const JA_NEURAL_THREADS: usize = 8;
 
 /// 資料載入錯誤。訊息一律帶上出錯的路徑。
 #[derive(Debug, thiserror::Error)]
@@ -410,6 +441,88 @@ pub fn load_curated_decoder(words: &Path, connection: &Path) -> Result<JaDecoder
     Ok(decoder)
 }
 
+/// 解析 Jinen 的 GGUF 與 tokenizer。
+///
+/// GGUF 順序：`JC_JINEN_GGUF`、資料根目錄的 [`JA_NEURAL_GGUF`]。
+/// tokenizer 順序：`JC_JINEN_TOKENIZER`、GGUF 同目錄的 `tokenizer.json`、
+/// [`JA_NEURAL_TOKENIZERS`]。找不到時回傳帶所有候選路徑的錯誤。
+pub fn resolve_ja_neural(root: &Path) -> Result<(PathBuf, PathBuf), LoadError> {
+    let gguf = if let Some(value) = std::env::var_os(JA_NEURAL_GGUF_ENV) {
+        PathBuf::from(value)
+    } else {
+        root.join(JA_NEURAL_GGUF)
+    };
+    if !gguf.is_file() {
+        return Err(LoadError(format!(
+            "找不到 Jinen 模型：{}；可用 {JA_NEURAL_GGUF_ENV} 指定",
+            gguf.display()
+        )));
+    }
+    if let Some(value) = std::env::var_os(JA_NEURAL_TOKENIZER_ENV) {
+        let tokenizer = PathBuf::from(value);
+        if !tokenizer.is_file() {
+            return Err(LoadError(format!(
+                "找不到 Jinen tokenizer：{}",
+                tokenizer.display()
+            )));
+        }
+        return Ok((gguf, tokenizer));
+    }
+    let mut candidates = Vec::new();
+    if let Some(dir) = gguf.parent() {
+        candidates.push(dir.join("tokenizer.json"));
+    }
+    candidates.extend(JA_NEURAL_TOKENIZERS.iter().map(|path| root.join(path)));
+    for tokenizer in &candidates {
+        if tokenizer.is_file() {
+            return Ok((gguf, tokenizer.clone()));
+        }
+    }
+    let listed: Vec<String> = candidates
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    Err(LoadError(format!(
+        "找不到 Jinen tokenizer，試過：{}；可用 {JA_NEURAL_TOKENIZER_ENV} 指定",
+        listed.join("、")
+    )))
+}
+
+/// 載入 Jinen 並啟動推論 worker。
+///
+/// 模型缺席或載入失敗時回傳錯誤；呼叫端記一次警告後維持統計轉換即可。
+pub fn load_ja_neural(root: &Path) -> Result<Arc<NeuralRuntime>, LoadError> {
+    let (gguf, tokenizer) = resolve_ja_neural(root)?;
+    // candle 的執行緒數必須在任何張量運算之前決定。
+    if std::env::var_os("RAYON_NUM_THREADS").is_none() {
+        std::env::set_var("RAYON_NUM_THREADS", JA_NEURAL_THREADS.to_string());
+    }
+    if std::env::var_os("CANDLE_NUM_THREADS").is_none() {
+        std::env::set_var("CANDLE_NUM_THREADS", JA_NEURAL_THREADS.to_string());
+    }
+    let model = Jinen::load(&gguf, &tokenizer)
+        .map_err(|err| LoadError(format!("載入 {} 失敗：{err}", gguf.display())))?;
+    Ok(Arc::new(NeuralRuntime::spawn(Box::new(JinenEngine {
+        model,
+        max_new_tokens: JA_NEURAL_MAX_NEW_TOKENS,
+    }))))
+}
+
+/// [`NeuralEngine`] 的 Jinen 實作；模型只活在 worker 執行緒裡。
+struct JinenEngine {
+    model: Jinen,
+    max_new_tokens: usize,
+}
+
+impl NeuralEngine for JinenEngine {
+    fn convert(&mut self, request: &NeuralRequest) -> Result<String, NeuralError> {
+        self.model
+            .generate(&request.reading, &request.left, self.max_new_tokens)
+            .map(|generation| generation.text)
+            .map_err(|err| NeuralError::Inference(err.to_string()))
+    }
+}
+
 /// 載入日文 reranker；模型缺席或 ONNX Runtime 不可用時回傳錯誤。
 pub fn load_ja_reranker(root: &Path) -> Result<Arc<NeuralReranker>, LoadError> {
     let models = ja_models_dir(root);
@@ -543,6 +656,8 @@ pub struct EngineData {
     pub ja: Arc<JaDecoder>,
     /// 日文 tokenizer；模型缺席時為 `None`。
     pub ja_tokenizer: Option<Arc<jc_model::Tokenizer>>,
+    /// Jinen 推論 worker；模型缺席或 `JC_JINEN=off` 時為 `None`。
+    pub ja_neural: Option<Arc<NeuralRuntime>>,
 }
 
 impl std::fmt::Debug for EngineData {
@@ -555,15 +670,20 @@ impl std::fmt::Debug for EngineData {
                 &self.zh.lm.as_ref().is_some_and(|lm| lm.bigrams() > 0),
             )
             .field("ja_tokenizer", &self.ja_tokenizer.is_some())
+            .field("ja_neural", &self.ja_neural.is_some())
             .finish()
     }
 }
 
 impl EngineData {
     /// 為指定模式建立 session 設定。
+    ///
+    /// 日文預設接上 Jinen；模型缺席時 `runtime` 為 `None`，行為與純統計
+    /// 完全相同。要完全關閉時讓 [`JA_NEURAL_ENV`] 為 `off`。
     pub fn session_config(&self, mode: Mode) -> SessionConfig {
         let mut config = zh_session_config(mode, &self.zh);
         config.ja = Some(Arc::clone(&self.ja));
+        config.ja_neural.runtime = self.ja_neural.clone();
         config
     }
 }
@@ -649,11 +769,33 @@ pub fn load_engine_data(root: &Path) -> Result<EngineData, EngineDataError> {
         log::warn!("找不到日文 tokenizer：{}", tokenizer_path.display());
         None
     };
+    // 日文預設接上 Jinen；缺席只警告一次，維持統計轉換。
+    let neural_off = std::env::var(JA_NEURAL_ENV)
+        .map(|value| value.eq_ignore_ascii_case("off"))
+        .unwrap_or(false);
+    let ja_neural = if neural_off {
+        None
+    } else {
+        match load_ja_neural(root) {
+            Ok(runtime) => {
+                log::info!(
+                    "已載入 Jinen 日文轉換：{}",
+                    root.join(JA_NEURAL_GGUF).display()
+                );
+                Some(runtime)
+            }
+            Err(err) => {
+                log::warn!("Jinen 不可用，日文維持統計轉換：{err}");
+                None
+            }
+        }
+    };
     Ok(EngineData {
         root: root.to_path_buf(),
         zh,
         ja: Arc::new(decoder),
         ja_tokenizer,
+        ja_neural,
     })
 }
 
