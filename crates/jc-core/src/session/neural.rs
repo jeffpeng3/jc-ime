@@ -573,8 +573,16 @@ impl NeuralStatsSnapshot {
 ///
 /// 這個函式不修改任何統計結果；呼叫端只在拿到
 /// [`NeuralDecision::Accepted`] 時才替換。
+///
+/// 一般轉換與逐字変換共用這一份門檻與驗證：統計結果等於讀音時代表只是
+/// 組字中的未知詞 fallback（半截讀音），不論哪條路徑都直接跳過。
 pub fn maybe_convert(config: &NeuralConfig, input: &NeuralInput<'_>) -> NeuralDecision {
     if !config.enabled {
+        return NeuralDecision::Skipped;
+    }
+    // 半截讀音：統計結果等於讀音，表示整段仍是かな，等完整讀音再問模型。
+    // 這條規則放在共用層，一般轉換與逐字変換不會各自實作。
+    if input.statistical == input.reading {
         return NeuralDecision::Skipped;
     }
     let Some(runtime) = &config.runtime else {
@@ -639,6 +647,63 @@ fn head_chars(text: &str, limit: usize) -> String {
         return String::new();
     }
     text.chars().take(limit).collect()
+}
+
+/// 逐字変換的神經採用器。
+///
+/// 控制器先算好統計結果與門檻訊號，這裡只把它們轉成 [`NeuralInput`] 再走
+/// [`maybe_convert`]；門檻與五條驗證與一般轉換共用同一份實作。
+#[derive(Clone)]
+pub struct LiveGate {
+    config: NeuralConfig,
+}
+
+impl LiveGate {
+    /// 用指定設定建立採用器。
+    pub fn new(config: NeuralConfig) -> Self {
+        Self { config }
+    }
+
+    /// 目前的設定。
+    pub fn config(&self) -> &NeuralConfig {
+        &self.config
+    }
+}
+
+impl fmt::Debug for LiveGate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LiveGate")
+            .field("config", &self.config)
+            .finish()
+    }
+}
+
+impl crate::ja::live::NeuralGate for LiveGate {
+    fn adopt(&self, request: &crate::ja::live::GateRequest<'_>) -> Option<String> {
+        let decision = maybe_convert(
+            &self.config,
+            &NeuralInput {
+                reading: request.reading,
+                left: request.left,
+                right: request.right,
+                statistical: request.statistical,
+                statistical_cost: request.statistical_cost,
+                runner_up_cost: request.runner_up_cost,
+                mean_candidates: request.mean_candidates,
+            },
+        );
+        decision.accepted_surface().map(str::to_string)
+    }
+}
+
+/// 逐字変換用的採用器；關閉或模型缺席時回傳 `None`。
+///
+/// `None` 代表控制器連門檻訊號都不算，逐字路徑與沒有神經轉換完全相同。
+pub fn live_gate(config: &NeuralConfig) -> Option<std::rc::Rc<dyn crate::ja::live::NeuralGate>> {
+    if !config.enabled || config.runtime.is_none() {
+        return None;
+    }
+    Some(std::rc::Rc::new(LiveGate::new(config.clone())))
 }
 
 #[cfg(test)]
@@ -924,6 +989,66 @@ mod tests {
         let decision = maybe_convert(&config, &input("きょう", "", "今日"));
         assert_eq!(decision, NeuralDecision::Timeout);
         assert_eq!(config.runtime.unwrap().stats().timeouts, 1);
+    }
+
+    /// 半截讀音：統計結果等於讀音時不呼叫模型，一般與逐字路徑共用。
+    #[test]
+    fn test_half_reading_skips_engine() {
+        let (runtime, calls) = runtime("京");
+        let config = NeuralConfig {
+            runtime: Some(runtime),
+            ..NeuralConfig::default()
+        };
+        let mut input = input("きょ", "", "きょ");
+        assert_eq!(maybe_convert(&config, &input), NeuralDecision::Skipped);
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "半截讀音不得呼叫模型");
+        input.statistical = "京";
+        assert_eq!(
+            maybe_convert(&config, &input),
+            NeuralDecision::Accepted {
+                surface: "京".to_string()
+            }
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// 逐字採用器走同一份門檻與驗證：半截讀音跳過，完整讀音才採用。
+    #[test]
+    fn test_live_gate_uses_shared_thresholds() {
+        use crate::ja::live::{GateRequest, NeuralGate};
+
+        let (runtime, calls) = runtime("京");
+        let gate = LiveGate::new(NeuralConfig {
+            runtime: Some(runtime),
+            ..NeuralConfig::default()
+        });
+        let half = GateRequest {
+            reading: "きょ",
+            left: "",
+            right: "",
+            statistical: "きょ",
+            statistical_cost: 1_000,
+            runner_up_cost: Some(1_100),
+            mean_candidates: 8.0,
+        };
+        assert_eq!(gate.adopt(&half), None);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let full = GateRequest {
+            reading: "きょう",
+            statistical: "今日",
+            ..half
+        };
+        assert_eq!(gate.adopt(&full), Some("京".to_string()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // 成本差超過門檻時仍不呼叫，門檻與一般路徑相同。
+        let clear = GateRequest {
+            runner_up_cost: Some(2_000),
+            ..full
+        };
+        assert_eq!(gate.adopt(&clear), None);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
