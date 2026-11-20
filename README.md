@@ -2,37 +2,45 @@
 
 Windows 優先的輸入法，核心全部以 Rust 實作，平台整合由獨立 wrapper 完成。
 
-目前 M0–M2 完成，M3 的路由可用但 session 端只做了一部分：注音與日文的統計
-轉換可以在 Linux 上跑完整評測，並有凍結題庫的實測數字。個人化學習、
-Windows wrapper、設定／更新／安裝器尚未實作。逐項現況見
-[`docs/status.md`](docs/status.md)。
+M0–M4 完成：注音 golden 45/45、模糊音 919 題、日文統計與 Jinen 神經轉換、
+Mixed 6/6、注音選字模型與個人化都已接線。M5 的引擎端（stdio、Unix socket、
+Windows named pipe、client crate）完成，Windows TSF 尚未開始；設定只有資料
+模型，安裝器未做。逐項現況見 [`docs/status.md`](docs/status.md)。
 
 ## 現在的能力與限制
 
 | 能力 | 現況 |
 |---|---|
-| 注音（大千鍵盤） | 聲調選填、候選翻頁、Tab 補全、簡繁轉換、Ctrl＋標點、mixed ASCII 推斷已接上；golden 41/45，剩 4 例依賴個人化學習 |
+| 注音（大千鍵盤） | 聲調選填、候選翻頁、Tab 補全、簡繁轉換、Ctrl＋標點、mixed ASCII 推斷；golden 45/45 |
 | 模糊音 | `select` 模式（`z-zh`、`c-ch`、`s-sh`、`en-eng`）；919 題 top-1 16.4%，注音 319 題 44.5% |
-| 日文（羅馬字→かな→漢字） | Mozc pack v2 與 context ID 連接矩陣；`modern-500` top-1 86.0%、top-5 98.0% |
-| Mixed 路由 | 注音／日文／英文分段、英文直通與前綴補完；候選清單與帳號／型號切法未移植 |
-| 模型 | `jc-model` 可載入日文 reranker 與標點模型（feature `onnx`，預設關閉）；尚未接進 `jc-core`；注音模型未取得 |
-| 引擎行程 | stdio 與 Unix domain socket；Windows named pipe 未實作 |
-| 平台 | `jc-platform` 只定義 wrapper 契約，沒有任何實際 wrapper |
+| 注音選字模型 | candle Q8_0，33.9 MiB、推論 p50 9.36 ms、逐對排序一致 99.51%、golden 45/45 |
+| 日文（羅馬字→かな→漢字） | Mozc pack v2 與 context ID 矩陣；統計 `modern-500` 86.0%，預設 Jinen small 門檻混合 93.6% |
+| 日文神經轉換 | Jinen v2 small Q5_K_M；`top2 - top1 < 460` 才呼叫，逾時回退統計結果 |
+| Mixed 路由 | 注音／日文／英文分段、英文直通與前綴補完；`eval mixed` 6/6 |
+| 個人化 | rollback window、弱負向訊號、最短觸發長度；機制在 `jc-core`，資料可寫成 `personal.json` |
+| 引擎行程 | stdio、Unix domain socket、Windows named pipe；一次服務一條連線 |
+| client crate | `jc-windows` 可連 named pipe；`jc-linux`／`jc-mac` 是佔位，回 `Unsupported` |
+| 平台 wrapper | Windows TSF、Fcitx5、macOS 都尚未實作 |
 
 ## Crate
 
 | Crate | 內容 |
 |---|---|
-| `jc-core` | 鍵序列、注音音節與鍵盤、lattice／Viterbi、注音解碼、日文輸入與解碼、Mixed 路由、session、輸出 |
+| `jc-core` | 鍵序列、注音音節與鍵盤、lattice／Viterbi、注音解碼、日文輸入與解碼、Mixed 路由、session、神經 runtime、輸出 |
 | `jc-data` | 日文 `0CJADIC` pack v1／v2 與注音 `lexicon.bin`／`lm.bin` 的零拷貝讀取、manifest 驗證 |
-| `jc-model` | ONNX Runtime 接線：manifest、tokenizer、reranker、標點模型 |
-| `jc-proto` | 引擎與 wrapper 的訊框、請求／回應、版本握手 |
+| `jc-model` | 推論接線：manifest、tokenizer、reranker、Jinen（candle）、注音選字（candle Q8_0 與 ORT 對照） |
+| `jc-proto` | 引擎與 wrapper 的 v3 訊框、請求／回應、版本握手、候選明細 |
 | `jc-platform` | 平台抽象：`InputHost`、`HostEvent`、`Clock`、`Scheduler` |
-| `jc-engine` | 引擎行程，處理協定並把按鍵交給 `jc-core::Session` |
+| `jc-engine` | 引擎行程，載入資料與模型，處理協定並把按鍵交給 `jc-core::Session` |
 | `jc-eval` | 題庫讀取、top-1／top-5／邊界／延遲指標、`Report` 與 gate |
 | `jc-testdata` | 測試資料定位（`JC_TESTDATA`、`require_data!`） |
-| `jc-cli` | 開發工具：`eval`、`convert`、`bench`，另有 `ja-eval` |
+| `jc-cli` | 開發工具：`eval`、`convert`、`bench`、`tokenize-ja`，另有 `ja-eval` |
 | `jc-jadic` | Mozc `dictionary_oss` 匯入，產出 pack v2 與 manifest |
+| `jc-englishpack` | 英文詞表建置與打包 |
+| `jc-settings` | 設定與模型包的資料模型、驗證、原子寫檔；引擎尚未讀取設定檔 |
+| `jc-windows` | wrapper 端 client：named pipe 傳輸、握手、逾時與重連 |
+| `jc-linux` | 佔位，之後接 Unix socket client；目前回 `Unsupported` |
+| `jc-mac` | 佔位，之後接 Unix socket／launchd；目前回 `Unsupported` |
 
 ## 建置
 
@@ -41,29 +49,32 @@ cargo build --workspace
 cargo check --workspace --all-targets
 ```
 
-模型推論預設不編譯，也不下載 ONNX Runtime。需要驗證 reranker 時用：
+模型推論不再有編譯期 feature。`ort` 以 `load-dynamic` 載入，缺少 ONNX
+Runtime 時執行期探測為不可用，全部維持統計排序。Jinen 走 candle；注音
+選字可用 candle Q8_0（`JC_RERANK_BACKEND=candle`），ORT fp32 保留作對照。
+
+## 快速開始
 
 ```sh
-cargo run -p jc-cli --release -- eval ja --corpus modern-500 --rerank on
-```
+# 啟動引擎（Unix domain socket）
+cargo run -p jc-engine --release -- --data /mnt/work/jc/jc-ime-data --socket /tmp/jc-engine.sock
 
-需要系統上有 ONNX Runtime 動態庫，或改用 `--backend candle` 讀 safetensors。
+# Windows 上同一個參數走 named pipe；只取最後一段掛到 \\.\pipe\
+# cargo run -p jc-engine --release -- --data <資料根> --socket jc-engine
 
-## 跑評測
-
-```sh
 # 注音 golden（45 例）
-cargo run -p jc-cli --bin jc-cli -- eval zh-golden
+cargo run -p jc-cli --release -- eval zh-golden
 
-# 日文題庫
-cargo run -p jc-cli --release --bin ja-eval -- --corpus modern-500 --top 5
-cargo run -p jc-cli --release --bin jc-cli -- eval ja --corpus hard-cases
+# 日文題庫（預設開啟 Jinen 門檻；--neural off 回到統計）
+cargo run -p jc-cli --release -- eval ja --corpus modern-500
+cargo run -p jc-cli --release -- eval ja --corpus hard-cases --neural off
 
-# 模糊輸入
-cargo run -p jc-cli --bin jc-cli -- eval fuzzy
+# 模糊輸入與 Mixed
+cargo run -p jc-cli --release -- eval fuzzy
+cargo run -p jc-cli --release -- eval mixed
 
 # 單句轉換
-cargo run -p jc-cli --bin jc-cli -- convert "わたしはほんをよむ。"
+cargo run -p jc-cli --release -- convert "わたしはほんをよむ。"
 
 # 改讀真實注音資料包（預設仍是凍結 TSV）
 cargo run -p jc-cli --release -- convert "ㄨㄛˇ ㄞˋ" --data /mnt/work/jc/jc-ime-data/build-zh-bigram
@@ -71,7 +82,8 @@ cargo run -p jc-cli --release -- convert "ㄨㄛˇ ㄞˋ" --data /mnt/work/jc/jc
 
 題庫與詞典不在 git 內，預設讀 `/mnt/work/jc/jc-ime-data`；可用 `JC_TESTDATA`
 或 `--testdata` 改路徑。日文 pack 的解析順序是 `--pack` → `JC_JA_PACK` →
-`packs/ja-lexicon-mozc-v2.pack` → v1 pack。
+`packs/ja-lexicon-mozc-v2.pack` → v1 pack。Jinen 模型路徑可用
+`JC_JINEN_GGUF`、`JC_JINEN_TOKENIZER` 覆寫，`JC_JINEN=off` 關閉。
 
 ## 產生日文詞典
 
@@ -92,7 +104,7 @@ cargo test --workspace
 
 需要外部資料的測試用 `jc_testdata::require_data!`，資料不存在時跳過而不是
 失敗。開發期間只做 `cargo check`，測試由整合階段統一執行；細節見
-[`docs/blaze.md`](docs/blaze.md)。
+[`docs/blaze.md`](docs/blaze.md)。最新 gate 是 52 targets、1118 passed。
 
 ## 資料
 
@@ -100,13 +112,13 @@ cargo test --workspace
 
 ```text
 /mnt/work/jc/jc-ime-data/
-  0c-testdata/      凍結題庫：golden、ja、eval、fuzzy
+  0c-testdata/      凍結題庫：golden、ja、fuzzy、mixed
   build-zh/         注音詞典 lexicon.bin（8,791,416 bytes）與 lm.bin
   build-zh-bigram/  加上新酷音 bigram 的版本（lm.bin 32,879,418 bytes）
   packs/            日文 pack v2 與 manifest
   mozc-3.35.6354/   Mozc OSS dictionary_oss
   opencc/           OpenCC 1.4.2 的 tw2s 字典
-  models/           reranker-extra；標點模型保留但不再使用
+  models/           zh-select（Q8_0 33.9 MiB）、reranker、Jinen small、tokenizer
   english/、ja-src/ 英文詞表與日文 curated 來源
 ```
 
@@ -118,10 +130,12 @@ Hugging Face 下載後記下 revision 與 SHA-256。每個檔案都要能對回�
 ## 文件
 
 - [`docs/status.md`](docs/status.md)：目前數字與缺口，每個里程碑更新這一頁。
-- [`docs/history.md`](docs/history.md)：為什麼重寫、前身學到什麼、M0–M2 的紀錄。
-- [`docs/architecture.md`](docs/architecture.md)：核心、引擎與 wrapper 的邊界。
+- [`docs/proto.md`](docs/proto.md)：v3 協定規格（凍結）。
 - [`docs/wrapper.md`](docs/wrapper.md)：wrapper 作者規格，接引擎不用讀 Rust。
+- [`docs/models.md`](docs/models.md)：模型來源、授權、雜湊與散布規則。
+- [`docs/architecture.md`](docs/architecture.md)：核心、引擎與 wrapper 的邊界。
 - [`docs/port/`](docs/port/)：逐 task 的 Go → Rust 對照表。
+- [`docs/history.md`](docs/history.md)：為什麼重寫、前身學到什麼、M0 以後的紀錄。
 - [`docs/integration-log.md`](docs/integration-log.md)：合併順序、衝突與量測。
 
 ## 致謝
@@ -133,7 +147,8 @@ Hugging Face 下載後記下 revision 與 SHA-256。每個檔案都要能對回�
 
 日文詞典來自 Mozc OSS 3.35.6354（BSD-3-Clause 與 NAIST／IPAdic／ICOT／
 沖繩語料授權）；注音 bigram 來自 libchewing-data（CC-BY-4.0）；簡繁轉換字典
-來自 OpenCC 1.4.2（Apache-2.0）。0c-ime 同為 AGPL-3.0 授權。
+來自 OpenCC 1.4.2（Apache-2.0）；Jinen v2 來自 `togatogah/jinen-v2-small.gguf`
+（CC-BY-SA-4.0）。0c-ime 同為 AGPL-3.0 授權。
 
 ## 授權
 
