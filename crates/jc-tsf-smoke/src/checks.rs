@@ -12,8 +12,9 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, IClassFactory, CLSCTX_INPROC_SERVER,
     COINIT_APARTMENTTHREADED,
 };
+use windows::Win32::System::Ole::CONNECT_E_ADVISELIMIT;
 use windows::Win32::UI::TextServices::{
-    CLSID_TF_ThreadMgr, ITfCompositionSink, ITfKeyEventSink, ITfKeystrokeMgr,
+    CLSID_TF_ThreadMgr, ITfClientId, ITfCompositionSink, ITfKeyEventSink, ITfKeystrokeMgr,
     ITfTextInputProcessor, ITfThreadMgr, ITfThreadMgrEventSink,
 };
 
@@ -190,25 +191,70 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
         (Some(service), Some(manager)) => {
             // SAFETY: manager 剛由本執行緒建立；sink 的存活期由 service 管理。
             match unsafe { manager.Activate() } {
-                Ok(client_id) => {
+                Ok(application_client_id) => {
+                    report.info(format!(
+                        "ITfThreadMgr::Activate → 應用程式 client_id={application_client_id}（不是 TIP 的 client_id）"
+                    ));
+
+                    // 應用程式與文字服務的 TfClientId 來源不同：前者從
+                    // ITfThreadMgr::Activate 拿到，後者由 TSF 在
+                    // ITfTextInputProcessor::Activate 傳進來。把前者傳給 TIP 會讓
+                    // msctf 的 AdviseKeyEventSink 回 E_INVALIDARG，因為它不是 TIP
+                    // 的 client id。這裡自己建的 TIP 物件用 ITfClientId::GetClientId
+                    // 取得與 CLSID 綁定的 id；已安裝時 msctf 在上一行的 Activate
+                    // 中就已經用同一個 id 激活過 TIP，這時會回 CONNECT_E_ADVISELIMIT。
+                    let tip_client_id =
+                        manager.cast::<ITfClientId>().and_then(|client_id| unsafe {
+                            client_id.GetClientId(&product::CLSID_JC_TSF)
+                        });
+
                     let mut activated = false;
-                    match unsafe { service.Activate(manager, client_id) } {
-                        Ok(()) => {
-                            report.pass(
-                                "5. Activate",
-                                format!(
-                                    "ITfThreadMgr::Activate → client_id={client_id}；ITfTextInputProcessor::Activate = S_OK（{}）",
-                                    report::hex(0)
-                                ),
-                            );
-                            activated = true;
+                    match tip_client_id {
+                        Ok(tip_client_id) => {
+                            report.info(format!(
+                                "ITfClientId::GetClientId(CLSID_JC_TSF) → TIP client_id={tip_client_id}"
+                            ));
+                            match unsafe { service.Activate(manager, tip_client_id) } {
+                                Ok(()) => {
+                                    report.pass(
+                                        "5. Activate",
+                                        format!(
+                                            "ITfThreadMgr::Activate → 應用程式 client_id={application_client_id}；\
+                                             ITfClientId::GetClientId → TIP client_id={tip_client_id}；\
+                                             ITfTextInputProcessor::Activate = S_OK（{}）",
+                                            report::hex(0)
+                                        ),
+                                    );
+                                    activated = true;
+                                }
+                                Err(error) => match classify_tip_activate(error.code().0) {
+                                    TipActivate::AlreadyActivated => {
+                                        report.pass(
+                                            "5. Activate",
+                                            format!(
+                                                "TIP client_id={tip_client_id} 已有 key sink（HRESULT {}）：\
+                                                 msctf 在 ITfThreadMgr::Activate 時已激活本 TIP，不需再手動激活",
+                                                report::hex(CONNECT_E_ADVISELIMIT.0 as u32)
+                                            ),
+                                        );
+                                        activated = true;
+                                    }
+                                    TipActivate::Failed(_) | TipActivate::Activated => report.fail(
+                                        "5. Activate",
+                                        format!(
+                                            "ITfTextInputProcessor::Activate 回 HRESULT {}；詳細步驟見 TSF 日誌：\
+                                             設定環境變數 JC_TSF_LOG=1 後重跑，會追加到 %LOCALAPPDATA%\\jc-ime\\tsf.log\
+                                             （沒設定時只走 OutputDebugStringW，用 DebugView 才看得到）",
+                                            report::hex(error.code().0 as u32)
+                                        ),
+                                    ),
+                                },
+                            }
                         }
                         Err(error) => report.fail(
                             "5. Activate",
                             format!(
-                                "ITfTextInputProcessor::Activate 回 HRESULT {}；詳細步驟見 TSF 日誌：\
-                                 設定環境變數 JC_TSF_LOG=1 後重跑，會追加到 %LOCALAPPDATA%\\jc-ime\\tsf.log\
-                                 （沒設定時只走 OutputDebugStringW，用 DebugView 才看得到）",
+                                "取得 TIP client_id 失敗：HRESULT {}",
                                 report::hex(error.code().0 as u32)
                             ),
                         ),
@@ -320,6 +366,30 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
         std::process::ExitCode::SUCCESS
     } else {
         std::process::ExitCode::FAILURE
+    }
+}
+
+/// `ITfTextInputProcessor::Activate` 的判定結果。
+#[derive(Debug, PartialEq, Eq)]
+enum TipActivate {
+    /// 這次成功註冊了 sink。
+    Activated,
+    /// 同一個 TIP client id 已經有 sink：msctf 自己激活過，視為成功。
+    AlreadyActivated,
+    /// 真的失敗；保留原始 HRESULT 供報表顯示。
+    Failed(i32),
+}
+
+/// 把 `Activate` 的 HRESULT 轉成判定。
+///
+/// `CONNECT_E_ADVISELIMIT` 代表 tid 已經有 key sink。對手動建立的 TIP 物件
+/// 而言，這正是「msctf 在 `ITfThreadMgr::Activate` 時已激活同一個 TIP」的證據，
+/// 不能當成失敗；其餘錯誤（`E_INVALIDARG` 等）都要照實回報。
+fn classify_tip_activate(hresult: i32) -> TipActivate {
+    match hresult {
+        0 => TipActivate::Activated,
+        code if code == CONNECT_E_ADVISELIMIT.0 => TipActivate::AlreadyActivated,
+        code => TipActivate::Failed(code),
     }
 }
 
@@ -448,5 +518,23 @@ mod tests {
     fn parse_args_rejects_unknown_flags() {
         let args = vec!["--nope".to_string()];
         assert_eq!(parse_args(&args), Cli::Error);
+    }
+
+    #[test]
+    fn tip_activate_accepts_repeated_activation() {
+        // S_OK：第一次激活，或解除註冊後重新激活。
+        assert_eq!(classify_tip_activate(0), TipActivate::Activated);
+        // 已安裝的 TIP 會被 msctf 先激活；第二次手動激活拿到 ADVISELIMIT，
+        // 這是重複執行也該通過的路徑。
+        assert_eq!(
+            classify_tip_activate(CONNECT_E_ADVISELIMIT.0),
+            TipActivate::AlreadyActivated
+        );
+        // 之前把應用程式 client id 當成 TIP id 時的真機錯誤，必須判定失敗。
+        let e_invalidarg = 0x8007_0057u32 as i32;
+        assert_eq!(
+            classify_tip_activate(e_invalidarg),
+            TipActivate::Failed(e_invalidarg)
+        );
     }
 }

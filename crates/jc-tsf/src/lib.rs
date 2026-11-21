@@ -36,6 +36,7 @@ use windows::Win32::Foundation::{
     S_OK, WPARAM,
 };
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::TextServices::{
     IEnumTfDisplayAttributeInfo, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
     ITfDisplayAttributeInfo, ITfDisplayAttributeProvider, ITfDisplayAttributeProvider_Impl,
@@ -104,7 +105,11 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             return Ok(());
         };
 
-        logging::debug(format!("Activate：開始（client_id = {tid}）"));
+        // SAFETY: GetCurrentThreadId 沒有參數，也不碰呼叫端的記憶體。
+        let thread_id = unsafe { GetCurrentThreadId() };
+        logging::debug(format!(
+            "Activate：開始（client_id = {tid}，thread = {thread_id}）"
+        ));
 
         // sink 就是這個物件本身；這兩個引用會在 Deactivate 明確丟掉，否則會
         // 形成自己引用自己的循環，`DllCanUnloadNow` 永遠不會回 S_OK。
@@ -139,6 +144,10 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
         let control = this.control.borrow_mut().take();
         if let Some(mut control) = control {
             control.shutdown();
+        } else {
+            // 重複 Deactivate 或前一次 Activate 失敗；用來區分真機 log 裡
+            // 兩個 TIP 實例各自的「文字服務已停用」。
+            logging::debug("Deactivate：沒有已啟用的 control");
         }
         logging::info("文字服務已停用");
         Ok(())

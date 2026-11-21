@@ -1,5 +1,10 @@
 # activate-diagnose：`Activate` 回 `0x80070057`
 
+> 後續更新：這份日誌配置已定位出真正原因，見
+> `docs/port/activate-second-call.md`。`0x80070057` 來自冒煙測試把應用程式
+> client id 傳給 `ITfTextInputProcessor::Activate`，不是 `jc-tsf` 的 cleanup
+> 或訊息視窗問題。以下保留原本的診斷背景。
+
 真機跑 `jc-tsf-smoke.exe` 時，檢查 5 的 `ITfTextInputProcessor::Activate` 回
 `0x80070057`（`E_INVALIDARG`）。其他六項都通過：DLL 載入、`DllGetClassObject`、
 四個介面 QI 且是同一個物件、`CoCreateInstance(CLSID_TF_ThreadMgr)`、
