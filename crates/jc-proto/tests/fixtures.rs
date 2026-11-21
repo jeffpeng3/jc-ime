@@ -143,6 +143,8 @@ fn response_ready_round_trips() {
         Response::Ready {
             protocol: PROTOCOL_VERSION,
             engine: "jc-engine/0.1.0".into(),
+            // fixture 是舊形狀，沒有 session；反序列化應補 1。
+            session: 1,
         }
     );
 }

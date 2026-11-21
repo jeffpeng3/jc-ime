@@ -265,6 +265,86 @@ pub(super) fn serve(engine: &Engine, path: &Path, max_frame: usize) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    use jc_proto::{
+        read_message, write_message, ErrorCode, Request, Response, DEFAULT_MAX_FRAME,
+        PROTOCOL_VERSION,
+    };
+
+    /// 和 `serve()` 的 worker 一樣用毫秒級 buffer 驅動 `serve_connection`，
+    /// 只驗證 accepted 的兩條連線各自拿到不同 id、Close 只認自己的 id。
+    fn serve_wire(engine: &mut Engine, requests: &[Request]) -> Vec<Response> {
+        let mut input = Vec::new();
+        for request in requests {
+            write_message(&mut input, request, DEFAULT_MAX_FRAME).unwrap();
+        }
+        let mut reader = Cursor::new(input);
+        let mut output = Vec::new();
+        serve_connection(engine, &mut reader, &mut output, DEFAULT_MAX_FRAME).unwrap();
+
+        let mut reader = Cursor::new(output);
+        let mut responses = Vec::new();
+        while let Some(response) =
+            read_message::<_, Response>(&mut reader, DEFAULT_MAX_FRAME).unwrap()
+        {
+            responses.push(response);
+        }
+        responses
+    }
+
+    #[test]
+    fn accepted_connections_use_their_own_session_id_on_close() {
+        // pipe_listener::serve() 每接受一條連線就 accept() → into_engine() →
+        // serve_connection()，這裡走完全相同的進入點。
+        let listener = Engine::new();
+        let mut first = listener.accept().into_engine();
+        let mut second = listener.accept().into_engine();
+        let hello = || Request::Hello {
+            protocol: PROTOCOL_VERSION,
+            client: "pipe".into(),
+        };
+
+        let first_ready = &serve_wire(&mut first, &[hello()])[0];
+        let second_ready = &serve_wire(&mut second, &[hello()])[0];
+        let (
+            Response::Ready {
+                session: first_id, ..
+            },
+            Response::Ready {
+                session: second_id, ..
+            },
+        ) = (first_ready, second_ready)
+        else {
+            panic!(" handshake 應回 Ready");
+        };
+        assert_eq!((*first_id, *second_id), (1, 2));
+
+        assert_eq!(
+            serve_wire(
+                &mut first,
+                &[Request::Close {
+                    session: *second_id
+                }]
+            )[0],
+            Response::error(ErrorCode::Internal, "session 不存在或不屬於這個連線")
+        );
+        assert_eq!(
+            serve_wire(
+                &mut second,
+                &[Request::Close {
+                    session: *second_id
+                }]
+            )[0],
+            Response::Acknowledged {
+                session: *second_id
+            }
+        );
+        assert_eq!(
+            serve_wire(&mut first, &[Request::Close { session: *first_id }])[0],
+            Response::Acknowledged { session: *first_id }
+        );
+    }
 
     #[test]
     fn sddl_matches_0c() {

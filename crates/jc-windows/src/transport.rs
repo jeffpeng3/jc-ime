@@ -169,6 +169,7 @@ mod tests {
                 &Response::Ready {
                     protocol: PROTOCOL_VERSION,
                     engine: "test".into(),
+                    session: 1,
                 },
                 DEFAULT_MAX_FRAME,
             )
@@ -191,6 +192,7 @@ mod tests {
             Response::Ready {
                 protocol: PROTOCOL_VERSION,
                 engine: "test".into(),
+                session: 1,
             }
         );
         server.join().expect("server 執行緒不該 panic");

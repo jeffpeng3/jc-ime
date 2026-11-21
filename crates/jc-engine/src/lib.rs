@@ -415,9 +415,16 @@ impl Engine {
                 self.hello = true;
                 self.open_session();
                 log::info!("客戶端 {} 完成握手（協定 {protocol}）", client);
+                // 把實際配置的 id 回給 adapter；它記住後用在同一連線的 Close。
+                let session = lock(&self.shared)
+                    .current
+                    .get(&self.conn)
+                    .copied()
+                    .unwrap_or(0);
                 Response::Ready {
                     protocol: PROTOCOL_VERSION,
                     engine: engine_label(),
+                    session,
                 }
             }
             Request::Key { key } => {
@@ -504,8 +511,9 @@ impl Engine {
 
     /// 為這條連線開一個 session；已有 current session 時直接沿用。
     ///
-    /// T1a adapter 把 `Ready` 映射成 `session = 1`，所以 id 從 1 開始，讓第一
-    /// 條連線的 id 與之吻合；key／toggle／commit 請求不帶 id，一律走 current。
+    /// id 從 1 開始，並由 [`Request::Hello`] 的 Ready 回給 adapter。第一條連線
+    /// 拿到 1（與舊引擎相容），第二條以後拿到 2、3…；adapter 記住自己的 id 後
+    /// 用在同一連線的 Close。key／toggle／commit 請求不帶 id，一律走 current。
     fn open_session(&mut self) {
         let mut registry = lock(&self.shared);
         if let Some(id) = registry.current.get(&self.conn).copied() {

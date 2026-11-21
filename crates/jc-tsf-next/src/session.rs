@@ -395,8 +395,13 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
 /// jc `Response` → 0c reply Value。轉換在 `parse()` 之前完成。
 pub fn response_to_reply(response: &Response) -> Value {
     match response {
-        Response::Ready { engine, .. } => json!({
-            "ok": true, "session": 1, "engine": engine, "info": {},
+        // 引擎配置的 id 原樣帶到 0c reply；`Session::ensure_open()` 會記住它，
+        // 之後 reset／Drop 的 Close 就送這個 id，而不是寫死 1。舊引擎的 Ready
+        // 沒有 session 欄位時，jc-proto 反序列化會補 1，行為與從前一致。
+        Response::Ready {
+            engine, session, ..
+        } => json!({
+            "ok": true, "session": session, "engine": engine, "info": {},
         }),
         Response::State { .. } => json!({
             "ok": true, "snapshot": state_to_snapshot_value(response),
@@ -1206,7 +1211,9 @@ impl Session {
             self.id = 0;
             return false;
         }
-        self.id = reply["session"].as_u64().unwrap_or(0);
+        // 記住引擎在 Ready 配置的 id；reset／Drop 的 Close 必須送同一個值。
+        // 舊引擎或手工偽造的 reply 沒有 session 時退回 1，與原本的固定值相同。
+        self.id = reply["session"].as_u64().filter(|id| *id != 0).unwrap_or(1);
         self.generation = self.client.generation();
         self.vocab_keys = reply["info"]["vocab_keys"] == "true";
         self.shared = reply["info"]["mode_memory"] == "shared";
@@ -1818,6 +1825,27 @@ mod parse_tests {
         assert!(!s.english_autocomplete);
     }
 
+    #[test]
+    fn ready_reply_carries_the_engine_session_id() {
+        let ready = Response::Ready {
+            protocol: PROTOCOL_VERSION,
+            engine: "jc-engine test".into(),
+            session: 23,
+        };
+        let reply = response_to_reply(&ready);
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["session"], 23, "adapter 不可再寫死 session 1");
+        assert_eq!(reply["engine"], "jc-engine test");
+
+        let old: Response =
+            serde_json::from_str(r#"{"op":"ready","protocol":3,"engine":"old"}"#).unwrap();
+        assert_eq!(
+            response_to_reply(&old)["session"],
+            1,
+            "舊引擎沒有 session 欄位時沿用 1"
+        );
+    }
+
     /// 測試用候選來源；只需一個合法的 `CandidateSource` 值。
     fn jc_core_source() -> jc_proto::CandidateSource {
         jc_proto::CandidateSource::Lexicon
@@ -1916,6 +1944,8 @@ mod tests {
         vocab_keys: Option<String>,
         start_english: bool,
         session: u64,
+        /// `true` 時 hello 回真正的 jc Ready 訊框，用來驗證 session id 流轉。
+        ready_wire: bool,
     }
 
     impl MockState {
@@ -1933,6 +1963,7 @@ mod tests {
                 vocab_keys: None,
                 start_english: false,
                 session: 1,
+                ready_wire: false,
             }
         }
     }
@@ -1982,6 +2013,14 @@ mod tests {
         }
         match request["op"].as_str().unwrap_or("") {
             "hello" => {
+                if st.ready_wire {
+                    let ready = Response::Ready {
+                        protocol: PROTOCOL_VERSION,
+                        engine: "toy".into(),
+                        session: st.session,
+                    };
+                    return serde_json::to_value(ready).ok();
+                }
                 let mut info = st.info.clone();
                 if let Some(v) = &st.vocab_keys {
                     info["vocab_keys"] = Value::from(v.clone());
@@ -2122,6 +2161,26 @@ mod tests {
     fn toy_session() -> (Session, Arc<Mutex<MockState>>) {
         let (client, state) = mock_client(toy_response);
         (Session::with_client(client), state)
+    }
+
+    #[test]
+    fn engine_session_id_is_remembered_and_sent_on_close() {
+        let (mut s, st) = toy_session();
+        {
+            let mut state = st.lock().unwrap();
+            state.session = 7;
+            state.ready_wire = true;
+        }
+
+        // 第一次按鍵會先 hello 開 session；Hello 回的是真正的 jc Ready 訊框。
+        assert!(s.key("j").ok);
+        assert_eq!(s.id, 7, "adapter 必須記住引擎配置的 id");
+
+        s.reset();
+        let requests = st.lock().unwrap().requests.clone();
+        let close = requests.last().expect("reset 要送 Close");
+        assert_eq!(close["op"], "close");
+        assert_eq!(close["session"], 7, "Close 要送引擎給的 id，不是 1");
     }
 
     #[test]
