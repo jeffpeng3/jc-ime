@@ -16,7 +16,10 @@ use crate::profile_rules::{feature_label, lookup_rule, rule_value_label};
 use crate::settings::{on_off, SetError, Settings, SettingsError, LAYOUT_STANDARD};
 
 /// 由輸入習慣管理的設定鍵。
-pub(crate) const PROFILE_KEYS: [&str; 14] = [
+///
+/// `mixed-input` 已從 JSON 契約移除：舊檔的 `input_profile.values` 若還有它，
+/// 讀取時直接丟棄，不進快照也不寫回。引擎一律對中文使用者用混打模式。
+pub(crate) const PROFILE_KEYS: [&str; 13] = [
     "toggle-key",
     "caps-lock-english",
     "esc-clear",
@@ -25,7 +28,6 @@ pub(crate) const PROFILE_KEYS: [&str; 14] = [
     "candidate-cursor",
     "candidate-layout",
     "selection-keys",
-    "mixed-input",
     "english-autocomplete",
     "emoji-shortcut",
     "emoji-equals-first",
@@ -119,7 +121,11 @@ fn valid_profile_id(id: &str) -> bool {
 }
 
 fn managed_key(key: &str) -> bool {
-    lookup_rule(key).is_some() || key == "left-shift" || PROFILE_KEYS.contains(&key)
+    // 舊檔的 mixed-input 視為已退休鍵：接受它、但讀取時丟棄其值。
+    key == "mixed-input"
+        || lookup_rule(key).is_some()
+        || key == "left-shift"
+        || PROFILE_KEYS.contains(&key)
 }
 
 fn inputstyle_default_rules() -> Rules {
@@ -142,7 +148,6 @@ fn builtin_profile(preset: &Preset) -> Profile {
         ("candidate-cursor", behavior.candidate_cursor.clone()),
         ("candidate-layout", behavior.candidate_layout.clone()),
         ("selection-keys", behavior.selection_keys.clone()),
-        ("mixed-input", on_off(behavior.mixed_input)),
         (
             "english-autocomplete",
             on_off(behavior.english_autocomplete),
@@ -457,10 +462,14 @@ impl Settings {
     pub(crate) fn load_profiles(&mut self, raw: Value) {
         self.profiles = Some(raw.clone());
         self.profile_invalid = true;
-        let Some(store) = parse_store(&raw) else {
+        let Some(mut store) = parse_store(&raw) else {
             self.read_only = true;
             return;
         };
+        // mixed_input 已從契約移除；舊快照的值直接丟棄，不進記憶體也不寫回。
+        for profile in &mut store.items {
+            profile.values.remove("mixed-input");
+        }
         if store.active.is_empty() || store.items.is_empty() || store.items.len() > 64 {
             self.read_only = true;
             return;
@@ -553,38 +562,16 @@ struct StyleConflict {
 }
 
 fn style_conflicts() -> Vec<StyleConflict> {
-    vec![
-        StyleConflict {
-            rule: "style-shift-space",
-            feature: "mixed-input",
-            when: |rules| rules.shift_space == "fullwidth",
-        },
-        StyleConflict {
-            rule: "style-tab",
-            feature: "mixed-input",
-            when: |rules| rules.tab == "segment",
-        },
-        StyleConflict {
-            rule: "style-shift-letter",
-            feature: "mixed-input",
-            when: |rules| rules.shift_letter == "commit",
-        },
-        StyleConflict {
-            rule: "style-shift-letter",
-            feature: "mixed-input",
-            when: |rules| rules.shift_letter == "lower",
-        },
-        StyleConflict {
-            rule: "style-punctuation",
-            feature: "toneless",
-            when: |rules| rules.punctuation != "0c",
-        },
-    ]
+    // mixed-input 已移除，不再有與鍵位規則的衝突組合。
+    vec![StyleConflict {
+        rule: "style-punctuation",
+        feature: "toneless",
+        when: |rules| rules.punctuation != "0c",
+    }]
 }
 
 fn feature_on(settings: &Settings, key: &str) -> bool {
     match key {
-        "mixed-input" => settings.mixed_input,
         "english-autocomplete" => settings.english_autocomplete,
         "toneless" => settings.toneless,
         _ => false,
@@ -600,16 +587,6 @@ pub(crate) fn fresh_settings(goos: &str) -> Settings {
     let mut store = settings.profile_store();
     if !store.items.is_empty() {
         store.items.remove(0);
-    }
-    if goos == "windows" {
-        // 內建風格的快照原本把混打記成 off；Windows 要同步改掉，避免讀檔時被蓋回。
-        settings.mixed_input = true;
-        let active = store.active.clone();
-        if let Some(profile) = store.items.iter_mut().find(|profile| profile.id == active) {
-            profile
-                .values
-                .insert("mixed-input".to_string(), "on".to_string());
-        }
     }
     settings.put_profile_store(store);
     settings

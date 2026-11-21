@@ -283,9 +283,10 @@ DP（A）與路由（B）都能把 `watashi` 解成 `わたし`，有日文解�
 
 ### 歸因與處置
 
-`crates/jc-engine/src/config.rs` 的 `mode_from_settings` 順序是「混打 → 日文 →
-英文 → 注音」。原本 `mixed-input = off` 讓引擎進 `Mode::Zh`，才是使用者看到
-注音與無法繼續打字的根本原因。
+舊版 `crates/jc-engine/src/config.rs` 的 `mode_from_settings` 順序是「混打 → 日文 →
+英文 → 注音」，`mixed-input = off` 讓引擎進 `Mode::Zh`，才是使用者看到
+注音與無法繼續打字的根本原因。現在已收斂成 `japanese() ? Ja : Mixed`，
+`mixed_input` 並從 JSON 契約移除，舊檔直接忽略。
 
 依使用者指示，`mixed-input` 開關直接移除，引擎對中文使用者永遠進
 `Mode::Mixed`。本 task 不改開關、不改預設值、不改路由邏輯，只補回歸測試：

@@ -737,26 +737,43 @@ fn test_unusable_model_residency_value_is_kept_until_set() {
 }
 
 #[test]
-fn test_fresh_windows_settings_enable_mixed_input() {
-    let settings = fresh_settings("windows");
-    assert!(settings.mixed_input, "全新安裝的 Windows 設定要開混打");
-    let active = settings.active_profile("windows");
-    assert_eq!(
-        active.values.get("mixed-input").map(String::as_str),
-        Some("on")
-    );
-    assert_eq!(settings.value("mixed-input").as_deref(), Some("on"));
-
-    let dir = tmpdir("windows-mixed");
+fn test_legacy_mixed_input_is_ignored() {
+    // 舊檔的 mixed_input 直接忽略：能讀、不進 extra、不產生警示、不寫回。
+    let dir = tmpdir("legacy-mixed");
     let path = dir.join("settings.json");
-    save(&path, &settings).expect("存檔");
-    let report = read(&path, "windows");
-    assert!(
-        report.settings.mixed_input,
-        "重新讀取不能被風格快照蓋回 off"
+    write_settings(
+        &path,
+        r#"{"schema":2,"mixed_input":true,"punctuation":true}"#,
     );
-    assert_eq!(report.settings, settings);
+    let report = read(&path, "linux");
+    assert!(report.error.is_none(), "{:?}", report.error);
+    let mut expected = Settings::default_for_platform("linux");
+    expected.punctuation = true;
+    assert_eq!(
+        report.settings, expected,
+        "舊檔行為與不含 mixed_input 的新檔相同"
+    );
+    assert_eq!(report.settings.value("mixed-input"), None);
+    assert!(
+        !report.notes.iter().any(|note| note.contains("mixed_input")),
+        "退休欄位不該產生警示：{:?}",
+        report.notes
+    );
+
+    save(&path, &report.settings).expect("存檔");
+    let saved = read_text(&path);
+    assert!(!saved.contains("mixed_input"), "退休欄位不寫回：{saved}");
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_fresh_settings_have_no_mixed_input() {
+    for goos in ["linux", "windows", "darwin"] {
+        let settings = fresh_settings(goos);
+        assert_eq!(settings.value("mixed-input"), None, "{goos}");
+        let active = settings.active_profile(goos);
+        assert!(!active.values.contains_key("mixed-input"), "{goos}");
+    }
 }
 
 #[test]
@@ -772,7 +789,6 @@ fn test_profiles_migration_and_complete_round_trip() {
         !settings.active_profile("linux").builtin,
         "舊設定應凍結成 legacy"
     );
-    assert!(settings.mixed_input);
     assert!(settings.punctuation);
     assert_eq!(settings.toggle_key, "left");
     assert_eq!(read_text(&path), original, "讀取不得改寫設定");
@@ -797,11 +813,14 @@ fn test_profiles_migration_and_complete_round_trip() {
     settings
         .profile_action(ProfileAction::Select, "legacy", "", "linux")
         .expect("選回舊設定");
-    assert!(settings.mixed_input);
     assert_eq!(settings.toggle_key, "left");
     assert!(settings.punctuation);
     save(&path, &settings).expect("存檔");
     assert!(read_text(&path).contains("future_field"), "未知欄位要保留");
+    assert!(
+        !read_text(&path).contains("mixed_input"),
+        "退休的 mixed_input 不寫回"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -955,10 +974,10 @@ fn test_custom_rules_cannot_bypass_compatibility() {
         assert_eq!(settings, before, "{key}");
     }
     let mut settings = Settings::default();
-    settings.set("mixed-input", "on", "linux").expect("設定");
+    settings.set("toneless", "on", "linux").expect("設定");
     let before = settings.clone();
     assert!(settings
-        .set("style-shift-space", "fullwidth", "linux")
+        .set("style-punctuation", "microsoft", "linux")
         .is_err());
     assert_eq!(settings, before, "反向操作也要擋");
 }

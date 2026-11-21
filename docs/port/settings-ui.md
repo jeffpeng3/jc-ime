@@ -37,7 +37,7 @@ Go 版設定程式是 Tauri（`ref/0c-ime/platforms/settings`）：Rust 外殼�
 | `platforms/settings/ui/pages.js`（各頁項目與順序） | `crates/jc-settings-ui/src/options.rs` | rewritten；只留本 task 的四頁 |
 | `platforms/settings/ui/app.js`（依契約產生欄位、送 `settings set`） | `crates/jc-settings-ui/src/ui.rs`、`state.rs` | rewritten；改成 `SettingField` 直接呼叫 `Settings::set` |
 | `platforms/settings/ui/models.js`（模型頁） | `crates/jc-settings-ui/src/data.rs`、`ui.rs`（資料分頁） | rewritten；只顯示 manifest 與檔案存在，不提供下載 |
-| `platforms/settings/ui/input-styles.js`（輸入習慣） | `state.rs`（`copy_profile`）、`ui.rs`（輸入分頁） | 部分 ported：顯示鎖定與複製成自訂，沒有改名／刪除 |
+| `platforms/settings/ui/input-styles.js`（輸入習慣） | `state.rs`（`make_editable`）、`ui.rs`（輸入分頁） | 部分 ported：第一次修改時自動轉成自訂快照，沒有改名／刪除 |
 | `platforms/settings/src/main.rs`（視窗、單一實例、指令白名單） | `crates/jc-settings-ui/src/main.rs` | rewritten；GPUI 進入點，無 IPC |
 | `platforms/settings/src/updater.rs`、`watch.rs`（更新與詞彙同步） | n/a | 本版沒有更新器與「我的詞彙」 |
 | `internal/settings/settings.go`（讀寫、驗證） | `crates/jc-settings/src/settings.rs` | 已在 settings-core 移植；本 task 只使用 |
@@ -54,50 +54,48 @@ Go 版設定程式是 Tauri（`ref/0c-ime/platforms/settings`）：Rust 外殼�
 | 注音 | 選字模型 | `selection` | 下拉：神經模型／統計（預設神經） |
 | 注音 | 學習 | `document-context` | 開關（預設開） |
 | 注音 | 選字模型狀態 | n/a | 唯讀；有權重顯示「已安裝」，缺 `models/zh-select` 時顯示「需下載」 |
-| 日文 | 神經模型（Jinen） | `ja-model` | 開關（預設開） |
-| 日文 | 逐字変換 | `ja-live-conversion` | 開關（預設關） |
-| 日文 | 寫入日文個人詞庫 | `ja-learning` | 開關（預設開） |
-| 日文 | 輸入方式 | `ja-input-method` | 下拉：羅馬字／直接かな |
-| 日文 | 日英同形 | `ja-ambiguous` | 下拉：並列／英文優先／かな優先 |
 | 日文 | 神經轉換模式 | `ja-neural-mode` | 下拉：自動／品質優先／關閉（預設自動） |
-| 日文 | 候選重排（實驗） | `ja-rerank` | 開關（預設關） |
-| 輸入 | 中英切換鍵 | `toggle-key` | 下拉：右 Shift／左右 Shift／左 Shift／不使用 |
-| 輸入 | 啟動模式 | `start-mode` | 下拉：注音／英文 |
-| 輸入 | Esc 清除 | `esc-clear` | 開關 |
+| 日文 | 逐字変換 | `ja-live-conversion` | 開關；說明寫「神經補正由《神經轉換模式》控制」 |
+| 日文 | 寫入日文個人詞庫 | `ja-learning` | 開關（預設開） |
 | 輸入 | 空白選字 | `space-selects` | 開關 |
 
-中英混打已移除開關：DP 是唯一分詞路徑，引擎對中文使用者一律用混打模式，
-舊設定檔留下的 `mixed_input=false` 不再影響啟動模式。
+已從 UI 移除的項目：`toggle-key`、`start-mode`、`esc-clear`、`ja-model`、
+`ja-rerank`、`ja-input-method`、`ja-ambiguous`、`mode-memory`。其中前七項的 JSON
+欄位保留給舊檔相容，只有 `mixed_input` 從 JSON 契約整個移除。
+
+中英切換固定為單按左／右 Shift：TSF 送 `{"op":"toggle"}`，引擎在目前語言與
+純英文 En 之間切換，再按一次回到原本的 Mixed 或 Ja。中文使用者一律用混打模式，
+舊設定檔的 `mixed_input` 直接忽略，不寫回。
 | 資料 | 資料根目錄、設定檔、manifest、模型 | n/a | 唯讀再加「重新檢查」按鈕 |
 
 ### 模型頁的狀態判斷
 
-`data.rs` 用固定相對路徑探測模型檔，`ui.rs` 的資料分頁「模型」群組只列仍在使用
-或隨 MSI 散布的角色。有檔案顯示「已安裝」（正常色），缺檔才顯示「需下載」
-（警告色）。目前列出四項：
+`data.rs` 從 `jc-data` 的 `CATALOG` 依角色解析實際路徑，不再自己維護一份相對
+路徑表；catalog 改目錄或檔名時模型頁跟著改。`ui.rs` 的資料分頁「模型」群組只列
+仍在使用或隨 MSI 散布的角色。有檔案顯示「已安裝」（正常色），缺檔才顯示
+「需下載」（警告色）。目前列出四項：
 
-| 顯示名稱 | 探測路徑 | 缺檔時 |
+| 顯示名稱 | catalog 角色 | 缺檔時 |
 |---|---|---|
-| 注音選字模型 | `models/zh-select/model.q8_0.gguf` 等三種格式 | 需下載 |
-| 日文神經模型（Jinen） | `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | 需下載 |
-| Jinen tokenizer | `models/quant/jinen-v2-xsmall/tokenizer.json` 等三種候選 | 需下載 |
-| 日文詞典 pack | `packs/ja-lexicon-mozc-v2.pack` 或 public-core | 需下載 |
+| 注音選字模型 | `ZhSelect` 的 `.gguf`／`.safetensors`／`.onnx` 候選 | 需下載 |
+| 日文神經模型（Jinen） | `JaNeural` 的 `.gguf` 候選 | 需下載 |
+| Jinen tokenizer | 環境變數 → 資料 manifest 的 `JaTokenizer` → GGUF 同目錄 → 隨附候選 | 需下載 |
+| 日文詞典 pack | `JaLexicon` 的 `.pack` 候選 | 需下載 |
 
-這三項模型檔（zh-select GGUF、Jinen GGUF、Jinen tokenizer）隨 MSI 散布，
-正常安裝應全部顯示「已安裝」。Jinen tokenizer 的候選順序跟
-`jc-engine::resolve_ja_neural` 一致，App 不讀資料 manifest 的路徑解析。
+Jinen tokenizer 的探測順序與 `jc-engine::resolve_ja_neural` 一致，也補上環境
+變數、資料 manifest 與 GGUF 同目錄三種來源。這三項模型檔隨 MSI 散布，正常安裝
+應全部顯示「已安裝」。
 
 已移除的角色不再列出，也不再探測：`ja-rerank` 已棄用且 `SessionConfig::ja_rerank`
 預設 false；`ja-punct` 與舊的 `models/ja-tokenizer/public_core_ja.model`
 自 2026-11-20 起不載入、不散布，2026-11-21 起也從集合 manifest 移除。
-把它們顯示成「缺少／未安裝」是誤導，因此 UI 完全不顯示，跟 `jc-engine` 移除
-過期 tokenizer 探測的做法一致。`ja-rerank` 設定開關仍保留在日文分頁，
-那是引擎仍接受的設定值，與模型頁的檔案清單無關。
+把它們顯示成「缺少／未安裝」是誤導，因此 UI 完全不顯示。相對應的死設定 UI
+（`ja-model`、`ja-rerank`、`ja-input-method`、`ja-ambiguous`）也已移除，JSON
+欄位保留給舊檔相容。
 
 日文的 `ja-model`、`ja-input-method`、`ja-ambiguous` 在 `settings-wire` 的對照
 表是「本版忽略」：引擎用 `ja-neural-mode` 決定神經轉換、只實作羅馬字、固定日英
-並列。畫面照存這些值，說明文字直接寫明尚未生效，避免把保留值當成已生效。
-`ja-neural-mode` 與 `ja-rerank` 已接進 `SessionConfig`，可直接修改。
+並列。畫面不再顯示這些值；`ja-neural-mode` 已接進 `SessionConfig`，可直接修改。
 
 輸入分頁的 14 個鍵位規則由 `input_profile` 管理。第一次啟動時
 `SettingsView::load` 會把預設值存成 `settings.json`，同時把內建風格轉成自訂快照；

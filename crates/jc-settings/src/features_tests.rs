@@ -118,8 +118,6 @@ fn test_platform_defaults() {
     let windows = Settings::default_for_platform("windows");
     assert_eq!(windows.toggle_key, "both");
     assert!(windows.left_shift, "Windows 預設左右 Shift");
-    assert!(windows.mixed_input, "Windows 注音預設進 Mixed 模式");
-    assert!(!linux.mixed_input, "Linux 仍維持注音模式");
     let mac = Settings::default_for_platform("darwin");
     assert_eq!(mac.toggle_key, "none");
     assert_eq!(mac.candidate_cursor, "before");

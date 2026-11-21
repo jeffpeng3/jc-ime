@@ -117,6 +117,13 @@ impl Engine {
                 }
                 state(snapshot)
             }
+            Request::Toggle => {
+                if !self.hello {
+                    return Response::error(ErrorCode::Internal, "尚未完成握手");
+                }
+                // 單按左右 Shift：切到 En 或回到切換前的 Mixed／Ja。
+                state(self.session.toggle_english())
+            }
             Request::Snapshot => {
                 if !self.hello {
                     return Response::error(ErrorCode::Internal, "尚未完成握手");
@@ -317,6 +324,30 @@ mod tests {
         assert_eq!(
             engine.handle(Request::Commit),
             Response::Committed { text: "我".into() }
+        );
+    }
+
+    #[test]
+    fn toggle_request_switches_english_and_restores_previous_mode() {
+        let config = SessionConfig::new(jc_core::Mode::Mixed);
+        let mut engine = Engine::with_session(Session::new(config));
+        hello(&mut engine);
+        assert_eq!(engine.session.mode(), jc_core::Mode::Mixed);
+        assert!(matches!(
+            engine.handle(Request::Toggle),
+            Response::State { .. }
+        ));
+        assert_eq!(engine.session.mode(), jc_core::Mode::En);
+        engine.handle(Request::Toggle);
+        assert_eq!(engine.session.mode(), jc_core::Mode::Mixed);
+    }
+
+    #[test]
+    fn toggle_before_hello_is_rejected() {
+        let mut engine = Engine::new();
+        assert_eq!(
+            engine.handle(Request::Toggle),
+            Response::error(ErrorCode::Internal, "尚未完成握手")
         );
     }
 

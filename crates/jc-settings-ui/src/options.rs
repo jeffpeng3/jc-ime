@@ -4,9 +4,7 @@
 //! 中文標籤。預設值由 `Settings::default_for_platform` 取得，不另外複製一份。
 
 use jc_settings::{
-    Settings, JA_AMBIGUOUS_BOTH, JA_AMBIGUOUS_ENGLISH, JA_AMBIGUOUS_KANA, JA_INPUT_KANA,
-    JA_INPUT_ROMAJI, JA_NEURAL_AUTO, JA_NEURAL_OFF, JA_NEURAL_QUALITY, NEURAL, START_ENGLISH,
-    START_ZHUYIN, STATISTICAL, TOGGLE_BOTH, TOGGLE_LEFT, TOGGLE_NONE, TOGGLE_RIGHT,
+    Settings, JA_NEURAL_AUTO, JA_NEURAL_OFF, JA_NEURAL_QUALITY, NEURAL, STATISTICAL,
 };
 
 /// 下拉選項：設定檔內的值與畫面文字。
@@ -61,62 +59,6 @@ const SELECTION_CHOICES: &[Choice] = &[
     Choice {
         value: STATISTICAL,
         label: "統計",
-    },
-];
-
-const TOGGLE_CHOICES: &[Choice] = &[
-    Choice {
-        value: TOGGLE_RIGHT,
-        label: "右 Shift",
-    },
-    Choice {
-        value: TOGGLE_BOTH,
-        label: "左右 Shift",
-    },
-    Choice {
-        value: TOGGLE_LEFT,
-        label: "左 Shift",
-    },
-    Choice {
-        value: TOGGLE_NONE,
-        label: "不使用",
-    },
-];
-
-const START_CHOICES: &[Choice] = &[
-    Choice {
-        value: START_ZHUYIN,
-        label: "注音",
-    },
-    Choice {
-        value: START_ENGLISH,
-        label: "英文",
-    },
-];
-
-const JA_INPUT_CHOICES: &[Choice] = &[
-    Choice {
-        value: JA_INPUT_ROMAJI,
-        label: "羅馬字",
-    },
-    Choice {
-        value: JA_INPUT_KANA,
-        label: "直接かな",
-    },
-];
-
-const JA_AMBIGUOUS_CHOICES: &[Choice] = &[
-    Choice {
-        value: JA_AMBIGUOUS_BOTH,
-        label: "並列",
-    },
-    Choice {
-        value: JA_AMBIGUOUS_ENGLISH,
-        label: "英文優先",
-    },
-    Choice {
-        value: JA_AMBIGUOUS_KANA,
-        label: "かな優先",
     },
 ];
 
@@ -180,13 +122,10 @@ pub const ZH: [Opt; 2] = [
 ];
 
 /// 日文分頁。
-pub const JA: [Opt; 7] = [
-    Opt {
-        key: "ja-model",
-        title: "神經模型（Jinen）",
-        help: "轉換時使用神經かな漢字変換；與「神經轉換模式」一起決定是否呼叫模型。",
-        kind: Kind::Switch,
-    },
+///
+/// `ja-model`、`ja-rerank`、`ja-input-method` 與 `ja-ambiguous` 已從 UI 移除：
+/// 引擎不讀這些值或已標棄用。JSON 欄位保留給舊檔相容，只是不再顯示。
+pub const JA: [Opt; 3] = [
     Opt {
         key: "ja-neural-mode",
         title: "神經轉換模式",
@@ -196,13 +135,7 @@ pub const JA: [Opt; 7] = [
     Opt {
         key: "ja-live-conversion",
         title: "逐字変換",
-        help: "邊打邊轉換，不等空白鍵；本版尚未接上神經模型。",
-        kind: Kind::Switch,
-    },
-    Opt {
-        key: "ja-rerank",
-        title: "候選重排（實驗）",
-        help: "用日文 reranker 重排候選；實測可能退步，預設不開。",
+        help: "邊打邊轉換，不等空白鍵；神經補正由《神經轉換模式》控制。",
         kind: Kind::Switch,
     },
     Opt {
@@ -211,47 +144,18 @@ pub const JA: [Opt; 7] = [
         help: "選字結果記進個人詞庫，下次優先出現。",
         kind: Kind::Switch,
     },
-    Opt {
-        key: "ja-input-method",
-        title: "輸入方式",
-        help: "引擎目前只實作羅馬字；選直接かな只會存進設定檔。",
-        kind: Kind::Choice(JA_INPUT_CHOICES),
-    },
-    Opt {
-        key: "ja-ambiguous",
-        title: "日英同形",
-        help: "引擎目前固定日英並列；這個值會保留給之後的排序。",
-        kind: Kind::Choice(JA_AMBIGUOUS_CHOICES),
-    },
 ];
 
 /// 輸入分頁。
-pub const INPUT: [Opt; 4] = [
-    Opt {
-        key: "toggle-key",
-        title: "中英切換鍵",
-        help: "按一下切換中英模式；右 Shift 是 Linux 的預設。",
-        kind: Kind::Choice(TOGGLE_CHOICES),
-    },
-    Opt {
-        key: "start-mode",
-        title: "啟動模式",
-        help: "引擎啟動時先進入哪一種模式。",
-        kind: Kind::Choice(START_CHOICES),
-    },
-    Opt {
-        key: "esc-clear",
-        title: "Esc 清除",
-        help: "按 Esc 清掉整段組字，不用逐字刪。",
-        kind: Kind::Switch,
-    },
-    Opt {
-        key: "space-selects",
-        title: "空白選字",
-        help: "空白鍵選第一個候選；關閉時空白鍵只送出空白。",
-        kind: Kind::Switch,
-    },
-];
+///
+/// 中英切換固定為單按左／右 Shift，不再提供切換鍵、啟動模式與 Esc 清除開關；
+/// 對應的 JSON 欄位保留給舊檔相容。
+pub const INPUT: [Opt; 1] = [Opt {
+    key: "space-selects",
+    title: "空白選字",
+    help: "空白鍵選第一個候選；關閉時空白鍵只送出空白。",
+    kind: Kind::Switch,
+}];
 
 /// 把預設值翻成畫面文字。
 pub fn default_label(opt: &Opt, defaults: &Settings) -> String {
@@ -329,18 +233,40 @@ mod tests {
     }
 
     #[test]
-    fn test_linux_defaults_are_right_shift_and_zhuyin() {
+    fn test_linux_defaults_are_kept_for_legacy_files() {
         let defaults = Settings::default_for_platform("linux");
         assert_eq!(
             defaults.value("toggle-key").as_deref(),
-            Some(TOGGLE_RIGHT),
-            "Linux 預設用右 Shift 切換"
+            Some("right"),
+            "舊檔的 toggle-key 預設值仍可查詢"
         );
         assert_eq!(
             defaults.value("start-mode").as_deref(),
-            Some(START_ZHUYIN),
-            "預設從注音開始"
+            Some("zhuyin"),
+            "舊檔的 start-mode 預設值仍可查詢"
         );
+    }
+
+    #[test]
+    fn test_retired_options_are_not_exposed_in_ui() {
+        let retired = [
+            "toggle-key",
+            "start-mode",
+            "esc-clear",
+            "ja-model",
+            "ja-rerank",
+            "ja-input-method",
+            "ja-ambiguous",
+            "mode-memory",
+        ];
+        for opt in FUZZY
+            .iter()
+            .chain(ZH.iter())
+            .chain(JA.iter())
+            .chain(INPUT.iter())
+        {
+            assert!(!retired.contains(&opt.key), "{} 已從 UI 移除", opt.key);
+        }
     }
 
     #[test]

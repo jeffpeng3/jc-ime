@@ -47,13 +47,15 @@
 ```json
 { "op": "hello", "protocol": 3, "client": "jc-tsf/0.1.0" }
 { "op": "key", "key": { ... } }
+{ "op": "toggle" }
 { "op": "snapshot" }
 { "op": "commit" }
 { "op": "shutdown" }
 ```
 
-`key` 的形狀見 `jc_core::Key`／`KeyCode`。未定義的 `op` 由 `unknown` 接住並回
-`UnknownOp`，不會斷線。
+`key` 的形狀見 `jc_core::Key`／`KeyCode`。`toggle` 是單按左／右 Shift：引擎在目前
+語言（Mixed 或 Ja）與純英文 En 之間切換，並記住切換前的模式；再收到一次就回到
+它。未定義的 `op` 由 `unknown` 接住並回 `UnknownOp`，不會斷線。
 
 ### Response
 
@@ -159,6 +161,7 @@ UTF-16 位移的外殼請自己從 `cursor_rune` 換算，不要假設 `cursor` 
   ├─ Hello ──▶ Ready
   │
   ├─ Key ─────▶ State（每次按鍵都回完整快照）
+  ├─ Toggle ──▶ State（在目前語言與 En 間切換，回完整快照）
   ├─ Snapshot ▶ State
   ├─ Commit ──▶ Committed
   │
@@ -167,7 +170,7 @@ UTF-16 位移的外殼請自己從 `cursor_rune` 換算，不要假設 `cursor` 
 
 規則：
 
-- 每個 `Key` 都回一個 `State`，wrapper 不需要自己維護組字狀態。
+- 每個 `Key` 與 `Toggle` 都回一個 `State`，wrapper 不需要自己維護組字狀態。
 - `Commit` 後組字區清空，回 `Committed { text }`。
 - 取消（Esc）由核心處理，回應仍是 `State`，`preedit` 為空。
 - 引擎不會主動推送訊息；wrapper 以請求／回應為單位。

@@ -216,6 +216,8 @@ pub struct Control {
     generation: Rc<Cell<u64>>,
     /// 已送出但還沒回覆的選取導覽鍵世代；用來避免快速連打時重複補 `Down`。
     navigation_armed: Cell<Option<u64>>,
+    /// 單按左右 Shift 的狀態；在 UI 執行緒使用。
+    shift_tap: RefCell<keys::ShiftTap>,
     hwnd: HWND,
     queue: Arc<Queue>,
     /// 長期的請求通道；候選清單與 `Control` 共用，由 dispatch 執行緒轉送給
@@ -308,6 +310,7 @@ impl Control {
             last: Cell::new(LastState::default()),
             generation,
             navigation_armed: Cell::new(None),
+            shift_tap: RefCell::new(keys::ShiftTap::default()),
             hwnd: HWND::default(),
             queue,
             bridge_tx,
@@ -455,7 +458,17 @@ impl Control {
             // 引擎不在就全部放行，讓使用者至少能打出原來的字母。
             return false;
         }
-        keys::translate(wparam as u16, scan_code(lparam), self.composing()).is_some()
+        let vk = wparam as u16;
+        // 左右 Shift 要追蹤 key-down、在 key-up 判定單按，所以兩個事件都攔。
+        if keys::is_shift(vk) {
+            return true;
+        }
+        keys::translate(vk, scan_code(lparam), self.composing()).is_some()
+    }
+
+    /// `OnTestKeyUp`：只有左右 Shift 需要攔來判定單按。
+    pub fn test_key_up(&self, wparam: usize) -> bool {
+        self.queue.is_connected() && keys::is_shift(wparam as u16)
     }
 
     /// `OnKeyDown`：把按鍵送給 worker，立即返回。
@@ -467,8 +480,9 @@ impl Control {
             self.context.replace(Some(context.clone()));
         }
 
-        let Some(mut batch) = keys::translate(wparam as u16, scan_code(lparam), self.composing())
-        else {
+        let vk = wparam as u16;
+        self.shift_tap.borrow_mut().key_down(vk);
+        let Some(mut batch) = keys::translate(vk, scan_code(lparam), self.composing()) else {
             return false;
         };
 
@@ -498,6 +512,23 @@ impl Control {
         true
     }
 
+    /// `OnKeyUp`：單按左／右 Shift 時請引擎在目前語言與 En 之間切換。
+    ///
+    /// 搭配 Ctrl／Alt／Win 的快捷鍵不算單按；有沒有其他的 key-down 由
+    /// [`keys::ShiftTap`] 記錄。
+    pub fn key_up(&self, wparam: usize) -> bool {
+        if !self.queue.is_connected() {
+            return false;
+        }
+        let tap = self.shift_tap.borrow_mut().key_up(wparam as u16);
+        if tap && !keys::Modifiers::current().pass_through() {
+            self.push_request(Request::Toggle);
+            true
+        } else {
+            false
+        }
+    }
+
     /// 焦點換到別的文件：丟掉舊 context 與組字，並清掉引擎裡殘留的狀態。
     fn clear_focus_state(&self) {
         let was_composing = self.composing();
@@ -505,6 +536,7 @@ impl Control {
         self.context.replace(None);
         self.last.set(LastState::default());
         self.navigation_armed.set(None);
+        self.shift_tap.borrow_mut().clear();
         self.candidate.borrow_mut().end();
         if was_composing {
             logging::debug("焦點改變，送出 Escape 清掉引擎組字");

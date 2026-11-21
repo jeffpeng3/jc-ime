@@ -46,7 +46,7 @@ jc-engine --data <資料根目錄> [--mode zh|ja|mixed|en] \
 | 參數 | 說明 |
 |---|---|
 | `--data <dir>` | 資料根目錄；沒給時讀 `JC_DATA`，兩者都沒有就結束（exit 1） |
-| `--mode` | 啟動時的輸入模式，預設 `zh`；**沒有執行期切換模式的請求** |
+| `--mode` | 啟動時的輸入模式；執行期可用 `{"op":"toggle"}` 在目前語言與 En 間切換 |
 | `--socket <path>` | Unix 上用 domain socket；Windows 上取最後一段掛到 `\\.\pipe\`；`--supervise` 不給時用 `jc-ime-<SID 尾段>` |
 | `--max-frame` | 單一訊框上限，預設 1048576 |
 | `--allow-empty-data` | 不載入資料，只給協定測試用；**產品不可使用** |
@@ -343,8 +343,9 @@ Shift+Tab 有兩種表示：`{"kind":"shift_tab"}` 配 `shift:true`，或
 - 關閉時：一個按鍵都不送引擎，全部 pass-through；同時要把引擎裡殘留的
   組字收掉。
 - 開啟時：依 §4.5 的規則送。
-- 中英切換：引擎沒有切換請求。要嘛關掉 IME 讓英文直通，要嘛用
-  `--mode mixed`；混合候選已可用，但模式仍只能在啟動時指定。
+- 中英切換：單按左／右 Shift 時送 `{"op":"toggle"}`，引擎在目前語言（Mixed 或
+  Ja）與純英文 En 之間切換，回一個完整 `State`；再按一次回到原本的語言。
+  搭配其他鍵的 Shift 不算單按，不要送。
 - 全形／半形、標點樣式、Shift+Space：都是 wrapper 的 UI 決策。引擎沒有
   這些請求，Shift+Space 也不要送給引擎。
 
@@ -380,7 +381,8 @@ Shift+Tab 有兩種表示：`{"kind":"shift_tab"}` 配 `shift:true`，或
 | `en` | 直接累積英數到組字區 | Enter 會提交但不產生換行，見 §7.3 |
 | `mixed` | 自動判斷英數與注音／日文 | 候選清單可用，仍是新功能 |
 
-模式只能在啟動時指定。要換模式就是重啟引擎，或關掉 IME 直通。
+啟動模式由 `--mode` 指定；執行期可用 `Toggle` 請求暫時切到 En 並回到原模式。
+要指定其他語言仍須重啟引擎。
 
 ## 5. 組字顯示
 
@@ -870,7 +872,8 @@ Linux CI 能編譯、能跑測試。佔位 crate 沒有 `todo!()`，所有入口
 6. **一次一條連線**。多應用程式共用會排隊，沒有多工。
 7. **沒有執行期設定頻道**。簡繁轉換、Ctrl 標點、英文自動補完、輸入風格、
    模糊音都只能在啟動時由 `settings.json` 決定；改了要重啟引擎。
-8. **模式不能切換**。`--mode` 只影響啟動。
+8. **模式切換只支援 En**。執行期可用 `Toggle` 在目前語言與 En 間切換；切到其他
+   語言仍須重啟引擎。
 9. **引擎端沒有載入個人化檔案**。核心有 rollback、弱負向訊號與最短觸發
    長度，但 `jc-engine` 啟動時不會讀取使用者學習檔。
 10. **日文 reranker 預設關閉**。重排由 Jinen small 取代，`ja_rerank` 只
@@ -897,7 +900,7 @@ Linux CI 能編譯、能跑測試。佔位 crate 沒有 `todo!()`，所有入口
 | 7 | `docs/proto.md` 說每個 Key 都回 `State` | Enter 回 `Committed`，錯誤回 `Error` | 文件補上回應矩陣 |
 | 8 | 沒有學習次數與來源權重 | 候選窗無法顯示「常用」或信心 | v4 加欄位，保持舊 wrapper 可解析 |
 | 9 | `Ready` 沒有通告 `max_frame` 與能力 | wrapper 只能猜 | 加 `max_frame`，之後再加 `features` |
-| 10 | 沒有切換模式、IME 開關的請求 | 每個模式要一個引擎 | 加 `set_mode`，或明確寫成 wrapper 責任 |
+| 10 | `Toggle` 只能在目前語言與 En 間切換 | 切到其他語言仍要重啟引擎 | 加完整的 `set_mode` 請求 |
 | 11 | 沒有執行期設定請求 | 設定改了要重啟引擎 | 加 `configure` 請求，或明確寫成啟動時設定 |
 | 12 | 沒有 undo／forget | 無法撤銷學習或提交 | 加 `undo`／`forget` |
 | 13 | 沒有焦點事件 | 共用引擎時組字會跨應用程式殘留 | 加 `focus_lost`，或由 wrapper 保證送 Esc |

@@ -54,10 +54,64 @@ impl Modifiers {
     }
 }
 
+/// 左 Shift 的虛擬鍵碼（`VK_LSHIFT`）。
+pub const VK_LSHIFT: u16 = 0xA0;
+/// 右 Shift 的虛擬鍵碼（`VK_RSHIFT`）。
+pub const VK_RSHIFT: u16 = 0xA1;
+
+/// 是否為用來切換中英的左右 Shift。
+pub fn is_shift(vk: u16) -> bool {
+    vk == VK_LSHIFT || vk == VK_RSHIFT
+}
+
 /// 單一虛擬鍵是否按著。
 fn pressed(key: VIRTUAL_KEY) -> bool {
     // SAFETY: GetKeyState 只讀目前執行緒的鍵盤狀態。
     unsafe { GetKeyState(key.0 as i32) < 0 }
+}
+
+/// 單按 Shift 的狀態機。
+///
+/// 按左或右 Shift 時開始記錄；其間若有其他按鍵先按下，這次就不算單按。
+/// key-up 由 [`ShiftTap::key_up`] 判定是否要送 `Request::Toggle`。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ShiftTap {
+    /// 正在追蹤的 Shift 虛擬鍵碼；`None` 代表沒有。
+    down: Option<u16>,
+    /// Shift 按下之後是否出現過其他按鍵。
+    touched: bool,
+}
+
+impl ShiftTap {
+    /// 重設狀態；焦點改變或引擎斷線時呼叫。
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// 記錄 key-down；回傳是否為左右 Shift。
+    pub fn key_down(&mut self, vk: u16) -> bool {
+        if is_shift(vk) {
+            self.down = Some(vk);
+            self.touched = false;
+            true
+        } else {
+            if self.down.is_some() {
+                self.touched = true;
+            }
+            false
+        }
+    }
+
+    /// 記錄 key-up；回傳 true 代表構成單按 Shift，應切換 En。
+    pub fn key_up(&mut self, vk: u16) -> bool {
+        if !is_shift(vk) {
+            return false;
+        }
+        let tap = self.down == Some(vk) && !self.touched;
+        self.down = None;
+        self.touched = false;
+        tap
+    }
 }
 
 /// 把按鍵事件轉成要送給引擎的按鍵序列。
@@ -219,5 +273,35 @@ mod tests {
         assert_eq!(named_key(VK_TAB.0, true, true), Some(KeyCode::ShiftTab));
         assert_eq!(named_key(VK_TAB.0, true, false), None);
         assert_eq!(named_key(VK_HOME.0, false, true), None);
+    }
+
+    #[test]
+    fn is_shift_recognizes_both_sides() {
+        assert!(is_shift(VK_LSHIFT));
+        assert!(is_shift(VK_RSHIFT));
+        assert!(!is_shift(VK_SHIFT.0));
+    }
+
+    #[test]
+    fn shift_tap_fires_on_same_side_key_up() {
+        let mut tap = ShiftTap::default();
+        assert!(tap.key_down(VK_LSHIFT));
+        assert!(tap.key_up(VK_LSHIFT));
+
+        let mut tap = ShiftTap::default();
+        assert!(tap.key_down(VK_RSHIFT));
+        assert!(tap.key_up(VK_RSHIFT));
+    }
+
+    #[test]
+    fn shift_tap_ignores_other_keys_and_opposite_side() {
+        let mut tap = ShiftTap::default();
+        tap.key_down(VK_LSHIFT);
+        tap.key_down(b'J' as u16);
+        assert!(!tap.key_up(VK_LSHIFT), "搭配其他鍵就不算單按");
+
+        let mut tap = ShiftTap::default();
+        tap.key_down(VK_LSHIFT);
+        assert!(!tap.key_up(VK_RSHIFT), "不同邊的 key-up 不算");
     }
 }

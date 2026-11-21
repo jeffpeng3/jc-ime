@@ -3909,6 +3909,7 @@ version = "0.1.0-rc.11"
 dependencies = [
  "env_logger",
  "gpui-kit",
+ "jc-data",
  "jc-settings",
  "serde_json",
 ]

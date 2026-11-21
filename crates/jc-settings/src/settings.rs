@@ -130,11 +130,15 @@ pub const START_ZHUYIN: &str = "zhuyin";
 pub const START_ENGLISH: &str = "english";
 
 /// 已拿掉的設定檔欄位：讀檔時忽略，存檔時不寫回。
-const RETIRED_KEYS: [&str; 4] = [
+///
+/// `mixed_input` 已從 JSON 契約移除；舊檔保留這個欄位時直接丟棄，不進
+/// `extra`、不產生警示、也不寫回。引擎對中文使用者一律用混打模式。
+const RETIRED_KEYS: [&str; 5] = [
     "preview_0_2",
     "language_memory",
     "language_hotkey",
     "english_profile",
+    "mixed_input",
 ];
 
 /// 讀取結果的檔案狀態。
@@ -182,7 +186,7 @@ pub enum SetError {
         values: String,
     },
     /// 此項由選用的輸入習慣固定。
-    #[error("此項由選用的輸入習慣固定；請先複製成自訂")]
+    #[error("此項由選用的輸入習慣固定；請先切換至自訂輸入習慣")]
     LockedByProfile {
         /// 設定鍵。
         key: String,
@@ -391,19 +395,17 @@ pub struct Settings {
     pub punctuation: bool,
     /// 依自己剛提交的文字選字。
     pub document_context: bool,
-    /// 中英混打。
-    pub mixed_input: bool,
     /// 英文模式自動補字。
     pub english_autocomplete: bool,
     /// 舊欄位：左 Shift 是否切換；由 [`Settings::toggle_key`] 推出。
     pub left_shift: bool,
-    /// 中英切換鍵：`right`、`both`、`left`、`none`。
+    /// 中英切換鍵；已固定為左右 Shift 單按切換，欄位保留給舊檔相容。
     pub toggle_key: String,
-    /// 切換視窗後的中英模式：`native` 或 `shared`。
+    /// 切換視窗後的中英模式；全系統無讀者，欄位保留給舊檔相容。
     pub mode_memory: String,
-    /// 開始時的中英模式：`zhuyin`（預設）或 `english`。
+    /// 開始時的中英模式；引擎固定用主要語言，欄位保留給舊檔相容。
     pub start_mode: String,
-    /// 按 Esc 清除整段組字。
+    /// Esc 清除；核心無條件清組字，欄位保留給舊檔相容。
     pub esc_clear: bool,
     /// 空白鍵開候選（預設）。
     pub space_selects: bool,
@@ -442,9 +444,9 @@ pub struct Settings {
     pub toneless: bool,
     /// 各組模糊音。
     pub fuzzy: Fuzzy,
-    /// 日文輸入方式。
+    /// 日文輸入方式；引擎只實作羅馬字，欄位保留給舊檔相容。
     pub ja_input_method: String,
-    /// 日英同形時的優先順序。
+    /// 日英同形優先順序；引擎固定並列，欄位保留給舊檔相容。
     pub ja_ambiguous: String,
     /// 日文変換方式：`live`（預設，逐字変換）或 `sentence`（整句変換）。
     pub ja_conversion: String,
@@ -454,11 +456,11 @@ pub struct Settings {
     pub ja_symbols: bool,
     /// 日文選字寫入日文個人詞庫。
     pub ja_learning: bool,
-    /// 日文候選使用神經模型重排。
+    /// 日文候選使用神經模型；引擎讀 `ja_neural_mode`，欄位保留給舊檔相容。
     pub ja_model: bool,
     /// 日文神經轉換模式：`auto`（預設）／`quality`／`off`。
     pub ja_neural_mode: String,
-    /// 日文候選使用 reranker 重排；預設關閉，可手動開。
+    /// 日文 reranker 重排；catalog 已標棄用，欄位保留給舊檔相容。
     pub ja_rerank: bool,
     /// 模型常駐模式。
     pub model_mode: String,
@@ -489,10 +491,9 @@ impl Default for Settings {
 type BoolSetter = fn(&mut Settings, bool);
 type StringSetter = fn(&mut Settings, &str);
 
-const BOOL_FIELDS: [(&str, BoolSetter); 23] = [
+const BOOL_FIELDS: [(&str, BoolSetter); 22] = [
     ("punctuation", |s, v| s.punctuation = v),
     ("document_context", |s, v| s.document_context = v),
-    ("mixed_input", |s, v| s.mixed_input = v),
     ("english_autocomplete", |s, v| s.english_autocomplete = v),
     ("left_shift", |s, v| s.left_shift = v),
     ("esc_clear", |s, v| s.esc_clear = v),
@@ -642,8 +643,6 @@ impl Settings {
             selection: NEURAL.to_string(),
             punctuation: false,
             document_context: true,
-            // 混打已是正式功能；Windows 注音直接進 Mixed 模式，別讓羅馬字被當注音解。
-            mixed_input: goos == "windows",
             english_autocomplete: false,
             left_shift: false,
             toggle_key: default_toggle_key(goos).to_string(),
@@ -1037,11 +1036,10 @@ impl Settings {
 }
 
 /// 存檔時的固定欄位順序。
-const SAVE_ORDER: [&str; 41] = [
+const SAVE_ORDER: [&str; 40] = [
     "selection",
     "punctuation",
     "document_context",
-    "mixed_input",
     "english_autocomplete",
     "left_shift",
     "esc_clear",
@@ -1120,12 +1118,6 @@ impl Serialize for Settings {
             &mut kept,
             "document_context",
             Value::Bool(self.document_context),
-        )?;
-        put_known(
-            &mut map,
-            &mut kept,
-            "mixed_input",
-            Value::Bool(self.mixed_input),
         )?;
         put_known(
             &mut map,
@@ -1620,7 +1612,6 @@ pub(crate) fn specs() -> Vec<Spec> {
         spec("document-context", &["on", "off"], |s| {
             on_off(s.document_context)
         }),
-        spec("mixed-input", &["on", "off"], |s| on_off(s.mixed_input)),
         spec("english-autocomplete", &["on", "off"], |s| {
             on_off(s.english_autocomplete)
         }),
@@ -2055,10 +2046,6 @@ impl Settings {
             "allow-placeholders" => {
                 self.allow_placeholders = value == "on";
                 self.forget("allow_placeholders");
-            }
-            "mixed-input" => {
-                self.mixed_input = value == "on";
-                self.forget("mixed_input");
             }
             "candidate-cursor" => {
                 self.candidate_cursor = value.to_string();

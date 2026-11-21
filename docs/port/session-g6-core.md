@@ -38,7 +38,7 @@ hook 接進同一條按鍵流程，並補上快照欄位。沒有改任何群組
 | `selectCandidate` | `core::select_by_digit`、`finish_composition`、`learn_candidate` | rewritten：選字即送進待提交區，不保留組字游標與鎖定 |
 | `accept`／`acceptZh` | `core::accept_suggestion` | rewritten：接受後以整詞取代組字，不新增音節與鎖定 |
 | `composing`／`Composing` | `input_style::composing`（注音）、`snapshot` 的組字字串 | partial：沒有 `cand != nil` 的公開查詢 |
-| `setMode`／`Toggle` | `Session::set_mode`、`toggle_english` | ported（沒有 `toggleStash` 還原） |
+| `setMode`／`Toggle` | `Session::set_mode`、`toggle_english` | ported：`toggle_english` 記住切換前模式，再按一次回到 Mixed/Ja，而非固定 Zh |
 | `capsLockChanged`／`CapsLockOn` | 無 | n/a：`Key` 沒有 caps_lock 請求，外殼直接送 `set_mode` |
 | `View`／`status` | `Session::snapshot` | rewritten：模式與語言欄位由外殼的 `Snapshot` 表達 |
 | `ctrlPunct` | `core::press_ctrl` | ported（G1） |

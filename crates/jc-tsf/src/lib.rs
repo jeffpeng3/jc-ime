@@ -242,8 +242,12 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         Ok(BOOL(control.test_key(wparam.0, lparam.0) as i32))
     }
 
-    fn OnTestKeyUp(&self, _pic: Ref<ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
-        Ok(BOOL(0))
+    fn OnTestKeyUp(&self, _pic: Ref<ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+        let borrowed = self.get_impl().control.borrow();
+        let Some(control) = borrowed.as_deref() else {
+            return Ok(BOOL(0));
+        };
+        Ok(BOOL(control.test_key_up(wparam.0) as i32))
     }
 
     fn OnKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
@@ -256,8 +260,12 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         ))
     }
 
-    fn OnKeyUp(&self, _pic: Ref<ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
-        Ok(BOOL(0))
+    fn OnKeyUp(&self, _pic: Ref<ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+        let borrowed = self.get_impl().control.borrow();
+        let Some(control) = borrowed.as_deref() else {
+            return Ok(BOOL(0));
+        };
+        Ok(BOOL(control.key_up(wparam.0) as i32))
     }
 
     fn OnPreservedKey(&self, _pic: Ref<ITfContext>, _rguid: *const GUID) -> Result<BOOL> {

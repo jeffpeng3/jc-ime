@@ -22,15 +22,15 @@ B + C：
    由 `apply` 自動轉成自訂快照後再寫入。
 
 中英混打開關同時從 UI 移除。DP 已是唯一分詞路徑，引擎對中文使用者一律進
-`Mode::Mixed`，舊檔的 `mixed_input=false` 不再影響啟動模式。`mixed_input` 欄位
-保留在 JSON 契約中做為舊檔相容，`jc-settings` 的驗證與風格快照邏輯不變。
+`Mode::Mixed`。`mixed_input` 已從 JSON 契約移除：舊檔含這個欄位時直接忽略，
+不進 `extra`、不寫回，`input_profile.values` 裡的同名鍵也一併丟棄。
 
 ## Go 對照
 
 | Go 檔案 | Rust 檔案 | 狀態 |
 |---|---|---|
 | `internal/settings/settings.go`（讀寫、缺檔預設） | `crates/jc-settings/src/settings.rs` | 已在 settings-core 移植；本 task 只調整 Windows 混打預設 |
-| `internal/settings/profiles.go`（風格快照與鎖定） | `crates/jc-settings/src/profiles.rs` | rewritten；`fresh_settings` 同步把 Windows 混打設為 on |
+| `internal/settings/profiles.go`（風格快照與鎖定） | `crates/jc-settings/src/profiles.rs` | rewritten；風格快照不再含 `mixed-input` |
 | `platforms/settings/ui/input-styles.js`（鎖定與複製） | `crates/jc-settings-ui/src/ui.rs`、`state.rs` | rewritten；移除複製，改為首次啟動建立可改檔 |
 | `platforms/settings/ui/pages.js`（輸入頁項目） | `crates/jc-settings-ui/src/options.rs` | rewritten；移除 `mixed-input` 開關 |
 
@@ -38,5 +38,5 @@ B + C：
 
 - `docs/install.md`：使用者設定第一次開啟設定程式就建立。
 - `docs/port/settings-ui.md`：移除「複製」與混打開關的說明。
-- `docs/port/settings-wire.md`：`mixed_input` 標為相容用，`start_mode` 不再決定
-  中文啟動模式。
+- `docs/port/settings-wire.md`：`mixed_input` 標為已移除、舊檔忽略；`start_mode`
+  不再決定中文啟動模式。

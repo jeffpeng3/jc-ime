@@ -94,6 +94,10 @@ pub enum Request {
     Hello { protocol: u32, client: String },
     /// 送出一個按鍵。
     Key { key: Key },
+    /// 單按左右 Shift：在目前語言與純英文 En 之間切換。
+    ///
+    /// 引擎記住切換前的模式，再收到一次就回到原本的 Mixed 或 Ja。
+    Toggle,
     /// 取得目前組字狀態。
     Snapshot,
     /// 送出目前的組字結果。
@@ -240,6 +244,16 @@ mod tests {
         let text = serde_json::to_string(&hello).unwrap();
         assert_eq!(text, r#"{"op":"hello","protocol":3,"client":"test"}"#);
         assert_eq!(serde_json::from_str::<Request>(&text).unwrap(), hello);
+    }
+
+    #[test]
+    fn toggle_uses_op_tag() {
+        let text = serde_json::to_string(&Request::Toggle).unwrap();
+        assert_eq!(text, r#"{"op":"toggle"}"#);
+        assert_eq!(
+            serde_json::from_str::<Request>(&text).unwrap(),
+            Request::Toggle
+        );
     }
 
     #[test]

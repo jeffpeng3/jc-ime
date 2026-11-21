@@ -58,12 +58,12 @@ CLI 對照：`jc-cli eval ja --no-live` 走 `sentence`，其餘日文評測預�
 | `selection` | 舊欄位：`statistical` 遷移成 `ja_neural_mode = off`、`neural` 遷移成 `auto`；兩者都在且語意不同時以 `ja_neural_mode` 為準並記一則警告，一致時不警告 | 遷移用 |
 | `punctuation` | `punct_mark = Some('，')`；本版以全形逗號代表「送出前補一個標點」 | 生效（簡化） |
 | `document_context` | `SessionConfig::document_context` | 生效 |
-| `mixed_input` | 舊欄位值不再讀取；UI 已移除開關，引擎一律混打並設 `style.mixed_input = true` | 相容用（忽略值） |
+| `mixed_input` | 已從 JSON 契約移除；舊檔含這個欄位時直接忽略，引擎一律混打並設 `style.mixed_input = true` | 已移除（舊檔忽略） |
 | `english_autocomplete` | `SessionConfig::english_autocomplete` | 生效 |
 | `esc_clear` | 引擎沒有對應欄位；核心的 Escape 一律清組字，是否轉送 Esc 由外殼決定 | 本版忽略（外殼） |
 | `space_selects` | `style.space_inserts_space = !space_selects` | 生效 |
 | `advance_after_select` | 選字後游標位置；核心提交後不控制游標 | 本版忽略（外殼） |
-| `toggle_key`／`left_shift` | 中英切換鍵；引擎只收按鍵，切換由外殼送出 `toggle`／`--mode` | 本版忽略（外殼） |
+| `toggle_key`／`left_shift` | 中英切換已固定為單按左／右 Shift；TSF 送 `{"op":"toggle"}`，引擎在目前語言與 En 間切換。欄位保留給舊檔相容 | 已移除 UI（舊檔忽略） |
 | `start_mode` | 仍保留設定值，但中文使用者的啟動模式不再受它影響；`--mode` 覆寫仍優先 | 本版忽略（中文） |
 | `primary_language` | 沒給 `--mode` 且為 `ja` 時啟動 `ja`，其餘中文一律 `mixed`（不再有 `zh`） | 生效 |
 | `selection_keys` | `style.selection_keys` | 生效 |
@@ -89,7 +89,7 @@ CLI 對照：`jc-cli eval ja --no-live` 走 `sentence`，其餘日文評測預�
 | `ja_input_method` | 日文只有羅馬字（`RomajiInput`），沒有直接かな | 本版忽略 |
 | `ja_ambiguous` | 解碼器在建構時固定 `both`，`SessionConfig` 沒有欄位 | 本版忽略 |
 | `ja_symbols` | 候選是否列記号／顔文字；解碼器開關未接線 | 本版忽略 |
-| `ja_model` | 引擎不讀；神經轉換由 `ja_neural_mode` 決定，這個值只保留給 UI | 本版忽略 |
+| `ja_model` | 引擎不讀；神經轉換由 `ja_neural_mode` 決定，UI 已移除，欄位保留給舊檔相容 | 已移除 UI（舊檔忽略） |
 | `model_mode`／`model_residency_mb`／`allow_placeholders` | 載入器啟動即載入固定資料，不做常駐調度或 placeholder | 本版忽略 |
 | 未知欄位 | 由 `jc-settings` 原樣保留，引擎不讀 | 不適用 |
 
@@ -97,10 +97,12 @@ CLI 對照：`jc-cli eval ja --no-live` 走 `sentence`，其餘日文評測預�
 
 - `max_candidates`：`Settings` 沒有這個欄位（未知鍵只會原文保留）。本版固定用
   `jc_core::session::DEFAULT_MAX_CANDIDATES`（5），並在 `--print-settings` 印出。
-- `esc_clear`、`advance_after_select`、`toggle_key`／`left_shift`、`mode_memory`、
-  `caps_lock_english`：Go 版把這些放在 `eng`，Rust 核心的 `SessionConfig`／
-  `InputStyle` 沒有同名欄位，屬於外殼（TSF／CLI 前端）的按鍵分派與游標行為。
-  任務書要求不改 `jc-core` 的 `SessionConfig`，因此本版只輸出、不套用。
+- `esc_clear`、`advance_after_select`、`mode_memory`、`caps_lock_english`：
+  Go 版把這些放在 `eng`，Rust 核心的 `SessionConfig`／`InputStyle` 沒有同名欄位，
+  屬於外殼（TSF／CLI 前端）的按鍵分派與游標行為，本版只輸出、不套用。
+- `mixed_input` 已從 `Settings` struct、序列化與 `keys()` 移除；讀到舊檔時直接
+  丟棄，不進 `extra`、不產生警示、不寫回。`input_profile.values` 裡的同名鍵也
+  一併忽略。引擎一律對中文使用者用混打模式。
 - 其餘列為「本版忽略」的欄位，理由如表。
 
 ## 優先序

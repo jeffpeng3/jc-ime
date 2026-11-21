@@ -333,6 +333,8 @@ pub struct Session {
     pub(super) ja_run: bool,
     /// 日文推斷前的模式；結束日文片段時還原。
     pub(super) ja_prev_mode: Mode,
+    /// Shift 切到 En 之前的模式；再按一次回到它，而不是固定的 Zh。
+    pub(super) toggle_previous_mode: Option<Mode>,
     /// 目前開啟的候選選單。
     pub(super) menu: Option<Menu>,
     /// 表情分頁的最後選擇；下次開選單時沿用。
@@ -434,6 +436,7 @@ impl Session {
             ascii: AsciiInput::new(),
             ja_run: false,
             ja_prev_mode: Mode::Mixed,
+            toggle_previous_mode: None,
             menu: None,
             palette_tab: 0,
             symbol_recent: Vec::new(),
@@ -563,24 +566,32 @@ impl Session {
         self.snapshot()
     }
 
-    /// 切換到指定模式；清空目前組字。
+    /// 切換到指定模式；清空目前組字，並丟掉先前記錄的 Shift 切換來源。
     ///
-    /// 英文模式切換（`request: {"type":"toggle"}`）由此進入。
+    /// 單按 Shift 的英文切換由 [`Session::toggle_english`] 進入。
     pub fn set_mode(&mut self, mode: Mode) -> Snapshot {
         self.clear_composition();
         self.config.mode = mode;
+        self.toggle_previous_mode = None;
         self.rebuild();
         self.snapshot()
     }
 
-    /// 在中文與英文模式之間切換。
+    /// 在目前語言與純英文 [`Mode::En`] 之間切換。
+    ///
+    /// 第一次從 `Mixed`／`Ja`／`Zh` 切到 `En` 時記住原模式；再按一次回到它。
+    /// 引擎直接以 `En` 啟動而沒有記錄時回到 `Mixed`，因為中文使用者一律用
+    /// 混打模式，不再回到純注音 `Zh`。
     pub fn toggle_english(&mut self) -> Snapshot {
-        let mode = if self.config.mode == Mode::En {
-            Mode::Zh
+        if self.config.mode != Mode::En {
+            let previous = self.config.mode;
+            let snapshot = self.set_mode(Mode::En);
+            self.toggle_previous_mode = Some(previous);
+            snapshot
         } else {
-            Mode::En
-        };
-        self.set_mode(mode)
+            let previous = self.toggle_previous_mode.take().unwrap_or(Mode::Mixed);
+            self.set_mode(previous)
+        }
     }
 
     /// 開啟符號選單；有最近使用的符號時從「最近」開，否則從第一個分類開。
@@ -1669,6 +1680,48 @@ mod tests {
         assert_eq!(s.candidates()[1].surface, "１２３");
         s.press(Key::char('2', false));
         assert_eq!(s.commit(), "１２３");
+    }
+
+    /// 單按 Shift：Mixed ⇄ En，回到原本的 Mixed 而不是 Zh。
+    #[test]
+    fn test_toggle_english_restores_mixed() {
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+        assert_eq!(s.mode(), Mode::Mixed);
+        s.toggle_english();
+        assert_eq!(s.mode(), Mode::En);
+        s.toggle_english();
+        assert_eq!(s.mode(), Mode::Mixed);
+    }
+
+    /// 日文上下文切到 En 後要回到 Ja。
+    #[test]
+    fn test_toggle_english_restores_japanese() {
+        let mut s = Session::new(SessionConfig::new(Mode::Ja));
+        s.toggle_english();
+        assert_eq!(s.mode(), Mode::En);
+        s.toggle_english();
+        assert_eq!(s.mode(), Mode::Ja);
+    }
+
+    /// 引擎直接以 En 啟動時沒有切換來源，回到 Mixed（中文一律混打）。
+    #[test]
+    fn test_toggle_english_without_previous_mode_uses_mixed() {
+        let mut s = english_session();
+        s.toggle_english();
+        assert_eq!(s.mode(), Mode::Mixed);
+    }
+
+    /// 外部 `set_mode` 要清掉先前的切換來源，不回到過期模式。
+    #[test]
+    fn test_set_mode_clears_toggle_previous_mode() {
+        let mut s = Session::new(SessionConfig::new(Mode::Ja));
+        s.toggle_english();
+        // 外部改到 Mixed 後，先前的 Ja 來源必須丟掉，不能回到過期模式。
+        s.set_mode(Mode::Mixed);
+        s.toggle_english();
+        assert_eq!(s.mode(), Mode::En);
+        s.toggle_english();
+        assert_eq!(s.mode(), Mode::Mixed);
     }
 
     /// 英文拼錯時，候選在原字後面補上拼字建議；打對的字沒有拼字建議。

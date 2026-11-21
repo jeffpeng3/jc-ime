@@ -123,7 +123,7 @@ pub struct EffectiveSettings {
     pub ja_neural_mode: String,
     /// 日文候選是否使用 reranker 重排。
     pub ja_rerank: bool,
-    /// 中英混打；UI 已移除開關，引擎一律開啟。
+    /// 中英混打；開關已移除、欄位也從 JSON 契約刪除，引擎一律開啟。
     pub mixed_input: bool,
     /// 英文模式自動補字。
     pub english_autocomplete: bool,
@@ -198,7 +198,7 @@ pub fn effective(settings: &Settings, overrides: &Overrides, goos: &str) -> Effe
         neural,
         ja_neural_mode,
         ja_rerank: settings.ja_rerank,
-        // 舊設定檔可能還留著 mixed_input=false；開關已移除，引擎一律用混打。
+        // mixed_input 已從 JSON 契約移除；引擎一律對中文使用者用混打。
         mixed_input: true,
         english_autocomplete: settings.english_autocomplete,
         esc_clear: settings.esc_clear,
@@ -458,7 +458,8 @@ mod tests {
         assert!(loaded.warnings.is_empty(), "缺檔不該警告");
         let default = Settings::default_for_platform("linux");
         assert_eq!(loaded.settings.selection, default.selection);
-        assert!(!loaded.settings.mixed_input);
+        let effective = effective(&loaded.settings, &Overrides::default(), "linux");
+        assert!(effective.mixed_input, "引擎一律用混打");
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -477,7 +478,8 @@ mod tests {
             loaded.warnings
         );
         assert_eq!(loaded.settings.selection, settings::NEURAL);
-        assert!(!loaded.settings.mixed_input);
+        let effective = effective(&loaded.settings, &Overrides::default(), "linux");
+        assert!(effective.mixed_input, "引擎一律用混打");
         fs::remove_dir_all(&dir).ok();
     }
 

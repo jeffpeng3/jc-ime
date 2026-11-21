@@ -91,6 +91,12 @@ fn request_key_round_trips() {
 }
 
 #[test]
+fn request_toggle_round_trips() {
+    let request: Request = round_trip("request_toggle.json");
+    assert_eq!(request, Request::Toggle);
+}
+
+#[test]
 fn request_snapshot_round_trips() {
     let request: Request = round_trip("request_snapshot.json");
     assert_eq!(request, Request::Snapshot);
