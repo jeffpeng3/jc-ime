@@ -1954,3 +1954,32 @@ gate：
 
 - linux (core)：success；windows (msvc)：success；check-tag：success。
 - build-linux／build-windows／publish：skipped（main scope，標籤流程才會跑）。
+
+## 2026-11-21 08:10 rc.9 後三筆 installer 修正（`a86cfe2`／`57d91c2`／`159f4a0`）
+
+三筆 parent 都是 `98c98af`。第一筆 ff-only 快轉到 `a86cfe2`，後兩筆因同 parent 已分歧，
+改以 `--no-ff` 合併：`build-zh-manifest` → `5c84499`、`msi-overwrite` → `4f0d9e2`。
+
+| Branch | Commit | 合併 |
+|---|---|---|
+| `engine-supervise` | `a86cfe2` | fast-forward（`98c98af` → `a86cfe2`） |
+| `build-zh-manifest` | `57d91c2` | `5c84499` |
+| `msi-overwrite` | `159f4a0` | `4f0d9e2` |
+
+- `engine-supervise`：WXS autostart 加 `--supervise`，引擎才會開 pipe 並自動重啟。
+  rc.9 打字全英文的根因：上一輪拿掉 `--socket` 後引擎退回 stdio，完全不開 pipe。
+  `validate-linux.sh` 改成同時擋「缺 `--supervise`」與「有 `--socket`」。
+- `build-zh-manifest`：catalog 補 `build-zh/manifest.json`（`Bundle::open` 一定要讀，缺了就 fatal），
+  WXS DataFiles 加對應 File；實機 `supervisor.log` 的「讀取 build-zh\manifest.json 失敗」根因。
+- `msi-overwrite`：ProductVersion 第四段帶 rc 序號（`0.1.0.9`），PackageCode 每次 build 自動產生，
+  rc 版可直接覆蓋安裝，不必先卸載。
+
+三筆都沒改 crates 的 TSF Activate／pipe 解析、沒改 CI、沒改 `Cargo.toml` 版本號。
+WXS XML 解析通過，`--supervise` 在 RegistryValue 值內（非註解），沒有 XML 非法的連續 `--`。
+
+gate：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、
+  **1317 passed、0 failed**，比上一輪 1316 多 1）。
+- `cargo check --workspace --all-targets` exit 0；clippy exit 0；fmt exit 0。
+- 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：`auto-download-zh-select`、`zh-select-pipeline`（都還沒合，未動）。
