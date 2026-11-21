@@ -11,6 +11,12 @@ Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
 > `english/manifest.json` 與 `english/NOTICE.txt`，manifest 從 8 筆變成 10 筆
 > （8 個 `shipped: true`、2 個 `zh_select` 下載項）。這兩筆是 `english/words.bin`
 > 的驗證中繼檔，英文載入器要求三者同時存在。下方表格保留移植當時的 6 筆隨附清單。
+>
+> **現況（2026-11-21，`build-zh-manifest`）**：catalog 再補進
+> `build-zh/manifest.json`，manifest 從 10 筆變成 11 筆（9 個 `shipped: true`、
+> 2 個 `zh_select` 下載項）。`jc_data::zh::Bundle::open` 載入注音資料包時一定要
+> 讀它驗證 `lexicon.bin` 與 `lm.bin`。上一輪只補 english、漏了 build-zh，真機上
+> 引擎子行程因此連續崩潰。完整根因見 [`build-zh-manifest.md`](build-zh-manifest.md)。
 
 ## 目標
 
@@ -292,6 +298,7 @@ jc-engine: 載入資料失敗：… 資料 manifest 檢查失敗：1 個致命�
 | `packs/ja-lexicon-mozc-v2.pack` | `ja_lexicon` | L-01 | Mozc OSS 詞典為 BSD-3-Clause 系，可散布，附 LICENSE 與 README |
 | `build-zh/lexicon.bin` | `zh_lexicon` | L-04、L-05、L-06、L-13～L-17 | 自製詞條、libchewing、政府開放資料等，全部允許散布 |
 | `build-zh/lm.bin` | `zh_lm` | 同上 | 同上 |
+| `build-zh/manifest.json` | `zh_lexicon` | L-04、L-05、L-06、L-13～L-17 | 2026-11-21 補：`Bundle::open` 的驗證中繼檔，與 `lexicon.bin` 同授權 |
 | `english/words.bin` | `english` | L-08 | ESDB／SCOWL 為 MIT 類授權，附 NOTICE |
 | `english/manifest.json` | `english` | L-08 | 2026-11-21 補：詞表驗證中繼檔，與 `words.bin` 同授權，隨資料包散布 |
 | `english/NOTICE.txt` | `english` | L-08 | 2026-11-21 補：詞表授權通知，與 `words.bin` 同授權，隨資料包散布 |

@@ -259,6 +259,8 @@
         <File Id="FileZhLexicon"
               Source="$(var.PayloadDir)/data/build-zh/lexicon.bin"
               KeyPath="yes" />
+        <File Id="FileZhManifest"
+              Source="$(var.PayloadDir)/data/build-zh/manifest.json" />
       </Component>
 
       <Component Id="ZhLm" Directory="BUILDZHDIR"

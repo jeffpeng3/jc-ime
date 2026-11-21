@@ -517,6 +517,15 @@ pub const CATALOG: &[DataFileSpec] = &[
         candidates: &["build-zh/lm.bin"],
         url: None,
     },
+    // Bundle::open 一定要讀這份 manifest 驗證 lexicon.bin 與 lm.bin；
+    // 缺席會讓引擎啟動 fatal。與 english 的三件式中繼檔是同一類問題。
+    DataFileSpec {
+        role: DataRole::ZhLexicon,
+        licenses: ZH_LICENSES,
+        shipped: true,
+        candidates: &["build-zh/manifest.json"],
+        url: None,
+    },
     DataFileSpec {
         role: DataRole::English,
         licenses: &["L-08"],
@@ -771,7 +780,7 @@ mod tests {
         assert_eq!(manifest.schema, SCHEMA);
         assert_eq!(manifest.version, "2026-11-20");
         // 只列出存在的隨附檔；下載項不存在就略過。
-        assert_eq!(manifest.files.len(), 8);
+        assert_eq!(manifest.files.len(), 9);
         let lexicon = manifest
             .files
             .iter()
@@ -796,6 +805,45 @@ mod tests {
         );
         assert_eq!(tokenizer.license, vec!["L-21".to_string()]);
         assert!(tokenizer.shipped);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn build_zh_manifest_is_cataloged() {
+        let dir = temp_dir("build-zh-meta");
+        for spec in CATALOG.iter().filter(|spec| spec.shipped) {
+            write(&dir, spec.candidates[0], b"data");
+        }
+        let manifest = DataManifest::generate(&dir, "2026-11-20", "2026-11-20T00:00:00Z").unwrap();
+        let zh: Vec<_> = manifest
+            .files
+            .iter()
+            .filter(|file| file.role == DataRole::ZhLexicon)
+            .collect();
+        assert_eq!(
+            zh.len(),
+            2,
+            "注音資料包要一次收錄 lexicon.bin 與 manifest.json"
+        );
+        for path in ["build-zh/lexicon.bin", "build-zh/manifest.json"] {
+            let file = zh
+                .iter()
+                .find(|file| file.path == path)
+                .unwrap_or_else(|| panic!("manifest 缺少 {path}"));
+            assert_eq!(
+                file.license.iter().map(String::as_str).collect::<Vec<_>>(),
+                ZH_LICENSES
+            );
+            assert!(file.shipped);
+        }
+        // Bundle::open 也要讀 lm.bin，雖然它的角色是 ZhLm。
+        assert!(
+            manifest
+                .files
+                .iter()
+                .any(|file| file.path == "build-zh/lm.bin" && file.shipped),
+            "注音資料包還要收錄 lm.bin"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -981,7 +1029,7 @@ mod tests {
         };
         let manifest = DataManifest::generate_now(&root).unwrap();
         assert_eq!(manifest.files.len(), CATALOG.len());
-        assert_eq!(manifest.shipped_files().count(), 8);
+        assert_eq!(manifest.shipped_files().count(), 9);
         assert_eq!(
             manifest
                 .download_files()
