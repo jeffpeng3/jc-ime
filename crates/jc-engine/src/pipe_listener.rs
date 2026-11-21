@@ -6,14 +6,18 @@
 //! `cmd/0c-server/transport_windows.go`，含 AppContainer 的
 //! ALL APPLICATION PACKAGES 與 ALL RESTRICTED APPLICATION PACKAGES。
 //!
-//! 目前用同步 I/O 一次服務一條連線；overlapped I/O 與多連線 accept loop
-//! 留給 T4。管道 instance 上限設 `PIPE_UNLIMITED_INSTANCES`，連線結束後
-//! `DisconnectNamedPipe` 再 `ConnectNamedPipe` 重複使用同一個 handle。
+//! T4 起每條連線一個 worker thread：accept 迴圈每次用
+//! `PIPE_UNLIMITED_INSTANCES` 建立一個新的 pipe instance，`ConnectNamedPipe`
+//! 成功後把 handle 移進 worker，自己再建立下一個 instance。drain／shutdown 時
+//! 對空閒 instance 與各 worker 的 handle 呼叫 `CancelIoEx` 中斷阻塞的
+//! `ConnectNamedPipe`／`ReadFile`，不需要 async runtime。
 
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::ptr;
+use std::sync::Arc;
+use std::thread;
 
 use anyhow::{anyhow, Context};
 use windows_sys::Win32::Foundation::{LocalFree, ERROR_NO_DATA, INVALID_HANDLE_VALUE};
@@ -21,11 +25,24 @@ use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptor
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
+use windows_sys::Win32::System::IO::CancelIoEx;
 
 use crate::{serve as serve_connection, Engine};
+
+/// 從別的 thread 中斷 handle 上正在等待的 I/O。
+///
+/// 把 handle 轉成 `isize`（`Send + Sync`）帶過 thread 邊界，呼叫時再轉回
+/// `HANDLE`。`lpOverlapped` 為 null 代表取消該 handle 上所有 I/O。
+fn cancel_io(handle: isize) {
+    // SAFETY: handle 是有效的 pipe handle，由持有它的 thread 保證生命週期；
+    // CancelIoEx 對已關閉 handle 只會失敗，不會造成記憶體不安全。
+    unsafe {
+        CancelIoEx(handle as *mut core::ffi::c_void, ptr::null());
+    }
+}
 
 /// Win32 管道完整路徑的前綴。
 const PIPE_PREFIX: &str = r"\\.\pipe\";
@@ -138,15 +155,6 @@ impl PipeStream {
         }
         Ok(())
     }
-
-    /// 結束目前連線，讓同一個 instance 可以再 `connect()`。
-    fn disconnect(&self) -> io::Result<()> {
-        // SAFETY: handle 有效。
-        if unsafe { DisconnectNamedPipe(self.handle.as_raw_handle()) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
 }
 
 // 用共用參考實作 Read/Write，讀寫端可以同時借用同一條 pipe，呼叫端因此能
@@ -202,37 +210,51 @@ impl Write for &PipeStream {
     }
 }
 
-/// 在 named pipe 上序列處理連線，收到 `Shutdown` 才回傳。
-pub(super) fn serve(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
+/// 在 named pipe 上接受多條連線，每條一個 worker thread。
+pub(super) fn serve(engine: &Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
     let name = pipe_name(path)?;
     let sid = jc_windows::current_user_sid()
         .ok_or_else(|| anyhow!("取不到目前使用者 SID，無法建立含 AppContainer 的 SDDL"))?;
-    let pipe =
-        PipeStream::listen(&name, &sid).with_context(|| format!("建立 named pipe 失敗：{name}"))?;
-    log::info!("jc-engine 監聽 named pipe {name}");
+    log::info!("jc-engine 監聽 named pipe {name}（多連線）");
 
     loop {
+        let pipe = PipeStream::listen(&name, &sid)
+            .with_context(|| format!("建立 named pipe 失敗：{name}"))?;
+        // 空閒 instance 也要能被 drain／shutdown 中斷，否則 accept 會一直卡在
+        // ConnectNamedPipe。連上之後立刻清掉，避免誤砍 worker 的 ReadFile。
+        let idle_handle = pipe.handle.as_raw_handle() as isize;
+        engine.set_listener_disconnect(Arc::new(move || cancel_io(idle_handle)));
         if let Err(err) = pipe.connect() {
+            if engine.is_shutdown() || engine.is_drain_done() {
+                break;
+            }
             log::warn!("等待 named pipe 連線失敗：{err}");
             continue;
         }
+        engine.clear_listener_disconnect();
         log::debug!("接受 named pipe 連線");
-        let mut input = BufReader::new(&pipe);
-        let mut output = BufWriter::new(&pipe);
-        // 單一連線的錯誤不影響下一個連線。
-        if let Err(err) = serve_connection(engine, &mut input, &mut output, max_frame) {
-            log::warn!("連線結束：{err}");
+        let connection = engine.accept();
+        let handle = pipe.handle.as_raw_handle() as isize;
+        connection.set_disconnect(Arc::new(move || cancel_io(handle)));
+        let spawned = thread::Builder::new()
+            .name("jc-engine-conn".into())
+            .spawn(move || {
+                let mut view = connection.into_engine();
+                let mut input = BufReader::new(&pipe);
+                let mut output = BufWriter::new(&pipe);
+                if let Err(err) = serve_connection(&mut view, &mut input, &mut output, max_frame) {
+                    log::warn!("連線結束：{err}");
+                }
+                if let Err(err) = output.flush() {
+                    log::warn!("寫出最後一個回應失敗：{err}");
+                }
+                view.finish_connection();
+            });
+        if let Err(err) = spawned {
+            log::warn!("衍生連線 worker 失敗：{err}");
         }
-        if let Err(err) = output.flush() {
-            log::warn!("寫出最後一個回應失敗：{err}");
-        }
-        if engine.is_shutdown() {
-            log::debug!("收到 Shutdown，結束行程");
-            break;
-        }
-        engine.reset_session();
-        if let Err(err) = pipe.disconnect() {
-            log::warn!("中斷 named pipe 連線失敗：{err}");
+        if engine.is_shutdown() || engine.is_drain_done() {
+            log::debug!("行程結束旗標已設定，離開 accept 迴圈");
             break;
         }
     }

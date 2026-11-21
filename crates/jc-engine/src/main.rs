@@ -39,16 +39,23 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::io::{self, BufReader, BufWriter};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+#[cfg(unix)]
+use std::time::Duration;
 
 use anyhow::{bail, Context};
 #[cfg(not(windows))]
-use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
+use interprocess::local_socket::traits::Listener as _;
+#[cfg(unix)]
+use interprocess::local_socket::ListenerOptions;
+#[cfg(unix)]
+use interprocess::local_socket::{traits::Stream as _, ListenerNonblockingMode};
 use jc_core::session::{Session, SessionConfig};
 use jc_core::Mode;
 use jc_engine::config;
 use jc_engine::loader::load_engine_data;
 use jc_engine::supervise::{self, SupervisorConfig};
-use jc_engine::{engine_label, serve, Engine};
+use jc_engine::{engine_label, serve, Engine, SessionFactory};
 use jc_proto::{DEFAULT_MAX_FRAME, PROTOCOL_VERSION};
 
 /// 啟動方式。
@@ -147,15 +154,18 @@ fn run(options: Options) -> anyhow::Result<()> {
         effective.space_selects,
         effective.document_context
     );
-    let mut engine = if options.allow_empty_data {
-        log::info!("--allow-empty-data：不載入資料，使用空 session（僅測試用）");
-        let base = SessionConfig::default();
-        Engine::with_session(Session::new(config::session_config(base, &effective)))
+    // T4：每條連線在 worker thread 裡用自己的 factory 建 Session，避免在
+    // thread 間移動非 Send 的 Session／SessionConfig。
+    let personal_dir = if options.allow_empty_data {
+        None
     } else {
-        let dir = data_dir.ok_or_else(missing_data_dir)?;
+        Some(data_dir.clone().ok_or_else(missing_data_dir)?)
+    };
+    let factory: SessionFactory = if let Some(dir) = &personal_dir {
         log::debug!("資料根目錄：{}", dir.display());
-        let data =
-            load_engine_data(&dir).with_context(|| format!("載入資料失敗：{}", dir.display()))?;
+        let data = Arc::new(
+            load_engine_data(dir).with_context(|| format!("載入資料失敗：{}", dir.display()))?,
+        );
         log::info!(
             "載入 {} 個注音詞條{}，日文解碼器就緒",
             data.zh.lexicon.len(),
@@ -165,9 +175,17 @@ fn run(options: Options) -> anyhow::Result<()> {
                 ""
             }
         );
-        let base = data.session_config(effective.mode);
-        Engine::with_session(Session::new(config::session_config(base, &effective)))
+        // 個人資料由各 session 自己持有並存到 personal-<id>.json；T4 不讀回
+        // 舊檔，ResetPersonal 重建 session 時才能保證拿到真正的空白 store。
+        Arc::new(move || {
+            let base = data.session_config(effective.mode);
+            Session::new(config::session_config(base, &effective))
+        })
+    } else {
+        log::info!("--allow-empty-data：不載入資料，使用空 session（僅測試用）");
+        Arc::new(move || Session::new(config::session_config(SessionConfig::default(), &effective)))
     };
+    let mut engine = Engine::with_factory(factory, personal_dir);
     match options.mode {
         Transport::Stdio => {
             let stdin = io::stdin();
@@ -179,7 +197,7 @@ fn run(options: Options) -> anyhow::Result<()> {
             log::debug!("stdio 結束");
             Ok(())
         }
-        Transport::Socket(path) => serve_socket(&mut engine, &path, options.max_frame),
+        Transport::Socket(path) => serve_socket(&engine, &path, options.max_frame),
     }
 }
 
@@ -290,48 +308,71 @@ fn default_supervisor_log() -> PathBuf {
 ///
 /// SDDL 照 0c 逐字設定，含 AppContainer 的兩組 SID；不流經 `interprocess`，
 /// 因此避開它複製含 `G:` 的 SDDL 時回 ERROR_INVALID_OWNER (1307) 的 bug。
-/// 一次只服務一條連線；多連線 accept loop 是 T4 的範圍。
+/// T4 起每條連線一個 worker thread，共用同一份 engine registry。
 #[cfg(windows)]
-fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
+fn serve_socket(engine: &Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
     pipe_listener::serve(engine, path, max_frame)
 }
 
-/// 在 `path` 對應的 unix domain socket 上監聽並序列處理連線，收到 `Shutdown`
-/// 才回傳。Unix 維持 interprocess（Linux CI 要用），一次只服務一條連線。
-/// 訊框仍走 `jc_proto`，這裡只負責搬位元組。
+/// 在 `path` 對應的 unix domain socket 上監聽；T4 起每條連線一個 worker
+/// thread，共用同一份 registry。listener 設為 nonblocking，每 50ms 輪一次，
+/// 讓 drain／Shutdown 在沒有新連線時也能結束 accept 迴圈。
 #[cfg(unix)]
-fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
+fn serve_socket(engine: &Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
+    use std::thread;
+
     let name = jc_windows::socket_name(path)?;
     let options = ListenerOptions::new().name(jc_windows::ns_name(&name)?);
     let listener = options
         .create_sync()
         .with_context(|| format!("監聽 local socket 失敗：{name}"))?;
-    log::info!("jc-engine 監聽 local socket {name}");
+    listener
+        .set_nonblocking(ListenerNonblockingMode::Accept)
+        .context("設定 nonblocking accept 失敗")?;
+    log::info!("jc-engine 監聽 local socket {name}（多連線）");
 
     loop {
-        let stream = match listener.accept() {
-            Ok(stream) => stream,
+        match listener.accept() {
+            Ok(stream) => {
+                log::debug!("接受 local socket 連線");
+                let connection = engine.accept();
+                // interprocess 的 Stream 不暴露 raw fd，改用 receive timeout：
+                // worker 每 250ms 醒來一次檢查全域收線旗標，drain／Shutdown
+                // 因此能即時收掉所有連線，不必 async runtime。
+                stream
+                    .set_recv_timeout(Some(Duration::from_millis(250)))
+                    .context("設定 socket receive timeout 失敗")?;
+                let spawned =
+                    thread::Builder::new()
+                        .name("jc-engine-conn".into())
+                        .spawn(move || {
+                            let mut view = connection.into_engine();
+                            let mut input = BufReader::new(&stream);
+                            let mut output = BufWriter::new(&stream);
+                            if let Err(err) = serve(&mut view, &mut input, &mut output, max_frame) {
+                                log::warn!("連線結束：{err}");
+                            }
+                            if let Err(err) = output.flush() {
+                                log::warn!("寫出最後一個回應失敗：{err}");
+                            }
+                            view.finish_connection();
+                        });
+                if let Err(err) = spawned {
+                    log::warn!("衍生連線 worker 失敗：{err}");
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(50));
+            }
             Err(err) => {
                 log::warn!("接受連線失敗：{err}");
-                continue;
+                thread::sleep(Duration::from_millis(50));
             }
-        };
-        log::debug!("接受 local socket 連線");
-        // Stream 的共用參考同時實作 Read 與 Write，不需要複製 handle。
-        let mut input = BufReader::new(&stream);
-        let mut output = BufWriter::new(&stream);
-        // 單一連線的錯誤不影響下一個連線。
-        if let Err(err) = serve(engine, &mut input, &mut output, max_frame) {
-            log::warn!("連線結束：{err}");
         }
-        if let Err(err) = output.flush() {
-            log::warn!("寫出最後一個回應失敗：{err}");
-        }
-        if engine.is_shutdown() {
-            log::debug!("收到 Shutdown，結束行程");
+        if engine.is_shutdown() || engine.is_drain_done() {
+            log::debug!("行程結束旗標已設定，離開 accept 迴圈");
             break;
         }
-        engine.reset_session();
     }
 
     Ok(())
@@ -339,7 +380,7 @@ fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::R
 
 /// 既不是 unix 也不是 Windows 的平台沒有 socket 傳輸，明確回報錯誤而不是 panic。
 #[cfg(not(any(unix, windows)))]
-fn serve_socket(_engine: &mut Engine, _path: &Path, _max_frame: usize) -> anyhow::Result<()> {
+fn serve_socket(_engine: &Engine, _path: &Path, _max_frame: usize) -> anyhow::Result<()> {
     bail!("這個平台不支援 --socket，只能使用 stdio 模式")
 }
 

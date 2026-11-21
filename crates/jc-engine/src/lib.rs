@@ -4,9 +4,20 @@
 //! 每次請求都回傳完整快照，wrapper 不需要自己保存狀態。
 //!
 //! 資料載入在 [`loader`]；`jc-cli` 共用同一份載入程式碼。
+//!
+//! T4 的並行模型：`Session` 本身不是 `Send`（核心的 `ja::live::Config` 與
+//! `Controller` 含 `Rc`／`Box<dyn>` 測試注入點），所以 session 留在其所屬
+//! worker thread 的 [`LocalState`]，永遠不跨 thread 移動。全行程共享的
+//! [`Registry`] 只放 metadata 與一個 `SessionFactory`，兩者都是 `Send + Sync`。
+//! 這樣既不需要改 jc-core，也讓 Mutex 臨界區完全避開 `engineDo` 的長計算。
 
-use std::io::{Read, Write};
+use std::collections::{HashMap, HashSet};
+use std::io::{self, Read, Write};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
+use jc_core::personal::PersonalStore;
 use jc_core::session::{Session, SessionConfig};
 use jc_core::{KeyCode, Mode, Snapshot};
 
@@ -14,19 +25,160 @@ pub mod config;
 pub mod loader;
 pub mod supervise;
 use jc_proto::message::{read_message, ProtoError};
-use jc_proto::{write_message, ErrorCode, Request, Response, PROTOCOL_VERSION};
+use jc_proto::{write_message, ErrorCode, HealthInfo, Request, Response, PROTOCOL_VERSION};
 
 /// 回報給 wrapper 的引擎識別字串。
 pub fn engine_label() -> String {
     format!("jc-engine {}", env!("CARGO_PKG_VERSION"))
 }
 
-/// 協定引擎。組字狀態全部在 [`Session`] 裡。
-pub struct Engine {
-    hello: bool,
-    session: Session,
-    close_connection: bool,
+/// 一條連線的識別字。session 歸屬檢查以其為單位。
+pub type ConnId = u64;
+
+/// stdio 與直接使用 [`Engine::handle`] 的呼叫端所用的連線 id。
+pub const DEFAULT_CONN: ConnId = 0;
+
+/// 中斷一條連線的回呼。drain／shutdown 時由 watcher 跨連線廣播。
+///
+/// Unix 端呼叫 `shutdown(fd, SHUT_RDWR)`，Windows 端呼叫 `CancelIoEx`，
+/// 讓阻塞在 read／ConnectNamedPipe 的 worker 結束，不必引入 async runtime。
+pub type DisconnectFn = Arc<dyn Fn() + Send + Sync>;
+
+/// 建立 session 的工廠。在 worker thread 內呼叫，回傳的 `Session` 不跨 thread。
+pub type SessionFactory = Arc<dyn Fn() -> Session + Send + Sync>;
+
+/// drain watcher 的 polling 間隔。
+const DRAIN_POLL: Duration = Duration::from_millis(50);
+
+/// 一條 session 的共享 metadata。真正的 `Session` 在持有它的 worker 裡。
+#[derive(Debug, Clone)]
+struct SessionMeta {
+    owner: ConnId,
+    composing: bool,
+    last_active: Instant,
+    /// 已處理過的請求。連線重開、generation 改變時供上層重播（replay 載體）。
+    log: Vec<Request>,
+}
+
+/// 全行程共享的引擎狀態。Mutex 臨界區只有 metadata 讀寫與旗標切換，
+/// 不含任何 `Session::press()`／`Session::commit()` 長計算。
+pub struct Registry {
+    next_session: u64,
+    next_conn: u64,
+    factory: SessionFactory,
+    meta: HashMap<u64, SessionMeta>,
+    /// 每條連線目前使用的 session id（不帶 id 的 key／toggle 走這裡）。
+    current: HashMap<ConnId, u64>,
+    /// 每條連線自己持有的 session id set；歸屬檢查用。
+    owned: HashMap<ConnId, HashSet<u64>>,
+    disconnects: HashMap<ConnId, DisconnectFn>,
+    /// accept 迴圈手上空閒 pipe instance 的中斷回呼（Windows 用）。
+    listener_disconnect: Option<DisconnectFn>,
+    draining: bool,
+    closing: bool,
     shutdown: bool,
+    drain_done: bool,
+    settings_pending: bool,
+    /// ResetPersonal 代次；worker 發現代次變化時重建自己的 session。
+    personal_epoch: u64,
+    /// 正在處理的請求數；drain 要等它與 composing 都歸零。
+    active: usize,
+    last_key: Option<Instant>,
+}
+
+impl Registry {
+    fn new(factory: SessionFactory) -> Self {
+        Self {
+            next_session: 1,
+            next_conn: 1,
+            factory,
+            meta: HashMap::new(),
+            current: HashMap::new(),
+            owned: HashMap::new(),
+            disconnects: HashMap::new(),
+            listener_disconnect: None,
+            draining: false,
+            closing: false,
+            shutdown: false,
+            drain_done: false,
+            settings_pending: false,
+            personal_epoch: 0,
+            active: 0,
+            last_key: None,
+        }
+    }
+
+    fn broadcast_disconnects(&self) -> Vec<DisconnectFn> {
+        let mut out: Vec<DisconnectFn> = self.disconnects.values().cloned().collect();
+        if let Some(listener) = &self.listener_disconnect {
+            out.push(Arc::clone(listener));
+        }
+        out
+    }
+}
+
+/// 保護共享 metadata 的 Mutex lock。中毒時取回內部資料，避免一條 worker
+/// panic 就拖垮全行程。
+fn lock(registry: &Arc<Mutex<Registry>>) -> MutexGuard<'_, Registry> {
+    registry.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+/// 請求在處理期間持有；drop 時把 `Registry::active` 減一。
+struct ActiveGuard(Arc<Mutex<Registry>>);
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        let mut registry = lock(&self.0);
+        registry.active = registry.active.saturating_sub(1);
+    }
+}
+
+/// 只屬於一條 worker thread 的 session。永遠不跨 thread 移動。
+struct LocalState {
+    sessions: HashMap<u64, Session>,
+    epoch: u64,
+}
+
+/// 可跨 thread 遞送的連線憑證。worker 在自己的 thread 呼叫 [`Connection::into_engine`]
+/// 建立引擎視圖，因此 `Session` 從頭到尾都待在同一條 thread。
+pub struct Connection {
+    shared: Arc<Mutex<Registry>>,
+    conn: ConnId,
+    personal_dir: Option<PathBuf>,
+}
+
+impl Connection {
+    /// 在 worker thread 內建立這條連線的引擎視圖。
+    pub fn into_engine(self) -> Engine {
+        let epoch = lock(&self.shared).personal_epoch;
+        Engine {
+            local: LocalState {
+                sessions: HashMap::new(),
+                epoch,
+            },
+            shared: self.shared,
+            conn: self.conn,
+            hello: false,
+            close_connection: false,
+            personal_dir: self.personal_dir,
+        }
+    }
+
+    /// 註冊這條連線的中斷回呼；drain／shutdown 時呼叫。
+    pub fn set_disconnect(&self, disconnect: DisconnectFn) {
+        lock(&self.shared).disconnects.insert(self.conn, disconnect);
+    }
+}
+
+/// 協定引擎。組字狀態全部在 worker 自己持有的 [`Session`] 裡。
+pub struct Engine {
+    local: LocalState,
+    shared: Arc<Mutex<Registry>>,
+    conn: ConnId,
+    hello: bool,
+    close_connection: bool,
+    /// 個人資料存檔目錄；`None`（stdio／測試）時不存檔。
+    personal_dir: Option<PathBuf>,
 }
 
 impl Default for Engine {
@@ -38,55 +190,200 @@ impl Default for Engine {
 impl Engine {
     /// 建立一個尚未握手、沒有額外資料的引擎。
     pub fn new() -> Self {
-        Self::with_session(Session::new(SessionConfig::default()))
+        Self::with_factory(Arc::new(|| Session::new(SessionConfig::default())), None)
     }
 
-    /// 用載入好的資料建立引擎；`mode` 決定啟動時的輸入語言。
-    pub fn with_data(data: &loader::EngineData, mode: Mode) -> Self {
-        Self::with_session(Session::new(data.session_config(mode)))
-    }
-
-    /// 用指定的工作階段建立引擎。
-    pub fn with_session(session: Session) -> Self {
+    /// 用 session 工廠建立引擎；工廠會在每個 worker thread 內呼叫。
+    pub fn with_factory(factory: SessionFactory, personal_dir: Option<PathBuf>) -> Self {
+        let shared = Arc::new(Mutex::new(Registry::new(factory)));
+        shared
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .owned
+            .entry(DEFAULT_CONN)
+            .or_default();
         Self {
+            local: LocalState {
+                sessions: HashMap::new(),
+                epoch: 0,
+            },
+            shared,
+            conn: DEFAULT_CONN,
             hello: false,
-            session,
             close_connection: false,
-            shutdown: false,
+            personal_dir,
         }
     }
 
-    /// 目前的組字字串。
-    pub fn composition(&self) -> String {
-        self.session.preedit()
+    /// 用指定的工作階段建立引擎；session 裝在預設連線上，id 為 1。
+    pub fn with_session(session: Session) -> Self {
+        let mut engine = Self::new();
+        {
+            let mut registry = lock(&engine.shared);
+            let id = registry.next_session;
+            registry.next_session += 1;
+            registry.owned.entry(DEFAULT_CONN).or_default().insert(id);
+            registry.current.insert(DEFAULT_CONN, id);
+            registry.meta.insert(
+                id,
+                SessionMeta {
+                    owner: DEFAULT_CONN,
+                    composing: false,
+                    last_active: Instant::now(),
+                    log: Vec::new(),
+                },
+            );
+        }
+        engine.local.sessions.insert(1, session);
+        engine
     }
 
-    /// 這一條連線是否該收掉（版本不符或收到 `Shutdown`）。
-    ///
-    /// `Shutdown` 會同時設定這個旗標；全行程的 shutdown 狀態另外由
-    /// [`Engine::is_shutdown`] 保存，`reset_session` 只清連線狀態。
+    /// 為一條新 accept 的連線建立憑證，共享同一份 registry。
+    pub fn accept(&self) -> Connection {
+        let conn = {
+            let mut registry = lock(&self.shared);
+            let conn = registry.next_conn;
+            registry.next_conn += 1;
+            registry.owned.insert(conn, HashSet::new());
+            conn
+        };
+        Connection {
+            shared: Arc::clone(&self.shared),
+            conn,
+            personal_dir: self.personal_dir.clone(),
+        }
+    }
+
+    /// 註冊 accept 迴圈空閒 pipe instance 的中斷回呼（Windows 用）。
+    pub fn set_listener_disconnect(&self, disconnect: DisconnectFn) {
+        lock(&self.shared).listener_disconnect = Some(disconnect);
+    }
+
+    /// 空閒 pipe 已連上使用者，清掉中斷回呼，避免誤砍 worker 的 I/O。
+    pub fn clear_listener_disconnect(&self) {
+        lock(&self.shared).listener_disconnect = None;
+    }
+
+    /// 連線結束：清掉這條連線持有的所有 session 並各自存檔。
+    pub fn finish_connection(&mut self) {
+        let ids: Vec<u64> = {
+            let mut registry = lock(&self.shared);
+            registry
+                .owned
+                .remove(&self.conn)
+                .map(|set| set.into_iter().collect())
+                .unwrap_or_default()
+        };
+        let mut stores = Vec::new();
+        for id in ids {
+            if let Some(session) = self.local.sessions.remove(&id) {
+                stores.push((id, session.personal().clone()));
+            }
+            let mut registry = lock(&self.shared);
+            registry.current.remove(&self.conn);
+            registry.meta.remove(&id);
+        }
+        lock(&self.shared).disconnects.remove(&self.conn);
+        self.save_personal(&stores);
+        self.close_connection = true;
+    }
+
+    /// 目前的組字字串；沒有 session 時回空字串。
+    pub fn composition(&self) -> String {
+        let id = lock(&self.shared).current.get(&self.conn).copied();
+        match id.and_then(|id| self.local.sessions.get(&id)) {
+            Some(session) => session.preedit(),
+            None => String::new(),
+        }
+    }
+
+    /// 目前 session 的輸入模式；沒有 session 時回 `Zh`。
+    pub fn mode(&self) -> Mode {
+        let id = lock(&self.shared).current.get(&self.conn).copied();
+        match id.and_then(|id| self.local.sessions.get(&id)) {
+            Some(session) => session.mode(),
+            None => Mode::Zh,
+        }
+    }
+
+    /// 目前連線持有的 session id；診斷與 replay 用。
+    pub fn session_ids(&self) -> Vec<u64> {
+        let registry = lock(&self.shared);
+        registry
+            .owned
+            .get(&self.conn)
+            .map(|set| set.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// 讀取一個 session 的請求 log（replay 載體）；別條連線讀不到。
+    pub fn session_log(&self, session: u64) -> Vec<Request> {
+        let registry = lock(&self.shared);
+        match registry.meta.get(&session) {
+            Some(meta) if meta.owner == self.conn => meta.log.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// 把來源 session 的 log 重播到同連線的另一個 session，回傳每個請求的回應。
+    pub fn replay_into(&mut self, from: u64, to: u64) -> Vec<Response> {
+        let log = self.session_log(from);
+        log.into_iter()
+            .map(|request| {
+                let logged = request.clone();
+                self.apply_to_session(to, Some(request), |session| match logged {
+                    Request::Key { key } => state(session.press(key)),
+                    Request::Toggle => state(session.toggle_english()),
+                    Request::Commit => Response::Committed {
+                        text: session.commit(),
+                    },
+                    Request::Snapshot => state(session.snapshot()),
+                    other => {
+                        log::debug!("replay 略過非組字請求：{other:?}");
+                        Response::Acknowledged { session: 0 }
+                    }
+                })
+            })
+            .collect()
+    }
+
+    /// 這一條連線是否該收掉（版本不符、`Shutdown`、drain 完成）。
     pub fn is_closing(&self) -> bool {
-        self.close_connection
+        self.close_connection || lock(&self.shared).closing
     }
 
     /// 是否收到 `Shutdown`，整個行程要結束。
     pub fn is_shutdown(&self) -> bool {
-        self.shutdown
+        lock(&self.shared).shutdown
     }
 
-    /// 清除單一連線的狀態，讓 socket 伺服器服務下一個連線。
+    /// drain 是否已完成存檔並斷開所有連線；accept 迴圈據此結束。
+    pub fn is_drain_done(&self) -> bool {
+        lock(&self.shared).drain_done
+    }
+
+    /// 清除單一連線的握手狀態並重置它目前的 session。
     ///
-    /// `Shutdown` 是全行程的旗標，不會被清掉。
+    /// `Shutdown` 是全行程旗標，不會被清掉。
     pub fn reset_session(&mut self) {
         self.hello = false;
-        self.session.reset();
+        let id = lock(&self.shared).current.get(&self.conn).copied();
+        if let Some(id) = id {
+            if let Some(session) = self.local.sessions.get_mut(&id) {
+                session.reset();
+            }
+            let mut registry = lock(&self.shared);
+            if let Some(meta) = registry.meta.get_mut(&id) {
+                meta.log.clear();
+                meta.composing = false;
+            }
+        }
         self.close_connection = false;
     }
 
     /// 處理一個請求。任何請求都會得到一個回應。
-    ///
-    /// 版本不符或收到 `Shutdown` 時會設定收線旗標，呼叫端寫完回應後結束連線。
     pub fn handle(&mut self, request: Request) -> Response {
+        self.sync_epoch();
         match request {
             Request::Hello { protocol, client } => {
                 if protocol != PROTOCOL_VERSION {
@@ -97,6 +394,7 @@ impl Engine {
                     );
                 }
                 self.hello = true;
+                self.open_session();
                 log::info!("客戶端 {} 完成握手（協定 {protocol}）", client);
                 Response::Ready {
                     protocol: PROTOCOL_VERSION,
@@ -105,60 +403,333 @@ impl Engine {
             }
             Request::Key { key } => {
                 if !self.hello {
-                    return Response::error(ErrorCode::Internal, "尚未完成握手");
+                    return not_handshaked();
                 }
                 let enters = key.code == KeyCode::Enter;
-                let snapshot = self.session.press(key);
-                if enters {
-                    let text = self.session.commit();
-                    if !text.is_empty() {
-                        return Response::Committed { text };
+                lock(&self.shared).last_key = Some(Instant::now());
+                let logged = Some(Request::Key { key: key.clone() });
+                self.with_current(logged, |session| {
+                    let snapshot = session.press(key);
+                    if enters {
+                        let text = session.commit();
+                        if !text.is_empty() {
+                            return Response::Committed { text };
+                        }
                     }
-                }
-                state(snapshot)
+                    state(snapshot)
+                })
             }
             Request::Toggle => {
                 if !self.hello {
-                    return Response::error(ErrorCode::Internal, "尚未完成握手");
+                    return not_handshaked();
                 }
-                // 單按左右 Shift：切到 En 或回到切換前的 Mixed／Ja。
-                state(self.session.toggle_english())
+                self.with_current(Some(Request::Toggle), |session| {
+                    state(session.toggle_english())
+                })
             }
             Request::Snapshot => {
                 if !self.hello {
-                    return Response::error(ErrorCode::Internal, "尚未完成握手");
+                    return not_handshaked();
                 }
-                self.snapshot()
+                self.with_current(None, |session| state(session.snapshot()))
             }
             Request::Commit => {
                 if !self.hello {
-                    return Response::error(ErrorCode::Internal, "尚未完成握手");
+                    return not_handshaked();
                 }
-                self.commit()
+                self.with_current(Some(Request::Commit), |session| Response::Committed {
+                    text: session.commit(),
+                })
+            }
+            Request::Close { session } => self.close_session(session),
+            Request::Ping => Response::Acknowledged { session: 0 },
+            Request::Health => Response::Health {
+                info: self.health(),
+            },
+            Request::ApplySettings { settings } => {
+                lock(&self.shared).settings_pending = true;
+                log::info!("收到 {} 項延遲設定；實際套用由 T6 處理", settings.len());
+                Response::Health {
+                    info: self.health(),
+                }
+            }
+            Request::Drain => {
+                self.begin_drain();
+                Response::Health {
+                    info: self.health(),
+                }
+            }
+            Request::ResetPersonal => {
+                {
+                    let mut registry = lock(&self.shared);
+                    registry.personal_epoch += 1;
+                }
+                self.sync_epoch();
+                Response::Acknowledged { session: 0 }
             }
             Request::Shutdown => {
-                self.shutdown = true;
-                self.close_connection = true;
+                self.begin_shutdown();
                 self.snapshot()
             }
             Request::Unknown => Response::error(ErrorCode::UnknownOp, "未知的操作"),
-            // T3 新增的 0c op 在 T4／T6 接手前先回明確的「不支援」，不要落入
-            // UnknownOp，讓 adapter 能區分協定不認識與引擎尚未實作。
+            // 0c 的 context／mode／caps_lock／vocab 等 op 在 T6 接手前回明確的
+            // 「不支援」，讓 adapter 能區分協定不認識與引擎尚未實作。
             other => Response::error(ErrorCode::Unsupported, format!("jc 尚未支援 {other:?}")),
         }
     }
 
     /// 目前的完整快照。
-    fn snapshot(&self) -> Response {
-        state(self.session.snapshot())
+    fn snapshot(&mut self) -> Response {
+        self.with_current(None, |session| state(session.snapshot()))
     }
 
-    /// 取走目前的組字並回傳提交結果。
-    fn commit(&mut self) -> Response {
-        Response::Committed {
-            text: self.session.commit(),
+    /// 為這條連線開一個 session；已有 current session 時直接沿用。
+    ///
+    /// T1a adapter 把 `Ready` 映射成 `session = 1`，所以 id 從 1 開始，讓第一
+    /// 條連線的 id 與之吻合；key／toggle／commit 請求不帶 id，一律走 current。
+    fn open_session(&mut self) {
+        let mut registry = lock(&self.shared);
+        if let Some(id) = registry.current.get(&self.conn).copied() {
+            if registry
+                .meta
+                .get(&id)
+                .is_some_and(|meta| meta.owner == self.conn)
+            {
+                return;
+            }
+        }
+        let id = registry.next_session;
+        registry.next_session += 1;
+        let session = (registry.factory)();
+        self.local.sessions.insert(id, session);
+        registry.owned.entry(self.conn).or_default().insert(id);
+        registry.current.insert(self.conn, id);
+        registry.meta.insert(
+            id,
+            SessionMeta {
+                owner: self.conn,
+                composing: false,
+                last_active: Instant::now(),
+                log: Vec::new(),
+            },
+        );
+    }
+
+    /// 關閉一個 session；別條連線的 id 回 error（0c `server.go:322-324`）。
+    fn close_session(&mut self, session: u64) -> Response {
+        let store = {
+            let registry = lock(&self.shared);
+            let Some(meta) = registry.meta.get(&session) else {
+                return ownership_error();
+            };
+            if meta.owner != self.conn {
+                return ownership_error();
+            }
+            self.local
+                .sessions
+                .get(&session)
+                .map(|value| value.personal().clone())
+                .unwrap_or_default()
+        };
+        self.local.sessions.remove(&session);
+        {
+            let mut registry = lock(&self.shared);
+            registry.meta.remove(&session);
+            if let Some(owned) = registry.owned.get_mut(&self.conn) {
+                owned.remove(&session);
+            }
+            if registry.current.get(&self.conn) == Some(&session) {
+                registry.current.remove(&self.conn);
+            }
+        }
+        self.save_personal(&[(session, store)]);
+        Response::Acknowledged { session }
+    }
+
+    /// 對這條連線目前的 session 套用 `f`。不持任何共享 Mutex 計算。
+    fn with_current<F>(&mut self, request: Option<Request>, f: F) -> Response
+    where
+        F: FnOnce(&mut Session) -> Response,
+    {
+        let id = match lock(&self.shared).current.get(&self.conn).copied() {
+            Some(id) => id,
+            None => return not_handshaked(),
+        };
+        self.apply_to_session(id, request, f)
+    }
+
+    /// 對指定 session 套用 `f`；shared Mutex 只做歸屬檢查、active 加減與 metadata 更新。
+    fn apply_to_session<F>(&mut self, id: u64, request: Option<Request>, f: F) -> Response
+    where
+        F: FnOnce(&mut Session) -> Response,
+    {
+        {
+            let registry = lock(&self.shared);
+            if !registry
+                .meta
+                .get(&id)
+                .is_some_and(|meta| meta.owner == self.conn)
+            {
+                return ownership_error();
+            }
+        }
+        {
+            let mut registry = lock(&self.shared);
+            registry.active += 1;
+        }
+        let _active = ActiveGuard(Arc::clone(&self.shared));
+        let Some(session) = self.local.sessions.get_mut(&id) else {
+            return ownership_error();
+        };
+        if let Some(request) = request {
+            lock(&self.shared)
+                .meta
+                .get_mut(&id)
+                .expect("歸屬檢查已通過")
+                .log
+                .push(request);
+        }
+        let response = f(session);
+        let composing = !session.preedit().is_empty();
+        {
+            let mut registry = lock(&self.shared);
+            if let Some(meta) = registry.meta.get_mut(&id) {
+                meta.composing = composing;
+                meta.last_active = Instant::now();
+            }
+        }
+        response
+    }
+
+    /// 發現 personal epoch 改變時，用 factory 重建自己持有的所有 session。
+    fn sync_epoch(&mut self) {
+        let (epoch, factory) = {
+            let registry = lock(&self.shared);
+            (registry.personal_epoch, Arc::clone(&registry.factory))
+        };
+        if epoch == self.local.epoch {
+            return;
+        }
+        self.local.epoch = epoch;
+        let ids: Vec<u64> = self.local.sessions.keys().copied().collect();
+        let mut stores = Vec::new();
+        for id in ids {
+            self.local.sessions.insert(id, factory());
+            stores.push((id, PersonalStore::new()));
+            let mut registry = lock(&self.shared);
+            if let Some(meta) = registry.meta.get_mut(&id) {
+                meta.log.clear();
+                meta.composing = false;
+            }
+        }
+        self.save_personal(&stores);
+    }
+
+    /// 實際健康數值，對應 0c `Reply.Info`。
+    fn health(&self) -> HealthInfo {
+        let registry = lock(&self.shared);
+        let sessions = registry.meta.len();
+        let composing = registry.meta.values().filter(|meta| meta.composing).count();
+        HealthInfo {
+            draining: registry.draining || registry.closing,
+            // conn 0 是 stdio／測試用，不計入實際 socket 連線。
+            connections: registry.owned.len().saturating_sub(1),
+            idle_seconds: registry.last_key.map(|at| at.elapsed().as_secs()),
+            sessions,
+            composing,
+            pid: Some(std::process::id()),
+            personal_reset: true,
+            ..HealthInfo::default()
         }
     }
+
+    /// drain：標記 draining，接著由背景 watcher 等 composing／active 歸零。
+    ///
+    /// 成立時先中斷所有連線；worker 結束時各自存檔個人資料。外殼重連時接到
+    /// 新版引擎並重播 log。若外殼不重連，accept 迴圈在自己的中斷回呼下醒來。
+    fn begin_drain(&self) {
+        {
+            let mut registry = lock(&self.shared);
+            if registry.draining || registry.shutdown {
+                return;
+            }
+            registry.draining = true;
+        }
+        let shared = Arc::clone(&self.shared);
+        let spawned = std::thread::Builder::new()
+            .name("jc-engine-drain".into())
+            .spawn(move || {
+                loop {
+                    let ready = {
+                        let registry = lock(&shared);
+                        registry.shutdown
+                            || (registry.active == 0
+                                && registry.meta.values().all(|meta| !meta.composing))
+                    };
+                    if ready {
+                        break;
+                    }
+                    std::thread::sleep(DRAIN_POLL);
+                }
+                let disconnects = {
+                    let mut registry = lock(&shared);
+                    registry.closing = true;
+                    registry.drain_done = true;
+                    registry.settings_pending = false;
+                    registry.broadcast_disconnects()
+                };
+                for disconnect in disconnects {
+                    disconnect();
+                }
+                log::info!("drain 完成：已中斷所有連線");
+            });
+        if let Err(err) = spawned {
+            log::warn!("啟動 drain watcher 失敗：{err}");
+            lock(&self.shared).draining = false;
+        }
+    }
+
+    /// shutdown：全行程廣播，立刻中斷所有連線；worker 結束時各自存檔。
+    fn begin_shutdown(&self) {
+        let disconnects = {
+            let mut registry = lock(&self.shared);
+            if registry.shutdown {
+                return;
+            }
+            registry.shutdown = true;
+            registry.closing = true;
+            registry.broadcast_disconnects()
+        };
+        for disconnect in disconnects {
+            disconnect();
+        }
+    }
+
+    /// 個人資料取捨：每 session 一份 store，各自存到 `personal-<id>.json`。
+    ///
+    /// `jc_core::Session` 自有 `PersonalStore`，沒有 merge API，T4 也不能改
+    /// jc-core，因此不共享、不 last-writer-wins，沒有覆寫別人資料的風險。
+    /// 限制是個人學習不跨 session／跨行程合併，重開引擎不讀回 `personal-<id>`，
+    /// 合併與載入留給後續任務。ResetPersonal 重建 session 並立刻寫入空白檔。
+    fn save_personal(&self, stores: &[(u64, PersonalStore)]) {
+        let Some(dir) = &self.personal_dir else {
+            return;
+        };
+        for (id, store) in stores {
+            let path = dir.join(format!("personal-{id}.json"));
+            if let Err(err) = store.save(&path) {
+                log::warn!("存檔個人資料 {} 失敗：{err}", path.display());
+            }
+        }
+    }
+}
+
+fn not_handshaked() -> Response {
+    Response::error(ErrorCode::Internal, "尚未完成握手")
+}
+
+fn ownership_error() -> Response {
+    Response::error(ErrorCode::Internal, "session 不存在或不屬於這個連線")
 }
 
 /// 把核心快照轉成協定回應。
@@ -166,10 +737,7 @@ fn state(snapshot: Snapshot) -> Response {
     Response::state(snapshot)
 }
 
-/// 服務一條連線直到 EOF、`Shutdown` 或協定錯誤。
-///
-/// 讀取端乾淨 EOF 回傳 `Ok(())`。協定層錯誤（壞訊框、超長、JSON 壞掉）會先
-/// 回一個 `Error` 回應再結束，因為資料流已經不可信。
+/// 服務一條連線直到 EOF、`Shutdown`、drain 或協定錯誤。
 pub fn serve<R: Read, W: Write>(
     engine: &mut Engine,
     input: &mut R,
@@ -185,6 +753,19 @@ pub fn serve<R: Read, W: Write>(
                 if engine.is_closing() {
                     return Ok(());
                 }
+            }
+            // socket 模式設了 receive timeout，用來取代跨 thread shutdown：
+            // 逾時時先看全域收線旗標，還沒收線就繼續等下一個訊框。
+            Err(ProtoError::Io(err))
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                if engine.is_closing() {
+                    return Ok(());
+                }
+                continue;
             }
             Err(err) => {
                 log::warn!("協定錯誤，結束連線：{err}");
@@ -218,7 +799,6 @@ mod tests {
         assert!(matches!(response, Response::Ready { .. }));
     }
 
-    /// 沒有候選的預期 State。
     fn state_of(preedit: &str) -> Response {
         Response::state(Snapshot::from_preedit(preedit))
     }
@@ -335,14 +915,14 @@ mod tests {
         let config = SessionConfig::new(jc_core::Mode::Mixed);
         let mut engine = Engine::with_session(Session::new(config));
         hello(&mut engine);
-        assert_eq!(engine.session.mode(), jc_core::Mode::Mixed);
+        assert_eq!(engine.mode(), jc_core::Mode::Mixed);
         assert!(matches!(
             engine.handle(Request::Toggle),
             Response::State { .. }
         ));
-        assert_eq!(engine.session.mode(), jc_core::Mode::En);
+        assert_eq!(engine.mode(), jc_core::Mode::En);
         engine.handle(Request::Toggle);
-        assert_eq!(engine.session.mode(), jc_core::Mode::Mixed);
+        assert_eq!(engine.mode(), jc_core::Mode::Mixed);
     }
 
     #[test]
@@ -376,6 +956,63 @@ mod tests {
     }
 
     #[test]
+    fn session_ownership_is_checked_across_connections() {
+        let engine = Engine::new();
+        let mut first = engine.accept().into_engine();
+        hello(&mut first);
+        let id = first.session_ids()[0];
+        let mut second = engine.accept().into_engine();
+        hello(&mut second);
+        assert_eq!(
+            second.handle(Request::Close { session: id }),
+            ownership_error()
+        );
+        assert!(first.session_ids().contains(&id), "別條連線不能關掉這個 id");
+    }
+
+    #[test]
+    fn health_reports_registry_numbers() {
+        let engine = Engine::new();
+        let mut conn = engine.accept().into_engine();
+        conn.handle(Request::Ping);
+        let Response::Health { info } = conn.handle(Request::Health) else {
+            panic!("health 應回 Health");
+        };
+        assert_eq!(info.sessions, 0);
+        assert_eq!(info.composing, 0);
+        assert!(!info.draining);
+        assert!(info.pid.is_some());
+        assert!(info.personal_reset);
+        hello(&mut conn);
+        let Response::Health { info } = conn.handle(Request::Health) else {
+            panic!("health 應回 Health");
+        };
+        assert_eq!(info.sessions, 1);
+    }
+
+    #[test]
+    fn replay_log_is_carried_in_registry() {
+        let mut engine = Engine::new();
+        hello(&mut engine);
+        engine.handle(Request::Key {
+            key: Key::char('ㄇ', false),
+        });
+        engine.handle(Request::Key {
+            key: Key::char('ㄚ', false),
+        });
+        let from = engine.session_ids()[0];
+        let log = engine.session_log(from);
+        assert_eq!(log.len(), 2);
+        let mut conn = engine.accept().into_engine();
+        hello(&mut conn);
+        let to = conn.session_ids()[0];
+        let replies = conn.replay_into(from, to);
+        assert_eq!(replies.len(), 2);
+        // 第一條連線的 log 對第二條不可見（歸屬檢查）。
+        assert!(conn.session_log(from).is_empty());
+    }
+
+    #[test]
     fn serve_returns_after_clean_eof() {
         let mut engine = Engine::new();
         let mut input = Cursor::new(Vec::<u8>::new());
@@ -403,7 +1040,6 @@ mod tests {
             jc_proto::DEFAULT_MAX_FRAME,
         )
         .unwrap();
-        // Shutdown 排在後面，版本不符應該先斷線、不處理它。
         write_message(&mut input, &Request::Shutdown, jc_proto::DEFAULT_MAX_FRAME).unwrap();
 
         let mut output = Vec::new();
