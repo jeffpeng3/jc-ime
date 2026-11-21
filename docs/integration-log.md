@@ -2117,3 +2117,16 @@ gate（合併後，本機實測）：
 - 題庫：zh-golden **45/45（100.0%）**、ja modern-500 **92.2%**、
   fuzzy **44.5%**、mixed **6/6**，與 rc.11 完全相同。
 - 三筆檔案範圍不重疊；`Cargo.toml` 只新增 windows feature，不需要動 `Cargo.lock` 的依賴版本。
+
+### 版本與發版（`0.1.0-rc.12`）
+
+- `747daae`：整合紀錄與 gate 結果，先 push main（`b34a4f8..747daae`）。
+- `ceb2b13`：`Cargo.toml` 版本 `0.1.0-rc.12`、CHANGELOG 補 rc.12 段落。
+- `ae30a7f`：`Cargo.lock` 同步到 rc.12；annotated tag `v0.1.0-rc.12` 打在這個 commit。
+- push：再推 main（`747daae..ae30a7f`），接著推 tag；遠端 `refs/heads/main` 與
+  `refs/tags/v0.1.0-rc.12^{}` 都在 `ae30a7f2d4ae4c1317b6409a9fb7023c9fd9fad2`。
+- CI（tag 所屬 commit，run **44922796203**，HEAD `ae30a7f`）：linux (core) success、
+  windows (msvc) success、check-tag success、build-linux (tar.gz) success、
+  build-windows (MSI) success、publish success。
+- worktree 已全數回收（settings-cleanup、smoke-hang、smoke-timestamp；engine-on-demand 原本就沒有），
+  branch 保留；目前只剩 `/mnt/work/jc/jc-ime`。
