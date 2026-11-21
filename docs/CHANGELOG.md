@@ -4,6 +4,17 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.13 - 2026-11-22
+
+### 修正
+
+- Windows 打字：修正引擎 detached spawn 的引號解析。原本把 Run 機碼字串直接交給
+  `CreateProcessW` 的 `lpCommandLine`，末尾 `\"` 被當成跳脫引號，`--data` 的值
+  吃到後面的 `--settings`，引擎以 os error 123 啟動失敗，TIP 無限重試。
+  改用 `Command::new(exe).args([...])` 傳五個獨立參數，並用
+  `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` 啟動後立刻放手。
+  3 秒冷卻、等 pipe、lockfile 與失敗只警告的行為不變；新增末尾反斜線案例測試。
+
 ## 0.1.0-rc.12 - 2026-11-22
 
 ### 修正
