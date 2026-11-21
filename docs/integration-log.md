@@ -2223,3 +2223,39 @@ gate（合併後，本機實測）：
   --target x86_64-pc-windows-msvc` exit 0。
 - 題库：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、
   mixed **6/6**，四個都 exit 0，與 rc.13 完全相同。
+
+## 2026-11-22 03:34 fix-settings-ui-test（`7801582`，直接 ff）與重發 rc.14
+
+`fix-settings-ui-test` 的 parent 就是 rc.14 的 `ac09161`，main 沒有前進，
+直接 `merge --ff-only`，不需 rebase。只改 `jc-settings-ui/src/main.rs` 的測試預期。
+
+rc.14 第一次發版（tag 在 `ac09161`，CI run **44939765336**）的 windows (msvc) job
+失敗：`jc-settings-ui` 的 `tests::test_settings_defaults_to_data_root` 寫死預期
+`/tmp/d/settings.json`，但 Windows 上程式照設計展開 `%LOCALAPPDATA%`，拿到
+`C:\Users\runneradmin\AppData\Local\jc-ime\settings.json`。這是跨平台測試假設，
+不是功能 bug。`publish` 被跳過，GitHub 上沒有 `v0.1.0-rc.14` Release，也沒有
+對外發布的 MSI／tar.gz，因此選擇砍掉舊 tag、原地重發 rc.14，而不是改發 rc.15：
+版本號與 CHANGELOG 已對齊 rc.14，多發一個號碼只會讓沒有 published 的 rc.14 懸空。
+
+修法：測試預期值照 `default_settings_path` 的分支算，Windows 用 `LOCALAPPDATA`，
+其餘平台沿用原值；功能程式碼沒動。本機另外跑 `cargo test -p jc-settings-ui`
+得到 24 passed、0 failed。
+
+gate（合併後，本機實測）：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**
+  （54 targets、**1332 passed、0 failed、1 ignored**，與 rc.13 的 1332 持平，
+  符合只增不減）。
+- `cargo check --workspace --all-targets` exit 0；
+  `cargo clippy --workspace --all-targets -- -D warnings` exit 0；
+  `cargo fmt --all -- --check` exit 0。
+- Windows 目標 `cargo check --workspace --all-targets --exclude jc-cli --exclude jc-settings-ui
+  --target x86_64-pc-windows-msvc` exit 0。
+- 題库：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、
+  mixed **6/6**，四個都 exit 0，與 rc.13 完全相同。
+
+### 重發版本與發版（`0.1.0-rc.14`）
+
+- `7801582`：跨平台測試修正，ff 到 main。
+- 砍掉遠端與本機的舊 `v0.1.0-rc.14`（指在 `ac09161`，CI 失敗且沒有 Release），
+  於新的 main commit 重新打 annotated tag，版本號與 CHANGELOG 不變。
+- 重發後 CI run id 與結果記在下一節。
