@@ -709,3 +709,160 @@ fn imm32_context_without_caret_passes_english_keys_to_the_app() {
         let _ = DestroyWindow(canvas);
     }
 }
+
+// T8b：補足 0c `privacy.rs:544-752` 的九個政策案例在假宿主上的等價檢查。
+// 原本的 host tests 只跑 Unreal 文字儲存、缺 InputScope、原生 EDIT 與 IMM32 插入點四條路徑；
+// 這裡用同一個假 context 覆蓋 InputScope 三態、IMM32 context 判定、WinUI island 與 OneNote 文件畫布。
+
+#[test]
+fn host_secret_scopes_block_keys_and_hotkeys() {
+    init();
+    let view = window(w!("UnrealWindow"), 0);
+    for secret in [
+        IS_PASSWORD,
+        IS_NUMERIC_PASSWORD,
+        IS_NUMERIC_PIN,
+        IS_ALPHANUMERIC_PIN,
+        IS_ALPHANUMERIC_PIN_SET,
+    ] {
+        // 無痕視窗同時標 IS_PRIVATE：秘密欄位優先，仍舊繞過引擎。
+        for scopes in [vec![secret], vec![IS_PRIVATE, secret]] {
+            let ctx = host(
+                view,
+                view,
+                Scope::Scopes(scopes.clone()),
+                TS_SS_NOHIDDENTEXT,
+                0,
+            );
+            assert_eq!(field(Some(&ctx), 1, false), Field::Blocked, "{scopes:?}");
+            assert!(!hotkey_allowed(Some(&ctx), 1, false), "{scopes:?}");
+            assert!(blocked_in_edit(&ctx, 1, false), "{scopes:?}");
+        }
+    }
+    unsafe {
+        let _ = DestroyWindow(view);
+    }
+}
+
+#[test]
+fn host_private_scopes_compose_without_learning() {
+    init();
+    let view = window(w!("UnrealWindow"), 0);
+    for scopes in [
+        vec![IS_PRIVATE],
+        vec![IS_DEFAULT, IS_PRIVATE],
+        vec![IS_PRIVATE, IS_URL],
+    ] {
+        let ctx = host(
+            view,
+            view,
+            Scope::Scopes(scopes.clone()),
+            TS_SS_NOHIDDENTEXT,
+            0,
+        );
+        assert_eq!(field(Some(&ctx), 1, false), Field::Private, "{scopes:?}");
+        assert!(hotkey_allowed(Some(&ctx), 1, false), "{scopes:?}");
+        assert!(!blocked_in_edit(&ctx, 1, false), "{scopes:?}");
+    }
+    unsafe {
+        let _ = DestroyWindow(view);
+    }
+}
+
+#[test]
+fn host_open_scopes_accept_keys_and_hotkeys() {
+    init();
+    let view = window(w!("UnrealWindow"), 0);
+    for scopes in [
+        vec![IS_DEFAULT],
+        vec![IS_TEXT],
+        vec![IS_EMAIL_SMTPEMAILADDRESS],
+        vec![IS_NUMBER],
+        vec![],
+    ] {
+        let ctx = host(
+            view,
+            view,
+            Scope::Scopes(scopes.clone()),
+            TS_SS_NOHIDDENTEXT,
+            0,
+        );
+        assert_eq!(field(Some(&ctx), 1, false), Field::Open, "{scopes:?}");
+        assert!(hotkey_allowed(Some(&ctx), 1, false), "{scopes:?}");
+        assert!(!blocked_in_edit(&ctx, 1, false), "{scopes:?}");
+    }
+    unsafe {
+        let _ = DestroyWindow(view);
+    }
+}
+
+#[test]
+fn host_imm32_context_requires_transitory_without_nohiddentext() {
+    init();
+    let canvas = window(w!("UnrealWindow"), 0);
+    // 系統相容層的暫時 context：只有 TS_SS_TRANSITORY，啟用旗標為 0。
+    let ctx = host(
+        canvas,
+        canvas,
+        Scope::Scopes(vec![IS_DEFAULT]),
+        TS_SS_TRANSITORY,
+        0,
+    );
+    assert!(imm32_context(&ctx, 0));
+    assert!(!imm32_context(&ctx, 0x4000_0040));
+    // Chromium 同時標 0xc，touch/TSF 自己處理，不算 IMM32 相容層（#242）。
+    let ctx = host(
+        canvas,
+        canvas,
+        Scope::Scopes(vec![IS_DEFAULT]),
+        TS_SS_TRANSITORY | TS_SS_NOHIDDENTEXT,
+        0,
+    );
+    assert!(!imm32_context(&ctx, 0));
+    assert!(!imm32_context(&ctx, 0x4000_0040));
+    // 自己實作 TSF 文字儲存的程式不是暫時 context。
+    let ctx = host(
+        canvas,
+        canvas,
+        Scope::Scopes(vec![IS_DEFAULT]),
+        TS_SS_NOHIDDENTEXT,
+        0,
+    );
+    assert!(!imm32_context(&ctx, 0));
+    unsafe {
+        let _ = DestroyWindow(canvas);
+    }
+}
+
+#[test]
+fn host_winui_island_without_scope_uses_static_flags() {
+    init();
+    register(w!("InputSiteWindowClass"), Some(plain_proc));
+    let view = window(w!("InputSiteWindowClass"), 0);
+    // #105：相片搜尋框實測 0x32（REGIONS＋觸控鍵盤預測＋自動校正），照一般欄位組字。
+    let ctx = host(view, view, Scope::Fail(E_FAIL), 0x32, 0);
+    assert_eq!(field(Some(&ctx), 1, false), Field::Open);
+    // 宿主關掉預測與校正：仍可組字，但不學習、不讀前文。
+    let ctx = host(view, view, Scope::Fail(E_FAIL), TS_SS_REGIONS, 0);
+    assert_eq!(field(Some(&ctx), 1, false), Field::Private);
+    let ctx = host(view, view, Scope::Fail(E_FAIL), 0, 0);
+    assert_eq!(field(Some(&ctx), 1, false), Field::Private);
+    unsafe {
+        let _ = DestroyWindow(view);
+    }
+}
+
+#[test]
+fn host_onenote_canvas_without_scope_is_an_open_field() {
+    init();
+    register(w!("OneNote::DocumentCanvas"), Some(plain_proc));
+    let view = window(w!("OneNote::DocumentCanvas"), 0);
+    // #163：OneNote 桌面版的頁面讀 InputScope 回 E_FAIL，但沒有密碼／唯讀／停用。
+    for flags in [TS_SS_NOHIDDENTEXT, TS_SS_TRANSITORY] {
+        let ctx = host(view, view, Scope::Fail(E_FAIL), flags, 0);
+        assert_eq!(field(Some(&ctx), 1, false), Field::Open, "{flags:#x}");
+    }
+    unsafe {
+        let _ = DestroyWindow(view);
+    }
+}

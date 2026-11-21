@@ -254,3 +254,146 @@ impl Drop for Elements {
         self.end();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! 移植自 0c `uielement.rs:194-311`。0c 的 `zuin_win_common::UiMessage` 在新 crate
+    //! 由本模組的 `Candidates` 取代：補全提示、提示訊息、加詞標示沒有候選文字，等價於
+    //! `show: true` 且 `candidates` 空白，仍要檢查「無候選不畫視窗」（#159）。
+    use super::*;
+    use windows::Win32::UI::TextServices::{IEnumTfUIElements, ITfUIElement, ITfUIElementMgr_Impl};
+    use windows_core::Ref;
+
+    /// 模擬宿主的 UI 元件管理員：BeginUIElement 回傳指定的 pbShow，並記下呼叫次數。
+    #[implement(ITfUIElementMgr)]
+    struct Host {
+        show: bool,
+        begun: Cell<u32>,
+        ended: Cell<u32>,
+    }
+
+    impl ITfUIElementMgr_Impl for Host_Impl {
+        fn BeginUIElement(
+            &self,
+            _element: Ref<ITfUIElement>,
+            show: *mut BOOL,
+            id: *mut u32,
+        ) -> windows_core::Result<()> {
+            self.begun.set(self.begun.get() + 1);
+            unsafe {
+                show.write(self.show.into());
+                id.write(7);
+            }
+            Ok(())
+        }
+        fn UpdateUIElement(&self, _id: u32) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn EndUIElement(&self, _id: u32) -> windows_core::Result<()> {
+            self.ended.set(self.ended.get() + 1);
+            Ok(())
+        }
+        fn GetUIElement(&self, _id: u32) -> windows_core::Result<ITfUIElement> {
+            Err(E_NOTIMPL.into())
+        }
+        fn EnumUIElements(&self) -> windows_core::Result<IEnumTfUIElements> {
+            Err(E_NOTIMPL.into())
+        }
+    }
+
+    fn host(show: bool) -> (ComObject<Host>, Elements) {
+        let host = ComObject::new(Host {
+            show,
+            begun: Cell::new(0),
+            ended: Cell::new(0),
+        });
+        let elements = Elements::new(host.to_interface());
+        (host, elements)
+    }
+
+    /// 只有補全提示／提示訊息／標示說明，沒有候選：三種在 Candidates 裡都是空清單。
+    fn hint() -> Candidates {
+        Candidates {
+            show: true,
+            candidates: Vec::new(),
+            ..Default::default()
+        }
+    }
+
+    fn candidates() -> Candidates {
+        Candidates {
+            show: true,
+            candidates: vec!["價".into()],
+            highlight: 0,
+        }
+    }
+
+    #[test]
+    fn uiless_host_never_gets_our_window_for_hints_without_candidates() {
+        // #159：英雄聯盟（UI-less）打「價」只有補全提示「格」，0c-ui 的視窗疊在獨佔全螢幕的遊戲上，
+        // 遊戲失去前景並跳回桌面。補全提示、提示訊息、標示說明都沒有 UI 元件可交給宿主，一律不畫。
+        let (host, mut elements) = host(false);
+        for _ in 0..3 {
+            assert!(!elements.present(&hint(), None));
+        }
+        assert_eq!(
+            host.begun.get(),
+            0,
+            "hints are not handed to the host as candidate lists"
+        );
+        // 候選清單交給宿主畫，外殼不畫；之後只剩補全提示時結束元件，仍不畫。
+        assert!(!elements.present(&candidates(), None));
+        assert_eq!(host.begun.get(), 1);
+        assert!(!elements.present(&hint(), None));
+        assert_eq!(host.ended.get(), 1);
+        // 收起照常放行（呼叫端送隱藏訊息）。
+        assert!(elements.present(&Candidates::default(), None));
+    }
+
+    #[test]
+    fn uiless_host_that_lets_us_draw_still_sees_our_candidate_window() {
+        let (host, mut elements) = host(true);
+        assert!(elements.present(&candidates(), None));
+        assert_eq!(host.begun.get(), 1);
+    }
+
+    fn list() -> ComObject<CandidateList> {
+        object_created();
+        ComObject::new(CandidateList {
+            items: RefCell::new(vec!["我".into(), "窩".into()]),
+            selection: Cell::new(1),
+            document: RefCell::new(None),
+            flags: Cell::new(ALL_FLAGS),
+            shown: Cell::new(true),
+        })
+    }
+
+    #[test]
+    fn candidate_list_reports_current_page_to_host() {
+        let element: ITfCandidateListUIElement = list().into_interface();
+        unsafe {
+            assert_eq!(element.GetCount().unwrap(), 2);
+            assert_eq!(element.GetSelection().unwrap(), 1);
+            assert_eq!(element.GetString(0).unwrap().to_string(), "我");
+            assert!(element.GetString(2).is_err());
+            assert_eq!(element.GetUpdatedFlags().unwrap(), ALL_FLAGS);
+            assert_eq!(
+                element.GetUpdatedFlags().unwrap(),
+                0,
+                "flags reset after read"
+            );
+            let mut pages = 0;
+            element.GetPageIndex(&mut [], &mut pages).unwrap();
+            assert_eq!(pages, 1);
+            let mut index = [7u32; 1];
+            element.GetPageIndex(&mut index, &mut pages).unwrap();
+            assert_eq!(index, [0]);
+            assert_eq!(element.GetCurrentPage().unwrap(), 0);
+            let base: ITfUIElement = windows_core::Interface::cast(&element).unwrap();
+            assert!(base.IsShown().unwrap().as_bool());
+            base.Show(false.into()).unwrap();
+            assert!(!base.IsShown().unwrap().as_bool());
+            assert_eq!(base.GetGUID().unwrap(), ELEMENT_GUID);
+        }
+    }
+}
