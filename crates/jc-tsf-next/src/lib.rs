@@ -29,3 +29,16 @@ pub use session::{
     response_to_reply, state_to_snapshot_value, to_jc_request, Client, Mode, Segment, Session,
     Snapshot, Transport, PROTOCOL_VERSION,
 };
+
+// T7b：顯示屬性、候選窗定位、前文追蹤、UIElement 與 IMM32 相容層。
+// 寫在檔案末端，方便與 T6 的 service/langbar mod 宣告合併。
+#[cfg(windows)]
+pub mod caret;
+#[cfg(windows)]
+pub mod context;
+#[cfg(windows)]
+pub mod cuas;
+#[cfg(windows)]
+pub mod displayattr;
+#[cfg(windows)]
+pub mod uielement;
