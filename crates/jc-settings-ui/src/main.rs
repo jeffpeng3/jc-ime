@@ -182,7 +182,19 @@ mod tests {
         let options = parse_args(args(&["--data", "/tmp/d"]))
             .expect("解析成功")
             .expect("有工作");
-        assert_eq!(options.settings_path, PathBuf::from("/tmp/d/settings.json"));
+        // 預期值照 default_settings_path 的分支算：Windows 展開 %LOCALAPPDATA%，
+        // 其餘平台沿用傳入的資料根目錄。這樣 CI windows job 不會拿真實使用者
+        // 路徑去比寫死的 /tmp/d/settings.json。函式本身的行為不變。
+        let fallback = PathBuf::from("/tmp/d/settings.json");
+        let expected = if cfg!(windows) {
+            std::env::var_os("LOCALAPPDATA")
+                .filter(|value| !value.is_empty())
+                .map(|value| PathBuf::from(value).join("jc-ime").join("settings.json"))
+                .unwrap_or(fallback)
+        } else {
+            fallback
+        };
+        assert_eq!(options.settings_path, expected);
     }
 
     #[test]
