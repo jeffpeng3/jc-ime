@@ -1949,3 +1949,8 @@ gate：
 - 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
 - WXS XML 有效；`validate-linux.sh` 本機因缺 .NET runtime 無法完成（已知限制，WIx 綁定交給 CI）。
 - worktree `w7N`、`w7P` 已回收，branch 保留；`git branch --no-merged main`：空。
+
+### CI（push `1276f27`，run 44893221254；activate-second-call／engine-pipe-name）
+
+- linux (core)：success；windows (msvc)：success；check-tag：success。
+- build-linux／build-windows／publish：skipped（main scope，標籤流程才會跑）。
