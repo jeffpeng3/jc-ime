@@ -345,8 +345,18 @@ impl Engine {
     }
 
     /// 把來源 session 的 log 重播到同連線的另一個 session，回傳每個請求的回應。
+    ///
+    /// 重播是跨連線搬移組字狀態：直接從 registry 拿 log，不走 [`Self::session_log`]
+    /// 的連線歸屬檢查。歸屬檢查只擋外部讀取，不擋引擎自己把 log 放進新 session。
     pub fn replay_into(&mut self, from: u64, to: u64) -> Vec<Response> {
-        let log = self.session_log(from);
+        let log = {
+            let registry = lock(&self.shared);
+            registry
+                .meta
+                .get(&from)
+                .map(|meta| meta.log.clone())
+                .unwrap_or_default()
+        };
         log.into_iter()
             .map(|request| {
                 let logged = request.clone();
@@ -383,9 +393,11 @@ impl Engine {
 
     /// 清除單一連線的握手狀態並重置它目前的 session。
     ///
-    /// `Shutdown` 是全行程旗標，不會被清掉。
+    /// `Shutdown` 是全行程旗標，不會被清掉；`closing` 只是「這條連線要收掉」的
+    /// 旗標，重置後這條連線重新可握手，所以一併清掉。
     pub fn reset_session(&mut self) {
         self.hello = false;
+        lock(&self.shared).closing = false;
         let id = lock(&self.shared).current.get(&self.conn).copied();
         if let Some(id) = id {
             if let Some(session) = self.local.sessions.get_mut(&id) {
