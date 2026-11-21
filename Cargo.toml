@@ -20,6 +20,7 @@ members = [
     "crates/jc-settings-ui",
     "crates/jc-tsf-smoke",
     "crates/jc-tsf-next",
+    "crates/jc-ui",
 ]
 
 [workspace.package]
