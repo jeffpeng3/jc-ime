@@ -11,7 +11,7 @@ clippy，並在測試前下載與 release 相同的資料包，把 `JC_IMEDATA` 
 | push tag `v<version>` | `verify` → `windows` → `linux` → `publish` | 是 |
 | Actions → Release → Run workflow | `verify` → `windows` → `linux` | 否，只留 artifact |
 
-手動觸發可以填 `data_bundle_url`、`data_bundle_sha256` 覆寫 repo secret／variable，
+手動觸發可以填 `data_bundle_url`、`data_bundle_sha256` 覆寫公開 repo variable，
 適合第一次試跑或換資料包來源。手動觸發的版本號取自 `Cargo.toml`。
 
 ## 版本號規則
@@ -66,17 +66,17 @@ git push origin v0.1.0-rc.1
 資料根目錄，因此 release workflow 會下載一個預先打包的資料包。沒有資料包 URL
 時 `windows` job 會直接失敗，不會產出缺資料的 MSI。
 
-設定下列其中一個來源，優先序是 workflow_dispatch 輸入、repo secret、repo
-variable：
+資料包來源只有一個：公開 repo variable，或 `workflow_dispatch` 輸入覆寫。
+**不使用 repo secret**，讓 fork PR 也能重現同一份資料包。優先序是
+`workflow_dispatch` 輸入 → repo variable：
 
-- repo secret `JC_DATA_BUNDLE_URL`（建議）
 - repo variable `JC_DATA_BUNDLE_URL`
 - `workflow_dispatch` 輸入 `data_bundle_url`
 
-`JC_DATA_BUNDLE_SHA256` 同樣支援 secret、variable 與輸入，建議設成 repo secret。
-workflow 下載後會實際算 SHA-256；不一致就讓 `windows` job 失敗，錯誤訊息會印出
-預期與實際值。沒有提供這個值時只警告並繼續，之後仍由 `jc-cli data verify` 驗
-manifest 內每個檔案的雜湊。正式發版建議一定要鎖 SHA-256。
+`JC_DATA_BUNDLE_SHA256` 同樣只支援 variable 與輸入。workflow 下載後會實際算
+SHA-256；不一致就讓 `windows` job 失敗，錯誤訊息會印出預期與實際值。沒有提供
+這個值時只警告並繼續，之後仍由 `jc-cli data verify` 驗 manifest 內每個檔案的
+雜湊。正式發版建議一定要鎖 SHA-256。
 
 CI 的 `linux`／`windows` job 也下載這同一份資料包，但只讀公開 repo variable
 `JC_DATA_BUNDLE_URL`／`JC_DATA_BUNDLE_SHA256`（不讀 secret、也不吃 workflow_dispatch
@@ -147,9 +147,9 @@ HF 會把 `resolve` 轉到 CDN，`Invoke-WebRequest` 會跟隨 redirect。`<comm
 1. 用新的 `--version` 重新產生 manifest，確認 `shipped: true` 清單正確。
 2. 跑 `scripts/data-bundle.sh`，記下輸出的 SHA-256、檔案大小與資料版本。
 3. 上傳到 `jeffpeng3/jc-ime-data`，取得上傳後的 commit SHA。
-4. 更新 repo secret `JC_DATA_BUNDLE_URL` 為
-   `https://huggingface.co/jeffpeng3/jc-ime-data/resolve/<commit>/jc-ime-data-<data-version>.tar.zst`。
-5. 更新 repo secret `JC_DATA_BUNDLE_SHA256` 為腳本印出的 SHA-256。
+4. 更新公開 repo variable `JC_DATA_BUNDLE_URL` 為
+   `https://huggingface.co/datasets/jeffpeng3/jc-ime-data/resolve/<commit>/jc-ime-data-<data-version>.tar.zst`。
+5. 更新公開 repo variable `JC_DATA_BUNDLE_SHA256` 為腳本印出的 SHA-256。
 6. 手動觸發 Release workflow 驗一次，確認 log 沒有「跳過資料包雜湊檢查」的警告，
    且 MSI 內的 `data/manifest.json` 版本正確。
 7. 如果資料版本會影響使用者，更新 `docs/CHANGELOG.md` 與相關資料文件。
@@ -393,7 +393,7 @@ artifact，不會建立 Release。
 release workflow 只能證明「建置與打包成功」，下面這些要在第一次 tag 前確認：
 
 - [ ] `JC_DATA_BUNDLE_URL` 已設定，且資料包只含 `shipped: true` 的檔案。
-- [ ] `JC_DATA_BUNDLE_SHA256` 已設成 repo secret，值與 `scripts/data-bundle.sh`
+- [ ] `JC_DATA_BUNDLE_SHA256` 已設成公開 repo variable，值與 `scripts/data-bundle.sh`
       印出的 SHA-256 相同；手動觸發時 log 沒有「跳過資料包雜湊檢查」警告。
 - [ ] 資料包 `manifest.json` 包含 Jinen tokenizer
       （`models/quant/jinen-v2-xsmall/tokenizer.json`）。依 `docs/models.md`，這筆

@@ -13,11 +13,11 @@ on:
   workflow_dispatch:
     inputs:
       data_bundle_url:
-        description: "資料包 URL（tar.zst／tar.gz／tgz／zip）；留空則讀 repo secret 或 variable JC_DATA_BUNDLE_URL"
+        description: "資料包 URL（tar.zst／tar.gz／tgz／zip）；留空則讀公開 repo variable JC_DATA_BUNDLE_URL"
         required: false
         type: string
       data_bundle_sha256:
-        description: "資料包 SHA-256；留空則讀 repo secret 或 variable JC_DATA_BUNDLE_SHA256"
+        description: "資料包 SHA-256；留空則讀公開 repo variable JC_DATA_BUNDLE_SHA256"
         required: false
         type: string
 
@@ -139,9 +139,10 @@ jobs:
       # Windows 的 Python 3.12 預設 cp1252；build.ps1 呼叫 check-payload.py 時
       # 印中文不能爆，統一用 UTF-8。
       PYTHONUTF8: "1"
-      # 手動輸入優先，其次 repo secret，最後 repo variable。
-      DATA_BUNDLE_URL: ${{ github.event.inputs.data_bundle_url || secrets.JC_DATA_BUNDLE_URL || vars.JC_DATA_BUNDLE_URL }}
-      DATA_BUNDLE_SHA256: ${{ github.event.inputs.data_bundle_sha256 || secrets.JC_DATA_BUNDLE_SHA256 || vars.JC_DATA_BUNDLE_SHA256 }}
+      # 單一來源：手動輸入優先，否則讀公開 repo variable。不放 secret，
+      # 讓 fork PR 也能重現同一份資料包（見 docs/release.md）。
+      DATA_BUNDLE_URL: ${{ github.event.inputs.data_bundle_url || vars.JC_DATA_BUNDLE_URL }}
+      DATA_BUNDLE_SHA256: ${{ github.event.inputs.data_bundle_sha256 || vars.JC_DATA_BUNDLE_SHA256 }}
     steps:
       - uses: actions/checkout@v5
 
@@ -183,8 +184,7 @@ jobs:
             throw @'
           沒有資料包 URL。MSI 需要資料根目錄（manifest.json 與 shipped: true 的檔案）。
           請將資料包上傳到 runner 讀得到的位置，然後設定下列其中一個：
-            - repo variable JC_DATA_BUNDLE_URL
-            - repo secret   JC_DATA_BUNDLE_URL
+            - 公開 repo variable JC_DATA_BUNDLE_URL
             - workflow_dispatch 輸入 data_bundle_url
           打包方式見 docs/release.md。
           '@
@@ -201,7 +201,7 @@ jobs:
             }
             Write-Host '資料包 SHA-256 通過'
           } else {
-            Write-Warning '沒有設定 JC_DATA_BUNDLE_SHA256（secret／variable／輸入皆未提供）；跳過資料包雜湊檢查（manifest 內的檔案雜湊仍會驗）'
+            Write-Warning '沒有設定 JC_DATA_BUNDLE_SHA256（variable／輸入皆未提供）；跳過資料包雜湊檢查（manifest 內的檔案雜湊仍會驗）'
           }
 
           $root = Join-Path $env:RUNNER_TEMP 'jc-ime-data'
