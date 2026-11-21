@@ -11,7 +11,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # 同一 ref 的新 push 排隊等待，不取消進行中的 run。
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
