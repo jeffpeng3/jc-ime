@@ -11,18 +11,19 @@
 //! [`Registry`] 只放 metadata 與一個 `SessionFactory`，兩者都是 `Send + Sync`。
 //! 這樣既不需要改 jc-core，也讓 Mutex 臨界區完全避開 `engineDo` 的長計算。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use jc_core::personal::PersonalStore;
+use jc_core::personal::{PersonalError, PersonalStore};
 use jc_core::session::{Session, SessionConfig};
 use jc_core::{KeyCode, Mode, Snapshot};
 
 pub mod config;
 pub mod loader;
+mod personal_merge;
 pub mod supervise;
 use jc_proto::message::{read_message, ProtoError};
 use jc_proto::{write_message, ErrorCode, HealthInfo, Request, Response, PROTOCOL_VERSION};
@@ -40,6 +41,9 @@ pub const DEFAULT_CONN: ConnId = 0;
 
 /// 個人學習資料的預設檔名前綴；已發行的舊引擎用這個值。
 pub const DEFAULT_PERSONAL_PREFIX: &str = "personal";
+
+/// 活動中週期寫回的間隔。避免打字途中崩潰遺失尚未 Close 的學習。
+const PERSONAL_FLUSH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// 中斷一條連線的回呼。drain／shutdown 時由 watcher 跨連線廣播。
 ///
@@ -84,6 +88,10 @@ pub struct Registry {
     settings_pending: bool,
     /// ResetPersonal 代次；worker 發現代次變化時重建自己的 session。
     personal_epoch: u64,
+    /// 全行程唯一的個人學習資料。跨 session、跨連線共享同一份。
+    personal_store: Arc<Mutex<PersonalStore>>,
+    /// 啟動時是否成功從前綴對應的檔案讀回資料。Health 據此回報真實情形。
+    personal_loaded: bool,
     /// 正在處理的請求數；drain 要等它與 composing 都歸零。
     active: usize,
     last_key: Option<Instant>,
@@ -106,6 +114,8 @@ impl Registry {
             drain_done: false,
             settings_pending: false,
             personal_epoch: 0,
+            personal_store: Arc::new(Mutex::new(PersonalStore::new())),
+            personal_loaded: false,
             active: 0,
             last_key: None,
         }
@@ -139,6 +149,8 @@ impl Drop for ActiveGuard {
 /// 只屬於一條 worker thread 的 session。永遠不跨 thread 移動。
 struct LocalState {
     sessions: HashMap<u64, Session>,
+    /// 各 session 建立時從共用 store 取得的快照。回寫時用來算增量，避免重複累加。
+    personal_baseline: HashMap<u64, PersonalStore>,
     epoch: u64,
 }
 
@@ -159,6 +171,7 @@ impl Connection {
         Engine {
             local: LocalState {
                 sessions: HashMap::new(),
+                personal_baseline: HashMap::new(),
                 epoch,
             },
             shared: self.shared,
@@ -167,6 +180,7 @@ impl Connection {
             close_connection: false,
             personal_dir: self.personal_dir,
             personal_prefix: self.personal_prefix,
+            last_personal_flush: Instant::now(),
         }
     }
 
@@ -187,6 +201,8 @@ pub struct Engine {
     personal_dir: Option<PathBuf>,
     /// 個人資料檔名前綴；平行建置用不同前綴避免新舊互寫。
     personal_prefix: String,
+    /// 上次把 session 增量寫回共用的時間；用來做活動中的週期存檔。
+    last_personal_flush: Instant,
 }
 
 impl Default for Engine {
@@ -203,7 +219,25 @@ impl Engine {
 
     /// 用 session 工廠建立引擎；工廠會在每個 worker thread 內呼叫。
     pub fn with_factory(factory: SessionFactory, personal_dir: Option<PathBuf>) -> Self {
-        let shared = Arc::new(Mutex::new(Registry::new(factory)));
+        Self::with_factory_personal(
+            factory,
+            personal_dir,
+            Arc::new(Mutex::new(PersonalStore::new())),
+        )
+    }
+
+    /// 與 [`Engine::with_factory`] 相同，但共用呼叫端提供的個人學習資料。
+    ///
+    /// 主要給需要事先把初始資料放進共用的嵌入端使用；一般行程用
+    /// [`Engine::load_personal`] 從檔案讀回即可。
+    pub fn with_factory_personal(
+        factory: SessionFactory,
+        personal_dir: Option<PathBuf>,
+        personal_store: Arc<Mutex<PersonalStore>>,
+    ) -> Self {
+        let mut registry = Registry::new(factory);
+        registry.personal_store = personal_store;
+        let shared = Arc::new(Mutex::new(registry));
         shared
             .lock()
             .unwrap_or_else(|err| err.into_inner())
@@ -213,6 +247,7 @@ impl Engine {
         Self {
             local: LocalState {
                 sessions: HashMap::new(),
+                personal_baseline: HashMap::new(),
                 epoch: 0,
             },
             shared,
@@ -221,16 +256,63 @@ impl Engine {
             close_connection: false,
             personal_dir,
             personal_prefix: DEFAULT_PERSONAL_PREFIX.to_string(),
+            last_personal_flush: Instant::now(),
         }
     }
 
     /// 設定個人資料檔名前綴；不改變資料根目錄，只讓新舊引擎各寫各的檔。
     ///
-    /// 預設是 `"personal"`（`personal-<id>.json`）。新版引擎用 `--personal-prefix
-    /// personal-next` 呼叫它，存成 `personal-next-<id>.json`，回退後舊引擎讀不到也不會
-    /// 覆寫新版資料。必須在 `accept()` 之前呼叫。
+    /// 預設是 `"personal"`（`personal.json`）。新版引擎用 `--personal-prefix
+    /// personal-next` 呼叫它，存成 `personal-next.json`，回退後舊引擎讀不到也不會
+    /// 覆寫新版資料。必須在 `accept()` 或 `load_personal()` 之前呼叫。
     pub fn set_personal_prefix(&mut self, prefix: impl Into<String>) {
         self.personal_prefix = prefix.into();
+    }
+
+    /// 個人資料的完整檔名；前綴決定新舊版資料，彼此不會互寫。
+    fn personal_path(&self) -> Option<PathBuf> {
+        self.personal_dir
+            .as_ref()
+            .map(|dir| dir.join(format!("{}.json", self.personal_prefix)))
+    }
+
+    /// 啟動時讀回共用個人資料。檔案不存在或損壞時使用空白基準，不阻礙啟動。
+    ///
+    /// 讀檔只看目前前綴對應的單一檔案（`personal-next.json`），舊版的前綴
+    /// （`personal`）與舊版 per-session 檔（`personal-<id>.json`）都不碰。
+    pub fn load_personal(&mut self) {
+        let Some(path) = self.personal_path() else {
+            return;
+        };
+        match PersonalStore::load(&path) {
+            Ok(store) => {
+                let shared = Arc::clone(&self.shared);
+                let mut registry = lock(&shared);
+                *registry
+                    .personal_store
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner()) = store;
+                registry.personal_loaded = true;
+                log::info!("讀回個人資料：{}", path.display());
+            }
+            Err(PersonalError::Io(err)) if err.kind() == io::ErrorKind::NotFound => {
+                log::info!("個人資料檔不存在，使用空白基準：{}", path.display());
+            }
+            Err(err) => {
+                log::warn!("讀取個人資料失敗，使用空白基準：{}：{err}", path.display());
+            }
+        }
+    }
+
+    /// 共用個人資料的快照；診斷與測試用。
+    pub fn personal_store(&self) -> PersonalStore {
+        let registry = lock(&self.shared);
+        let copied = registry
+            .personal_store
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
+        copied
     }
 
     /// 用指定的工作階段建立引擎；session 裝在預設連線上，id 為 1。
@@ -252,7 +334,9 @@ impl Engine {
                 },
             );
         }
+        let baseline = session.personal().clone();
         engine.local.sessions.insert(1, session);
+        engine.local.personal_baseline.insert(1, baseline);
         engine
     }
 
@@ -283,7 +367,7 @@ impl Engine {
         lock(&self.shared).listener_disconnect = None;
     }
 
-    /// 連線結束：清掉這條連線持有的所有 session 並各自存檔。
+    /// 連線結束：把這條連線所有 session 的學習合併回共用 store 並存檔。
     pub fn finish_connection(&mut self) {
         let ids: Vec<u64> = {
             let mut registry = lock(&self.shared);
@@ -293,17 +377,16 @@ impl Engine {
                 .map(|set| set.into_iter().collect())
                 .unwrap_or_default()
         };
-        let mut stores = Vec::new();
         for id in ids {
-            if let Some(session) = self.local.sessions.remove(&id) {
-                stores.push((id, session.personal().clone()));
-            }
+            self.flush_session(id);
+            self.local.sessions.remove(&id);
+            self.local.personal_baseline.remove(&id);
             let mut registry = lock(&self.shared);
             registry.current.remove(&self.conn);
             registry.meta.remove(&id);
         }
         lock(&self.shared).disconnects.remove(&self.conn);
-        self.save_personal(&stores);
+        self.save_global();
         self.close_connection = true;
     }
 
@@ -403,6 +486,10 @@ impl Engine {
     /// 處理一個請求。任何請求都會得到一個回應。
     pub fn handle(&mut self, request: Request) -> Response {
         self.sync_epoch();
+        if self.last_personal_flush.elapsed() >= PERSONAL_FLUSH_INTERVAL {
+            self.last_personal_flush = Instant::now();
+            self.flush_all();
+        }
         match request {
             Request::Hello { protocol, client } => {
                 if protocol != PROTOCOL_VERSION {
@@ -473,6 +560,7 @@ impl Engine {
                 }
             }
             Request::Drain => {
+                self.flush_all();
                 self.begin_drain();
                 Response::Health {
                     info: self.health(),
@@ -487,6 +575,7 @@ impl Engine {
                 Response::Acknowledged { session: 0 }
             }
             Request::Shutdown => {
+                self.flush_all();
                 self.begin_shutdown();
                 self.snapshot()
             }
@@ -519,7 +608,14 @@ impl Engine {
         }
         let id = registry.next_session;
         registry.next_session += 1;
-        let session = (registry.factory)();
+        let seed = registry
+            .personal_store
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
+        let mut session = (registry.factory)();
+        session.set_personal_store(seed.clone());
+        self.local.personal_baseline.insert(id, seed);
         self.local.sessions.insert(id, session);
         registry.owned.entry(self.conn).or_default().insert(id);
         registry.current.insert(self.conn, id);
@@ -536,7 +632,7 @@ impl Engine {
 
     /// 關閉一個 session；別條連線的 id 回 error（0c `server.go:322-324`）。
     fn close_session(&mut self, session: u64) -> Response {
-        let store = {
+        {
             let registry = lock(&self.shared);
             let Some(meta) = registry.meta.get(&session) else {
                 return ownership_error();
@@ -544,13 +640,10 @@ impl Engine {
             if meta.owner != self.conn {
                 return ownership_error();
             }
-            self.local
-                .sessions
-                .get(&session)
-                .map(|value| value.personal().clone())
-                .unwrap_or_default()
-        };
+        }
+        self.flush_session(session);
         self.local.sessions.remove(&session);
+        self.local.personal_baseline.remove(&session);
         {
             let mut registry = lock(&self.shared);
             registry.meta.remove(&session);
@@ -561,7 +654,7 @@ impl Engine {
                 registry.current.remove(&self.conn);
             }
         }
-        self.save_personal(&[(session, store)]);
+        self.save_global();
         Response::Acknowledged { session }
     }
 
@@ -620,7 +713,7 @@ impl Engine {
         response
     }
 
-    /// 發現 personal epoch 改變時，用 factory 重建自己持有的所有 session。
+    /// 發現 personal epoch 改變時，清空共用資料，並用 factory 重建自己的 session。
     fn sync_epoch(&mut self) {
         let (epoch, factory) = {
             let registry = lock(&self.shared);
@@ -630,18 +723,27 @@ impl Engine {
             return;
         }
         self.local.epoch = epoch;
+        {
+            let mut registry = lock(&self.shared);
+            *registry
+                .personal_store
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()) = PersonalStore::new();
+            registry.personal_loaded = false;
+        }
         let ids: Vec<u64> = self.local.sessions.keys().copied().collect();
-        let mut stores = Vec::new();
         for id in ids {
             self.local.sessions.insert(id, factory());
-            stores.push((id, PersonalStore::new()));
+            self.local
+                .personal_baseline
+                .insert(id, PersonalStore::new());
             let mut registry = lock(&self.shared);
             if let Some(meta) = registry.meta.get_mut(&id) {
                 meta.log.clear();
                 meta.composing = false;
             }
         }
-        self.save_personal(&stores);
+        self.save_global();
     }
 
     /// 實際健康數值，對應 0c `Reply.Info`。
@@ -649,6 +751,10 @@ impl Engine {
         let registry = lock(&self.shared);
         let sessions = registry.meta.len();
         let composing = registry.meta.values().filter(|meta| meta.composing).count();
+        let mut capabilities = BTreeMap::new();
+        capabilities.insert("personal_shared".to_string(), true);
+        capabilities.insert("personal_persist".to_string(), self.personal_dir.is_some());
+        capabilities.insert("personal_loaded".to_string(), registry.personal_loaded);
         HealthInfo {
             draining: registry.draining || registry.closing,
             // conn 0 是 stdio／測試用，不計入實際 socket 連線。
@@ -657,7 +763,10 @@ impl Engine {
             sessions,
             composing,
             pid: Some(std::process::id()),
+            // 0c 把 personal_reset 當成「支援清除學習紀錄」的能力旗標；
+            // 這份引擎有 reset 指令且會把空白寫回檔案，所以回 true。
             personal_reset: true,
+            capabilities,
             ..HealthInfo::default()
         }
     }
@@ -724,24 +833,48 @@ impl Engine {
         }
     }
 
-    /// 個人資料取捨：每 session 一份 store，各自存到 `<前綴>-<id>.json`。
+    /// 把一條 session 相對基準的學習增量合併回共用 store，並前進基準。
     ///
-    /// `jc_core::Session` 自有 `PersonalStore`，沒有 merge API，T4 也不能改
-    /// jc-core，因此不共享、不 last-writer-wins，沒有覆寫別人資料的風險。
-    /// 限制是個人學習不跨 session／跨行程合併，重開引擎不讀回舊檔，
-    /// 合併與載入留給後續任務。ResetPersonal 重建 session 並立刻寫入空白檔。
-    ///
-    /// T9 平行建置：前綴預設是 `personal`，新版引擎用 `personal-next`，
-    /// 兩個引擎共用資料根目錄也不會互寫同一個檔案。
-    fn save_personal(&self, stores: &[(u64, PersonalStore)]) {
-        let Some(dir) = &self.personal_dir else {
+    /// 只在這條 worker thread 內讀 session，Mutex 只包住短暫的合併，沒有
+    /// `engineDo` 長計算。基準前進很重要：下一次週期或 Close 不再重複加同一筆。
+    fn flush_session(&mut self, id: u64) {
+        let Some(session) = self.local.sessions.get(&id) else {
             return;
         };
-        for (id, store) in stores {
-            let path = dir.join(format!("{}-{id}.json", self.personal_prefix));
-            if let Err(err) = store.save(&path) {
-                log::warn!("存檔個人資料 {} 失敗：{err}", path.display());
-            }
+        let Some(baseline) = self.local.personal_baseline.get(&id).cloned() else {
+            return;
+        };
+        let learned = session.personal().clone();
+        let shared = Arc::clone(&self.shared);
+        let global = Arc::clone(&lock(&shared).personal_store);
+        {
+            let mut store = global.lock().unwrap_or_else(|err| err.into_inner());
+            personal_merge::merge_learning(&mut store, &baseline, &learned);
+        }
+        if let Some(current) = self.local.personal_baseline.get_mut(&id) {
+            *current = learned;
+        }
+    }
+
+    /// 把這條連線所有 session 的學習合併回共用 store 並存檔。
+    fn flush_all(&mut self) {
+        let ids: Vec<u64> = self.local.sessions.keys().copied().collect();
+        for id in ids {
+            self.flush_session(id);
+        }
+        self.save_global();
+    }
+
+    /// 把共用 store 寫到前綴對應的單一檔案，原子替換由 `Store::save` 處理。
+    fn save_global(&self) {
+        let Some(path) = self.personal_path() else {
+            return;
+        };
+        let shared = Arc::clone(&self.shared);
+        let global = Arc::clone(&lock(&shared).personal_store);
+        let store = global.lock().unwrap_or_else(|err| err.into_inner()).clone();
+        if let Err(err) = store.save(&path) {
+            log::warn!("存檔個人資料 {} 失敗：{err}", path.display());
         }
     }
 }
@@ -1122,5 +1255,131 @@ mod tests {
             Response::Error { code, .. } => assert_eq!(code, ErrorCode::BadFrame),
             other => panic!("壞訊框應回 BadFrame，收到 {other:?}"),
         }
+    }
+
+    fn temp_data_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jc-t12c-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn make_store(word: &str) -> PersonalStore {
+        let mut store = PersonalStore::new();
+        store.note_seed(word, 1.0);
+        store
+    }
+
+    #[test]
+    fn personal_loads_only_the_prefixed_file() {
+        let dir = temp_data_dir("isolate");
+        make_store("舊詞").save(&dir.join("personal.json")).unwrap();
+        make_store("新詞")
+            .save(&dir.join("personal-next.json"))
+            .unwrap();
+
+        let mut engine = Engine::with_factory(
+            Arc::new(|| Session::new(SessionConfig::default())),
+            Some(dir.clone()),
+        );
+        engine.set_personal_prefix("personal-next");
+        engine.load_personal();
+        assert!(engine.personal_store().is_learned("新詞"));
+        assert!(!engine.personal_store().is_learned("舊詞"));
+
+        let mut old_engine = Engine::with_factory(
+            Arc::new(|| Session::new(SessionConfig::default())),
+            Some(dir),
+        );
+        old_engine.set_personal_prefix("personal");
+        old_engine.load_personal();
+        assert!(old_engine.personal_store().is_learned("舊詞"));
+        assert!(!old_engine.personal_store().is_learned("新詞"));
+    }
+
+    #[test]
+    fn personal_seed_applies_to_all_connections() {
+        let dir = temp_data_dir("seed");
+        make_store("全域詞")
+            .save(&dir.join("personal-next.json"))
+            .unwrap();
+        let mut engine = Engine::with_factory(
+            Arc::new(|| Session::new(SessionConfig::default())),
+            Some(dir),
+        );
+        engine.set_personal_prefix("personal-next");
+        engine.load_personal();
+
+        let mut first = engine.accept().into_engine();
+        let mut second = engine.accept().into_engine();
+        hello(&mut first);
+        hello(&mut second);
+        for conn in [&first, &second] {
+            let id = conn.session_ids()[0];
+            assert!(conn.local.sessions[&id].personal().is_learned("全域詞"));
+        }
+    }
+
+    #[test]
+    fn personal_merge_adds_only_the_delta() {
+        let mut global = make_store("基準詞");
+        let baseline = global.clone();
+        let mut session = baseline.clone();
+        session.note_seed("基準詞", 0.5);
+        session.note_seed("新詞", 1.0);
+
+        personal_merge::merge_learning(&mut global, &baseline, &session);
+        assert_eq!(global.uni.get("基準詞").copied(), Some(1.5));
+        assert_eq!(global.uni.get("新詞").copied(), Some(1.0));
+
+        // 基準前進後再合一次，同一筆學習不該重複累加。
+        let advanced = session.clone();
+        personal_merge::merge_learning(&mut global, &advanced, &session);
+        assert_eq!(global.uni.get("基準詞").copied(), Some(1.5));
+        assert_eq!(global.uni.get("新詞").copied(), Some(1.0));
+    }
+
+    #[test]
+    fn personal_flush_writes_prefixed_file_on_close() {
+        let dir = temp_data_dir("close");
+        let mut engine = Engine::with_factory(
+            Arc::new(|| Session::new(SessionConfig::default())),
+            Some(dir.clone()),
+        );
+        engine.set_personal_prefix("personal-next");
+        engine.load_personal();
+        hello(&mut engine);
+        let id = engine.session_ids()[0];
+        {
+            let session = engine.local.sessions.get_mut(&id).unwrap();
+            let mut store = session.personal().clone();
+            store.note_seed("關閉詞", 2.0);
+            session.set_personal_store(store);
+        }
+        engine.handle(Request::Close { session: id });
+
+        let saved = PersonalStore::load(&dir.join("personal-next.json")).unwrap();
+        assert_eq!(saved.uni.get("關閉詞").copied(), Some(2.0));
+    }
+
+    #[test]
+    fn health_reports_real_personal_state() {
+        let dir = temp_data_dir("health");
+        make_store("讀回詞")
+            .save(&dir.join("personal-next.json"))
+            .unwrap();
+        let mut engine = Engine::with_factory(
+            Arc::new(|| Session::new(SessionConfig::default())),
+            Some(dir),
+        );
+        engine.set_personal_prefix("personal-next");
+        engine.load_personal();
+        let Response::Health { info } = engine.handle(Request::Health) else {
+            panic!("health 應回 Health");
+        };
+        assert!(info.personal_reset);
+        assert_eq!(info.capabilities.get("personal_shared"), Some(&true));
+        assert_eq!(info.capabilities.get("personal_persist"), Some(&true));
+        assert_eq!(info.capabilities.get("personal_loaded"), Some(&true));
     }
 }

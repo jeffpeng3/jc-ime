@@ -467,6 +467,17 @@ impl Session {
         &self.personal
     }
 
+    /// 換掉這個工作階段的個人化資料，並重建個人詞典。
+    ///
+    /// engine 在開 session 時用它把全行程共用的一份學習資料灌進新工作階段。
+    /// 重建詞典是必要的，因為 [`Session::base_lexicon`] 之上還疊了個人片語與
+    /// 自訂詞，只換 `personal` 會讓這些詞在畫面上消失。組字中的其他狀態不動。
+    pub fn set_personal_store(&mut self, store: PersonalStore) {
+        self.lexicon = store.augment_lexicon(&self.base_lexicon);
+        self.config.personal = store.clone();
+        self.personal = store;
+    }
+
     /// 目前高亮的候選索引。
     pub fn highlighted(&self) -> usize {
         self.highlighted
