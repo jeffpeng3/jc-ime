@@ -226,7 +226,7 @@ pub const JA: [Opt; 7] = [
 ];
 
 /// 輸入分頁。
-pub const INPUT: [Opt; 5] = [
+pub const INPUT: [Opt; 4] = [
     Opt {
         key: "toggle-key",
         title: "中英切換鍵",
@@ -249,12 +249,6 @@ pub const INPUT: [Opt; 5] = [
         key: "space-selects",
         title: "空白選字",
         help: "空白鍵選第一個候選；關閉時空白鍵只送出空白。",
-        kind: Kind::Switch,
-    },
-    Opt {
-        key: "mixed-input",
-        title: "中英混打",
-        help: "同一段組字裡直接打英文，不用先切模式。",
         kind: Kind::Switch,
     },
 ];
@@ -306,6 +300,14 @@ mod tests {
                 opt.key
             );
         }
+    }
+
+    #[test]
+    fn test_mixed_input_is_not_exposed_in_input_page() {
+        assert!(
+            INPUT.iter().all(|opt| opt.key != "mixed-input"),
+            "混打已移除開關，輸入頁不能再出現 mixed-input"
+        );
     }
 
     #[test]

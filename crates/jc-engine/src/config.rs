@@ -123,7 +123,7 @@ pub struct EffectiveSettings {
     pub ja_neural_mode: String,
     /// 日文候選是否使用 reranker 重排。
     pub ja_rerank: bool,
-    /// 中英混打。
+    /// 中英混打；UI 已移除開關，引擎一律開啟。
     pub mixed_input: bool,
     /// 英文模式自動補字。
     pub english_autocomplete: bool,
@@ -176,7 +176,7 @@ pub struct EffectiveSettings {
 pub fn effective(settings: &Settings, overrides: &Overrides, goos: &str) -> EffectiveSettings {
     let mode = overrides
         .mode
-        .unwrap_or_else(|| mode_from_settings(settings, goos));
+        .unwrap_or_else(|| mode_from_settings(settings));
     // CLI `--neural` 仍優先：on 對應 auto，off 對應 off。
     let ja_neural_mode = match overrides.neural {
         Some(true) => settings::JA_NEURAL_AUTO,
@@ -198,7 +198,8 @@ pub fn effective(settings: &Settings, overrides: &Overrides, goos: &str) -> Effe
         neural,
         ja_neural_mode,
         ja_rerank: settings.ja_rerank,
-        mixed_input: settings.mixed_input,
+        // 舊設定檔可能還留著 mixed_input=false；開關已移除，引擎一律用混打。
+        mixed_input: true,
         english_autocomplete: settings.english_autocomplete,
         esc_clear: settings.esc_clear,
         space_selects: settings.space_selects,
@@ -225,16 +226,13 @@ pub fn effective(settings: &Settings, overrides: &Overrides, goos: &str) -> Effe
 
 /// 設定檔決定的啟動模式。
 ///
-/// 順序：混打 → 主要語言日文 → 開始時英文 → 注音。CLI `--mode` 一律優先。
-fn mode_from_settings(settings: &Settings, goos: &str) -> Mode {
-    if settings.mixed_input {
-        Mode::Mixed
-    } else if settings.japanese() {
+/// 混打開關已移除：日文主要語言進 `Ja`，其餘中文使用者一律進 `Mixed`，
+/// 不再有純注音 `Zh` 的啟動模式。CLI `--mode` 一律優先。
+fn mode_from_settings(settings: &Settings) -> Mode {
+    if settings.japanese() {
         Mode::Ja
-    } else if settings.effective_start_mode(goos) == settings::START_ENGLISH {
-        Mode::En
     } else {
-        Mode::Zh
+        Mode::Mixed
     }
 }
 
@@ -556,5 +554,27 @@ mod tests {
             "要指出讀的是哪一份檔案"
         );
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 混打開關已移除：中文使用者不論舊檔值或開始模式，都從 Mixed 啟動。
+    #[test]
+    fn chinese_settings_always_start_in_mixed_mode() {
+        for body in [
+            r#"{"selection":"statistical"}"#,
+            r#"{"selection":"statistical","mixed_input":false}"#,
+            r#"{"selection":"statistical","start_mode":"english"}"#,
+        ] {
+            let settings = parsed(body);
+            let effective = effective(&settings, &Overrides::default(), "windows");
+            assert_eq!(effective.mode, Mode::Mixed, "{body}");
+            assert!(effective.mixed_input, "{body} 的舊欄位不得關閉混打");
+            let config = session_config(SessionConfig::default(), &effective);
+            assert!(config.style.mixed_input, "{body}");
+        }
+        let ja = parsed(r#"{"primary_language":"ja","mixed_input":false}"#);
+        assert_eq!(
+            effective(&ja, &Overrides::default(), "windows").mode,
+            Mode::Ja
+        );
     }
 }

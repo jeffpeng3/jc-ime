@@ -65,8 +65,9 @@ Go 版設定程式是 Tauri（`ref/0c-ime/platforms/settings`）：Rust 外殼�
 | 輸入 | 啟動模式 | `start-mode` | 下拉：注音／英文 |
 | 輸入 | Esc 清除 | `esc-clear` | 開關 |
 | 輸入 | 空白選字 | `space-selects` | 開關 |
-| 輸入 | 中英混打 | `mixed-input` | 開關 |
-| 輸入 | 複製成自訂輸入習慣 | `input_profile` | 按鈕；內建風格時才出現 |
+
+中英混打已移除開關：DP 是唯一分詞路徑，引擎對中文使用者一律用混打模式，
+舊設定檔留下的 `mixed_input=false` 不再影響啟動模式。
 | 資料 | 資料根目錄、設定檔、manifest、模型 | n/a | 唯讀再加「重新檢查」按鈕 |
 
 日文的 `ja-model`、`ja-input-method`、`ja-ambiguous` 在 `settings-wire` 的對照
@@ -74,13 +75,16 @@ Go 版設定程式是 Tauri（`ref/0c-ime/platforms/settings`）：Rust 外殼�
 並列。畫面照存這些值，說明文字直接寫明尚未生效，避免把保留值當成已生效。
 `ja-neural-mode` 與 `ja-rerank` 已接進 `SessionConfig`，可直接修改。
 
-輸入分頁的 14 個鍵位規則由 `input_profile` 管理。選用內建風格時
-`Settings::profile_locked` 會拒絕修改，畫面把該項反灰並說明原因；按「複製成
-自訂輸入習慣」後就能改。這與 Go 版的 `items[].locked` 行為一致。
+輸入分頁的 14 個鍵位規則由 `input_profile` 管理。第一次啟動時
+`SettingsView::load` 會把預設值存成 `settings.json`，同時把內建風格轉成自訂快照；
+所有項目第一次開啟就能改，不再需要按「複製成自訂輸入習慣」。既有檔案若還用著
+內建風格，第一次修改時自動轉成自訂快照。這與 Go 版 `items[].locked` 的行為不同，
+是刻意配合使用者回報調整。較新 schema 與壞檔仍保留原有的唯讀保護。
 
 ## 存檔行為
 
-- 每次變更立刻 `save`：先寫暫存檔再改名（`jc_settings::atomic_file`），不會留下半個檔案。
+- 第一次啟動就建立 `settings.json`；後續每次變更立刻 `save`：先寫暫存檔再改名
+  （`jc_settings::atomic_file`），不會留下半個檔案。
 - 壞檔或讀不到時不寫入，畫面顯示原因；schema 比本版新時只讀。
 - 變更被拒（值不合法、風格鎖定、風格組合衝突）時保留原值並顯示錯誤。
 - 變更後不需要重開程式；但引擎只在啟動時讀設定，所以畫面固定顯示「引擎下次啟動才生效」。
@@ -116,7 +120,7 @@ RUST_FONTCONFIG_DLOPEN=1 cargo fmt -p jc-settings-ui
 ## 未完成
 
 1. **重新啟動引擎**：按鈕停用；需要安裝器提供服務控制（systemd／launchd／Windows 服務）。
-2. **輸入習慣管理**：只做「複製成自訂」，沒有改名、刪除與多風格預覽。
+2. **輸入習慣管理**：第一次編輯時自動轉成自訂快照，沒有改名、刪除與多風格預覽。
 3. **Windows／macOS 建置**：未交叉 check；GPUI 的 Windows linker 與 WebView 無關，
    CI 需要 Windows target。
 4. **顯示器實測**：本機沒有 DISPLAY，沒有做到真正開窗截圖與滑鼠操作。

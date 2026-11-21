@@ -35,7 +35,6 @@ fn test_bool_settings_defaults_and_persist() {
     let cases = [
         ("punctuation", "off", "on"),
         ("document-context", "on", "off"),
-        ("mixed-input", "off", "on"),
         ("english-autocomplete", "off", "on"),
         ("esc-clear", "on", "off"),
         ("space-selects", "on", "off"),
@@ -119,6 +118,8 @@ fn test_platform_defaults() {
     let windows = Settings::default_for_platform("windows");
     assert_eq!(windows.toggle_key, "both");
     assert!(windows.left_shift, "Windows 預設左右 Shift");
+    assert!(windows.mixed_input, "Windows 注音預設進 Mixed 模式");
+    assert!(!linux.mixed_input, "Linux 仍維持注音模式");
     let mac = Settings::default_for_platform("darwin");
     assert_eq!(mac.toggle_key, "none");
     assert_eq!(mac.candidate_cursor, "before");
@@ -861,18 +862,23 @@ fn test_mixed_profile_new_keys_win_over_old_english_settings() {
 #[test]
 fn test_future_boolean_value_survives_until_explicit_set() {
     let settings = Settings::from_json_for(
-        br#"{"schema":2,"mixed_input":"later","selection":"statistical"}"#,
+        br#"{"schema":2,"english_autocomplete":"later","selection":"statistical"}"#,
         "linux",
     )
     .expect("解析");
-    assert!(!settings.mixed_input);
+    assert!(!settings.english_autocomplete);
     let text = serde_json::to_string(&settings).expect("序列化");
-    assert!(text.contains("\"mixed_input\":\"later\""), "{text}");
+    assert!(
+        text.contains("\"english_autocomplete\":\"later\""),
+        "{text}"
+    );
     let mut settings = settings;
-    settings.set("mixed-input", "on", "linux").expect("設定");
+    settings
+        .set("english-autocomplete", "on", "linux")
+        .expect("設定");
     let text = serde_json::to_string(&settings).expect("序列化");
     assert!(!text.contains("later"), "{text}");
-    assert!(text.contains("\"mixed_input\":true"), "{text}");
+    assert!(text.contains("\"english_autocomplete\":true"), "{text}");
 }
 
 /// 舊設定檔沒有 `ja_conversion`：視為逐字変換。

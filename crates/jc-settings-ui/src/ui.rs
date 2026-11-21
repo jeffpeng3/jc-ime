@@ -171,47 +171,22 @@ fn ja_page(this: &Entity<SettingsView>, view: &SettingsView) -> SettingPage {
 }
 
 fn input_page(this: &Entity<SettingsView>, view: &SettingsView) -> SettingPage {
-    let active = view.settings.active_profile(view.goos);
-    let mut items: Vec<SettingItem> = options::INPUT
+    let items: Vec<SettingItem> = options::INPUT
         .iter()
         .map(|opt| option_item(this, view, opt))
         .collect();
-    if active.builtin && view.editable() {
-        items.push(profile_copy_item(this, &active.name));
-    }
-    let footer = if active.builtin {
-        format!(
-            "目前使用內建輸入習慣「{}」。標示為固定的項目要複製成自訂風格後才能修改。",
-            active.name
-        )
-    } else {
-        format!(
-            "目前使用自訂輸入習慣「{}」，所有項目都可以修改。",
-            active.name
-        )
-    };
 
     SettingPage::new("輸入")
         .resettable(false)
-        .description("中英切換、啟動模式與空白鍵行為。")
-        .group(
-            SettingGroup::new()
-                .title("鍵位與模式")
-                .items(items)
-                .footer(move |_, cx| {
-                    Label::new(footer.clone())
-                        .id("profile-footer")
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                }),
-        )
+        .description("中英切換、啟動模式與空白鍵行為；第一次開啟即可修改。")
+        .group(SettingGroup::new().title("鍵位與模式").items(items))
 }
 
 fn data_page(this: &Entity<SettingsView>, view: &SettingsView) -> SettingPage {
     let data = &view.data;
     let state_label = match data.settings_state {
         jc_settings::FileState::Ok => "可讀取".to_string(),
-        jc_settings::FileState::Missing => "還沒有設定檔，第一次修改時建立".to_string(),
+        jc_settings::FileState::Missing => "第一次開啟時建立；目前尚未建立".to_string(),
         jc_settings::FileState::Corrupt => "無法解析；本程式不會覆寫".to_string(),
         jc_settings::FileState::Unreadable => "讀不到；本程式不會寫入".to_string(),
     };
@@ -294,13 +269,8 @@ fn data_page(this: &Entity<SettingsView>, view: &SettingsView) -> SettingPage {
 }
 
 fn option_item(this: &Entity<SettingsView>, view: &SettingsView, opt: &Opt) -> SettingItem {
-    let locked = view.locked(opt.key);
-    let mut description = options::description(opt, &view.defaults);
-    if locked {
-        let name = view.settings.active_profile(view.goos).name;
-        description.push_str(&format!("　此項由輸入習慣「{name}」固定。"));
-    }
-    let disabled = !view.editable() || locked;
+    let description = options::description(opt, &view.defaults);
+    let disabled = !view.editable();
 
     let item = match &opt.kind {
         Kind::Switch => {
@@ -412,26 +382,4 @@ fn rescan_item(this: &Entity<SettingsView>) -> SettingItem {
     })
     .keywords(["資料", "模型", "manifest"])
     .description("重新讀取資料根目錄與模型檔。")
-}
-
-fn profile_copy_item(this: &Entity<SettingsView>, name: &str) -> SettingItem {
-    let view = this.clone();
-    let label = format!("把「{name}」複製成自訂輸入習慣");
-    let description = "複製後這 14 項鍵位規則由你管理；原本的內建風格保留在目錄裡。".to_string();
-    SettingItem::render(move |_, _, _cx| {
-        Button::new("copy-profile")
-            .label(label.clone())
-            .on_click({
-                let view = view.clone();
-                move |_, _, cx| {
-                    view.update(cx, |view, cx| {
-                        view.copy_profile();
-                        cx.notify();
-                    });
-                }
-            })
-            .into_any_element()
-    })
-    .description(description)
-    .keywords(["輸入習慣", "profile", "自訂"])
 }

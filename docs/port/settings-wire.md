@@ -58,14 +58,14 @@ CLI 對照：`jc-cli eval ja --no-live` 走 `sentence`，其餘日文評測預�
 | `selection` | 舊欄位：`statistical` 遷移成 `ja_neural_mode = off`、`neural` 遷移成 `auto`；兩者都在且語意不同時以 `ja_neural_mode` 為準並記一則警告，一致時不警告 | 遷移用 |
 | `punctuation` | `punct_mark = Some('，')`；本版以全形逗號代表「送出前補一個標點」 | 生效（簡化） |
 | `document_context` | `SessionConfig::document_context` | 生效 |
-| `mixed_input` | 啟動模式改 `mixed`；`style.mixed_input` | 生效 |
+| `mixed_input` | 舊欄位值不再讀取；UI 已移除開關，引擎一律混打並設 `style.mixed_input = true` | 相容用（忽略值） |
 | `english_autocomplete` | `SessionConfig::english_autocomplete` | 生效 |
 | `esc_clear` | 引擎沒有對應欄位；核心的 Escape 一律清組字，是否轉送 Esc 由外殼決定 | 本版忽略（外殼） |
 | `space_selects` | `style.space_inserts_space = !space_selects` | 生效 |
 | `advance_after_select` | 選字後游標位置；核心提交後不控制游標 | 本版忽略（外殼） |
 | `toggle_key`／`left_shift` | 中英切換鍵；引擎只收按鍵，切換由外殼送出 `toggle`／`--mode` | 本版忽略（外殼） |
-| `start_mode` | 沒給 `--mode` 時的啟動模式：`english` → `en`，否則 `zh` | 生效 |
-| `primary_language` | 沒給 `--mode` 且為 `ja` 時啟動模式改 `ja` | 生效 |
+| `start_mode` | 仍保留設定值，但中文使用者的啟動模式不再受它影響；`--mode` 覆寫仍優先 | 本版忽略（中文） |
+| `primary_language` | 沒給 `--mode` 且為 `ja` 時啟動 `ja`，其餘中文一律 `mixed`（不再有 `zh`） | 生效 |
 | `selection_keys` | `style.selection_keys` | 生效 |
 | `emoji_shortcut` | `style.emoji_shortcut` | 生效 |
 | `shift_symbol_halfwidth` | `style.shift_symbol_halfwidth`；也參與 `ctrl_punctuation`、`toneless` 的收斂 | 生效 |
