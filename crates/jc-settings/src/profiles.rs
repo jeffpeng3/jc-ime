@@ -601,6 +601,16 @@ pub(crate) fn fresh_settings(goos: &str) -> Settings {
     if !store.items.is_empty() {
         store.items.remove(0);
     }
+    if goos == "windows" {
+        // 內建風格的快照原本把混打記成 off；Windows 要同步改掉，避免讀檔時被蓋回。
+        settings.mixed_input = true;
+        let active = store.active.clone();
+        if let Some(profile) = store.items.iter_mut().find(|profile| profile.id == active) {
+            profile
+                .values
+                .insert("mixed-input".to_string(), "on".to_string());
+        }
+    }
     settings.put_profile_store(store);
     settings
 }

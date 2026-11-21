@@ -107,7 +107,7 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%ProgramData%\jc-ime\data\models\zh-select\vocab.json` | 注音選字詞表，選字模型載入必要檔 |
 | `%ProgramData%\jc-ime\data\english\words.bin` | 英文詞表 |
 | `%ProgramData%\jc-ime\data\models\external\jinen-v2-small\jinen-v2-small-Q5_K_M.gguf` | 日文神經模型 |
-| `%LOCALAPPDATA%\jc-ime\settings.json` | 使用者設定；第一次按「套用」才建立，MSI 不覆蓋既有檔 |
+| `%LOCALAPPDATA%\jc-ime\settings.json` | 使用者設定；第一次開啟設定程式就以預設值建立，可立即修改，MSI 不覆蓋既有檔 |
 | `%LOCALAPPDATA%\jc-ime\personal.json` | 個人化資料（引擎之後才會寫） |
 | `%LOCALAPPDATA%\jc-ime\tsf.log` | 只有 `JC_TSF_LOG=1` 時才寫 |
 

@@ -737,6 +737,29 @@ fn test_unusable_model_residency_value_is_kept_until_set() {
 }
 
 #[test]
+fn test_fresh_windows_settings_enable_mixed_input() {
+    let settings = fresh_settings("windows");
+    assert!(settings.mixed_input, "全新安裝的 Windows 設定要開混打");
+    let active = settings.active_profile("windows");
+    assert_eq!(
+        active.values.get("mixed-input").map(String::as_str),
+        Some("on")
+    );
+    assert_eq!(settings.value("mixed-input").as_deref(), Some("on"));
+
+    let dir = tmpdir("windows-mixed");
+    let path = dir.join("settings.json");
+    save(&path, &settings).expect("存檔");
+    let report = read(&path, "windows");
+    assert!(
+        report.settings.mixed_input,
+        "重新讀取不能被風格快照蓋回 off"
+    );
+    assert_eq!(report.settings, settings);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn test_profiles_migration_and_complete_round_trip() {
     let dir = tmpdir("profile-migration");
     let path = dir.join("settings.json");

@@ -642,7 +642,8 @@ impl Settings {
             selection: NEURAL.to_string(),
             punctuation: false,
             document_context: true,
-            mixed_input: false,
+            // 混打已是正式功能；Windows 注音直接進 Mixed 模式，別讓羅馬字被當注音解。
+            mixed_input: goos == "windows",
             english_autocomplete: false,
             left_shift: false,
             toggle_key: default_toggle_key(goos).to_string(),

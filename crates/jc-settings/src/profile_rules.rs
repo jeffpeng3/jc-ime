@@ -157,7 +157,7 @@ pub(crate) fn rule_value_label(key: &str, value: &str) -> String {
 /// 設定項目的顯示名稱，用於衝突訊息。
 pub(crate) fn feature_label(key: &str) -> &'static str {
     match key {
-        "mixed-input" => "中英混打（試用）",
+        "mixed-input" => "中英混打",
         "english-autocomplete" => "英文模式自動補字",
         "toneless" => "不打聲調也能選字",
         _ => "設定",
