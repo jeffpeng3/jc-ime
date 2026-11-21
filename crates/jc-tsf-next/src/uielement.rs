@@ -23,27 +23,8 @@ use windows::Win32::UI::TextServices::{
 };
 use windows_core::{implement, ComObject, BOOL, BSTR, GUID};
 
+use crate::log::{self, zlog};
 use crate::session::Snapshot;
-
-/// adapter spike 不帶檔案 I/O：保留呼叫點，不產生輸出。T6 再接到 `logging`。
-macro_rules! zlog {
-    ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }};
-}
-
-/// COM 物件計數。新 crate 還沒有 DLL 生命週期管理，T6 接到 `lib.rs` 的 LIVE_OBJECTS。
-fn object_created() {}
-fn object_destroyed() {}
-
-/// COM 邊界不得 unwind；與 0c `lib.rs::guarded` 行為相同。
-fn guarded<T, F: FnOnce() -> windows_core::Result<T>>(what: &str, f: F) -> windows_core::Result<T> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-        Ok(r) => r,
-        Err(_) => {
-            let _ = what;
-            Err(windows::Win32::Foundation::E_FAIL.into())
-        }
-    }
-}
 
 /// 本元件的識別碼（ITfUIElement::GetGUID）；宿主只用來分辨元件，不需要註冊。
 const ELEMENT_GUID: GUID = GUID::from_u128(0xda0ca60a_1a05_4b70_980d_a964070868e1);
@@ -79,6 +60,22 @@ impl<'a> From<&'a Snapshot> for Candidates {
     }
 }
 
+/// T12b：service 送給候選窗行程的 [`crate::ui::UiMessage`] 轉成宿主 UI 元件要讀的一頁候選。
+/// 0c 兩邊共用同一個訊息型別，新 crate 用這個轉換接起來；T12a 合併後型別換掉，轉換仍成立。
+impl<'a> From<&'a crate::ui::UiMessage> for Candidates {
+    fn from(message: &'a crate::ui::UiMessage) -> Self {
+        Self {
+            show: message.show,
+            candidates: message
+                .candidates
+                .iter()
+                .map(|candidate| candidate.text.clone())
+                .collect(),
+            highlight: message.highlight,
+        }
+    }
+}
+
 #[implement(ITfCandidateListUIElement)]
 struct CandidateList {
     items: RefCell<Vec<String>>,
@@ -91,35 +88,35 @@ struct CandidateList {
 
 impl Drop for CandidateList {
     fn drop(&mut self) {
-        object_destroyed();
+        log::object_destroyed();
     }
 }
 
 impl ITfUIElement_Impl for CandidateList_Impl {
     fn GetDescription(&self) -> windows_core::Result<BSTR> {
-        guarded("UIElement.GetDescription", || Ok(BSTR::from("候選字")))
+        crate::guarded("UIElement.GetDescription", || Ok(BSTR::from("候選字")))
     }
     fn GetGUID(&self) -> windows_core::Result<GUID> {
-        guarded("UIElement.GetGUID", || Ok(ELEMENT_GUID))
+        crate::guarded("UIElement.GetGUID", || Ok(ELEMENT_GUID))
     }
     fn Show(&self, show: BOOL) -> windows_core::Result<()> {
         // 下一次更新候選時依此決定是否畫自己的候選窗。
-        guarded("UIElement.Show", || {
+        crate::guarded("UIElement.Show", || {
             self.shown.set(show.as_bool());
             Ok(())
         })
     }
     fn IsShown(&self) -> windows_core::Result<BOOL> {
-        guarded("UIElement.IsShown", || Ok(self.shown.get().into()))
+        crate::guarded("UIElement.IsShown", || Ok(self.shown.get().into()))
     }
 }
 
 impl ITfCandidateListUIElement_Impl for CandidateList_Impl {
     fn GetUpdatedFlags(&self) -> windows_core::Result<u32> {
-        guarded("UIElement.GetUpdatedFlags", || Ok(self.flags.replace(0)))
+        crate::guarded("UIElement.GetUpdatedFlags", || Ok(self.flags.replace(0)))
     }
     fn GetDocumentMgr(&self) -> windows_core::Result<ITfDocumentMgr> {
-        guarded("UIElement.GetDocumentMgr", || {
+        crate::guarded("UIElement.GetDocumentMgr", || {
             self.document
                 .borrow()
                 .clone()
@@ -127,16 +124,16 @@ impl ITfCandidateListUIElement_Impl for CandidateList_Impl {
         })
     }
     fn GetCount(&self) -> windows_core::Result<u32> {
-        guarded(
+        crate::guarded(
             "UIElement.GetCount",
             || Ok(self.items.borrow().len() as u32),
         )
     }
     fn GetSelection(&self) -> windows_core::Result<u32> {
-        guarded("UIElement.GetSelection", || Ok(self.selection.get()))
+        crate::guarded("UIElement.GetSelection", || Ok(self.selection.get()))
     }
     fn GetString(&self, index: u32) -> windows_core::Result<BSTR> {
-        guarded("UIElement.GetString", || {
+        crate::guarded("UIElement.GetString", || {
             self.items
                 .borrow()
                 .get(index as usize)
@@ -151,7 +148,7 @@ impl ITfCandidateListUIElement_Impl for CandidateList_Impl {
         count: *mut u32,
     ) -> windows_core::Result<()> {
         // 只有一頁，從 0 開始。index 為 null 時只回頁數（宿主先問大小）。
-        guarded("UIElement.GetPageIndex", || {
+        crate::guarded("UIElement.GetPageIndex", || {
             if count.is_null() {
                 return Err(E_POINTER.into());
             }
@@ -165,10 +162,10 @@ impl ITfCandidateListUIElement_Impl for CandidateList_Impl {
         })
     }
     fn SetPageIndex(&self, _index: *const u32, _count: u32) -> windows_core::Result<()> {
-        guarded("UIElement.SetPageIndex", || Err(E_NOTIMPL.into()))
+        crate::guarded("UIElement.SetPageIndex", || Err(E_NOTIMPL.into()))
     }
     fn GetCurrentPage(&self) -> windows_core::Result<u32> {
-        guarded("UIElement.GetCurrentPage", || Ok(0))
+        crate::guarded("UIElement.GetCurrentPage", || Ok(0))
     }
 }
 
@@ -181,7 +178,7 @@ pub struct Elements {
 
 impl Elements {
     pub fn new(mgr: ITfUIElementMgr) -> Elements {
-        object_created(); // CandidateList 的 Drop 扣回
+        log::object_created(); // CandidateList 的 Drop 扣回
         Elements {
             mgr,
             element: ComObject::new(CandidateList {
@@ -358,7 +355,7 @@ mod tests {
     }
 
     fn list() -> ComObject<CandidateList> {
-        object_created();
+        log::object_created();
         ComObject::new(CandidateList {
             items: RefCell::new(vec!["我".into(), "窩".into()]),
             selection: Cell::new(1),

@@ -565,6 +565,9 @@ fn new_host(
 ) -> Host {
     let cuas = FakeCuas::new(doc.clone());
     *cuas.service.borrow_mut() = Some(service.clone());
+    // T12b：service 已有 State.cuas／complete_via_cuas／PendingRepost，把假相容層接進真正的
+    // 生產路徑（CommitBeforeHostKey → complete_via_cuas → complete_and_repost），而不是讓 Host 自己驅動。
+    service.state.borrow_mut().cuas = cuas.clone();
     let sink: ITfKeyEventSink = service.to_interface();
     let imm32 = static_flags == TS_SS_TRANSITORY;
     Host {
@@ -1441,18 +1444,17 @@ fn imm32_any_doubt_falls_back_to_not_eating() {
 #[test]
 fn imm32_complete_reports_by_cuas_only_when_cuas_ended_it() {
     // #66：ByCuas 是觀察到的（OnCompositionTerminated 對上守衛的組字），不是從「組字已結束」推論的。
-    // 新 crate 的 service 尚未有 complete_via_cuas／Completed，改為直接驗證假相容層
-    // 是否發出 OnCompositionTerminated：有通知才算 ByCuas，自己清掉狀態則算 BySelf。
     let Some(mut h) = open_zhuyin(TS_SS_TRANSITORY) else {
         return;
     };
     plain_keyboard();
     h.view_is_app();
     h.zhuyin("ji3");
-    assert!(h.doc.composing());
-    assert_eq!(h.cuas.complete(app_hwnd()), Complete::Notified);
-    assert!(h.cuas.terminated.get(), "相容層終止了組字（ByCuas）");
-    assert!(!h.doc.composing());
+    assert_eq!(
+        h.service.complete_via_cuas(Some(&h.ctx), app_hwnd()),
+        Completed::ByCuas,
+        "相容層終止了組字"
+    );
 
     let Some(mut h) = open_zhuyin(TS_SS_TRANSITORY) else {
         return;
@@ -1461,12 +1463,11 @@ fn imm32_complete_reports_by_cuas_only_when_cuas_ended_it() {
     h.view_is_app();
     h.cuas.silent_end.set(true);
     h.zhuyin("ji3");
-    assert_eq!(h.cuas.complete(app_hwnd()), Complete::Notified);
-    assert!(
-        !h.cuas.terminated.get(),
-        "組字狀態是別的路徑清掉的（BySelf）"
+    assert_eq!(
+        h.service.complete_via_cuas(Some(&h.ctx), app_hwnd()),
+        Completed::BySelf,
+        "組字狀態是別的路徑清掉的，不是相容層終止的"
     );
-    assert!(!h.doc.composing());
 }
 
 /// 攔下重排之後，重排的鍵沒有回來（post 的訊息比之後的輸入先取出、或視窗已經換了）：
@@ -1482,15 +1483,14 @@ fn lost_repost(h: &mut Host, vk: u32, scan: isize, act: Act) {
         .retain(|q| matches!(q, Queued::Char { .. }));
     h.drain();
     assert!(
-        keys_in(h).is_empty(),
-        "重排的鍵還沒回來，宿主端沒有新的按鍵"
+        h.service.state.borrow().pending_repost.is_some(),
+        "重排的鍵還沒回來，等待狀態在"
     );
 }
 
-/// 重排的鍵已經回到程式（佇列裡不再有 Key）。service 尚未移植 pending_repost 欄位，
-/// 這裡改用假相容層的 observable 狀態判斷。
+/// 重排的鍵已經回到程式，或這一鍵已結束：State.pending_repost 已清掉。
 fn pending_cleared(h: &Host) -> bool {
-    keys_in(h).is_empty()
+    h.service.state.borrow().pending_repost.is_none()
 }
 
 #[test]

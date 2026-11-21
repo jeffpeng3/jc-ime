@@ -235,14 +235,16 @@ fn composing_in_a() -> Option<(
     let (doc_b, _ctx_b, edits_b) = document();
     let range: ITfRange = ComObject::new(Range { ctx: ctx_a }).into_interface();
     let composition: ITfComposition = ComObject::new(Comp { range }).into_interface();
-    let window = windows::Win32::Foundation::HWND(0x3000 as *mut std::ffi::c_void);
+    // T12b：callback 從 HWND 改成真正的 CandidateWindow；測試用服務本身建立訊息視窗，
+    // 讓 can_wait 為 true，與 Activate 成功時的行為一致。
+    let window = crate::candidate::CandidateWindow::new(&service).ok();
     {
         let mut st = service.state.borrow_mut();
         st.session = super::support::session();
         assert_eq!(st.session.key("s").text(), "ㄋ");
         st.composing = true;
         st.composition = Some(composition);
-        st.callback = Some(window);
+        st.callback = window;
     }
     Some((service, doc_a, edits_a, doc_b, edits_b))
 }

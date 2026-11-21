@@ -9,9 +9,6 @@
 //! 規則：`complete` 會同步回呼外殼（OnCompositionTerminated、OnEndEdit），所以呼叫任何 `Cuas` 方法前先
 //! clone 出 `Rc<dyn Cuas>`，呼叫期間不持有 `state` 的任何借用。
 
-// 完整介面已移植，但要等 T6 service.rs 接線才會被呼叫；先保留避免 dead_code 警告洗版。
-#![allow(dead_code)]
-
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::Ime::{
     ImmGetContext, ImmGetHotKey, ImmNotifyIME, ImmReleaseContext, CPS_COMPLETE, NI_COMPOSITIONSTR,
