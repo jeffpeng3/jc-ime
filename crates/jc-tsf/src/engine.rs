@@ -8,7 +8,9 @@
 //! `jc-windows` 的契約必須重連，不能重送同一個按鍵。
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -16,20 +18,13 @@ use std::time::{Duration, Instant};
 
 use jc_proto::Request;
 use jc_windows::{Client, Error as ClientError, LocalSocket};
-use windows::core::{PCWSTR, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HMODULE};
-use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::LibraryLoader::{
     GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 };
-use windows::Win32::System::Registry::{
-    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ,
-    KEY_WOW64_64KEY, REG_VALUE_TYPE,
-};
-use windows::Win32::System::Threading::{
-    CreateProcessW, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
-};
+use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 use crate::logging;
@@ -46,9 +41,6 @@ const SPAWN_COOLDOWN: Duration = Duration::from_secs(3);
 /// spawn 後等 pipe 出現的重試次數與間隔。
 const PIPE_WAIT_ATTEMPTS: usize = 10;
 const PIPE_WAIT_INTERVAL: Duration = Duration::from_millis(100);
-
-/// MSI `EngineAutostart` 在 `HKLM\...\Run` 寫的值名稱。
-const RUN_VALUE_NAME: &str = "jc-ime-engine";
 
 /// 握手時送出的客戶端名稱。
 const CLIENT_NAME: &str = concat!("jc-tsf/", env!("CARGO_PKG_VERSION"));
@@ -329,7 +321,7 @@ fn spawn_engine_throttled() -> bool {
         return false;
     }
 
-    let command = match engine_command_line() {
+    let command = match engine_command() {
         Ok(command) => command,
         Err(error) => {
             logging::warn(format!("無法建構引擎啟動指令，略過按需啟動：{error}"));
@@ -339,7 +331,7 @@ fn spawn_engine_throttled() -> bool {
 
     match launch_detached(&command) {
         Ok(()) => {
-            logging::info(format!("已 detached spawn 引擎：{command}"));
+            logging::info(format!("已 detached spawn 引擎：{}", command.display()));
             true
         }
         Err(error) => {
@@ -349,16 +341,35 @@ fn spawn_engine_throttled() -> bool {
     }
 }
 
-/// 產生與 MSI `EngineAutostart` 一致的啟動指令。
+/// detached spawn 用的引擎指令：執行檔與 argv 分開保存。
 ///
-/// 優先直接讀 `HKLM\Software\Microsoft\Windows\CurrentVersion\Run\jc-ime-engine`
-/// 並展開環境變數，這保證指令與安裝器完全相同。機碼不存在時退回「TIP 自己的
-/// DLL 所在目錄推 INSTALLFOLDER」與系統環境變數推資料／設定檔路徑。
-fn engine_command_line() -> Result<String, String> {
-    if let Some(command) = command_from_run_key() {
-        return Ok(command);
-    }
+/// 不把 argv 組回單一字串交給 `CreateProcessW::lpCommandLine`。該 API 的引號
+/// 規則與 ShellExecute／Run 機碼不同，末尾 `\"` 會被當成跳脫引號，讓
+/// `--data` 的值一路吃到後面的 `--settings`。改用 `Command::args()` 後由標準
+/// 函式庫處理跳脫，引擎端的 `CommandLineToArgvW` 會拆回原本的 argv。
+struct EngineCommand {
+    /// 引擎執行檔，不含任何參數。
+    exe: PathBuf,
+    /// 逐項分開的參數，不含 `exe` 本身。
+    args: Vec<String>,
+}
 
+impl EngineCommand {
+    /// 供日誌使用的可讀字串；實際 spawn 不用它當命令列。
+    fn display(&self) -> String {
+        let mut parts = Vec::with_capacity(self.args.len() + 1);
+        parts.push(self.exe.display().to_string());
+        parts.extend(self.args.iter().cloned());
+        parts.join(" ")
+    }
+}
+
+/// 產生引擎啟動指令的 argv。
+///
+/// 不讀 Run 機碼的字串：它的引號是給 ShellExecute 用的，交給 `CreateProcessW`
+/// 會被重新解析而出錯。改從「TIP 自己的 DLL 所在目錄」推 INSTALLFOLDER，並用
+/// 系統環境變數推資料／設定檔路徑，與 MSI 的 `EngineAutostart` 指向相同檔案。
+fn engine_command() -> Result<EngineCommand, String> {
     let exe = module_dir()?.join("jc-engine.exe");
     let program_data =
         std::env::var_os("ProgramData").ok_or_else(|| "讀不到 ProgramData 環境變數".to_string())?;
@@ -368,121 +379,21 @@ fn engine_command_line() -> Result<String, String> {
     let settings = PathBuf::from(local_app_data)
         .join("jc-ime")
         .join("settings.json");
-    Ok(build_command_line(&exe, &data, &settings))
+    Ok(engine_command_from_paths(&exe, &data, &settings))
 }
 
-/// 組合 `--supervise` 啟動指令；抽成純函式方便驗證參數順序與引號。
-fn build_command_line(
-    exe: &std::path::Path,
-    data: &std::path::Path,
-    settings: &std::path::Path,
-) -> String {
-    format!(
-        "\"{}\" --supervise --data \"{}\" --settings \"{}\"",
-        exe.display(),
-        data.display(),
-        settings.display()
-    )
-}
-
-/// 讀取 ExpandEnvironmentStringsW 展開後的 Run 機值；失敗回 `None`。
-fn command_from_run_key() -> Option<String> {
-    let path = crate::wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
-    let name = crate::wide(RUN_VALUE_NAME);
-    let mut key = HKEY::default();
-    // SAFETY: path 以 NUL 結尾；key 在成功時由 RegOpenKeyExW 寫入。32 位元 TIP
-    // 加 KEY_WOW64_64KEY 才會讀到 MSI 寫的 64 位元檢視。
-    let status = unsafe {
-        RegOpenKeyExW(
-            HKEY_LOCAL_MACHINE,
-            PCWSTR(path.as_ptr()),
-            None,
-            KEY_READ | KEY_WOW64_64KEY,
-            &mut key,
-        )
-    };
-    if status != ERROR_SUCCESS {
-        logging::debug(format!("讀取 Run 機碼失敗，改用模組路徑推導：{}", status.0));
-        return None;
+/// 從三個路徑純組出 argv；抽成純函式方便驗證參數順序與元素邊界。
+fn engine_command_from_paths(exe: &Path, data: &Path, settings: &Path) -> EngineCommand {
+    EngineCommand {
+        exe: exe.to_path_buf(),
+        args: vec![
+            "--supervise".into(),
+            "--data".into(),
+            data.display().to_string(),
+            "--settings".into(),
+            settings.display().to_string(),
+        ],
     }
-
-    let mut size = 0u32;
-    let mut kind = REG_VALUE_TYPE::default();
-    // SAFETY: key 由上面成功取得；此呼叫只問資料長度。
-    let status = unsafe {
-        RegQueryValueExW(
-            key,
-            PCWSTR(name.as_ptr()),
-            None,
-            Some(&mut kind),
-            None,
-            Some(&mut size),
-        )
-    };
-    if status != ERROR_SUCCESS {
-        // SAFETY: key 由 RegOpenKeyExW 取得，這裡是唯一放手的地方。
-        unsafe {
-            let _ = RegCloseKey(key);
-        }
-        logging::debug(format!("查詢 Run 值失敗，改用模組路徑推導：{}", status.0));
-        return None;
-    }
-
-    let mut buffer = vec![0u16; (size as usize).div_ceil(2).max(1)];
-    // SAFETY: buffer 的大小由上面的長度查詢決定。
-    let status = unsafe {
-        RegQueryValueExW(
-            key,
-            PCWSTR(name.as_ptr()),
-            None,
-            Some(&mut kind),
-            Some(buffer.as_mut_ptr().cast::<u8>()),
-            Some(&mut size),
-        )
-    };
-    // SAFETY: key 由 RegOpenKeyExW 取得，這裡是唯一放手的地方。
-    unsafe {
-        let _ = RegCloseKey(key);
-    }
-    if status != ERROR_SUCCESS {
-        logging::debug(format!(
-            "讀取 Run 值內容失敗，改用模組路徑推導：{}",
-            status.0
-        ));
-        return None;
-    }
-
-    let raw = String::from_utf16_lossy(&buffer[..(size as usize / 2).min(buffer.len())])
-        .trim_end_matches('\0')
-        .to_string();
-    if raw.is_empty() {
-        return None;
-    }
-    match expand_environment(&raw) {
-        Ok(command) => Some(command),
-        Err(error) => {
-            logging::debug(format!("展開 Run 值失敗，改用模組路徑推導：{error}"));
-            None
-        }
-    }
-}
-
-/// 展開 `%LOCALAPPDATA%` 之類的環境變數。
-fn expand_environment(text: &str) -> Result<String, String> {
-    let source = crate::wide(text);
-    // SAFETY: source 以 NUL 結尾；第一次呼叫只問所需大小。
-    let size = unsafe { ExpandEnvironmentStringsW(PCWSTR(source.as_ptr()), None) };
-    if size == 0 {
-        return Err("ExpandEnvironmentStringsW 查詢大小失敗".into());
-    }
-    let mut buffer = vec![0u16; size as usize];
-    // SAFETY: buffer 的大小就是 Query 回來的大小（含結尾 NUL）。
-    let written =
-        unsafe { ExpandEnvironmentStringsW(PCWSTR(source.as_ptr()), Some(buffer.as_mut_slice())) };
-    if written == 0 || written > buffer.len() as u32 {
-        return Err("ExpandEnvironmentStringsW 回傳的長度異常".into());
-    }
-    Ok(String::from_utf16_lossy(&buffer[..(written as usize - 1)]))
 }
 
 /// 取得這份 DLL 所在的目錄，也就是 MSI 的 INSTALLFOLDER。
@@ -519,36 +430,19 @@ fn module_dir() -> Result<PathBuf, String> {
     }
 }
 
-/// 用 `CreateProcessW` + `DETACHED_PROCESS` 啟動引擎後立刻關 handle。
+/// 用 `Command::args()` + `DETACHED_PROCESS` 啟動引擎後立刻放手。
 ///
-/// 引擎是獨立行程：TIP 結束不影響它，supervisor 的 lockfile 會擋掉重複啟動。
-fn launch_detached(command: &str) -> Result<(), String> {
-    let mut command_line = crate::wide(command);
-    let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
-    startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    let mut process = PROCESS_INFORMATION::default();
-
-    // SAFETY: command_line 以 NUL 結尾且可寫（CreateProcessW 會修改它）；
-    // startup 的 cb 已設好，process 由 API 填入。
-    unsafe {
-        CreateProcessW(
-            PCWSTR::null(),
-            Some(PWSTR(command_line.as_mut_ptr())),
-            None,
-            None,
-            false,
-            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-            None,
-            PCWSTR::null(),
-            &startup,
-            &mut process,
-        )
-        .map_err(|error| format!("CreateProcessW 失敗：{error}"))?;
-
-        // 放手：不等引擎、不用 job object 的 KILL_ON_JOB_CLOSE。
-        let _ = CloseHandle(process.hProcess);
-        let _ = CloseHandle(process.hThread);
-    }
+/// `Command` 在 Windows 上會把每個 argv 正確跳脫後再呼叫 `CreateProcessW`，
+/// 不用自己處理 `lpCommandLine` 的引號規則。引擎是獨立行程：TIP 結束不影響
+/// 它，supervisor 的 lockfile 會擋掉重複啟動。
+fn launch_detached(command: &EngineCommand) -> Result<(), String> {
+    // 不等引擎、不用 job object 的 KILL_ON_JOB_CLOSE。drop _child 只關掉
+    // 我們這端的 handle，引擎仍繼續跑。
+    let _child = Command::new(&command.exe)
+        .args(&command.args)
+        .creation_flags((DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP).0)
+        .spawn()
+        .map_err(|error| format!("spawn 引擎失敗：{error}"))?;
     Ok(())
 }
 
@@ -573,8 +467,6 @@ pub fn pipe_name() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     /// 冷卻時間內不重複 spawn，期滿才放行下一次。
@@ -588,17 +480,48 @@ mod tests {
         assert!(cooldown.acquire(start + Duration::from_secs(3)));
     }
 
-    /// 指令格式要和 MSI 的 EngineAutostart 一致：supervise + data + settings。
+    /// argv 要逐項分開：`--data` 的值只能是路徑，後面接獨立的 `--settings`。
     #[test]
-    fn command_line_matches_msi_autostart() {
-        let command = build_command_line(
+    fn engine_command_keeps_data_and_settings_as_separate_args() {
+        let command = engine_command_from_paths(
             Path::new(r"C:\Program Files\jc-ime\jc-engine.exe"),
             Path::new(r"C:\ProgramData\jc-ime\data"),
             Path::new(r"C:\Users\jeff\AppData\Local\jc-ime\settings.json"),
         );
         assert_eq!(
-            command,
-            r#""C:\Program Files\jc-ime\jc-engine.exe" --supervise --data "C:\ProgramData\jc-ime\data" --settings "C:\Users\jeff\AppData\Local\jc-ime\settings.json""#
+            command.exe,
+            Path::new(r"C:\Program Files\jc-ime\jc-engine.exe")
+        );
+        assert_eq!(
+            command.args,
+            vec![
+                "--supervise",
+                "--data",
+                r"C:\ProgramData\jc-ime\data",
+                "--settings",
+                r"C:\Users\jeff\AppData\Local\jc-ime\settings.json",
+            ]
+        );
+    }
+
+    /// Run 機碼的資料路徑以 `\` 結尾。舊做法把整串命令列交給
+    /// `CreateProcessW::lpCommandLine`，末尾 `\"` 被當成跳脫引號，`--data`
+    /// 的值一路吃到 `--settings`。改用 argv 後，末尾 `\` 留在同一個元素裡，
+    /// `--settings` 是下一個獨立元素，引擎才會拿到單純的路徑。
+    #[test]
+    fn engine_command_keeps_trailing_backslash_inside_data_arg() {
+        let command = engine_command_from_paths(
+            Path::new(r"C:\Program Files\jc-ime\jc-engine.exe"),
+            Path::new(r"C:\ProgramData\jc-ime\data\"),
+            Path::new(r"C:\Users\jeff\AppData\Local\jc-ime\settings.json"),
+        );
+        assert_eq!(command.args.len(), 5);
+        assert_eq!(command.args[1], "--data");
+        assert_eq!(command.args[2], r"C:\ProgramData\jc-ime\data\");
+        assert_eq!(command.args[3], "--settings");
+        assert_eq!(
+            command.args[4],
+            r"C:\Users\jeff\AppData\Local\jc-ime\settings.json"
         );
     }
 
