@@ -1,0 +1,26 @@
+[package]
+name = "jc-tsf-next"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "0c session.rs 移植與 jc State → 0c Snapshot 轉換層（adapter spike，不進 TSF／註冊）"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+jc-proto = { path = "../jc-proto" }
+
+# session.rs 本身不直接呼叫 Win32；真正的 overlapped I/O Client 是 T2 的範圍。
+# 這裡先固定 jc 使用的 0.62，T2 在 Transport 實作中使用。
+# T0：windows-core 是直接依賴，供 #[implement] 展開使用；不依賴 windows-link，
+# 0c msctf.rs 的 windows_link::link! 到 T6 才需要改成 windows_core::link!。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+] }
+windows-core = "0.62"
