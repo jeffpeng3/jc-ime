@@ -1,18 +1,25 @@
 # 發佈流程
 
-`ci.yml` 是唯一入口。push main 時先並行跑 `check-tag` 與測試（linux／windows）；
-兩者都成功且 HEAD 帶 annotated `v<version>` 標籤時，`release` job 才用
-`workflow_call` 呼叫 `release.yml` 做 release 建置與 GitHub Release。
-`release.yml` 的 `verify` 只檢查版本號；測試結果靠 caller job 的 `needs` 傳遞，
-`publish` 不再查 CI API。所有 job 的 ref 都是 `refs/heads/main`。
+`ci.yml` 是唯一入口。push main 時 `check-tag` 與四個 job 同時起步：linux／windows
+測試，以及 build-windows／build-linux。build 只 `needs: check-tag`，不等測試；
+`publish` 等 `check-tag`、兩個測試與兩個 build 都成功才建立 GitHub Release。
+一般 push 沒有版本標籤時 build 與 publish 直接跳過。所有 job 的 ref 都是
+`refs/heads/main`。
+
+`check-tag` 明確用 `fetch-tags: true` checkout，再主動 `git fetch --tags --force
+origin`，用 `github.sha`（完整 SHA）搭配 `git tag --points-at` 找 `v*` 標籤；
+查不到時等 3 秒重試 fetch，共三次。`push --follow-tags` 的 commit 與 annotated
+tag 到達 runner 有 race，只靠 `git tag --points-at HEAD` 會漏掉（run 44888270175
+就是這種情形）。job 的 `if` 不再檢查 `github.ref`：`on.push.branches: [main]`
+已限制分支，改靠 `event_name == 'push'` 與 `has_tag` 判斷。
 
 ## 觸發方式
 
 | 觸發 | 行為 | 建立 GitHub Release |
 |---|---|---|
-| push main（帶 annotated `v<version>` 標籤） | `check-tag` + 測試 → `windows` MSI + `linux` tar.gz → `publish` | 是 |
+| push main（帶 annotated `v<version>` 標籤） | `check-tag` + 測試 + build 同時起步 → `publish` | 是 |
 | push main（無版本標籤）／pull request | 只跑 `check-tag` + 測試 | 否 |
-| Actions → Release → Run workflow | `verify` → `windows` → `linux` | 否，只留 artifact |
+| Actions → Release → Run workflow | `verify` → `windows` → `linux`（只產 artifact） | 否 |
 
 `git push --follow-tags origin main` 把 commit 連同 annotated tag 一起推上 main，
 所以 release 跑在 main scope，`release-*` 快取不再掛在 tag ref。
@@ -22,7 +29,7 @@
 ## 版本號規則
 
 - 唯一來源：`Cargo.toml` 的 `[workspace.package] version`。
-- 標籤必須是 `v<version>`，而且與 `Cargo.toml` 完全相同；不同就讓 `verify` 失敗。
+- 標籤必須是 `v<version>`，而且與 `Cargo.toml` 完全相同；不同就讓 `check-tag`（CI）／`verify`（手動測試）失敗。
 - 版本格式是 `x.y.z` 或 `x.y.z-<pre-release>`，例如 `0.1.0`、`0.1.0-rc.1`。
 - Release 標題、artifact 名稱、MSI 檔名都用完整版本：
   - `jc-ime-<version>-x64.msi`
@@ -41,13 +48,13 @@ MSI 的 `ProductVersion` 只接受三段數字，但發佈版本可以有 pre-re
 | git tag | `v0.1.0-rc.1` | 人工建立 |
 | `Cargo.toml` version | `0.1.0-rc.1` | 必須與 tag 去掉 `v` 相同 |
 | Release 標題／artifact 名稱／MSI 檔名 | `0.1.0-rc.1` | 完整版本 |
-| MSI `ProductVersion` | `0.1.0` | `verify` 推導後傳給 `build.ps1 -MsiVersion` |
+| MSI `ProductVersion` | `0.1.0` | `check-tag`／`verify` 推導後傳給 `build.ps1 -MsiVersion` |
 
 規則：
 
-- `verify` 用 `^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$` 驗完整版本，接受 `-rc.1`。
-- `msi_version` 取完整版本 `-` 之前的三段數字；`verify` 輸出這個值，Windows
-  job 用 `-MsiVersion` 傳進 `installer/build.ps1`。
+- `check-tag`／`verify` 用 `^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$` 驗完整版本，接受 `-rc.1`。
+- `msi_version` 取完整版本 `-` 之前的三段數字；`check-tag`／`verify` 輸出這個值，
+  Windows job 用 `-MsiVersion` 傳進 `installer/build.ps1`。
 - `build.ps1` 的 `-MsiVersion` 是選項。沒給時由 `Cargo.toml` 版本去掉
   pre-release 自己推導，本機建置不必手動指定。
 - `wix build -d Version=` 只拿 MSI 版本；檔名、Release 標題與說明仍用完整版本。
@@ -69,7 +76,7 @@ git push --follow-tags origin main
 ### 1. 資料包（必要）
 
 資料與模型不進 git，Windows runner 也沒有 `/mnt/work/jc/jc-ime-data`。MSI 需要
-資料根目錄，因此 release workflow 會下載一個預先打包的資料包。沒有資料包 URL
+資料根目錄，因此 build job 會下載一個預先打包的資料包。沒有資料包 URL
 時 `windows` job 會直接失敗，不會產出缺資料的 MSI。
 
 資料包來源只有一個：公開 repo variable，或 `workflow_dispatch` 輸入覆寫。
@@ -199,10 +206,12 @@ signtool verify /pa /v jc-ime-<version>-x64.msi
 
 | Job | 產出 |
 |---|---|
-| `verify` | 檢查傳入版本與 `Cargo.toml` 一致且符合 `x.y.z` 或 `x.y.z-<pre-release>`，輸出完整版本與 `msi_version`；手動觸發沒有輸入時退回 `Cargo.toml` 版本；不跑測試、不編譯 |
-| `windows` | 下載資料包並比對 SHA-256 → `python scripts/verify-bundle.py`（Full 驗證，等價 `jc-cli data verify`）→ 安裝 WiX v5 → `installer/build.ps1 -MsiVersion <x.y.z>` → MSI、checksum、`data-manifest.json` |
-| `linux` | 安裝 GPUI 系統依賴 → `cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui` → 打包 tar.gz 與 checksum |
-| `publish` | 只有 `ci.yml` 帶版本標籤呼叫時執行（`inputs.publish`）；needs 鏈包含 `ci.yml` 的 linux／windows 測試 job，失敗就不發版；不再查 CI run；下載兩個 artifact，建立或更新 GitHub Release |
+| `check-tag` | `fetch-tags: true` + `git fetch --tags --force origin`，用 `github.sha` 比對 `v*` 標籤（最多三次，間隔 3 秒）；輸出 `has_tag`／`version`／`msi_version` |
+| `linux`（測試） | 下載資料包 → fmt／clippy／Windows target check／test → 清理快取 |
+| `windows`（測試） | 下載資料包 → `cargo test --workspace` |
+| `build-windows` | `needs: check-tag`，與測試同時起步；下載資料包並驗 SHA → `verify-bundle.py` → WiX v5 → `installer/build.ps1 -MsiVersion <x.y.z>` → MSI、checksum、`data-manifest.json`，輸出 `signed` |
+| `build-linux` | `needs: check-tag`，與測試同時起步；GPUI 系統依賴 → `cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui` → tar.gz 與 checksum → 清理快取 |
+| `publish` | `needs: [check-tag, linux, windows, build-windows, build-linux]`；全部成功才下載兩個 artifact、建立或更新 GitHub Release，不查 CI run |
 
 Windows 建置必須指定 target（`--target x86_64-pc-windows-msvc`），否則 `build.ps1` 的 payload 路徑會不符；x64 找不到 `target/<triple>/release` 時會退回 `target/release`，並印出警告與實際路徑。
 
@@ -210,9 +219,9 @@ Windows 建置必須指定 target（`--target x86_64-pc-windows-msvc`），否�
 
 Windows 的 Python 輸出必須是 UTF-8。Windows job 設 `PYTHONUTF8=1`，`build.ps1` 另外設 `PYTHONIOENCODING=utf-8`，避免 Python 3.12 的 cp1252 讓 `check-payload.py` 與 `verify-bundle.py` 印中文時失敗。
 
-`release.yml` 不跑 `cargo fmt`、clippy、test；那些由 `ci.yml` 在日常 push／PR 負責。`verify` 當初的 `cargo test --workspace --release` 已移除：CI 在 push main 時跑過同一批測試，release profile 重跑只是多花 8～9 分鐘。
+build job 不跑 `cargo fmt`、clippy、test；那些由 `ci.yml` 在日常 push／PR 負責。`verify` 當初的 `cargo test --workspace --release` 已移除：CI 在 push main 時跑過同一批測試，release profile 重跑只是多花 8～9 分鐘。
 
-`ci.yml` 的 `release` job 宣告 `needs: [check-tag, linux, windows]`，而 `release.yml` 是由它呼叫的 reusable workflow，所以 publish 的 needs 鏈包含測試 job：check-tag 失敗、任一測試失敗、或沒有版本標籤時，整個 release workflow 都不會執行。`workflow_dispatch` 不帶 `publish: true`，只產 artifact。
+`publish` 直接宣告 `needs: [check-tag, linux, windows, build-windows, build-linux]`：check-tag 失敗、任一測試失敗或沒有版本標籤時都不會發版。`build-windows`／`build-linux` 只 `needs: check-tag`，與測試同時起步。`release.yml` 已移除 `workflow_call`，`workflow_dispatch` 只產 artifact，供手動測試 build。
 
 ## 建置快取
 
@@ -220,10 +229,12 @@ release 與 CI 都用 `Swatinem/rust-cache@v2`。
 
 | Workflow | Job | shared-key | cache-all-crates |
 |---|---|---|---|
-| `ci.yml` | `linux` | `ci-linux` | `true` |
-| `ci.yml` | `windows` | `ci-windows` | `true` |
-| `release.yml` | `linux` | `release-linux` | `false` |
-| `release.yml` | `windows` | `release-windows` | `false` |
+| `ci.yml` | `linux`（測試） | `ci-linux` | `true` |
+| `ci.yml` | `windows`（測試） | `ci-windows` | `true` |
+| `ci.yml` | `build-linux` | `release-linux` | `false` |
+| `ci.yml` | `build-windows` | `release-windows` | `false` |
+| `release.yml`（手動測試） | `linux` | `release-linux` | `false` |
+| `release.yml`（手動測試） | `windows` | `release-windows` | `false` |
 
 CI 連 workspace crate 的產物一起快取：每個 commit 通常只改幾個 crate，還原後 cargo 只
 重編改到的。release 只快取依賴，release 產物一份太大，每個 tag 存一份會擠掉其他快取。
@@ -249,7 +260,7 @@ Cache saved with key: ...                # 存檔
 Cache Size: ~NNN MB (NNNNNNNN B)         # 這次存了多大
 ```
 
-`release-*` 快取現在寫在 `push main` 的 main scope：release 由 `ci.yml` 呼叫，ref 固定是
+`release-*` 快取現在寫在 `push main` 的 main scope：`build-*` 跑在 `ci.yml` 的
 `refs/heads/main`，不同版本共用同一份快取，不再有 tag scope 每次 miss 的問題。
 不需要暖機，也不需要手動 `workflow_dispatch`。
 
@@ -313,13 +324,15 @@ release 改由 `ci.yml` 在 `push main` 時呼叫後，ref 固定是 `refs/heads
    ```
 
    `--follow-tags` 只推 annotated tag，所以必須用 `-a`；lightweight tag 不會被推上去，
-   `check-tag` 也看不到它。
-3. `ci.yml` 的 `check-tag` 讀到 tag、測試通過後，`release` job 呼叫 `release.yml`；
-   build 與 publish 都跑在 main scope。
+   `check-tag` 也看不到它。tag 比 commit 晚到 runner 時，`check-tag` 會主動 fetch
+   並重試三次。
+3. `ci.yml` 的 `check-tag` 抓到 tag 後，`build-windows`／`build-linux` 與兩個測試
+   同時起步；`publish` 等四個 job 都成功。build 與 publish 都跑在 main scope。
 4. 檢查 `publish` 建立或更新的 Release assets、說明與 checksum。
 
-`workflow_dispatch` 不會建立 GitHub Release。`publish` 的條件是 `inputs.publish`，
-只有前面的 push main 路徑才為 true；手動 run 只留 artifact，可以重複觸發。
+`workflow_dispatch` 不會建立 GitHub Release；`release.yml` 已移除 `publish` job 與
+`workflow_call`，只留手動測試 build。CI 的 `publish` 只靠 `event_name == 'push'` 與
+`has_tag` 判斷，可以重複跑同一個 tag。
 
 bump 版本會改 `Cargo.lock`，精確 key 末段的 hash 跟著變。
 `Swatinem/rust-cache` 還原時先用 restore key 前綴比對，仍會命中先前存的那份；
@@ -384,8 +397,8 @@ Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets�
 1. 更新 `docs/CHANGELOG.md`，確認有 `## <version>` 段落。
 2. 改 `Cargo.toml` 的 `[workspace.package] version`；必要時讓 `Cargo.lock` 跟著更新。
    RC 就寫 `0.1.0-rc.1`，不用為了 MSI 改成三段數字。
-3. 跑 `cargo check --workspace --all-targets`，commit 到 `main` 並 push，等 main 的 CI
-   測試通過。release job 的 needs 含測試，測試沒過就不會發版。
+3. 跑 `cargo check --workspace --all-targets`，commit 到 `main` 並 push。等 main 的
+   CI 測試通過；`publish` 的 needs 含測試，測試沒過就不會發版。
 4. 在剛 push 的 commit 上建立 annotated 標籤，連同 commit 一起推上 main：
 
    ```sh
@@ -396,8 +409,8 @@ Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets�
    `--follow-tags` 只推 annotated tag，所以必須用 `-a`。RC 版本帶 pre-release
    後綴，例如 `v0.1.0-rc.1`；MSI `ProductVersion` 仍是 `0.1.0`。
 
-5. 到 Actions → CI 看 `check-tag`、測試與 `release` job；release 內含 `verify`、
-   `windows`、`linux`、`publish` 四個 job。
+5. 到 Actions → CI 看 `check-tag`、兩個測試、`build-windows`／`build-linux` 與
+   `publish`。build 與測試同時起步，publish 等兩邊。
 6. 檢查 Release assets、說明與 checksum；Windows 找一臺乾淨機器跑一次安裝、
    升級與反安裝。
 

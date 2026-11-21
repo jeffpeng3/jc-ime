@@ -1,35 +1,14 @@
 name: Release
 
-# 由 ci.yml 的 release job 呼叫，跑在 push main 的 main scope：
-#   push main（帶 annotated tag）-> ci.yml check-tag + 測試 -> 本 workflow
-#   -> windows MSI + linux tar.gz -> GitHub Release
-# workflow_dispatch 保留供手動測試，只產 artifact，不建立 Release。
+# 主要發版流程已移到 ci.yml；本檔只供 workflow_dispatch 手動測試 build。
 #
-# 版本號唯一來源是 Cargo.toml 的 [workspace.package] version。ci.yml 的
-# check-tag 會確認 HEAD 的 v* 標籤去掉 v 後等於它，再把 version／msi_version
-# 傳進來。發佈版本可以有 pre-release 後綴（v0.1.0-rc.1）；MSI ProductVersion
-# 另取前三段數字（0.1.0）。
+# 手動 run 只產 artifact，不建立 GitHub Release；版本號取自 Cargo.toml。
+# 帶 annotated tag 的 push main 由 ci.yml 的 build-windows／build-linux／publish
+# 處理：build 與測試同時起步，publish 等兩邊都成功。
+#
+# 版本號唯一來源是 Cargo.toml 的 [workspace.package] version。手動測試時 verify
+# 直接讀它；正常發版由 ci.yml 的 check-tag 核對 tag 並把版本傳進 build job。
 on:
-  workflow_call:
-    inputs:
-      version:
-        description: "完整版本（含 pre-release 後綴），由 ci.yml check-tag 傳入"
-        required: true
-        type: string
-      msi_version:
-        description: "MSI ProductVersion（三段數字），由 ci.yml check-tag 推導"
-        required: true
-        type: string
-      publish:
-        description: "是否建立 GitHub Release；只有帶版本標籤的 push main 為 true"
-        required: false
-        type: boolean
-        default: false
-    secrets:
-      SIGNING_PFX_BASE64:
-        required: false
-      SIGNING_PFX_PASSWORD:
-        required: false
   workflow_dispatch:
     inputs:
       data_bundle_url:
@@ -62,15 +41,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # 只讀 Cargo.toml 與輸入：不裝工具鏈、不裝系統依賴、不碰編譯快取。
-      # workflow_call 的版本由 ci.yml check-tag 傳入並再核對一次；
-      # workflow_dispatch 沒有輸入時退回 Cargo.toml 版本，供手動測試。
+      # 只讀 Cargo.toml：不裝工具鏈、不裝系統依賴、不碰編譯快取。
+      # 手動測試的版本一律取自 Cargo.toml。
       - name: 版本號一致性
         id: version
         shell: bash
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-          INPUT_MSI_VERSION: ${{ inputs.msi_version }}
         run: |
           set -euo pipefail
 
@@ -93,15 +68,7 @@ jobs:
           PY
           )
 
-          if [[ -n "${INPUT_VERSION}" ]]; then
-            version="${INPUT_VERSION}"
-            if [[ "${version}" != "${cargo_version}" ]]; then
-              echo "::error::傳入版本 ${version} 與 Cargo.toml 的 ${cargo_version} 不一致"
-              exit 1
-            fi
-          else
-            version="${cargo_version}"
-          fi
+          version="${cargo_version}"
 
           # 發佈版本允許 pre-release 後綴（0.1.0-rc.1）；MSI 的 ProductVersion
           # 只接受三段數字，因此另外推導 msi_version 給 installer/build.ps1。
@@ -110,10 +77,6 @@ jobs:
             exit 1
           fi
           msi_version="${version%%-*}"
-          if [[ -n "${INPUT_MSI_VERSION}" && "${INPUT_MSI_VERSION}" != "${msi_version}" ]]; then
-            echo "::error::傳入 msi_version ${INPUT_MSI_VERSION} 與推導的 ${msi_version} 不一致"
-            exit 1
-          fi
 
           echo "Cargo.toml 版本：${cargo_version}"
           echo "本次發佈版本：${version}"
@@ -449,135 +412,3 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: bash scripts/cache-prune.sh --skip-recent-hours 6
 
-  publish:
-    name: publish（GitHub Release）
-    # 只有 ci.yml 在帶版本標籤的 push main 傳 publish: true 時建立 Release；
-    # workflow_dispatch 只產 artifact。測試由 ci.yml caller job 的 needs 保證，
-    # 這裡不必再查 CI run。
-    if: inputs.publish
-    needs: [verify, windows, linux]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: write
-      actions: read
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: 下載 Windows artifact
-        uses: actions/download-artifact@v7
-        with:
-          name: windows-msi-${{ needs.verify.outputs.version }}
-          path: dist/windows
-
-      - name: 下載 Linux artifact
-        uses: actions/download-artifact@v7
-        with:
-          name: linux-tar-${{ needs.verify.outputs.version }}
-          path: dist/linux
-
-      - name: 產生 Release 說明
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ needs.verify.outputs.version }}
-          MSI_VERSION: ${{ needs.verify.outputs.msi_version }}
-          SIGNED: ${{ needs.windows.outputs.signed }}
-        run: |
-          set -euo pipefail
-
-          version="${RELEASE_VERSION}"
-          msi_version="${MSI_VERSION}"
-          prerelease_args=()
-          if [[ "${version}" == *-* ]]; then
-            prerelease_args=(--prerelease)
-          fi
-          date_utc=$(date -u +%Y-%m-%d)
-          data_version=$(python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          manifest = json.loads(Path("dist/windows/data-manifest.json").read_text(encoding="utf-8"))
-          print(manifest.get("version", "unknown"))
-          PY
-          )
-
-          changelog=$(mktemp)
-          notes=$(mktemp)
-          trap 'rm -f "${changelog}" "${notes}"' EXIT
-
-          awk -v ver="${version}" '
-            /^## / {
-              if (found) exit
-              heading = $0
-              sub(/^##[[:space:]]+/, "", heading)
-              split(heading, parts, /[[:space:]]+/)
-              if (parts[1] == ver) {
-                found = 1
-                next
-              }
-            }
-            found { print }
-          ' docs/CHANGELOG.md > "${changelog}"
-
-          if [[ ! -s "${changelog}" ]]; then
-            printf '本版沒有 CHANGELOG 條目；請看 commit 記錄。\n' > "${changelog}"
-          fi
-
-          {
-            printf '## 版本\n\n`%s`（%s）\n\n' "${version}" "${date_utc}"
-            if [[ "${msi_version}" != "${version}" ]]; then
-              printf '這是 pre-release。MSI 的 ProductVersion 只有 `%s`，\n' "${msi_version}"
-              printf '因此 Windows 的「應用程式與功能」不會顯示 `%s` 後綴。\n\n' "${version}"
-            fi
-            printf '## 模型與資料版本\n\n`%s`（安裝包內 `data/manifest.json`，涵蓋詞典與模型）\n\n' "${data_version}"
-            printf '## 變更摘要\n\n'
-            cat "${changelog}"
-            printf '\n## 下載\n\n'
-            printf '| 平台 | 檔案 |\n|---|---|\n'
-            printf '| Windows x64 | `jc-ime-%s-x64.msi` |\n' "${version}"
-            printf '| Linux x86_64 | `jc-ime-%s-linux-x86_64.tar.gz` |\n\n' "${version}"
-            printf '每個檔案旁都附 `.sha256`，下載後請先核對。\n\n'
-            printf '## 簽章\n\n'
-            if [[ "${SIGNED}" == "true" ]]; then
-              printf 'Windows 執行檔與 MSI 已使用專案憑證簽章。\n\n'
-            else
-              printf '**未簽章**：本次沒有簽章憑證。Windows 可能顯示 SmartScreen 警告；\n'
-              printf '企業的 AppLocker／WDAC 白名單也會擋下未簽章 MSI。\n\n'
-            fi
-            printf '## 已知限制\n\n'
-            printf -- '- Windows TIP 同時包含 x64 與 x86 兩份 DLL，共用同一個「jc 注音」項目；32 位元程式（例如舊版 Office）不需要手動切換。\n'
-            printf -- '- MSI 是 per-machine 安裝，需要系統管理員；只會把輸入法加進執行安裝的帳號。\n'
-            printf -- '- 注音神經選字模型（Funmula `zh-select`）依授權不隨附，需另外下載。\n'
-            printf -- '- Linux 版目前只有引擎、CLI 與設定程式，沒有桌面輸入法整合。\n'
-            printf -- '- 設定變更後要重新啟動引擎才會生效。\n'
-            printf -- '- Windows 實機安裝、升級、反安裝與 UWP／Office 相容性仍需人工驗證。\n'
-          } > "${notes}"
-
-          echo "Release 說明："
-          cat "${notes}"
-
-          assets=(
-            "dist/windows/jc-ime-${version}-x64.msi"
-            "dist/windows/jc-ime-${version}-x64.msi.sha256"
-            "dist/linux/jc-ime-${version}-linux-x86_64.tar.gz"
-            "dist/linux/jc-ime-${version}-linux-x86_64.tar.gz.sha256"
-          )
-          for asset in "${assets[@]}"; do
-            if [[ ! -f "${asset}" ]]; then
-              echo "::error::缺少 release asset：${asset}"
-              exit 1
-            fi
-          done
-
-          if gh release view "v${version}" >/dev/null 2>&1; then
-            echo "Release v${version} 已存在；更新說明並覆蓋 assets。"
-            gh release edit "v${version}" --title "${version}" \
-              --notes-file "${notes}" "${prerelease_args[@]}"
-            gh release upload "v${version}" "${assets[@]}" --clobber
-          else
-            gh release create "v${version}" "${assets[@]}" \
-              --title "${version}" \
-              --notes-file "${notes}" \
-              --verify-tag "${prerelease_args[@]}"
-          fi

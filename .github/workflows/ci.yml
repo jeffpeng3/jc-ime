@@ -20,8 +20,8 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # 與測試並行起步。只讀 HEAD 上的 v* 標籤，決定要不要接著發版。
-  # fetch-depth: 0 才看得到（含 annotated）標籤。
+  # 與測試並行起步。主動抓 tag 並用完整 SHA 比對，決定要不要接著發版。
+  # fetch-depth: 0 讓 annotated tag 的 peel 資訊完整。
   check-tag:
     name: check-tag（版本標籤檢查）
     runs-on: ubuntu-24.04
@@ -36,12 +36,32 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # push --follow-tags 的 commit 與 annotated tag 可能先後到達 runner；
+          # 明确抓 tag，讓 check-tag 不依賴 checkout 的預設行為。
+          fetch-tags: true
 
-      - name: 檢查 HEAD 的版本標籤
+      - name: 檢查 commit 的版本標籤
         id: tag
         shell: bash
         run: |
           set -euo pipefail
+
+          # checkout 的 fetch-tags 遇上 push --follow-tags 的 race 仍可能漏掉 tag；
+          # 主動 fetch，再用完整 SHA 比對，tag 比 commit 晚到時重試。
+          commit_sha="${{ github.sha }}"
+          for attempt in 1 2 3; do
+            if ! git fetch --tags --force origin >/dev/null 2>&1; then
+              echo "::warning::第 ${attempt} 次 git fetch --tags origin 失敗。"
+            fi
+            mapfile -t v_tags < <(git tag --points-at "${commit_sha}" | grep '^v' || true)
+            if [[ ${#v_tags[@]} -gt 0 ]]; then
+              break
+            fi
+            if [[ ${attempt} -lt 3 ]]; then
+              echo "commit ${commit_sha} 還沒有 v* 標籤；等 3 秒後重試 fetch。"
+              sleep 3
+            fi
+          done
 
           cargo_version=$(python3 - <<'PY'
           import pathlib
@@ -62,19 +82,13 @@ jobs:
           PY
           )
 
-          v_tags=()
-          while IFS= read -r tag; do
-            [[ -n "${tag}" ]] || continue
-            [[ "${tag}" == v* ]] && v_tags+=("${tag}")
-          done < <(git tag --points-at HEAD)
-
           if [[ ${#v_tags[@]} -eq 0 ]]; then
-            echo "HEAD 沒有 v* 標籤；一般 push，只跑測試。"
+            echo "commit ${commit_sha} 沒有 v* 標籤；一般 push，只跑測試。"
             echo "has_tag=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
           if [[ ${#v_tags[@]} -gt 1 ]]; then
-            echo "::error::HEAD 有多個 v* 標籤：${v_tags[*]}；發版需要單一版本標籤。"
+            echo "::error::commit ${commit_sha} 有多個 v* 標籤：${v_tags[*]}；發版需要單一版本標籤。"
             exit 1
           fi
 
@@ -344,27 +358,472 @@ jobs:
           "JC_IMEDATA=$dataRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "資料根目錄：$dataRoot"
           Write-Host "資料版本：$dataVersion"
-      # 只跑 test（debug）。原本先 build --release 再 test，等於同一份程式編兩次；
-      # release 建置改由下面的 release job 呼叫 release.yml，在同一個 main scope 做。
+      # 只跑 test（debug）。release 建置由下面的 build-windows job 並行處理，
+      # 不必等測試結束才起步。
       - name: Test
         run: cargo test --workspace
 
-  # 一般 push 跳過。帶 annotated tag 的 push main 才跑，release-* 快取因此寫在
-  # main scope，和 tag scope 無關。needs 含 linux／windows 測試，測試失敗不會發版；
-  # publish 的 needs 鏈也因此包含測試，不必再查 API。
-  release:
-    name: release（有版本標籤時發版）
-    needs: [check-tag, linux, windows]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.check-tag.outputs.has_tag == 'true'
-    # reusable workflow 只能降權不能升權；publish 要 contents: write，
-    # linux 收尾清理要 actions: write，所以 caller 先給到這兩個權限。
+  # 與測試同時起步。只 needs check-tag，不等 linux/windows 測試；
+  # 一般 push（無 tag）跳過，帶 annotated tag 的 push main 才建置。
+  build-windows:
+    name: build-windows（MSI）
+    needs: check-tag
+    if: github.event_name == 'push' && needs.check-tag.outputs.has_tag == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 90
+    outputs:
+      signed: ${{ steps.signing.outputs.signed }}
+    env:
+      # RELEASE_VERSION 是完整版本（含 -rc.1），用於檔名與 Release 標題；
+      # MSI_VERSION 只有三段數字，給 MSI ProductVersion。
+      RELEASE_VERSION: ${{ needs.check-tag.outputs.version }}
+      MSI_VERSION: ${{ needs.check-tag.outputs.msi_version }}
+      # Windows 的 Python 3.12 預設 cp1252；build.ps1 呼叫 check-payload.py 時
+      # 印中文不能爆，統一用 UTF-8。
+      PYTHONUTF8: "1"
+      # 單一來源：公開 repo variable。不放 secret，fork PR 也讀得到
+      # 同一份資料包（見 docs/release.md）。
+      DATA_BUNDLE_URL: ${{ vars.JC_DATA_BUNDLE_URL }}
+      DATA_BUNDLE_SHA256: ${{ vars.JC_DATA_BUNDLE_SHA256 }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # 與 rust-toolchain.toml 同一版（action 不讀該檔案）。
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          components: rustfmt, clippy
+
+      # 32 位元的 TSF DLL：build.ps1 會另外建 i686-pc-windows-msvc 的 jc-tsf，
+      # 讓舊版 Office 等 32 位元程式也載入得到輸入法。
+      - name: 加入 i686 target（32 位元 TSF DLL）
+        shell: pwsh
+        run: rustup target add i686-pc-windows-msvc
+
+      # 這個 job 同時建 x86_64 與 i686 兩份產物，用 key 標明主要 target，
+      # 讓同一 runner 上的其他 Windows 快取不會與這份混淆。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows
+          key: x86_64-pc-windows-msvc
+          cache-targets: "true"
+          cache-all-crates: "false"
+          cache-on-failure: "true"
+
+      # build.ps1 需要資料根目錄。資料不進 git，因此由此 job 下載
+      # 預先打包的資料包；URL 由公開 repo variable 提供。
+      - name: 下載並展開資料包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Add-GitHubEnv([string]$Name, [string]$Value) {
+            "$Name=$Value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+
+          $url = $env:DATA_BUNDLE_URL
+          if ([string]::IsNullOrWhiteSpace($url)) {
+            throw @'
+          沒有資料包 URL。MSI 需要資料根目錄（manifest.json 與 shipped: true 的檔案）。
+          請將資料包上傳到 runner 讀得到的位置，並設定公開 repo variable
+          JC_DATA_BUNDLE_URL。打包方式見 docs/release.md。
+          打包方式見 docs/release.md。
+          '@
+          }
+
+          $bundle = Join-Path $env:RUNNER_TEMP 'jc-ime-data-bundle'
+          Invoke-WebRequest -Uri $url -OutFile $bundle
+
+          if (-not [string]::IsNullOrWhiteSpace($env:DATA_BUNDLE_SHA256)) {
+            $actual = (Get-FileHash -Algorithm SHA256 $bundle).Hash.ToLowerInvariant()
+            $expected = $env:DATA_BUNDLE_SHA256.Trim().ToLowerInvariant()
+            if ($actual -ne $expected) {
+              throw "資料包 SHA-256 不符：預期 $expected，實際 $actual"
+            }
+            Write-Host '資料包 SHA-256 通過'
+          } else {
+            Write-Warning '沒有設定 JC_DATA_BUNDLE_SHA256；跳過資料包雜湊檢查（manifest 內的檔案雜湊仍會驗）'
+          }
+
+          $root = Join-Path $env:RUNNER_TEMP 'jc-ime-data'
+          if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+          New-Item -ItemType Directory -Path $root | Out-Null
+
+          if ($url -match '\.zip(\?|$)') {
+            Expand-Archive -Path $bundle -DestinationPath $root -Force
+          } else {
+            & tar -xf $bundle -C $root
+            if ($LASTEXITCODE -ne 0) {
+              # Windows 內建 tar 不一定支援 zstd；有 7-Zip 就退回它。
+              if ($url -match '\.(zst|tzst)(\?|$)') {
+                Write-Warning 'Windows tar 無法解 zstd；改用 7-Zip。'
+                Remove-Item $root -Recurse -Force
+                New-Item -ItemType Directory -Path $root | Out-Null
+
+                $sevenZip = @(
+                  (Join-Path ${env:ProgramFiles} '7-Zip\7z.exe'),
+                  (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.exe')
+                ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+                if (-not $sevenZip) {
+                  throw '找不到 7-Zip，且 Windows tar 不支援 .tar.zst；請把資料包改成 .tar.gz。'
+                }
+                $sevenWork = Join-Path $env:RUNNER_TEMP 'jc-ime-data-7z'
+                if (Test-Path $sevenWork) { Remove-Item $sevenWork -Recurse -Force }
+                New-Item -ItemType Directory -Path $sevenWork | Out-Null
+
+                & $sevenZip x $bundle "-o$sevenWork" -y
+                if ($LASTEXITCODE -ne 0) {
+                  throw "7-Zip 解開 zstd 失敗（exit $LASTEXITCODE）"
+                }
+                $tarFile = Get-ChildItem -Path $sevenWork -Filter '*.tar' -File -Recurse |
+                  Select-Object -First 1
+                if (-not $tarFile) {
+                  throw '7-Zip 沒有產出 .tar；請把資料包改成 .tar.gz。'
+                }
+                & $sevenZip x $tarFile.FullName "-o$root" -y
+                if ($LASTEXITCODE -ne 0) {
+                  throw "7-Zip 解開 tar 失敗（exit $LASTEXITCODE）"
+                }
+              } else {
+                throw "解開資料包失敗（tar exit $LASTEXITCODE）"
+              }
+            }
+          }
+
+          # 允許壓縮檔自帶一層 jc-ime-data/ 目錄。
+          $dataRoot = $root
+          if (-not (Test-Path (Join-Path $dataRoot 'manifest.json'))) {
+            $candidates = @(Get-ChildItem -Path $root -Directory |
+              Where-Object { Test-Path (Join-Path $_.FullName 'manifest.json') })
+            if ($candidates.Count -eq 1) {
+              $dataRoot = $candidates[0].FullName
+            }
+          }
+          if (-not (Test-Path (Join-Path $dataRoot 'manifest.json'))) {
+            throw "資料包裡找不到 manifest.json（解開位置：$root）"
+          }
+
+          Add-GitHubEnv 'JC_DATA_ROOT' $dataRoot
+          Write-Host "資料根目錄：$dataRoot"
+
+      # Python 版與 `jc-cli data verify` 的 Full 驗證等價（見 scripts/verify-bundle.py），
+      # 省掉為了驗證而單獨編一次 release jc-cli 的 5～6 分鐘。build.ps1 仍會建
+      # 它需要的 crate。Windows runner 已有 Python，不必 setup-python。
+      - name: 驗證資料包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts/verify-bundle.py "$env:JC_DATA_ROOT"
+          if ($LASTEXITCODE -ne 0) {
+            throw "資料驗證失敗（exit $LASTEXITCODE）"
+          }
+
+      - name: 安裝 WiX v5
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.*
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # 簽章接口：有 SIGNING_PFX_BASE64 才簽；沒有就跳過，不讓流程失敗。
+      - name: 準備簽章憑證
+        id: signing
+        shell: pwsh
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX_BASE64)) {
+            Write-Warning '沒有 SIGNING_PFX_BASE64；跳過簽章，產出未簽章 MSI。'
+            'signed=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+
+          $pfx = Join-Path $env:RUNNER_TEMP 'jc-ime-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX_BASE64))
+          "JC_SIGN_CERT=$pfx" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if (-not [string]::IsNullOrWhiteSpace($env:SIGNING_PFX_PASSWORD)) {
+            "JC_SIGN_PASSWORD=$($env:SIGNING_PFX_PASSWORD)" |
+              Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+
+          # Windows runner 的 signtool 不一定在 PATH；找 x64 版本加進去。
+          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          $signtool = Get-ChildItem -Path $sdkRoot -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if ($signtool) {
+            $signtool.Directory.FullName |
+              Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            $env:PATH = "$($signtool.Directory.FullName);$env:PATH"
+            Write-Host "使用 signtool：$($signtool.FullName)"
+          } else {
+            Write-Warning '找不到 x64 signtool.exe；build.ps1 會在簽章時失敗。'
+          }
+
+          'signed=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: 建置 MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # runner 可能預裝 WiX v3；把 dotnet tool 的 v5 放到 PATH 最前面。
+          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+
+          # 資料包只帶 shipped 檔案，但 manifest 仍是對完整資料根目錄產生的；
+          # -Manifest 讓安裝包保留 shipped: false 的下載項與 URL。
+          # -MsiVersion 給 MSI ProductVersion（x.y.z）；MSI 檔名用完整版本。
+          .\installer\build.ps1 -DataRoot $env:JC_DATA_ROOT `
+            -Manifest (Join-Path $env:JC_DATA_ROOT 'manifest.json') `
+            -MsiVersion $env:MSI_VERSION
+
+          $msi = Join-Path 'target\installer' "jc-ime-$env:RELEASE_VERSION-x64.msi"
+          if (-not (Test-Path $msi)) {
+            throw "找不到預期的 MSI：$msi"
+          }
+
+          # Release 說明要讀資料版本，複製一份到 artifact 根目錄。
+          Copy-Item 'target\installer\payload\data\manifest.json' `
+            'target\installer\data-manifest.json' -Force
+
+          $hash = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path -Leaf $msi)" |
+            Set-Content -Path "$msi.sha256" -Encoding ascii
+
+      - name: 上傳 Windows artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-msi-${{ needs.check-tag.outputs.version }}
+          if-no-files-found: error
+          path: |
+            target/installer/jc-ime-${{ needs.check-tag.outputs.version }}-x64.msi
+            target/installer/jc-ime-${{ needs.check-tag.outputs.version }}-x64.msi.sha256
+            target/installer/data-manifest.json
+
+
+  # 與 build-windows 相同：只 needs check-tag，與測試並行起步。
+  build-linux:
+    name: build-linux（tar.gz）
+    needs: check-tag
+    if: github.event_name == 'push' && needs.check-tag.outputs.has_tag == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # 收尾清理需要刪快取的權限；job 層級覆蓋 workflow 的 contents: read。
+    permissions:
+      contents: read
+      actions: write
+    env:
+      RELEASE_VERSION: ${{ needs.check-tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # 與 rust-toolchain.toml 同一版（action 不讀該檔案）。
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          components: rustfmt, clippy
+
+      - name: 系統依賴（GPUI Kit 的 X11／Wayland／字型）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev \
+            libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libasound2-dev
+
+      # release 只快取依賴，不快取 workspace 產物：一份太大，會擠掉其他快取。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux
+          cache-targets: "true"
+          cache-all-crates: "false"
+          cache-on-failure: "true"
+
+      - name: 建置 Linux 執行檔
+        run: cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui
+
+      - name: 打包 tar.gz
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${RELEASE_VERSION}"
+          pkg="jc-ime-${version}-linux-x86_64"
+          stage="target/release-package/${pkg}"
+
+          rm -rf "target/release-package/${pkg}"
+          mkdir -p "${stage}/bin" "${stage}/docs"
+
+          install -m 0755 target/release/jc-engine "${stage}/bin/jc-engine"
+          install -m 0755 target/release/jc-cli "${stage}/bin/jc-cli"
+          install -m 0755 target/release/jc-settings-ui "${stage}/bin/jc-settings-ui"
+
+          cp LICENSE NOTICE "${stage}/"
+          cp -R legal "${stage}/legal"
+          cp docs/install.md "${stage}/docs/install.md"
+
+          tar -C target/release-package -czf "target/release-package/${pkg}.tar.gz" "${pkg}"
+          (
+            cd target/release-package
+            sha256sum "${pkg}.tar.gz" > "${pkg}.tar.gz.sha256"
+          )
+
+          echo "產出：target/release-package/${pkg}.tar.gz"
+          cat "target/release-package/${pkg}.tar.gz.sha256"
+
+      - name: 上傳 Linux artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-tar-${{ needs.check-tag.outputs.version }}
+          if-no-files-found: error
+          path: |
+            target/release-package/jc-ime-${{ needs.check-tag.outputs.version }}-linux-x86_64.tar.gz
+            target/release-package/jc-ime-${{ needs.check-tag.outputs.version }}-linux-x86_64.tar.gz.sha256
+
+      # 收尾清理舊快取：只在 main 跑，build 與 publish 都在 main scope。
+      # 清理失敗不讓 build 變紅；並行 run 的快取由 skip-recent-hours 保護。
+      - name: 清理舊快取
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/cache-prune.sh --skip-recent-hours 6
+
+
+  # 等 check-tag、兩個測試與兩個 build job 都完成才發版；
+  # 任一測試失敗就不發版。
+  publish:
+    name: publish（GitHub Release）
+    # 只有帶 annotated tag 的 push main 會執行。needs 包含兩個測試與兩個
+    # build job；任一失敗就不發版，不必再查 CI run。
+    if: github.event_name == 'push' && needs.check-tag.outputs.has_tag == 'true'
+    needs: [check-tag, linux, windows, build-windows, build-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
-      actions: write
-    uses: ./.github/workflows/release.yml
-    with:
-      version: ${{ needs.check-tag.outputs.version }}
-      msi_version: ${{ needs.check-tag.outputs.msi_version }}
-      publish: true
-    # 簽章 secret 要傳進 callee；沒有 secret 時 callee 自己跳過簽章。
-    secrets: inherit
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 下載 Windows artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: windows-msi-${{ needs.check-tag.outputs.version }}
+          path: dist/windows
+
+      - name: 下載 Linux artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: linux-tar-${{ needs.check-tag.outputs.version }}
+          path: dist/linux
+
+      - name: 產生 Release 說明
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.check-tag.outputs.version }}
+          MSI_VERSION: ${{ needs.check-tag.outputs.msi_version }}
+          SIGNED: ${{ needs.build-windows.outputs.signed }}
+        run: |
+          set -euo pipefail
+
+          version="${RELEASE_VERSION}"
+          msi_version="${MSI_VERSION}"
+          prerelease_args=()
+          if [[ "${version}" == *-* ]]; then
+            prerelease_args=(--prerelease)
+          fi
+          date_utc=$(date -u +%Y-%m-%d)
+          data_version=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("dist/windows/data-manifest.json").read_text(encoding="utf-8"))
+          print(manifest.get("version", "unknown"))
+          PY
+          )
+
+          changelog=$(mktemp)
+          notes=$(mktemp)
+          trap 'rm -f "${changelog}" "${notes}"' EXIT
+
+          awk -v ver="${version}" '
+            /^## / {
+              if (found) exit
+              heading = $0
+              sub(/^##[[:space:]]+/, "", heading)
+              split(heading, parts, /[[:space:]]+/)
+              if (parts[1] == ver) {
+                found = 1
+                next
+              }
+            }
+            found { print }
+          ' docs/CHANGELOG.md > "${changelog}"
+
+          if [[ ! -s "${changelog}" ]]; then
+            printf '本版沒有 CHANGELOG 條目；請看 commit 記錄。\n' > "${changelog}"
+          fi
+
+          {
+            printf '## 版本\n\n`%s`（%s）\n\n' "${version}" "${date_utc}"
+            if [[ "${msi_version}" != "${version}" ]]; then
+              printf '這是 pre-release。MSI 的 ProductVersion 只有 `%s`，\n' "${msi_version}"
+              printf '因此 Windows 的「應用程式與功能」不會顯示 `%s` 後綴。\n\n' "${version}"
+            fi
+            printf '## 模型與資料版本\n\n`%s`（安裝包內 `data/manifest.json`，涵蓋詞典與模型）\n\n' "${data_version}"
+            printf '## 變更摘要\n\n'
+            cat "${changelog}"
+            printf '\n## 下載\n\n'
+            printf '| 平台 | 檔案 |\n|---|---|\n'
+            printf '| Windows x64 | `jc-ime-%s-x64.msi` |\n' "${version}"
+            printf '| Linux x86_64 | `jc-ime-%s-linux-x86_64.tar.gz` |\n\n' "${version}"
+            printf '每個檔案旁都附 `.sha256`，下載後請先核對。\n\n'
+            printf '## 簽章\n\n'
+            if [[ "${SIGNED}" == "true" ]]; then
+              printf 'Windows 執行檔與 MSI 已使用專案憑證簽章。\n\n'
+            else
+              printf '**未簽章**：本次沒有簽章憑證。Windows 可能顯示 SmartScreen 警告；\n'
+              printf '企業的 AppLocker／WDAC 白名單也會擋下未簽章 MSI。\n\n'
+            fi
+            printf '## 已知限制\n\n'
+            printf -- '- Windows TIP 同時包含 x64 與 x86 兩份 DLL，共用同一個「jc 注音」項目；32 位元程式（例如舊版 Office）不需要手動切換。\n'
+            printf -- '- MSI 是 per-machine 安裝，需要系統管理員；只會把輸入法加進執行安裝的帳號。\n'
+            printf -- '- 注音神經選字模型（Funmula `zh-select`）依授權不隨附，需另外下載。\n'
+            printf -- '- Linux 版目前只有引擎、CLI 與設定程式，沒有桌面輸入法整合。\n'
+            printf -- '- 設定變更後要重新啟動引擎才會生效。\n'
+            printf -- '- Windows 實機安裝、升級、反安裝與 UWP／Office 相容性仍需人工驗證。\n'
+          } > "${notes}"
+
+          echo "Release 說明："
+          cat "${notes}"
+
+          assets=(
+            "dist/windows/jc-ime-${version}-x64.msi"
+            "dist/windows/jc-ime-${version}-x64.msi.sha256"
+            "dist/linux/jc-ime-${version}-linux-x86_64.tar.gz"
+            "dist/linux/jc-ime-${version}-linux-x86_64.tar.gz.sha256"
+          )
+          for asset in "${assets[@]}"; do
+            if [[ ! -f "${asset}" ]]; then
+              echo "::error::缺少 release asset：${asset}"
+              exit 1
+            fi
+          done
+
+          if gh release view "v${version}" >/dev/null 2>&1; then
+            echo "Release v${version} 已存在；更新說明並覆蓋 assets。"
+            gh release edit "v${version}" --title "${version}" \
+              --notes-file "${notes}" "${prerelease_args[@]}"
+            gh release upload "v${version}" "${assets[@]}" --clobber
+          else
+            gh release create "v${version}" "${assets[@]}" \
+              --title "${version}" \
+              --notes-file "${notes}" \
+              --verify-tag "${prerelease_args[@]}"
+          fi
