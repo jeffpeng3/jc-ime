@@ -4,6 +4,42 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.8 - 2026-11-21
+
+### 修正
+
+- Windows 安裝：TSF profile 改為預設啟用（`RegisterProfile` 的 `bEnabledByDefault`
+  傳 `true`，`LanguageProfile` 的 `Enable=1`），使用者在語言設定加入鍵盤後就能切換；
+  仍然不呼叫 `ActivateProfile`，不改系統預設輸入法。rc.7 上 `Enable=0` 時加入鍵盤
+  無法切換。
+- Windows 安裝：`%TEMP%\jc-ime-install.log` 第一次建立時寫入 UTF-8 BOM，
+  PowerShell 5.1 的 `Get-Content` 不必加 `-Encoding` 就不會讀成亂碼。
+- Windows TSF：`Activate` 失敗時可在 `%LOCALAPPDATA%\jc-ime\tsf.log` 看到逐步
+  HRESULT，定位 `0x80070057` 卡在訊息視窗建立或 sink 註冊。另修正
+  `create_message_window` 的 `hInstance`：原本用 `GetModuleHandleW(None)` 拿到宿主
+  exe，改為以模組位址取得 DLL 自己。
+- 混合輸入：拉丁 run 尾端的 `.` `,` `;` 先問切分器再決定是否當標點，避免 `5k42.`
+  的 ㄡ 被剝掉；`hello.` 的句點仍是標點。
+- 混合輸入：離線 DP 與正式路由合成單一管線，`mixed_latin_split` 開關移除。空白
+  在可完整解析的注音 run 尾端是一聲；標點韻母只在緊接缺韻母音節時成立；相鄰 run
+  保留前一段語言；片語合併只有一套規則。增量輸入與路由一致性由 532 筆 property
+  test 鎖住。
+- 資料包：`english/` 補上 `manifest.json` 與 `NOTICE.txt`，CI 不再因為缺少中繼檔
+  退回內建原型英文詞表。資料 catalog 移除已不載入的 `zh_punct`。
+
+### 變更
+
+- CI：linux 與 windows job 在測試前下載與 release 相同的正式資料包，強制驗
+  SHA-256 並寫入 `JC_IMEDATA`；資料包 URL 與雜湊是公開 repo variable，fork PR 也
+  讀得到。HF dataset 補上來源與授權說明。
+- CI／release：workflow 動作升級到 Node 24 版本（`checkout@v5`、
+  `upload-artifact@v6`、`download-artifact@v7`），消除 Node 20 棄用警告。
+- CI：快取加入總量上限 8 GB 與每日清理；tag scope 讓 release 快取每次 miss 的問題
+  另在 `docs/release.md` 記錄暖機流程。
+- 新增 `jc-cli mixed-diff`、`jc-cli corpus-diff` 兩個只量測、不改變行為的研究工具，
+  報告見 `docs/reports/segment-diff-2026-11-21.md` 與
+  `docs/reports/real-corpus-2026-11-21.md`。
+
 ## 0.1.0-rc.7 - 2026-11-21
 
 ### 修正
