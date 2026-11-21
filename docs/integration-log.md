@@ -1899,3 +1899,10 @@ gate（`JC_IMEDATA=/mnt/work/jc/jc-ime-data`）：
 - clippy exit 0；fmt exit 0。
 - 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
 - `git branch --no-merged main`：空。
+
+### CI（push `04bb19c`，run 44879174088；data-pack-english-meta）
+
+- 第一次：linux (core) success；windows (msvc) failure，唯一失敗是 timing-sensitive 的
+  `session::tests::test_ja_neural_timeout_keeps_statistical_result`（`session/mod.rs:2494`，
+  `left: "きょう"` / `right: "今日"`，stub runtime 80ms delay 對 5ms timeout）。資料包 SHA 驗證通過。
+- `gh run rerun --failed` 後：**linux (core) success、windows (msvc) success**，`hellp` 測試也通過。
