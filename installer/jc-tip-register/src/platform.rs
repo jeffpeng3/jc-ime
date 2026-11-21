@@ -50,7 +50,8 @@ use windows::Win32::UI::TextServices::{
 };
 
 use crate::guids::{
-    tip_string, CLSID_JC_TSF, ILOT_INSTALL, LANGID_ZH_TW, PROFILE_DESCRIPTION, PROFILE_JC_TSF,
+    tip_string, tip_string_next, CLSID_JC_TSF, CLSID_JC_TSF_NEXT, ILOT_INSTALL, LANGID_ZH_TW,
+    PROFILE_DESCRIPTION, PROFILE_DESCRIPTION_NEXT, PROFILE_JC_TSF, PROFILE_JC_TSF_NEXT,
 };
 use crate::log;
 
@@ -100,14 +101,67 @@ const CLSID_GUID: GUID = GUID::from_u128(0x7b7d6e1a_3c1f_4b2e_9a55_6c1d2f3e4a01)
 /// 注音 profile 的 GUID；與 `guids.rs` 的字串版本相同。
 const PROFILE_GUID: GUID = GUID::from_u128(0x8f0a9b3c_2d4e_4f50_a1b2_c3d4e5f60718);
 
+/// 新版 CLSID 的 GUID；與 `guids.rs` 的字串版本相同。
+const CLSID_GUID_NEXT: GUID = GUID::from_u128(0x2f6b41d8_9e07_4c3a_b5f1_8d2c6a9e0473);
+
+/// 新版 profile 的 GUID；與 `guids.rs` 的字串版本相同。
+const PROFILE_GUID_NEXT: GUID = GUID::from_u128(0xc4e8d217_5b3f_4a96_8e0c_7f1a2b3d4e56);
+
+/// 一組註冊身分。新舊版共用同一套註冊流程，只有 CLSID、profile 與描述不同。
+struct Identity {
+    /// CLSID 的字串形式，用在 CTF 機碼路徑與日誌。
+    clsid: &'static str,
+    /// CLSID 的 GUID，用在 COM 呼叫。
+    clsid_guid: GUID,
+    /// profile 的字串形式。
+    profile: &'static str,
+    /// profile 的 GUID。
+    profile_guid: GUID,
+    /// 顯示名稱。
+    description: &'static str,
+}
+
+/// 舊版已發行身分；`machine-register`／`machine-unregister` 用。
+const IDENTITY_OLD: Identity = Identity {
+    clsid: CLSID_JC_TSF,
+    clsid_guid: CLSID_GUID,
+    profile: PROFILE_JC_TSF,
+    profile_guid: PROFILE_GUID,
+    description: PROFILE_DESCRIPTION,
+};
+
+/// T9 新配的平行建置身分；`*-next` 子命令用。
+const IDENTITY_NEXT: Identity = Identity {
+    clsid: CLSID_JC_TSF_NEXT,
+    clsid_guid: CLSID_GUID_NEXT,
+    profile: PROFILE_JC_TSF_NEXT,
+    profile_guid: PROFILE_GUID_NEXT,
+    description: PROFILE_DESCRIPTION_NEXT,
+};
+
 /// 註冊文字服務的 profile 與三個分類。
 ///
 /// CLSID 的 `InprocServer32` 由 MSI 寫好才呼叫這裡。`bEnabledByDefault` 傳
 /// `true`：profile 預設啟用（`LanguageProfile` 機碼的 `Enable=1`），使用者在語言
 /// 設定加入鍵盤後就能切換；仍然不呼叫 `ActivateProfile`，不改系統預設輸入法。
 pub fn machine_register() -> Result<(), Error> {
+    machine_register_impl(&IDENTITY_OLD)
+}
+
+/// 註冊新版平行建置的 profile 與三個分類。
+///
+/// 用 T9 新配的 CLSID 與 profile，與舊版並存；流程與舊版完全相同。
+pub fn machine_register_next() -> Result<(), Error> {
+    machine_register_impl(&IDENTITY_NEXT)
+}
+
+/// 依指定身分註冊 profile 與三個分類。
+fn machine_register_impl(identity: &Identity) -> Result<(), Error> {
     log::step("machine-register：開始");
-    log::step("CLSID 的 InprocServer32 由 MSI 寫入（WXS 的 <Class>）；這裡只註冊 profile 與分類");
+    log::step(&format!(
+        "CLSID {}：InprocServer32 由 MSI 寫入（WXS 的 <Class>）；這裡只註冊 profile 與分類",
+        identity.clsid
+    ));
 
     // SAFETY: CoInitializeEx 對已初始化的執行緒是無害的。
     unsafe {
@@ -120,13 +174,13 @@ pub fn machine_register() -> Result<(), Error> {
         )?;
 
         // 去掉結尾的 NUL：windows 0.62 用 slice 長度當 cchDesc。
-        let description = wide(PROFILE_DESCRIPTION);
+        let description = wide(identity.description);
         let description = &description[..description.len() - 1];
-        log::step("ITfInputProcessorProfileMgr::RegisterProfile：開始");
+        log::step(&format!("RegisterProfile({})：開始", identity.description));
         let result = profiles.RegisterProfile(
-            &CLSID_GUID,
+            &identity.clsid_guid,
             LANGID_ZH_TW,
-            &PROFILE_GUID,
+            &identity.profile_guid,
             description,
             &NO_ICON[..0],
             0,
@@ -136,20 +190,24 @@ pub fn machine_register() -> Result<(), Error> {
             true,
             0,
         );
-        log_hr("ITfInputProcessorProfileMgr::RegisterProfile", &result);
+        log_hr(
+            &format!("RegisterProfile({})", identity.description),
+            &result,
+        );
         result?;
 
         let categories: ITfCategoryMgr = create("CLSID_TF_CategoryMgr", &CLSID_TF_CategoryMgr)?;
         for (label, category) in CATEGORIES {
             log::step(&format!("RegisterCategory({label})：開始"));
-            let result = categories.RegisterCategory(&CLSID_GUID, &category, &CLSID_GUID);
+            let result =
+                categories.RegisterCategory(&identity.clsid_guid, &category, &identity.clsid_guid);
             log_hr(&format!("RegisterCategory({label})"), &result);
             result?;
         }
     }
 
     log::step("ensure_tip_key：開始");
-    if let Err(error) = ensure_tip_key() {
+    if let Err(error) = ensure_tip_key(identity) {
         log::step(&format!("ensure_tip_key：失敗（{error}）"));
         return Err(error);
     }
@@ -239,8 +297,23 @@ fn log_hr<T>(label: &str, result: &windows::core::Result<T>) {
 /// 個別步驟失敗只記日誌、不中斷：反安裝不能被殘缺的 CTF 狀態卡住，MSI 這一端
 /// 也是 `Return="ignore"`。
 pub fn machine_unregister() -> Result<(), Error> {
+    machine_unregister_impl(&IDENTITY_OLD)
+}
+
+/// 移除新版平行建置的 profile 與三個分類。
+///
+/// 只清自己那組 CLSID 與 profile，舊版登錄不受影響。
+pub fn machine_unregister_next() -> Result<(), Error> {
+    machine_unregister_impl(&IDENTITY_NEXT)
+}
+
+/// 依指定身分移除 profile 與三個分類。
+fn machine_unregister_impl(identity: &Identity) -> Result<(), Error> {
     log::step("machine-unregister：開始");
-    log::step("CLSID 機碼由 MSI 的 RemoveRegistryValues 移除；這裡只清 profile 與分類");
+    log::step(&format!(
+        "CLSID {} 的機碼由 MSI 的 RemoveRegistryValues 移除；這裡只清 profile 與分類",
+        identity.clsid
+    ));
 
     // SAFETY: 與註冊相同；COM 沒有初始化時 CoCreateInstance 會失敗，記錄後繼續。
     unsafe {
@@ -251,7 +324,11 @@ pub fn machine_unregister() -> Result<(), Error> {
             Ok(categories) => {
                 for (label, category) in CATEGORIES {
                     log::step(&format!("UnregisterCategory({label})：開始"));
-                    let result = categories.UnregisterCategory(&CLSID_GUID, &category, &CLSID_GUID);
+                    let result = categories.UnregisterCategory(
+                        &identity.clsid_guid,
+                        &category,
+                        &identity.clsid_guid,
+                    );
                     log_hr(&format!("UnregisterCategory({label})"), &result);
                 }
             }
@@ -263,10 +340,20 @@ pub fn machine_unregister() -> Result<(), Error> {
             &CLSID_TF_InputProcessorProfiles,
         ) {
             Ok(profiles) => {
-                log::step("ITfInputProcessorProfileMgr::UnregisterProfile：開始");
-                let result =
-                    profiles.UnregisterProfile(&CLSID_GUID, LANGID_ZH_TW, &PROFILE_GUID, 0);
-                log_hr("ITfInputProcessorProfileMgr::UnregisterProfile", &result);
+                log::step(&format!(
+                    "UnregisterProfile({})：開始",
+                    identity.description
+                ));
+                let result = profiles.UnregisterProfile(
+                    &identity.clsid_guid,
+                    LANGID_ZH_TW,
+                    &identity.profile_guid,
+                    0,
+                );
+                log_hr(
+                    &format!("UnregisterProfile({})", identity.description),
+                    &result,
+                );
             }
             Err(error) => log::step(&format!("略過 profile 移除：{error}")),
         }
@@ -283,7 +370,17 @@ pub fn user_install() -> Result<(), Error> {
     if let Some(dir) = user_dir() {
         std::fs::create_dir_all(&dir)?;
     }
-    layout_or_tip(ILOT_INSTALL)
+    layout_or_tip(&tip_string(), ILOT_INSTALL)
+}
+
+/// 把新版 profile 加進目前使用者的語言清單。
+///
+/// 用 T9 新配的 profile 與 CLSID，與舊版並存；其餘行為與 `user_install` 相同。
+pub fn user_install_next() -> Result<(), Error> {
+    if let Some(dir) = user_dir() {
+        std::fs::create_dir_all(&dir)?;
+    }
+    layout_or_tip(&tip_string_next(), ILOT_INSTALL)
 }
 
 /// 刪除使用者資料；**不**移除語言清單裡的「jc 注音」。
@@ -396,8 +493,8 @@ fn user_dir() -> Option<std::path::PathBuf> {
 /// 「32 位元程式看得到同一個 TIP」變成安裝時就驗得到的事。64 位元檢視讀不到
 /// 就是註冊失敗；32 位元檢視讀不到只警告，因為 profile 是共用的一份，真正的
 /// 載入問題會在實機上以 `reg query /reg:32` 驗。
-fn ensure_tip_key() -> Result<(), Error> {
-    let path = wide(&format!(r"SOFTWARE\Microsoft\CTF\TIP\{CLSID_JC_TSF}"));
+fn ensure_tip_key(identity: &Identity) -> Result<(), Error> {
+    let path = wide(&format!(r"SOFTWARE\Microsoft\CTF\TIP\{}", identity.clsid));
     for (view, label) in [(KEY_WOW64_64KEY, "64 位元"), (KEY_WOW64_32KEY, "32 位元")] {
         let mut key = HKEY::default();
         // SAFETY: path 以 NUL 結尾；key 成功時由 RegOpenKeyExW 寫入。
@@ -411,7 +508,10 @@ fn ensure_tip_key() -> Result<(), Error> {
             )
         };
         if status == ERROR_SUCCESS {
-            log::step(&format!("CTF\\TIP\\{CLSID_JC_TSF}（{label}檢視）：存在"));
+            log::step(&format!(
+                "CTF\\TIP\\{}（{label}檢視）：存在",
+                identity.clsid
+            ));
             // SAFETY: key 由成功的 RegOpenKeyExW 取得。
             unsafe {
                 let _ = RegCloseKey(key);
@@ -419,20 +519,24 @@ fn ensure_tip_key() -> Result<(), Error> {
             continue;
         }
         log::step(&format!(
-            "CTF\\TIP\\{CLSID_JC_TSF}（{label}檢視）：讀不到（{}）",
+            "CTF\\TIP\\{}（{label}檢視）：讀不到（{}）",
+            identity.clsid,
             hex(status.0)
         ));
         if view == KEY_WOW64_64KEY {
             return Err(Error::Failure(format!(
-                "註冊後仍找不到 HKLM\\SOFTWARE\\Microsoft\\CTF\\TIP\\{CLSID_JC_TSF}\
-                 \\LanguageProfile\\{LANGID_ZH_TW:#06X}\\{PROFILE_JC_TSF}（{}）。\
+                "註冊後仍找不到 HKLM\\SOFTWARE\\Microsoft\\CTF\\TIP\\{}\
+                 \\LanguageProfile\\{LANGID_ZH_TW:#06X}\\{}（{}）。\
                  這通常表示 RegisterProfile 失敗；請確認已安裝繁體中文（台灣）語言。",
+                identity.clsid,
+                identity.profile,
                 hex(status.0)
             )));
         }
         debug_warning(&format!(
-            "CTF\\TIP\\{CLSID_JC_TSF} 在{label}檢視讀不到（{}）；\
+            "CTF\\TIP\\{} 在{label}檢視讀不到（{}）；\
              若 reg query /reg:32 也看不到，代表這台機器把 CTF 當成轉向機碼。",
+            identity.clsid,
             hex(status.0)
         ));
     }
@@ -450,8 +554,9 @@ fn debug_warning(text: &str) {
 ///
 /// 使用者的語言清單是 (LangID, profile GUID, CLSID) 三元組；兩個架構共用同一個
 /// CLSID 與 profile，所以只有一組。只用在安裝，移除刻意不做，理由見
-/// [`user_uninstall`]。
-fn layout_or_tip(flags: u32) -> Result<(), Error> {
+/// [`user_uninstall`]。`text` 由呼叫端從 `guids.rs` 的 `tip_string*` 組好，
+/// 舊版與新版因此各傳各的身分。
+fn layout_or_tip(text: &str, flags: u32) -> Result<(), Error> {
     let module = wide("input.dll");
     // SAFETY: 模組名稱以 NUL 結尾。
     let input = unsafe { LoadLibraryW(PCWSTR(module.as_ptr())) }
@@ -465,8 +570,7 @@ fn layout_or_tip(flags: u32) -> Result<(), Error> {
         // SAFETY: 簽章是 `BOOL WINAPI InstallLayoutOrTip(LPCWSTR, DWORD)`。
         let function: unsafe extern "system" fn(*const u16, u32) -> i32 =
             unsafe { std::mem::transmute(proc) };
-        let text = tip_string();
-        let tip = wide(&text);
+        let tip = wide(text);
         // SAFETY: tip 以 NUL 結尾且在呼叫期間保持存活。
         let ok = unsafe { function(tip.as_ptr(), flags) };
         if ok == 0 {
@@ -621,6 +725,24 @@ mod tests {
     fn guid_constants_match_strings() {
         assert_eq!(guid_text(&CLSID_GUID), CLSID_JC_TSF);
         assert_eq!(guid_text(&PROFILE_GUID), PROFILE_JC_TSF);
+    }
+
+    #[test]
+    fn next_guid_constants_match_strings() {
+        assert_eq!(guid_text(&CLSID_GUID_NEXT), CLSID_JC_TSF_NEXT);
+        assert_eq!(guid_text(&PROFILE_GUID_NEXT), PROFILE_JC_TSF_NEXT);
+        assert_ne!(CLSID_GUID_NEXT, CLSID_GUID);
+        assert_ne!(PROFILE_GUID_NEXT, PROFILE_GUID);
+    }
+
+    #[test]
+    fn identities_carry_their_own_values() {
+        assert_eq!(IDENTITY_OLD.clsid, CLSID_JC_TSF);
+        assert_eq!(IDENTITY_OLD.profile, PROFILE_JC_TSF);
+        assert_eq!(IDENTITY_OLD.description, PROFILE_DESCRIPTION);
+        assert_eq!(IDENTITY_NEXT.clsid, CLSID_JC_TSF_NEXT);
+        assert_eq!(IDENTITY_NEXT.profile, PROFILE_JC_TSF_NEXT);
+        assert_eq!(IDENTITY_NEXT.description, PROFILE_DESCRIPTION_NEXT);
     }
 
     /// 三個分類都要有，而且互不相同；少一個就少一項 Windows 功能。

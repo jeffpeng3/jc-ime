@@ -7,7 +7,10 @@
 //! |---|---|---|
 //! | `machine-register` | 提升（deferred、`Impersonate="no"`） | `WriteRegistryValues` 之後 |
 //! | `machine-unregister` | 提升 | 移除檔案之前 |
+//! | `machine-register-next` | 提升 | 新版 CLSID 的 `WriteRegistryValues` 之後 |
+//! | `machine-unregister-next` | 提升 | 新版解除安裝、移除檔案之前 |
 //! | `user-install` | 目前使用者（immediate） | 安裝完成之後 |
+//! | `user-install-next` | 目前使用者 | 新版平行註冊完成之後 |
 //! | `user-uninstall <0\|1>` | 目前使用者 | 解除安裝時 |
 //! | `settings` | 目前使用者 | 相容入口；Shortcut 已直連 jc-settings-ui |
 //! | `legal` | 目前使用者 | 開始功能表的「授權」捷徑 |
@@ -48,7 +51,10 @@ fn usage() -> &'static str {
      \n\
      \x20 machine-register                  註冊 TSF profile 與三個分類（CLSID 由 MSI 寫）\n\
      \x20 machine-unregister                反向移除 profile 與分類（CLSID 機碼由 MSI 移除）\n\
+     \x20 machine-register-next             註冊新版 CLSID 的 profile 與三個分類\n\
+     \x20 machine-unregister-next           反向移除新版 CLSID 的 profile 與分類\n\
      \x20 user-install                      把 jc 注音加進目前使用者的語言清單\n\
+     \x20 user-install-next                 把 jc 注音（新版）加進目前使用者的語言清單\n\
      \x20 user-uninstall <0|1>              刪除使用者資料；1 表示保留（語言清單不動）\n\
      \x20 settings                          以目前使用者的路徑啟動 jc-settings-ui.exe\n\
      \x20 legal                             用記事本開啟 legal\\THIRD-PARTY-NOTICES.md\n\
@@ -65,12 +71,20 @@ pub enum Command {
     ///
     /// 不吃參數：CLSID 與 DLL 路徑都由 MSI 負責，這支程式不需要知道檔案在哪。
     MachineRegister,
+    /// 以系統權限註冊新版文字服務的 profile 與分類。
+    ///
+    /// 不吃參數：新版 CLSID 的 `InprocServer32` 同樣由 MSI 負責。
+    MachineRegisterNext,
     /// 以系統權限移除文字服務的 profile 與分類。
     ///
     /// 不吃參數，也不刪 `HKCR\CLSID`：那是 MSI 的 `RemoveRegistryValues` 的工作。
     MachineUnregister,
+    /// 以系統權限移除新版文字服務的 profile 與分類。
+    MachineUnregisterNext,
     /// 把 profile 加進目前使用者的語言清單。
     UserInstall,
+    /// 把新版 profile 加進目前使用者的語言清單。
+    UserInstallNext,
     /// 刪除使用者資料；語言清單刻意不動。
     UserUninstall {
         /// `true` 時保留 `%LOCALAPPDATA%\jc-ime`。
@@ -100,9 +114,25 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
                 "machine-unregister 不接受參數（收到 {extra}）；CLSID 機碼由 MSI 移除"
             )),
         },
+        "machine-register-next" => match rest {
+            [] => Ok(Command::MachineRegisterNext),
+            [extra, ..] => Err(format!(
+                "machine-register-next 不接受參數（收到 {extra}）；新版 CLSID 由 MSI 寫入"
+            )),
+        },
+        "machine-unregister-next" => match rest {
+            [] => Ok(Command::MachineUnregisterNext),
+            [extra, ..] => Err(format!(
+                "machine-unregister-next 不接受參數（收到 {extra}）；新版 CLSID 機碼由 MSI 移除"
+            )),
+        },
         "user-install" => match rest {
             [] => Ok(Command::UserInstall),
             _ => Err("user-install 不接受參數".into()),
+        },
+        "user-install-next" => match rest {
+            [] => Ok(Command::UserInstallNext),
+            _ => Err("user-install-next 不接受參數".into()),
         },
         "settings" => match rest {
             [] => Ok(Command::Settings),
@@ -135,8 +165,11 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
 fn run(args: &[String]) -> Result<(), platform::Error> {
     match parse_args(args).map_err(platform::Error::Usage)? {
         Command::MachineRegister => platform::machine_register(),
+        Command::MachineRegisterNext => platform::machine_register_next(),
         Command::MachineUnregister => platform::machine_unregister(),
+        Command::MachineUnregisterNext => platform::machine_unregister_next(),
         Command::UserInstall => platform::user_install(),
+        Command::UserInstallNext => platform::user_install_next(),
         Command::UserUninstall { keep_user_data } => platform::user_uninstall(keep_user_data),
         Command::Settings => platform::open_settings(),
         Command::Legal => platform::open_legal(),
@@ -202,6 +235,26 @@ mod tests {
         );
         assert!(parse_args(&args(&["machine-unregister", r"C:\a\jc-tsf.dll"])).is_err());
         assert!(parse_args(&args(&["machine-unregister", "--arch", "x86"])).is_err());
+    }
+
+    /// 新版子命令與舊版同名命令各自獨立，而且照樣不吃參數。
+    #[test]
+    fn next_subcommands_are_parsed() {
+        assert_eq!(
+            parse_args(&args(&["machine-register-next"])),
+            Ok(Command::MachineRegisterNext)
+        );
+        assert!(parse_args(&args(&["machine-register-next", "x"])).is_err());
+        assert_eq!(
+            parse_args(&args(&["machine-unregister-next"])),
+            Ok(Command::MachineUnregisterNext)
+        );
+        assert!(parse_args(&args(&["machine-unregister-next", "x"])).is_err());
+        assert_eq!(
+            parse_args(&args(&["user-install-next"])),
+            Ok(Command::UserInstallNext)
+        );
+        assert!(parse_args(&args(&["user-install-next", "x"])).is_err());
     }
 
     #[test]
