@@ -21,6 +21,9 @@ pub mod edit;
 pub mod ipc;
 #[cfg(windows)]
 pub mod keys;
+// T7a 移植的欄位政策：三態、密碼／PIN 擋下、無痕／私密標記、Accessible 探測不讀文件文字。
+#[cfg(windows)]
+pub mod privacy;
 
 pub use session::{
     response_to_reply, state_to_snapshot_value, to_jc_request, Client, Mode, Segment, Session,

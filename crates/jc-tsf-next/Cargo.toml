@@ -18,19 +18,26 @@ jc-proto = { path = "../jc-proto" }
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
   "Win32_Foundation",
+  "Win32_Graphics_Gdi",
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_Storage_FileSystem",
   # edit.rs 的 VARIANT 被 cfg(all(Com, Ole, Variant)) 擋住，三個都要開。
   "Win32_System_Com",
   "Win32_System_IO",
+  "Win32_System_LibraryLoader",
   "Win32_System_Ole",
   "Win32_System_Pipes",
   "Win32_System_Threading",
   "Win32_System_SystemInformation",
   "Win32_System_Variant",
+  "Win32_UI_Accessibility",
+  "Win32_UI_Controls",
   "Win32_UI_Input_KeyboardAndMouse",
   # edit.rs 的 ITfContext／ITfRange／ITfComposition 與 TF_* 常數。
   "Win32_UI_TextServices",
+  # privacy.rs 的 GetClassNameW／GetWindowLongW／SendMessageW 與 ES_*／STATE_SYSTEM_*，
+  # 以及 host tests 的 CreateWindowExW／GetGUIThreadInfo／ClientToScreen。
+  "Win32_UI_WindowsAndMessaging",
 ] }
 windows-core = "0.62"
