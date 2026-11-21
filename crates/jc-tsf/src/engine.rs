@@ -24,7 +24,7 @@ use windows::Win32::System::LibraryLoader::{
     GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 };
-use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 use crate::logging;
@@ -430,17 +430,25 @@ fn module_dir() -> Result<PathBuf, String> {
     }
 }
 
-/// 用 `Command::args()` + `DETACHED_PROCESS` 啟動引擎後立刻放手。
+/// 用 `Command::args()` + `CREATE_NO_WINDOW` 啟動引擎後立刻放手。
 ///
 /// `Command` 在 Windows 上會把每個 argv 正確跳脫後再呼叫 `CreateProcessW`，
 /// 不用自己處理 `lpCommandLine` 的引號規則。引擎是獨立行程：TIP 結束不影響
 /// 它，supervisor 的 lockfile 會擋掉重複啟動。
+///
+/// 用 `CREATE_NO_WINDOW` 而非 `DETACHED_PROCESS`：引擎維持 console subsystem，
+/// `DETACHED_PROCESS` 只切斷父行程的 console，Windows 仍會為它配置新 console，
+/// 因此彈出終端機視窗。`CREATE_NO_WINDOW` 保留 console handle 但不建立視窗，
+/// stdout／stderr 照樣可寫。supervisor 的 log 由 `LogRing` 直接寫進檔案，
+/// 與 console 無關，不受影響。
 fn launch_detached(command: &EngineCommand) -> Result<(), String> {
     // 不等引擎、不用 job object 的 KILL_ON_JOB_CLOSE。drop _child 只關掉
     // 我們這端的 handle，引擎仍繼續跑。
+    // DETACHED_PROCESS 與 CREATE_NO_WINDOW 互斥，只能選一個；與
+    // CREATE_NEW_PROCESS_GROUP 搭配沒有衝突。
     let _child = Command::new(&command.exe)
         .args(&command.args)
-        .creation_flags((DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP).0)
+        .creation_flags((CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP).0)
         .spawn()
         .map_err(|error| format!("spawn 引擎失敗：{error}"))?;
     Ok(())

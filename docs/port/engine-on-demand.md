@@ -11,9 +11,18 @@ Worktree：`/mnt/work/jc/wt/engine-on-demand`（branch `engine-on-demand`）
 ## 決定
 
 TIP 在連不上 engine pipe 時 detached spawn 引擎。引擎仍是**獨立行程**，不是
-TIP 的子行程：`std::process::Command` 用 `DETACHED_PROCESS |
+TIP 的子行程：`std::process::Command` 用 `CREATE_NO_WINDOW |
 CREATE_NEW_PROCESS_GROUP` 啟動後立刻 drop child handle，不用 job object 的
 `KILL_ON_JOB_CLOSE`。TIP 結束或當機都不影響引擎。
+
+`CREATE_NO_WINDOW`（0x08000000）取代原本的 `DETACHED_PROCESS`，兩者互斥，不能
+同時使用。引擎維持 console subsystem，供管理員在 PowerShell 執行
+`jc-engine --supervise` 或查看 stdout 除錯。`DETACHED_PROCESS` 只切斷父行程的
+console，Windows 仍會為 console subsystem 的子行程配置新 console，所以終端機
+視窗會冒出來。`CREATE_NO_WINDOW` 保留 console handle 但不建立視窗，
+stdout／stderr 照樣可寫。supervisor 的 log 由 `LogRing` 直接寫進
+`%LOCALAPPDATA%\jc-ime\supervisor.log` 檔案，與 console 無關，因此不受影響。
+沒有對 `jc-engine` 加 `#![windows_subsystem = "windows"]`。
 
 指令用 `Command::args([...])` 逐項傳遞 argv，不再把整串命令列交給
 `CreateProcessW::lpCommandLine`。原因見 `docs/port/spawn-argv-fix.md`：
@@ -109,7 +118,7 @@ cargo fmt --all -- --check
    'jc-ime*'` 沒有 pipe。
 4. 點一下記事本的文字框：`tsf.log` 先出現「已 detached spawn 引擎」，接著
    「按需啟動後已連上引擎 pipe」；打字立刻有注音候選。引擎 log 的 `--data`
-   值是單純的路徑，不含 `--settings`。
+   值是單純的路徑，不含 `--settings`。桌面不該彈出新的終端機視窗。
 5. 短時間內反覆 kill + 點文字框：`tsf.log` 的 spawn 間隔至少 3 秒，沒有 spawn
    風暴；`supervisor.log` 只有一條「監督者啟動」（第二個被 lockfile 擋下）。
 6. 關掉記事本再開：`jc-engine.exe` 仍在，`Get-Process` 看得到，證明引擎是獨立
