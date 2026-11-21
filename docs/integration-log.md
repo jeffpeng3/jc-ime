@@ -1983,3 +1983,8 @@ gate：
 - `cargo check --workspace --all-targets` exit 0；clippy exit 0；fmt exit 0。
 - 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
 - `git branch --no-merged main`：`auto-download-zh-select`、`zh-select-pipeline`（都還沒合，未動）。
+
+### CI（push `2816d31`，run 44905481893；rc.9 後三筆 installer 修正）
+
+- linux (core)：success；windows (msvc)：success；check-tag：success。
+- build-linux／build-windows／publish：skipped（main scope，標籤流程才會跑）。
