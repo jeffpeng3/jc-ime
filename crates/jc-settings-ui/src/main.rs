@@ -15,6 +15,7 @@ mod ui;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use gpui_kit::component::Theme;
 use gpui_kit::*;
 
 use crate::state::{settings_path_for, LaunchOptions};
@@ -37,10 +38,24 @@ fn main() -> ExitCode {
         gpui_kit::init(cx);
         gpui_kit::component::set_locale("zh-TW");
         let view = state::SettingsView::load(&options);
-        gpui_kit::open_window(window_options(), cx, move |_, cx| cx.new(|_| view))
-            .expect("開啟設定視窗失敗");
+        gpui_kit::open_window(window_options(), cx, move |window, cx| {
+            follow_system_theme(window, cx);
+            cx.new(|_| view)
+        })
+        .expect("開啟設定視窗失敗");
     });
     ExitCode::SUCCESS
+}
+
+/// 啟動時套用系統外觀，之後系統深色／淺色切換也跟著換主題。
+///
+/// `WindowOptions` 沒有 appearance 欄位；`Window::appearance()` 是 GPUI 從平台
+/// 讀到的值。`observe_window_appearance` 的訂閱要 `detach()`，才會活到視窗關閉。
+fn follow_system_theme(window: &mut Window, cx: &mut App) {
+    Theme::sync_system_appearance(Some(window), cx);
+    window
+        .observe_window_appearance(|window, cx| Theme::sync_system_appearance(Some(window), cx))
+        .detach();
 }
 
 fn window_options() -> WindowOptions {

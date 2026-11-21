@@ -212,6 +212,7 @@ mod tests {
     #[test]
     fn test_probe_finds_model_manifest() {
         let dir = TempDir::new("zh");
+        fs::create_dir_all(dir.0.join("models")).expect("建立 models 目錄");
         fs::write(
             dir.0.join("models/manifest.json"),
             br#"{"schema":"jc.model-set/1","models":{}}"#,

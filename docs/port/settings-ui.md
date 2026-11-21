@@ -45,8 +45,10 @@ Go 版設定程式是 Tauri（`ref/0c-ime/platforms/settings`）：Rust 外殼�
 
 ## 分頁與設定鍵
 
-每個可編輯項目都有一行說明與「預設值」標記；預設值取自
-`Settings::default_for_platform(goos)`，沒有另外複製一份。
+每個可編輯項目的說明與「預設值」分成兩行：`options::description()` 用 `\n`
+連接，`SettingItem::description` 收的是 GPUI `Text`，其排版會把 `\n` 當成強制
+換行，不需要拆成兩個元件。預設值取自 `Settings::default_for_platform(goos)`，
+沒有另外複製一份。
 
 | 分頁 | 項目 | 設定鍵 | 形式 |
 |---|---|---|---|
@@ -127,17 +129,44 @@ Jinen tokenizer 的探測順序與 `jc-engine::resolve_ja_neural` 一致，也�
 `selection` 為 `statistical`、`neural` 為 `false`、`ja_live` 為 `true`，
 `fuzzy_pairs` 仍是四組。欄位名稱與 `crates/jc-engine/src/config.rs` 讀的一致。
 
+## 跟隨系統主題
+
+`main.rs` 在 `open_window` 的建構回呼裡呼叫 `follow_system_theme()`，啟動時先
+`Theme::sync_system_appearance(Some(window), cx)` 讀目前系統外觀，再用
+`window.observe_window_appearance(...)` 註冊變化回呼。回呼內重複呼叫同一個 API，
+所以 Windows 切換深色／淺色時主題跟著換；訂閱用 `detach()` 保留到視窗關閉。
+沒有新增「主題」設定項。
+
+GPUI 0.10 的 API 對應（`gpui-kit 0.10` 底層是 `gpui-pre 0.3.12`、
+`gpui-base 0.10.0`、`gpui-component 0.10.0`）：
+
+| API | 位置與用途 |
+|---|---|
+| `ThemeAppearance` | `gpui_base` 的 Light／Dark；由 `Theme` 的 `ThemeMode` 投影而來 |
+| `Theme`／`ActiveTheme` | `gpui_component::theme`；`ActiveTheme::theme()` 從 `App` 取得全域主題 |
+| `ThemeMode` | `gpui_component::theme` 的 Light／Dark，可由 `WindowAppearance` 轉換 |
+| `Theme::sync_system_appearance` | 讀 `Window::appearance()`（無視窗時讀 `App::window_appearance()`），再呼叫 `Theme::change()` |
+| `Window::observe_window_appearance` | 平台外觀變化回呼；Windows 由 `WM_SETTINGCHANGE` 的 `ImmersiveColorSet` 觸發 |
+| `WindowOptions` | 沒有 appearance 欄位，只有 `window_background`（透明度語意）；系統外觀要從 `Window::appearance()` 讀 |
+
+`gpui_kit::init(cx)` 一開始會把主題設成 Light，接著上面的同步會立刻改成系統
+目前的值。
+
 ## 驗證
 
 ```sh
-RUST_FONTCONFIG_DLOPEN=1 cargo check -p jc-settings-ui --all-targets        # 通過
-RUST_FONTCONFIG_DLOPEN=1 cargo check --workspace --all-targets              # 通過
-RUST_FONTCONFIG_DLOPEN=1 cargo clippy -p jc-settings-ui --all-targets -- -D warnings  # 通過
-RUST_FONTCONFIG_DLOPEN=1 cargo fmt -p jc-settings-ui
+cargo test -p jc-settings-ui                            # 24 passed
+cargo check --workspace --all-targets                    # 通過
+cargo clippy --workspace --all-targets -- -D warnings    # 無警告
+cargo fmt --all -- --check                               # 通過
 ```
 
 `cargo run -p jc-settings-ui -- --data <資料根目錄>` 在有顯示器的機器上會開
 1080×720 的視窗；本機 headless 跑 12 秒沒有 panic。
+
+Windows 交叉 check 卡在 `gpui-pre 0.3.12` 的 build script：
+`NotAttempted("llvm-rc")`（`build.rs:46`）。本機沒有 llvm-rc／Windows SDK，
+屬於環境限制，CI 的 windows job 會驗證。
 
 ## 未完成
 

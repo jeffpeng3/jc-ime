@@ -179,9 +179,12 @@ pub fn switch_label(value: &str) -> &'static str {
     }
 }
 
-/// 說明加上預設值標記。
+/// 說明加上預設值標記；「預設值：」放在獨立一行。
+///
+/// `SettingItem::description` 收的是 GPUI `Text`，`Text` 的排版會把 `\n` 當成
+/// 換行，因此不需要另外拆成兩個元件。
 pub fn description(opt: &Opt, defaults: &Settings) -> String {
-    format!("{}　預設值：{}", opt.help, default_label(opt, defaults))
+    format!("{}\n預設值：{}", opt.help, default_label(opt, defaults))
 }
 
 #[cfg(test)]
@@ -229,6 +232,26 @@ mod tests {
                 opt.key
             );
             assert!(description(opt, &defaults).contains("預設值："));
+        }
+    }
+
+    #[test]
+    fn test_description_puts_default_on_its_own_line() {
+        let defaults = Settings::default_for_platform("linux");
+        for opt in FUZZY
+            .iter()
+            .chain(ZH.iter())
+            .chain(JA.iter())
+            .chain(INPUT.iter())
+        {
+            let description = description(opt, &defaults);
+            let expected = format!("{}\n預設值：{}", opt.help, default_label(opt, &defaults));
+            assert_eq!(description, expected, "{} 的說明排版不符合預期", opt.key);
+            assert!(
+                !description.contains('　'),
+                "{} 仍用全形空格接同一行",
+                opt.key
+            );
         }
     }
 
