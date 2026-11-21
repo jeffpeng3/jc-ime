@@ -1,8 +1,8 @@
 //! 七項檢查的流程。
 //!
 //! 順序固定為：DLL 載入 → 類廠 → 介面 vtable／物件身分 → `ITfThreadMgr` →
-//! `Activate` → 引擎 pipe → 註冊探測。前一步失敗時，後面依賴它的項目改印
-//! `[SKIP]`，避免一個原因噴出一串失敗。
+//! `Activate`（只註冊 sink，不連 pipe）→ 引擎 pipe → 註冊探測。檢查 6 自己
+//! 探測 pipe，不依賴 Activate；前一步失敗時後面改印 `[SKIP]`。
 
 use std::time::Duration;
 
@@ -264,8 +264,8 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
                         report_key_chain(&report, manager);
                     }
 
-                    // 收乾淨：Deactivate 會停掉 worker 並關掉引擎 pipe。引擎一次只
-                    // 服務一條連線，不先放掉的話檢查 6 會連不進去。
+                    // Activate 不再連 pipe，檢查 6 的探測與 TIP 無關；Deactivate
+                    // 仍會非同步放掉 worker，保留短等待讓可能殘留的連線收乾淨。
                     // SAFETY: 上面才 Activate 過；重複 Deactivate 由 jc-tsf 自己容錯。
                     let _ = unsafe { service.Deactivate() };
                     let _ = unsafe { manager.Deactivate() };

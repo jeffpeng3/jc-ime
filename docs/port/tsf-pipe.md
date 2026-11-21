@@ -66,6 +66,28 @@ Notepad（5116）。TIP（pid 15132）反覆 Activate／shutdown，每次連
 再依 `RECONNECT_BACKOFF`（2 秒）重試，仍無法打字。要根治多 client 同時活著
 的情況，需要前面提到的 `jc-core` 調整，建議另開任務書處理。
 
+## 連線時序（focus-pipe）
+
+`Activate` 的語意是「切換到 jc 注音」（行程／執行緒層級），每個載入 TIP 的
+程式都會觸發；原本一 `Activate` 就連 pipe，開兩個程式就有兩條連線搶一對一
+pipe，拿到 `ERROR_PIPE_BUSY (231)`。現在改成 focus 事件管理：
+
+```text
+Activate              只建訊息視窗、註冊 sink；不 spawn engine worker、不連 pipe
+OnSetFocus            啟動 worker → 連 pipe（同一文字框重複事件直接忽略）
+OnKillFocus           送延遲 120 ms 的釋放；期間再 OnSetFocus 就取消，不重連
+Deactivate            立刻清掉 worker 的 sender，確保 pipe 最終釋放
+```
+
+TSF 的 `ITfThreadMgrEventSink` 沒有 `OnKillFocus` 方法，所以 kill focus 有兩個
+入口：`OnSetFocus(pdimfocus = null)` 與 `ITfKeyEventSink::OnSetFocus(FALSE)`。
+兩者都進同一個 `FocusPipe` 狀態機，重複事件會被吸收。
+
+`OnSetFocus` 可能早於 `Activate`；`TextService` 用 `pending_focus` 記下事件，
+`Activate` 成功後補送。worker 一 spawn 就連 pipe，所以第一次按鍵沒有連線延遲。
+
+細部設計與測試見 `docs/port/focus-pipe.md`。
+
 ## 移植對照
 
 | Go 檔案 | Rust 檔案 | 狀態 |

@@ -23,7 +23,7 @@ mod keys;
 mod logging;
 mod register;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -75,6 +75,9 @@ fn build_identity() -> String {
 pub struct TextService {
     /// 已啟用的狀態；`None` 代表尚未 `Activate` 或已經 `Deactivate`。
     control: RefCell<Option<Box<Control>>>,
+    /// `Activate` 之前收到的 focus 事件：`Some(true)` 是 set、`Some(false)` 是
+    /// kill。TSF 不保證 Activate 與 focus 的先後，所以要等 control 準備好再補。
+    pending_focus: Cell<Option<bool>>,
 }
 
 impl TextService {
@@ -83,6 +86,7 @@ impl TextService {
         LIVE_OBJECTS.fetch_add(1, Ordering::Relaxed);
         Self {
             control: RefCell::new(None),
+            pending_focus: Cell::new(None),
         }
     }
 }
@@ -122,6 +126,16 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
         match Control::start(Box::new(control), key_sink, thread_sink) {
             Ok(control) => {
                 this.control.replace(Some(control));
+                // Activate 只註冊 sink，不連 pipe；若之前先收到 focus，現在補上。
+                if let Some(gained) = this.pending_focus.take() {
+                    if let Some(control) = this.control.borrow().as_deref() {
+                        if gained {
+                            control.on_focus_changed();
+                        } else {
+                            control.on_focus_lost();
+                        }
+                    }
+                }
                 logging::debug("Activate：完成");
                 logging::info("文字服務已啟用");
                 Ok(())
@@ -139,6 +153,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
 
     fn Deactivate(&self) -> Result<()> {
         let this = self.get_impl();
+        this.pending_focus.set(None);
         // 先取出 Box 再 shutdown：`borrow_mut` 的守衛不能在 shutdown 期間活著，
         // 否則 TSF 若在清理時回呼任何 sink 就會撞到 RefCell。
         let control = this.control.borrow_mut().take();
@@ -171,11 +186,22 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
 
     fn OnSetFocus(
         &self,
-        _pdimfocus: Ref<windows::Win32::UI::TextServices::ITfDocumentMgr>,
+        pdimfocus: Ref<windows::Win32::UI::TextServices::ITfDocumentMgr>,
         _pdimprevfocus: Ref<windows::Win32::UI::TextServices::ITfDocumentMgr>,
     ) -> Result<()> {
-        if let Some(control) = self.get_impl().control.borrow().as_deref() {
-            control.on_focus_changed();
+        // ITfThreadMgrEventSink 沒有 OnKillFocus：pdimfocus 為 null 就代表焦點
+        // 離開所有文件，在 TSF 語意上等價於 kill focus。
+        let gained = !pdimfocus.is_null();
+        logging::debug(format!("thread sink OnSetFocus：gained = {gained}"));
+        let this = self.get_impl();
+        if let Some(control) = this.control.borrow().as_deref() {
+            if gained {
+                control.on_focus_changed();
+            } else {
+                control.on_focus_lost();
+            }
+        } else {
+            this.pending_focus.set(Some(gained));
         }
         Ok(())
     }
@@ -190,7 +216,21 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
 }
 
 impl ITfKeyEventSink_Impl for TextService_Impl {
-    fn OnSetFocus(&self, _fforeground: BOOL) -> Result<()> {
+    fn OnSetFocus(&self, fforeground: BOOL) -> Result<()> {
+        // 鍵盤焦點離開 TIP 是第二個 kill-focus 入口：有些程式只觸發它，不會送
+        // thread sink 的 OnSetFocus(null)。Control 的狀態機會吸收重複事件。
+        let gained = fforeground.as_bool();
+        logging::debug(format!("key sink OnSetFocus：gained = {gained}"));
+        let this = self.get_impl();
+        if let Some(control) = this.control.borrow().as_deref() {
+            if gained {
+                control.on_focus_changed();
+            } else {
+                control.on_focus_lost();
+            }
+        } else {
+            this.pending_focus.set(Some(gained));
+        }
         Ok(())
     }
 
