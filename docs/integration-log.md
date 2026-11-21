@@ -2130,3 +2130,33 @@ gate（合併後，本機實測）：
   build-windows (MSI) success、publish success。
 - worktree 已全數回收（settings-cleanup、smoke-hang、smoke-timestamp；engine-on-demand 原本就沒有），
   branch 保留；目前只剩 `/mnt/work/jc/jc-ime`。
+
+## 2026-11-22 02:38 spawn-argv-fix（`6c2467b` → ff `08cc4a1`）
+
+`spawn-argv-fix` 的 parent 就是 rc.12 的最後一筆 `6c2467b`，main 沒有前進，
+直接 `merge --ff-only`，不需 rebase。
+
+根因：detached spawn 引擎時把 Run 機碼字串直接交給 `CreateProcessW` 的
+`lpCommandLine`，末尾 `\"` 被當成跳脫引號，`--data` 的值一路吃到後面的
+`--settings`，引擎回 os error 123 啟動失敗，TIP 無限重試。
+
+修法：改用 `Command::new(exe).args([五個獨立元素])`，
+`creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)` 後 `spawn()` 立刻放手。
+不重造 parser、不改 Run 機碼；3 秒冷卻、等 pipe、lockfile、失敗只警告全部保留。
+新增 2 個測試，其中一個專測 `--data` 值末尾反斜線。
+只改 `jc-tsf/src/engine.rs`、`docs/port/engine-on-demand.md` 與新增
+`docs/port/spawn-argv-fix.md`。
+
+gate（合併後，本機實測）：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**
+  （54 targets、**1332 passed、0 failed、1 ignored**，與 rc.12 的 1332 持平，
+  符合只增不減）。新增的 2 個測試在 `jc-tsf`，該 crate 根層是 `#![cfg(windows)]`，
+  Linux host 不編進測試二進位，所以 host 測試數不變；Windows 端的型別與
+  測試由 Windows target check 與 CI windows job 覆蓋。
+- `cargo check --workspace --all-targets` exit 0；
+  `cargo clippy --workspace --all-targets -- -D warnings` exit 0；
+  `cargo fmt --all -- --check` exit 0。
+- Windows 目標 `cargo check --workspace --all-targets --exclude jc-cli --exclude jc-settings-ui
+  --target x86_64-pc-windows-msvc` exit 0。
+- 題库：zh-golden **45/45（100.0%）**、ja modern-500 **92.2%**、
+  fuzzy **44.5%**、mixed **6/6**，與 rc.12 完全相同。
