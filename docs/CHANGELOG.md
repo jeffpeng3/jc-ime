@@ -4,6 +4,20 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.12 - 2026-11-22
+
+### 修正
+
+- Windows 切換：Shift 單按改送 `Request::Toggle` 切換純英文，回到原本的
+  Mixed／Ja 模式（`toggle_previous_mode`）；協定與註解同步更新。
+- Windows 打字：TIP 連不上引擎 pipe 時 detached spawn 引擎（`CreateProcessW` +
+  `DETACHED_PROCESS`，立刻關 handle）。啟動指令從 Run 機碼讀取並展開環境變數，
+  3 秒冷卻搭配 10×100ms 等待，lockfile 擋跨行程重複啟動。
+- Windows 設定：移除 8 個已失效的設定 UI；`mixed_input` 從 JSON 契約完全移除，
+  舊設定檔的欄位仍忽略不影響行為；模型頁改走 catalog 解析。
+- 冒煙測試：Deactivate／probe 卡點加時間戳輸出並 flush，方便定位 Windows 上的
+  掛起問題，純診斷不改行為。
+
 ## 0.1.0-rc.11 - 2026-11-21
 
 ### 修正
