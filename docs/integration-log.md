@@ -1876,3 +1876,26 @@ gate（`JC_IMEDATA=/mnt/work/jc/jc-ime-data`，模擬 CI）：
 ### CI（push `a795413`，run 44830979177；unify-segment 環境修復後）
 
 - linux (core)：success；windows (msvc)：success。`hellp` 測試在兩個平台都通過。
+
+## 2026-11-21 07:15 data-pack-english-meta（`a28fb68` → `7741c1c`）與 legal 帳本校正
+
+- CATALOG 補 `english/manifest.json` 與 `english/NOTICE.txt`（`DataRole::English`／L-08／`shipped: true`），
+  `data-bundle.sh` 會一起包進資料包；CI 下載後 `Dictionary::load_pack` 能找到這兩份中繼檔，
+  不再讓 `English::load_default()` 退回原型詞彙。
+- Orchestrator 已用新 manifest 重包並上傳 HF（dataset commit `34a7025`），公開 repo variables 更新為
+  URL `.../resolve/34a7025.../jc-ime-data-2026-11-20.tar.zst`、SHA
+  `9ce77be471afe43151a2d97580788821461ab4c19c2011eb91accaaa4514dcad`（104,608,074 bytes，
+  從 HF 重下載驗證 SHA 相符、`english/` 三檔齊全）。
+- `legal/README.md`（直接在 main 改）：Jinen tokenizer 從「否（manifest 未列，待補）」改成
+  「是（隨安裝包散布）」；「待補」段落改成「已補」，並修正對照結果段落裡仍把 Jinen tokenizer
+  列為「否」的說法。全文已搜過，沒有其他「tokenizer 不在 manifest」或「待補」殘留。
+  HF dataset 的 README（commit `6ac09f0`）由使用者處理，本筆不含。
+
+gate（`JC_IMEDATA=/mnt/work/jc/jc-ime-data`）：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：前兩次 exit 101，
+  唯一的失敗是既有 flake `jc-engine` `supervise::tests::second_supervisor_is_rejected_by_lock`
+  （`supervise.rs:941`，`AlreadyRunning { name: "jc-ime-test-lock-…" }`）；單獨跑 1 passed，
+  第三次全量 **exit 0**（54 targets、**1315 passed、0 failed**）。
+- clippy exit 0；fmt exit 0。
+- 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：空。

@@ -107,12 +107,12 @@ repo 內的檔案相對於本 repo 根目錄。同一個資料包目錄的 `mani
 | 散布檔案 | 大小 | SHA-256 | 授權條目 | 散布 |
 |---|---|---:|---|---|
 | `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | 81,117,824 | `80482707513d6b67dafc31774371cf95d765542abf8d74eebf5f32f92d788bd3` | L-21 | 是 |
-| `models/quant/jinen-v2-xsmall/tokenizer.json` | 2,047,498 | `477c91a788bf97e7ed993a4441cfb2c4d60033e505ade17d6c367bc09ed6e6ba` | L-21 | 否（manifest 未列，待補） |
+| `models/quant/jinen-v2-xsmall/tokenizer.json` | 2,047,498 | `477c91a788bf97e7ed993a4441cfb2c4d60033e505ade17d6c367bc09ed6e6ba` | L-21 | 是（隨安裝包散布） |
 | `models/external/jinen-v2-small/manifest.json`、`README.md` | 824／2,427 | 見目錄內檔案 | L-21 | 否 |
 
-Jinen small 是日文轉換的預設神經後端，資料 manifest 的 `shipped: true` 只有 GGUF 一筆。
+Jinen small 是日文轉換的預設神經後端，GGUF 與 tokenizer 兩筆在資料 manifest 都標 `shipped: true`。
 GGUF 同目錄沒有 `tokenizer.json`，`jc-engine` 會退到 `models/quant/jinen-v2-xsmall/tokenizer.json`；
-這個檔案目前不在 manifest 內，出貨前必須把它加進 manifest，否則安裝後的預設路徑缺 tokenizer。
+該路徑已列入 catalog 的 `JaTokenizer`（L-21），並隨資料包與安裝包散布。
 訓練與署名見 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) 第 15 節。
 
 ### 其他外部日文模型（僅本機留存，不散布）
@@ -195,14 +195,13 @@ Public Domain，`ja/ajimee_200.json` 是 CC-BY-SA-3.0。若要隨產品散布題
 
 對照結果：manifest 的 5 筆 `shipped: true` 與帳本「是」的資料檔完全一致；4 筆下載項與帳本
 「否（下載）」一致。帳本另有幾筆資料目錄檔案（public-core pack、reranker、日文標點、共用
-分詞器、`models/manifest.json`、Jinen tokenizer）全部標「否」，不進 manifest 的隨附清單，
-因此不影響一致性。
+分詞器、`models/manifest.json`）標「否」，不進 manifest 的隨附清單；Jinen tokenizer 已列入
+`JaTokenizer` 並標「是」，與 catalog 一致。
 
-### 待補
+### 已補
 
-- `models/quant/jinen-v2-xsmall/tokenizer.json` 是 Jinen 執行時必要檔，但不在目前 manifest。
-  `docs/port/data-pack.md` 的 9 筆清單產生時還沒納入；下次產生 manifest 時要加進去並改成
-  `shipped: true`。
+- `models/quant/jinen-v2-xsmall/tokenizer.json` 是 Jinen 執行時必要檔，現已列入 catalog 的
+  `JaTokenizer`、`shipped: true`，並隨資料包與安裝包散布。
 
 ## 維護規則
 
