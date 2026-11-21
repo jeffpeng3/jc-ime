@@ -33,7 +33,7 @@ use windows::Win32::UI::TextServices::{
     ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfLangBarItem, ITfLangBarItemButton, ITfLangBarItemMgr,
     ITfSource, ITfTextInputProcessor, ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl,
     ITfTextInputProcessor_Impl, ITfTextLayoutSink, ITfTextLayoutSink_Impl, ITfThreadMgr,
-    ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, TfLayoutCode,
+    ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, ITfUIElementMgr, TfLayoutCode,
     GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, TF_INVALID_COOKIE, TF_LC_DESTROY, TF_TMAE_COMLESS,
     TF_TMAE_SECUREMODE, TF_TMAE_UIELEMENTENABLEDONLY,
 };
@@ -42,7 +42,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows_core::{implement, ComObject, IUnknownImpl, Interface, Ref, BOOL, GUID};
 
+use crate::candidate;
 use crate::caret;
+use crate::cuas::{Cuas, Win32Cuas};
 use crate::displayattr::{AttributeEnum, InputAttribute, KINDS};
 use crate::edit;
 use crate::keys;
@@ -50,14 +52,12 @@ use crate::langbar;
 use crate::log::{self, zdebug, zlog};
 use crate::privacy;
 use crate::session::{Session, Snapshot};
+use crate::ui::{self, UiCandidate, UiMessage};
 
 /// 同一個畫面版本最多因 OnLayoutChange 重查幾次。
 const MAX_REQUERIES: u32 = 8;
 /// 換欄位時，這段時間內已從引擎得知「輸出簡體字」就不再問（一次點擊常連著多次焦點變化）。
 const SIMPLIFIED_FRESH: Duration = Duration::from_secs(1);
-/// 重送舊畫面前拿掉 0c-ui 已自己收起的提示（本 crate 沒有 0c-ui，保留去重語意）。
-const NOTICE_MS: u64 = 4000;
-
 /// 標記 `edit::apply` 進行中；宿主可能在我們寫入時送 OnLayoutChange，這時 shown 與 revision
 /// 還是上一鍵的，不能拿來重送。離開（含 panic）時恢復。
 struct Applying<'a>(&'a Cell<u32>);
@@ -76,18 +76,78 @@ impl Drop for Applying<'_> {
     }
 }
 
+/// 請系統相容層完成組字的期間（#66）：進入時記下那時的組字，離開（含 panic）時解除。
+/// 相容層有沒有終止這個組字是觀察到的：OnCompositionTerminated 對上守衛的組字時記在 `terminated`。
+struct Completing<'a>(&'a RefCell<State>);
+impl<'a> Completing<'a> {
+    fn enter(state: &'a RefCell<State>, composition: Option<ITfComposition>) -> Self {
+        state.borrow_mut().completing = Some(CompletingState {
+            composition,
+            terminated: false,
+        });
+        Completing(state)
+    }
+    /// 相容層同步終止了守衛記下的那個組字（OnCompositionTerminated 看到的）。
+    fn terminated(&self) -> bool {
+        self.0
+            .borrow()
+            .completing
+            .as_ref()
+            .is_some_and(|state| state.terminated)
+    }
+}
+impl Drop for Completing<'_> {
+    fn drop(&mut self) {
+        // 用 try：unwind 中不該再 panic（正常離開時沒有人借用 state）。
+        if let Ok(mut state) = self.0.try_borrow_mut() {
+            state.completing = None;
+        }
+    }
+}
+
+/// `State.completing`：守衛記下的組字，與相容層是否終止了它。
+struct CompletingState {
+    composition: Option<ITfComposition>,
+    terminated: bool,
+}
+
+/// 已經攔下、重排給程式的快捷鍵（#66）：重排的鍵回來之前，同一個 (vk, lParam) 的 TestKeyDown 就是它回來了。
+struct PendingRepost {
+    vk: u32,
+    lparam: isize,
+    /// 這一鍵的 OnKeyDown 已經來過（吃下，只吃一次）。
+    key_down_seen: bool,
+}
+
+/// `complete_via_cuas` 的結果：組字是相容層終止的，還是外殼自己收尾的。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Completed {
+    ByCuas,
+    BySelf,
+}
+
+/// 重送舊畫面時，提示已超過候選窗自己收起的時間就放棄這次重送。
+fn drop_expired_notice(message: &mut UiMessage, age: Duration) -> bool {
+    if ui::notice_expires(message) && age >= Duration::from_millis(ui::NOTICE_MS) {
+        message.notice.clear();
+        return false;
+    }
+    true
+}
+
 /// 候選窗最近一次的呈現：OnLayoutChange 時重查游標位置並補送。
-/// 本 crate 還沒有候選窗程式，`message` 只保留狀態供版面重查，不實際畫 UI。
 struct Shown {
     ctx: ITfContext,
     cursor: usize,
     owner: Option<HWND>,
-    #[allow(dead_code)] // 候選窗接上後用來把訊息送到原文件。
     document: Option<ITfDocumentMgr>,
+    /// 位置來自 GetTextExt（不是退路）。
     exact: bool,
+    /// 這個畫面版本已經因 OnLayoutChange 重查幾次。
     requeries: u32,
     since: Instant,
-    notice: String,
+    /// 最近一次送給候選窗的訊息；版面變了要改座標後原樣重送。
+    message: UiMessage,
 }
 
 /// 執行緒的焦點文件改變時，進行中的組字怎麼辦（移植自 0c `service.rs`）。
@@ -158,8 +218,8 @@ fn bell() {
     zdebug!("bell: MessageBeep ok={ok}");
 }
 
-/// 沒有候選窗程式時，`callback` 是 None，`can_wait` 就是 false，
-/// `Undecided` 會照 0c 在沒有回呼視窗時的做法立即送出。
+/// `callback` 是候選窗的訊息視窗（Activate 建立、Deactivate 拆除）；它決定焦點 `Undecided`
+/// 能不能等非同步確認，也接收 `WM_SELECT_CANDIDATE`。建立失敗時照 0c 立即送出。
 #[implement(
     ITfTextInputProcessorEx,
     ITfTextInputProcessor,
@@ -188,6 +248,13 @@ struct State {
     ending_composition: Rc<Cell<bool>>,
     /// IPC session 與它與 client 的連線：Deactivate 不清掉，跨重新啟用存活。
     session: Session,
+    /// 系統相容層的操作（#66）；測試換成假的。呼叫前先 clone，呼叫期間不持有 state 的借用。
+    cuas: Rc<dyn Cuas>,
+    /// 正在請相容層完成組字（Completing 守衛，#66）：記著那時的組字。相容層同步終止的正是這個組字時，
+    /// OnCompositionTerminated 只清外殼狀態、不送取消。
+    completing: Option<CompletingState>,
+    /// 攔下重排的快捷鍵，等它從訊息佇列回來（#66）。
+    pending_repost: Option<PendingRepost>,
     composing: bool,
     attr_atoms: [u32; KINDS.len()],
     eaten: HashSet<u32>,
@@ -196,8 +263,10 @@ struct State {
     secure: bool,
     ui_less: bool,
     activate_flags: u32,
-    /// 本 crate 沒有候選窗程式，保留欄位但恒為 None（0c 在 UI 未就緒時也是 None）。
-    callback: Option<HWND>,
+    /// 候選窗的訊息視窗（0c 的 CandidateWindow）；收 `WM_SELECT_CANDIDATE` 與延後焦點確認。
+    callback: Option<candidate::CandidateWindow>,
+    /// 候選窗訊息用戶端，持有 UI-less 宿主的候選清單元件。
+    ui: ui::UiClient,
     revision: u32,
     selection: Option<(ITfContext, Vec<i64>)>,
     langbar: Option<(ITfLangBarItemMgr, ITfLangBarItemButton)>,
@@ -225,6 +294,9 @@ impl TextService {
                 composition: None,
                 ending_composition: Rc::new(Cell::new(false)),
                 session: Session::new(),
+                cuas: Rc::new(Win32Cuas),
+                completing: None,
+                pending_repost: None,
                 composing: false,
                 attr_atoms: [0; KINDS.len()],
                 eaten: HashSet::new(),
@@ -234,6 +306,7 @@ impl TextService {
                 ui_less: false,
                 activate_flags: 0,
                 callback: None,
+                ui: ui::UiClient::new(),
                 revision: 0,
                 selection: None,
                 langbar: None,
@@ -470,7 +543,7 @@ impl TextService_Impl {
         } else {
             None
         };
-        let revision = {
+        let (target, revision) = {
             let mut st = self.state.borrow_mut();
             st.revision = st.revision.wrapping_add(1).max(1);
             st.selection = if show {
@@ -478,7 +551,55 @@ impl TextService_Impl {
             } else {
                 None
             };
-            st.revision
+            (
+                st.callback
+                    .as_ref()
+                    .map(|window| window.handle())
+                    .unwrap_or(0),
+                st.revision,
+            )
+        };
+        let caret = placed.map(|(rect, _)| rect);
+        let message = UiMessage {
+            show: show && caret.is_some(),
+            x: caret.map(|rect| rect.left).unwrap_or(0),
+            y: caret.map(|rect| rect.top).unwrap_or(0),
+            w: caret.map(|rect| rect.right - rect.left).unwrap_or(0),
+            h: caret.map(|rect| rect.bottom - rect.top).unwrap_or(0),
+            candidates: snapshot
+                .candidates
+                .iter()
+                .enumerate()
+                .map(|(index, (id, text))| UiCandidate {
+                    id: *id,
+                    text: text.clone(),
+                    note: snapshot
+                        .candidate_notes
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_default(),
+                    key: Some(
+                        snapshot
+                            .candidate_keys
+                            .get(index)
+                            .cloned()
+                            .unwrap_or_default(),
+                    ),
+                })
+                .collect(),
+            highlight: snapshot.highlight,
+            page: snapshot.page + 1,
+            pages: snapshot.pages,
+            columns: snapshot.columns,
+            kind: snapshot.candidate_kind.clone(),
+            title: snapshot.candidate_title(),
+            suggestion: snapshot.suggestion.clone(),
+            notice,
+            marking: snapshot.marking(),
+            reading,
+            owner: std::process::id(),
+            target,
+            revision,
         };
         let document = ctx.and_then(|c| unsafe { c.GetDocumentMgr() }.ok());
         {
@@ -486,6 +607,7 @@ impl TextService_Impl {
             // 核心已經是快照的狀態；文件端沒套用成功時保留原組字物件，下一鍵再同步。
             st.composing = snapshot.composing();
             st.composition = applied.composition;
+            st.ui.present(&message, owner, document.clone());
             if !st.composing {
                 st.anchor = None;
                 st.left_from = None;
@@ -499,7 +621,7 @@ impl TextService_Impl {
                     exact: placed.is_some_and(|(_, source)| source == caret::Source::Exact),
                     requeries: 0,
                     since: Instant::now(),
-                    notice,
+                    message,
                 }),
                 None => None,
             };
@@ -509,7 +631,6 @@ impl TextService_Impl {
         if self.layout_missed.take() && show && !exact && self.applying.get() == 0 {
             self.requery(ctx);
         }
-        let _ = revision;
         snapshot.handled
     }
 
@@ -613,18 +734,17 @@ impl TextService_Impl {
                 client,
                 composition,
                 shown.cursor,
-                shown.notice.clone(),
                 revision,
             )
         };
-        let (ctx, client, composition, cursor, notice, revision) = request;
+        let (ctx, client, composition, cursor, revision) = request;
         let service = self.to_object();
         let requested = edit::request_locate(
             &ctx,
             client,
             composition,
             cursor,
-            Box::new(move |located| service.relocated(revision, notice, located)),
+            Box::new(move |located| service.relocated(revision, located)),
         );
         if let Err(e) = requested {
             self.state
@@ -636,7 +756,7 @@ impl TextService_Impl {
         }
     }
 
-    fn relocated(&self, revision: u32, notice: String, located: edit::Located) {
+    fn relocated(&self, revision: u32, located: edit::Located) {
         if self.applying.get() > 0 {
             self.layout_missed.set(true);
             return;
@@ -648,32 +768,47 @@ impl TextService_Impl {
         if st.revision != revision {
             return;
         }
-        let (expired, owner, exact) = {
-            let Some(shown) = st.shown.as_ref() else {
-                return;
-            };
-            (
-                shown.since.elapsed() >= Duration::from_millis(NOTICE_MS) && !notice.is_empty(),
-                shown.owner,
-                shown.exact,
-            )
+        let Some(shown) = st.shown.as_mut() else {
+            return;
         };
-        if expired {
+        if !drop_expired_notice(&mut shown.message, shown.since.elapsed()) {
             st.shown = None;
             return;
         }
-        let moved = rect.left != 0 && rect.top != 0; // 沒有候選窗 UI，只判斷位置是否有效
-        if exact && !moved {
+        let moved = (
+            shown.message.x,
+            shown.message.y,
+            shown.message.w,
+            shown.message.h,
+        ) != (
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+        );
+        if shown.exact && shown.message.show && !moved {
             return;
         }
-        if let Some(shown) = st.shown.as_mut() {
-            shown.exact = true;
-        }
+        let first = !shown.exact;
+        shown.exact = true;
+        shown.message.show = true;
+        shown.message.x = rect.left;
+        shown.message.y = rect.top;
+        shown.message.w = rect.right - rect.left;
+        shown.message.h = rect.bottom - rect.top;
+        let (message, owner, document) =
+            (shown.message.clone(), shown.owner, shown.document.clone());
         if st.composing {
             st.anchor = Some(rect);
         }
-        if let Some(h) = owner.filter(|h| !h.is_invalid()) {
-            st.recent = Some((h, rect));
+        if let Some(handle) = owner.filter(|handle| !handle.is_invalid()) {
+            st.recent = Some((handle, rect));
+        }
+        st.ui.present(&message, owner, document);
+        if first {
+            st.notes.once("relocated", || {
+                Some("版面更新（OnLayoutChange）後取得游標位置".into())
+            });
         }
     }
 
@@ -684,9 +819,29 @@ impl TextService_Impl {
             st.selection
                 .as_ref()
                 .filter(|(_, ids)| revision == st.revision && ids.contains(&id))
-                .map(|(ctx, _)| ctx.clone())
+                .map(|(ctx, _)| (ctx.clone(), st.client_id))
         };
-        if target.is_none() {
+        if let Some((ctx, client)) = target {
+            candidate::request(self, &ctx, client, revision, id);
+        }
+    }
+
+    /// 候選窗的 edit session 回呼：在點選當下再核對一次焦點、隱私與畫面版本，才送核心。
+    pub(crate) fn select_in_edit(&self, ec: u32, revision: u32, id: i64) {
+        let (ctx, ui_less) = {
+            let st = self.state.borrow();
+            let Some((ctx, ids)) = st.selection.as_ref() else {
+                return;
+            };
+            if st.secure || revision != st.revision || !ids.contains(&id) {
+                return;
+            }
+            (ctx.clone(), st.ui_less)
+        };
+        if self.focused_context().as_ref() != Some(&ctx)
+            || !candidate::foreground_belongs_to(std::process::id())
+            || privacy::blocked_in_edit(&ctx, ec, ui_less)
+        {
             return;
         }
         let snapshot = self
@@ -694,7 +849,7 @@ impl TextService_Impl {
             .borrow_mut()
             .session
             .handle(json!({"type": "select", "index": id}));
-        self.present(target.as_ref(), &snapshot);
+        self.present_in_edit(Some(&ctx), &snapshot, Some(ec));
     }
 
     /// 新組字的第一鍵之前：游標仍緊接著剛提交的文字，才讓引擎以它作為前文。
@@ -738,7 +893,16 @@ impl TextService_Impl {
 
     /// 結束目前組字：commit（失焦、停用）或 cancel（應用程式自行終止組字）。
     fn finish(&self, ctx: Option<&ITfContext>, kind: &str) {
-        if !self.state.borrow().composing {
+        let (composing, completing) = {
+            let st = self.state.borrow();
+            (st.composing, st.completing.is_some())
+        };
+        if !composing {
+            return;
+        }
+        if completing {
+            // 正在請相容層完成組字（#66）：焦點變化不能在這時送出或改文件，組字由 complete_via_cuas 收尾。
+            zdebug!("相容層完成組字中，略過 {}", kind);
             return;
         }
         let snapshot = self
@@ -747,6 +911,96 @@ impl TextService_Impl {
             .session
             .handle(json!({"type": kind}));
         self.present(ctx, &snapshot);
+    }
+
+    /// IMM32 程式裡把組字經系統相容層送出（#66）：引擎 commit（學習在這裡）→ 組字區換成送出文字、
+    /// 不結束 → 進入 Completing 守衛 → `Cuas::complete`（可能同步回呼外殼，呼叫期間不得持有 state 借用）
+    /// → 離開守衛 → 還在組字（相容層沒終止）就自己照快照結束。引擎沒回應退回一般送出。
+    fn complete_via_cuas(&self, ctx: Option<&ITfContext>, hwnd: HWND) -> Completed {
+        let snapshot = self
+            .state
+            .borrow_mut()
+            .session
+            .handle(json!({"type": "commit"}));
+        if !snapshot.ok || snapshot.commit.is_empty() {
+            // 引擎沒回應，或沒有東西可送：引擎已經收過 commit，不再重送一次，只照快照收尾組字區。
+            if self.state.borrow().composing {
+                self.present(ctx, &snapshot);
+            }
+            return Completed::BySelf;
+        }
+        let mut shown = snapshot.clone();
+        shown.preedit = vec![crate::session::Segment {
+            text: snapshot.commit.clone(),
+            style: String::new(),
+        }];
+        shown.commit.clear();
+        shown.cursor_utf16 = snapshot.commit.encode_utf16().count();
+        shown.candidates.clear();
+        shown.candidate_notes.clear();
+        shown.candidate_keys.clear();
+        shown.suggestion.clear();
+        shown.reading_hint.clear();
+        shown.notices.clear();
+        self.present(ctx, &shown);
+        let (cuas, composition) = {
+            let st = self.state.borrow();
+            (st.cuas.clone(), st.composition.clone())
+        };
+        let (result, terminated) = {
+            let completing = Completing::enter(&self.state, composition);
+            let result = cuas.complete(hwnd);
+            (result, completing.terminated())
+        };
+        zdebug!(
+            "經相容層完成組字 view={:#x} focus={:#x} 結果={:?}",
+            hwnd.0 as usize,
+            cuas.focus().0 as usize,
+            result
+        );
+        if !terminated {
+            if self.state.borrow().composing {
+                self.present(ctx, &snapshot);
+            }
+            return Completed::BySelf;
+        }
+        Completed::ByCuas
+    }
+
+    /// 組字一律經相容層送出；條件都成立才把這一鍵重排給程式，回傳有沒有攔下（#66）。
+    fn complete_and_repost(&self, ctx: Option<&ITfContext>, vk: u32, lparam: isize) -> bool {
+        let cuas = self.state.borrow().cuas.clone();
+        let (ctrl, alt, win) = keys::ctrl_alt_win();
+        let eligible = keys::reposts_after_commit(vk, ctrl, alt, win) && !cuas.ime_hotkey(vk);
+        let view = Self::view_window(ctx);
+        let target = cuas.focus();
+        let queue_had_no_char = eligible && !target.0.is_null() && !cuas.has_char(target);
+        let completed = self.complete_via_cuas(ctx, view);
+        let by_cuas = completed == Completed::ByCuas;
+        let focus_same = (eligible && queue_had_no_char && target == view && by_cuas)
+            .then(|| cuas.focus() == target);
+        let has_char = (focus_same == Some(true)).then(|| cuas.has_char(target));
+        let repost = has_char == Some(true) && cuas.repost(target, vk, lparam);
+        if eligible && !repost {
+            zdebug!(
+                "不重排 vk={} queue_had_no_char={} target==view:{} ByCuas:{} 焦點未變:{:?} has_char:{:?}",
+                vk,
+                queue_had_no_char,
+                target == view,
+                by_cuas,
+                focus_same,
+                has_char
+            );
+        }
+        if repost {
+            zdebug!("重排快捷鍵 vk={} 到 {:#x}", vk, target.0 as usize);
+            self.state.borrow_mut().pending_repost = Some(PendingRepost {
+                vk,
+                lparam,
+                key_down_seen: false,
+            });
+        }
+        repost
     }
 
     /// 硬要求二：只有真正的英文緩衝才自動 commit。
@@ -954,8 +1208,17 @@ impl TextService_Impl {
         Some(EnglishKey::Eat(false))
     }
 
-    /// 組字中交給宿主的按鍵先送出組字。
-    fn commit_before_host_key(&self, ctx: Option<&ITfContext>, vk: u32, lparam: isize) -> bool {
+    /// 組字中交給宿主的按鍵先送出組字（#106）。
+    ///
+    /// 回傳 true＝IMM32 程式裡已經把這一鍵攔下、重排給程式（#66）。`may_repost` 只有
+    /// OnTestKeyDown 傳 true：OnKeyDown 只送出、不重排，否則原本的鍵會執行兩次。
+    fn commit_before_host_key(
+        &self,
+        ctx: Option<&ITfContext>,
+        vk: u32,
+        lparam: isize,
+        may_repost: bool,
+    ) -> bool {
         if !self.state.borrow().composing {
             return false;
         }
@@ -967,6 +1230,15 @@ impl TextService_Impl {
         }
         let protocol = keys::to_key(vk, lparam, false, true);
         if keys::commits_before_host(vk, keys::modifier_down(), protocol.as_deref()) {
+            let flags = self.state.borrow().activate_flags;
+            if ctx.is_some_and(|c| privacy::imm32_context(c, flags)) {
+                zdebug!("IMM32 程式：經相容層送出組字");
+                if !may_repost {
+                    self.complete_via_cuas(ctx, Self::view_window(ctx));
+                    return false;
+                }
+                return self.complete_and_repost(ctx, vk, lparam);
+            }
             self.finish(ctx, "commit");
         }
         false
@@ -1071,7 +1343,7 @@ impl TextService_Impl {
         unsafe { composition.GetRange().and_then(|r| r.GetContext()).ok() }
     }
 
-    fn settle_focus(&self) {
+    pub(crate) fn settle_focus(&self) {
         let current = self
             .state
             .borrow()
@@ -1084,6 +1356,13 @@ impl TextService_Impl {
     }
 
     fn follow_focus(&self, step: FocusStep<ITfContext>, focused: bool) {
+        if let Some(window) = self.state.borrow().callback.as_ref() {
+            if matches!(step, FocusStep::Wait(_)) {
+                window.settle_focus_later();
+            } else {
+                window.cancel_settle_focus();
+            }
+        }
         match step {
             FocusStep::Keep => {
                 self.state.borrow_mut().left_from = None;
@@ -1190,6 +1469,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             self.activated.set(true);
             zlog!("activate 開始 exe={} tid={}", log::exe_name(), tid);
             let tm = ptim.ok()?.clone();
+            // 候選窗的訊息視窗：收 WM_SELECT_CANDIDATE 與延後的焦點確認。
+            let callback = candidate::CandidateWindow::new(self).ok();
             let mut opened = None;
             unsafe {
                 let keystrokes: ITfKeystrokeMgr = tm.cast()?;
@@ -1226,6 +1507,19 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                         .and_then(|c| c.RegisterGUID(&kind.guid()).ok())
                         .unwrap_or(0)
                 });
+                // 只有以 TF_TMAE_UIELEMENTENABLEDONLY 啟用的執行緒（自行繪製候選的遊戲等）把候選清單
+                // 交給宿主；一般程式即使宿主回 pbShow=FALSE 也照常顯示候選窗（0c #86）。
+                let (ui_less, manager) = {
+                    let st = self.state.borrow();
+                    (st.ui_less, st.thread_mgr.clone())
+                };
+                let elements = if ui_less {
+                    manager
+                        .and_then(|tm| tm.cast::<ITfUIElementMgr>().ok())
+                        .map(crate::uielement::Elements::new)
+                } else {
+                    None
+                };
                 let mut st = self.state.borrow_mut();
                 st.thread_mgr = Some(tm);
                 st.client_id = tid;
@@ -1233,6 +1527,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                 st.attr_atoms = atom;
                 st.openclose = openclose;
                 st.openclose_value = openclose_value;
+                st.callback = callback;
+                st.ui.set_elements(elements);
                 // 引擎已在執行就先問起始模式，不為此啟動引擎。
                 st.session.learn_mode(false);
                 let english = st.session.english();
@@ -1282,6 +1578,10 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             let (tm, tid, cookie) = {
                 let mut st = self.state.borrow_mut();
                 st.callback = None;
+                st.ui.hide();
+                st.ui.set_elements(None);
+                st.completing = None;
+                st.pending_repost = None;
                 st.composition = None;
                 st.composing = false;
                 st.left_from = None;
@@ -1375,6 +1675,17 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 st.hotkey_tested.forget();
                 st.key_tested.forget();
             }
+            // 重排回來的鍵（#66）：同一個 (vk, lParam) 再出現就是它回來了。清掉等待、不吃，交給程式。
+            {
+                let mut st = self.state.borrow_mut();
+                if let Some(pending) = st.pending_repost.take() {
+                    if pending.vk == wparam.0 as u32 && pending.lparam == lparam.0 {
+                        zdebug!("OnTestKeyDown vk={} 重排回來 -> 不吃", wparam.0);
+                        return Ok(false.into());
+                    }
+                    zdebug!("OnTestKeyDown vk={} 重排的鍵沒回來，清掉等待", pending.vk);
+                }
+            }
             if !self.allowed(pic.as_ref()) {
                 return Ok(false.into());
             }
@@ -1383,7 +1694,10 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             if self.test_simplified_hotkey(vk) {
                 return Ok(true.into());
             }
-            self.commit_before_host_key(pic.as_ref(), vk, lparam.0);
+            if self.commit_before_host_key(pic.as_ref(), vk, lparam.0, true) {
+                zdebug!("OnTestKeyDown vk={} -> 攔下重排", vk);
+                return Ok(true.into());
+            }
             self.learn_mode(vk);
             self.sync_caps(pic.as_ref(), vk);
             let wants = match self.english_key_policy(pic.as_ref(), vk, lparam.0) {
@@ -1406,6 +1720,8 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 let mut st = self.state.borrow_mut();
                 st.hotkey_tested.forget();
                 st.key_tested.forget();
+                // 放開就是這一鍵結束了：重排的鍵沒回來也不再等。
+                st.pending_repost = None;
             }
             if !self.allowed(pic.as_ref()) {
                 return Ok(false.into());
@@ -1430,6 +1746,16 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     ) -> windows_core::Result<BOOL> {
         crate::guarded("OnKeyDown", || {
             let vk = wparam.0 as u32;
+            // TestKeyDown 已經送出組字並重排：這一次的 OnKeyDown 只吃下，不再判斷。
+            {
+                let mut st = self.state.borrow_mut();
+                if let Some(pending) = st.pending_repost.as_mut() {
+                    if pending.vk == vk && !pending.key_down_seen {
+                        pending.key_down_seen = true;
+                        return Ok(true.into());
+                    }
+                }
+            }
             let (tested, key_tested) = {
                 let mut st = self.state.borrow_mut();
                 (st.hotkey_tested.take(vk), st.key_tested.take(vk))
@@ -1445,7 +1771,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 self.state.borrow_mut().eaten.insert(vk);
                 return Ok(true.into());
             }
-            self.commit_before_host_key(pic.as_ref(), vk, lparam.0);
+            self.commit_before_host_key(pic.as_ref(), vk, lparam.0, false);
             self.learn_mode(vk);
             self.sync_caps(pic.as_ref(), vk);
             let literal_fallback = key_tested == Some(true) && {
@@ -1551,14 +1877,32 @@ impl ITfCompositionSink_Impl for TextService_Impl {
                     return Ok(());
                 }
             }
-            zlog!("組字被宿主終止 exe={}", log::exe_name());
+            // 外殼自己請相容層完成組字（Completing 守衛，#66）而終止的正是那個組字：引擎已經 commit
+            // 並學習，只清外殼狀態，不送取消。
+            let by_cuas = {
+                let st = self.state.borrow();
+                matches!(&st.completing, Some(state)
+                    if state.composition.as_ref() == composition.as_ref())
+            };
+            if !by_cuas {
+                zlog!("組字被宿主終止 exe={}", log::exe_name());
+            }
             {
                 let mut st = self.state.borrow_mut();
                 st.composition = None;
                 st.composing = false;
                 st.left_from = None;
+                if by_cuas {
+                    if let Some(state) = st.completing.as_mut() {
+                        state.terminated = true;
+                    }
+                }
             }
             self.forget_candidates();
+            if by_cuas {
+                zdebug!("組字由相容層完成，不送取消");
+                return Ok(());
+            }
             let _ = self
                 .state
                 .borrow_mut()

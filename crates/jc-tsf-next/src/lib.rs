@@ -18,6 +18,8 @@ pub mod log;
 pub(crate) use log::{guarded, object_created, object_destroyed};
 
 #[cfg(windows)]
+pub mod candidate;
+#[cfg(windows)]
 pub mod caret;
 #[cfg(windows)]
 pub mod context;
@@ -41,6 +43,8 @@ pub mod msctf;
 pub mod privacy;
 #[cfg(windows)]
 pub mod service;
+#[cfg(windows)]
+pub mod ui;
 
 pub use session::{
     response_to_reply, state_to_snapshot_value, to_jc_request, Client, Mode, Segment, Session,
