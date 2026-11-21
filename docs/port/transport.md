@@ -41,16 +41,33 @@ taigikeyboard 七個 TSF 輸入法後，沒有一個把 TCP loopback、WebSocket
 
 ## Windows ACL
 
-`jc-engine` 建立 listener 前用一段 `#[cfg(windows)]` 組 SDDL：
+`jc-engine` 不指定自訂 SDDL，直接用 `CreateNamedPipeW` 的預設 DACL：
+LocalSystem、Administrators 與建立者（目前使用者）完整控制，
+Everyone 與匿名帳號可讀。TIP 與引擎是同一使用者行程，照樣能連上；
+interprocess 預設加 `PIPE_REJECT_REMOTE_CLIENTS`，遠端用戶連不進來。
+pipe 名稱帶使用者 RID，同機多使用者也不會互連。
+
+原本 transport-unified 曾組這段 SDDL，並透過
+`ListenerOptionsExt::security_descriptor` 設到 pipe 上：
 
 ```text
 O:<目前使用者 SID>G:BAD:(A;;GA;;;<SID>)(A;;GA;;;SY)(A;;GA;;;BA)
 ```
 
-透過 `interprocess::os::windows::local_socket::ListenerOptionsExt::security_descriptor`
-設到 named pipe 上，只讓目前使用者、SYSTEM 與 Administrators 完整讀寫。
-取不到 SID 或 SDDL 反序列化失敗時記警告並退回 interprocess 的預設 DACL，
-不擋引擎啟動。
+它讓 rc.13 真機引擎無法監聽。`interprocess` 2.4.9 的
+`SecurityDescriptor::deserialize` 會把 self-relative SD 複製成 absolute SD，
+但 `try_clone.rs` 複製 group 時誤呼叫 `set_owner`（應為 `set_group`），
+因此 `G:BA` 把 owner 從目前使用者 SID 覆蓋成 BA (`S-1-5-32-544`)。
+BA 是群組 SID，不能當物件的 owner，`CreateNamedPipeW` 回
+ERROR_INVALID_OWNER (1307)，pipe 建立失敗，監督者於是不斷重生子行程。
+任務書把它標成 ERROR_INVALID_SID，實際上 1307 是 ERROR_INVALID_OWNER
+（ERROR_INVALID_SID 是 1337）。
+
+SID 本身由 `jc_windows::current_user_sid()` 從目前行程 token 的 `TokenUser`
+經 `ConvertSidToStringSidW` 產生，格式正確；`SY`、`BA` 縮寫也被
+`ConvertStringSecurityDescriptorToSecurityDescriptorW` 接受。兩者都不是成因。
+移除自訂 SDDL 同時避開這個上游 bug；預設 DACL 已涵蓋原本想授權的三個身分，
+單機單使用者情境沒有安全損失。
 
 ## 取代的舊檔案
 
@@ -71,9 +88,9 @@ O:<目前使用者 SID>G:BAD:(A;;GA;;;<SID>)(A;;GA;;;SY)(A;;GA;;;BA)
 | Go 檔案 | Rust 檔案 | 狀態 |
 |---|---|---|
 | `cmd/0c-server/main.go`（unix socket 監聽） | `crates/jc-engine/src/main.rs`（`serve_socket`） | rewritten；改用 interprocess `Listener`，Unix 走 abstract namespace |
-| `cmd/0c-server/transport_windows.go`（`winio.ListenPipe`、名稱解析） | `crates/jc-engine/src/main.rs`（`serve_socket`、`windows_security_descriptor`） | rewritten；用 `GenericNamespaced` 與 SDDL |
+| `cmd/0c-server/transport_windows.go`（`winio.ListenPipe`、名稱解析） | `crates/jc-engine/src/main.rs`（`serve_socket`） | rewritten；用 `GenericNamespaced`，沿用 Windows 預設 DACL |
 | `cmd/0c-server/transport_windows.go`（`serving`／`alreadyRunning` 探測） | `crates/jc-engine/src/supervise.rs`（`health_ok`） | rewritten；Linux 用 interprocess 連 abstract socket，Windows 仍用 `WaitNamedPipeW` 探測 |
-| `cmd/0c-server/transport_windows.go`（SDDL 限本人＋AppContainer） | `crates/jc-engine/src/main.rs`（`windows_security_descriptor`） | rewritten；本人＋SYSTEM＋Administrators，未做 AppContainer |
+| `cmd/0c-server/transport_windows.go`（SDDL 限本人＋AppContainer） | `crates/jc-engine/src/main.rs`（`serve_socket`） | n/a；改用 Windows 預設 DACL，未做 AppContainer |
 | `cmd/0c-server/transport_windows.go`（使用者 SID 命名） | `crates/jc-windows/src/pipe_name.rs` | 不在本 task 範圍；名稱解析原樣保留 |
 | `cmd/0c-server/logoff_windows_test.go`（pipe 連線測試） | `crates/jc-windows/src/transport.rs`（`local_socket_round_trip`） | rewritten；server/client 都走 interprocess |
 

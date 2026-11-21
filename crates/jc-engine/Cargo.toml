@@ -23,9 +23,7 @@ serde_json.workspace = true
 [dev-dependencies]
 jc-testdata = { path = "../jc-testdata" }
 
-# Windows 的 SDDL 序列化需要 widestring；其餘平台用不到。
 [target.'cfg(windows)'.dependencies]
-widestring = "1"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     # supervise 測試註冊視窗類別用到的 WNDCLASSW 掛在這個 feature 底下。

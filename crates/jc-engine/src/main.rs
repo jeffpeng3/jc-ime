@@ -37,10 +37,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
 use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
-#[cfg(windows)]
-use interprocess::os::windows::local_socket::ListenerOptionsExt;
-#[cfg(windows)]
-use interprocess::os::windows::security_descriptor::SecurityDescriptor;
 use jc_core::session::{Session, SessionConfig};
 use jc_core::Mode;
 use jc_engine::config;
@@ -48,8 +44,6 @@ use jc_engine::loader::load_engine_data;
 use jc_engine::supervise::{self, SupervisorConfig};
 use jc_engine::{engine_label, serve, Engine};
 use jc_proto::{DEFAULT_MAX_FRAME, PROTOCOL_VERSION};
-#[cfg(windows)]
-use widestring::U16CString;
 
 /// 啟動方式。
 enum Transport {
@@ -291,19 +285,16 @@ fn default_supervisor_log() -> PathBuf {
 /// 平台差異全部交給 interprocess：Windows 是 named pipe，Unix 是 unix domain
 /// socket。一次只服務一條連線，維持 pipe-busy 修正後的一對一模型；連線時機由
 /// focus-pipe 統一管理。訊框仍走 `jc_proto`，這裡只負責搬位元組。
+///
+/// Windows 不指定自訂 SDDL，用 named pipe 的預設 DACL：建立者（目前使用者）、
+/// SYSTEM 與 Administrators 有完整控制權，同使用者的 TIP 能連上。`interprocess`
+/// 2.4.9 的 `SecurityDescriptor::deserialize` 在複製含 `G:` 的 SDDL 時會把 group
+/// SID 誤設成 owner（`try_clone` 呼叫 `set_owner` 而非 `set_group`），讓
+/// `CreateNamedPipeW` 回 ERROR_INVALID_OWNER (1307)，pipe 根本建立不起來。
 #[cfg(any(unix, windows))]
 fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
     let name = jc_windows::socket_name(path)?;
-    #[cfg(windows)]
-    let mut options = ListenerOptions::new().name(jc_windows::ns_name(&name)?);
-    #[cfg(not(windows))]
     let options = ListenerOptions::new().name(jc_windows::ns_name(&name)?);
-    #[cfg(windows)]
-    {
-        if let Some(sd) = windows_security_descriptor() {
-            options = options.security_descriptor(sd);
-        }
-    }
     let listener = options
         .create_sync()
         .with_context(|| format!("監聽 local socket 失敗：{name}"))?;
@@ -336,35 +327,6 @@ fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::R
     }
 
     Ok(())
-}
-
-/// Windows pipe 的 DACL：目前使用者、SYSTEM 與 Administrators 可完整讀寫。
-///
-/// 取不到使用者 SID 時退回 interprocess 的預設 DACL 並記一次警告，不擋引擎啟動。
-#[cfg(windows)]
-fn windows_security_descriptor() -> Option<SecurityDescriptor> {
-    let sid = match jc_windows::current_user_sid() {
-        Some(sid) => sid,
-        None => {
-            log::warn!("取不到目前使用者的 SID，pipe 改用預設 DACL");
-            return None;
-        }
-    };
-    let sddl = format!("O:{sid}G:BAD:(A;;GA;;;{sid})(A;;GA;;;SY)(A;;GA;;;BA)");
-    let wide = match U16CString::from_str(&sddl) {
-        Ok(wide) => wide,
-        Err(err) => {
-            log::warn!("pipe SDDL 轉 UTF-16 失敗：{err}");
-            return None;
-        }
-    };
-    match SecurityDescriptor::deserialize(&wide) {
-        Ok(sd) => Some(sd),
-        Err(err) => {
-            log::warn!("pipe SDDL 反序列化失敗：{err}");
-            None
-        }
-    }
 }
 
 /// 既不是 unix 也不是 Windows 的平台沒有 socket 傳輸，明確回報錯誤而不是 panic。

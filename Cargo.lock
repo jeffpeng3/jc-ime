@@ -3804,7 +3804,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
- "widestring",
  "windows-sys 0.61.2",
 ]
 
