@@ -4,7 +4,8 @@
 //! `Activate`（只註冊 sink，不連 pipe）→ 引擎 pipe → 註冊探測。檢查 6 自己
 //! 探測 pipe，不依賴 Activate；前一步失敗時後面改印 `[SKIP]`。
 
-use std::time::Duration;
+use std::io::Write;
+use std::time::{Duration, Instant};
 
 use windows::core::{IUnknown, Interface};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -26,6 +27,9 @@ use crate::report::{self, Report};
 
 /// 執行全部檢查，回傳行程結束碼。
 pub fn run(args: Vec<String>) -> std::process::ExitCode {
+    // 純診斷：記錄起點，供 Deactivate／probe 的卡點時間戳使用。
+    let start = Instant::now();
+
     let dll_arg = match parse_args(&args) {
         Cli::Run(dll) => dll,
         Cli::Help => return std::process::ExitCode::SUCCESS,
@@ -266,9 +270,31 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
 
                     // Activate 不再連 pipe，檢查 6 的探測與 TIP 無關；Deactivate
                     // 仍會非同步放掉 worker，保留短等待讓可能殘留的連線收乾淨。
+                    // 純診斷：以下時間戳每印一行就 flush，確保行程卡住時最後一行
+                    // 不會留在緩衝區，一眼就能看出卡在哪一步。
                     // SAFETY: 上面才 Activate 過；重複 Deactivate 由 jc-tsf 自己容錯。
+                    eprintln!(
+                        "[smoke {:.3}s] before service.Deactivate()",
+                        start.elapsed().as_secs_f64()
+                    );
+                    let _ = std::io::stderr().flush();
                     let _ = unsafe { service.Deactivate() };
+                    eprintln!(
+                        "[smoke {:.3}s] after service.Deactivate()",
+                        start.elapsed().as_secs_f64()
+                    );
+                    let _ = std::io::stderr().flush();
+                    eprintln!(
+                        "[smoke {:.3}s] before manager.Deactivate()",
+                        start.elapsed().as_secs_f64()
+                    );
+                    let _ = std::io::stderr().flush();
                     let _ = unsafe { manager.Deactivate() };
+                    eprintln!(
+                        "[smoke {:.3}s] after manager.Deactivate()",
+                        start.elapsed().as_secs_f64()
+                    );
+                    let _ = std::io::stderr().flush();
                     std::thread::sleep(Duration::from_millis(200));
                 }
                 Err(error) => report.fail(
@@ -284,6 +310,11 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
     }
 
     // ── 6. 引擎 pipe ────────────────────────────────────────────────
+    eprintln!(
+        "[smoke {:.3}s] before engine::probe()",
+        start.elapsed().as_secs_f64()
+    );
+    let _ = std::io::stderr().flush();
     match engine::probe() {
         Ok(detail) => report.pass("6. 引擎 pipe", detail),
         Err(reason) => report.skip(
@@ -291,6 +322,11 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
             format!("{reason}；引擎未啟動或未安裝，只警告不判定失敗"),
         ),
     }
+    eprintln!(
+        "[smoke {:.3}s] after engine::probe()",
+        start.elapsed().as_secs_f64()
+    );
+    let _ = std::io::stderr().flush();
 
     if let Some(test_key) = library.as_ref().and_then(|loaded| loaded.test_key()) {
         // 讓引擎把上一條連線收乾淨，再直驅 DLL 的測試匯出。
