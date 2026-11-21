@@ -8,6 +8,10 @@ Worktree：`/mnt/work/jc/wt/legal-update`（branch `legal-update`）
 > **現況（2026-11-21）**：`zh_punct` 已從 catalog 移除，不再是下載項。L-12 在
 > `legal/README.md` 保留是正確的，由授權帳本繼續記載 Funmula 標點模型；本文的
 > manifest 對照表是 2026-11-20 的歷史紀錄。
+>
+> **補記（2026-11-21，`data-pack-english-meta`）**：catalog 新增
+> `english/manifest.json`、`english/NOTICE.txt` 兩筆，同屬 L-08、皆為
+> `shipped: true`，是 `english/words.bin` 的驗證中繼檔；本文對照表保留舊值。
 
 ## 移植對照
 
@@ -39,6 +43,8 @@ manifest 來源：[`docs/port/data-pack.md`](data-pack.md) 的實際產物，`sc
 | `build-zh/lexicon.bin` | `zh_lexicon` | L-04、L-05、L-06、L-13～L-17 | L-04、L-05、L-06、L-13～L-17 | 是 | 是 |
 | `build-zh/lm.bin` | `zh_lm` | L-04、L-05、L-06、L-13～L-17 | L-04、L-05、L-06、L-13～L-17 | 是 | 是 |
 | `english/words.bin` | `english` | L-08 | L-08 | 是 | 是 |
+| `english/manifest.json` | `english` | L-08 | L-08 | 是 | 是（2026-11-21 補） |
+| `english/NOTICE.txt` | `english` | L-08 | L-08 | 是 | 是（2026-11-21 補） |
 | `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | `ja_neural` | L-21 | L-21 | 是 | 是 |
 
 ### 下載（`shipped: false`）

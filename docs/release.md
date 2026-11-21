@@ -398,6 +398,10 @@ release workflow 只能證明「建置與打包成功」，下面這些要在第
 - [ ] 資料包 `manifest.json` 包含 Jinen tokenizer
       （`models/quant/jinen-v2-xsmall/tokenizer.json`）。依 `docs/models.md`，這筆
       出貨前要補進 `jc-data` 的 catalog／manifest；沒列就不會進 MSI。
+- [ ] 資料包 `english/` 同時含 `words.bin`、`manifest.json`、`NOTICE.txt`。
+      `Dictionary::load_pack` 三者都要過大小與 SHA 檢查；少任一個就會退回原型
+      詞彙，英文輸入查不到正式詞表。可用 `tar -tf <bundle> | grep '^english/'`
+      確認三筆都在。
 - [ ] `models/zh-select` 沒有出現在資料包、MSI 或 Release assets（`zh-punct` 已於
       2026-11-21 從 catalog 移除）。
 - [ ] `LICENSE`、`NOTICE`、`legal/` 已打進 MSI（`installer-payload` 的缺口）。
