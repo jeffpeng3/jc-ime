@@ -33,6 +33,10 @@ windows = { version = "0.62", features = [
   "Win32_System_Variant",
   "Win32_UI_Accessibility",
   "Win32_UI_Controls",
+  # caret.rs 的 GetDpiForWindow。
+  "Win32_UI_HiDpi",
+  # cuas.rs 的 ImmGetContext／ImmGetHotKey／ImmNotifyIME／ImmReleaseContext。
+  "Win32_UI_Input_Ime",
   "Win32_UI_Input_KeyboardAndMouse",
   # edit.rs 的 ITfContext／ITfRange／ITfComposition 與 TF_* 常數。
   "Win32_UI_TextServices",

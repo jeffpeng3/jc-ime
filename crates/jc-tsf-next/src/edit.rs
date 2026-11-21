@@ -51,84 +51,10 @@ fn guarded<T, F: FnOnce() -> windows_core::Result<T>>(what: &str, f: F) -> windo
     }
 }
 
-/// 顯示屬性的最小定義。0c 放在 `displayattr.rs`；T7 才註冊真正的七種 GUID 與樣式，
-/// 這裡先保留種類與 `style_ranges`，讓 commit／preedit 的寫入順序能原樣移植。
-mod displayattr {
-    use crate::session::Segment;
-
-    /// 組字區顯示屬性的種類，順序就是 `attr_atoms` 的索引。
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Kind {
-        /// 一般細實線。
-        Input,
-        /// 已選字粗實線。
-        Locked,
-        /// 自動修正點線。
-        Corrected,
-        /// 加入詞庫的標示範圍。
-        Marked,
-        /// 按空白會組成中文的數字。
-        Reading,
-        /// 日文變換的一般文節。
-        Clause,
-        /// 日文變換中目前的文節。
-        ClauseActive,
-    }
-
-    /// 七種顯示屬性的固定順序。
-    pub const KINDS: [Kind; 7] = [
-        Kind::Input,
-        Kind::Locked,
-        Kind::Corrected,
-        Kind::Marked,
-        Kind::Reading,
-        Kind::Clause,
-        Kind::ClauseActive,
-    ];
-
-    impl Kind {
-        /// 在 `attr_atoms` 裡的索引。
-        pub fn index(self) -> usize {
-            self as usize
-        }
-    }
-
-    /// 一段要套用顯示屬性的 UTF-16 位移範圍。
-    #[derive(Debug, PartialEq, Eq)]
-    pub struct StyledRange {
-        /// 起點（UTF-16 單位）。
-        pub start: i32,
-        /// 終點（UTF-16 單位，不含）。
-        pub end: i32,
-        /// 樣式種類。
-        pub kind: Kind,
-    }
-
-    /// 把 snapshot 的 fragment 轉成 UTF-16 位移範圍。TSF 位移是 UTF-16 單位。
-    pub fn style_ranges(segments: &[Segment]) -> Option<Vec<StyledRange>> {
-        let mut ranges = Vec::new();
-        let mut start = 0i32;
-        for segment in segments {
-            let length = i32::try_from(segment.text.encode_utf16().count()).ok()?;
-            let end = start.checked_add(length)?;
-            if length > 0 {
-                let kind = match segment.style.as_str() {
-                    "locked" => Kind::Locked,
-                    "corrected" => Kind::Corrected,
-                    "marked" => Kind::Marked,
-                    "reading" => Kind::Reading,
-                    "clause" => Kind::Clause,
-                    "clause_active" => Kind::ClauseActive,
-                    _ => Kind::Input,
-                };
-                ranges.push(StyledRange { start, end, kind });
-            }
-            start = end;
-        }
-        Some(ranges)
-    }
-}
-use displayattr::{style_ranges, StyledRange, KINDS};
+// T7b：顯示屬性的完整定義（Kind／KINDS／StyledRange／style_ranges、GUID 註冊、
+// GetGUID／GetDescription／GetAttributeInfo 與 IEnumTfDisplayAttributeInfo）已抽出到
+// `crate::displayattr`。T5 內嵌的最小版移除，edit session 的寫入順序保持不變。
+use crate::displayattr::{style_ranges, StyledRange, KINDS};
 
 static NUL: [u16; 1] = [0];
 
