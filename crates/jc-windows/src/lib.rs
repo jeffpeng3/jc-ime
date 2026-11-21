@@ -219,7 +219,9 @@ impl Client<NamedPipe> {
     /// `name` 可以只寫 pipe 名稱，也可以寫完整的 `\\.\pipe\` 路徑。非 Windows
     /// 平台回 [`Error::Unsupported`]。
     pub fn connect(name: &str, client_name: &str, timeout: Duration) -> Result<Self, Error> {
-        let pipe = NamedPipe::connect(name)?;
+        // 引擎一次只服務一條連線；instance 短暫被佔用時用同一個 timeout 等它
+        // 釋出，避免 TSF 端立刻拿到 ERROR_PIPE_BUSY 也不斷重試。
+        let pipe = NamedPipe::connect_with_wait(name, timeout)?;
         Self::handshake(pipe, client_name, timeout)
     }
 

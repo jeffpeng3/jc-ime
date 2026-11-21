@@ -109,8 +109,9 @@ cargo test -p jc-windows                                                # 21 pas
 5. `JC_IME_PIPE` 覆寫時，監督者、子行程與 TSF 都用同一個值。
 6. 把使用者的 SID 查詢弄失敗（例如用受限權杖啟動）時，引擎與 IME 都退回
    `jc-ime`，且日誌各只有一行警告，IME 仍可輸入。
-7. 同一使用者開兩個 RDP session：兩個監督者都會啟動子行程，其中一個 bind
-   失敗並進入退避。名稱只帶使用者，不含 session 身分，這是已知限制。
+7. 同一使用者開兩個 RDP session：監督者改用 `%LOCALAPPDATA%` 鎖檔（帳號範圍）
+   後只會有一個，第二個直接以 `AlreadyRunning` 結束；詳見
+   `docs/port/engine-supervisor.md`。
 
 ## 待辦
 

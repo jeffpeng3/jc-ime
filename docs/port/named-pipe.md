@@ -39,7 +39,7 @@
 | 方向 | `PIPE_ACCESS_DUPLEX` |
 | 類型 | `PIPE_TYPE_MESSAGE \| PIPE_READMODE_MESSAGE \| PIPE_WAIT` |
 | 遠端 | `PIPE_REJECT_REMOTE_CLIENTS` |
-| instance 數 | 1（`PIPE_MAX_INSTANCES`），序列處理 |
+| instance 數 | 1（`PIPE_MAX_INSTANCES`），序列處理；client 端以 `WaitNamedPipeW` 等待短暫忙碌 |
 | 輸入／輸出緩衝 | 64 KiB（`PIPE_BUFFER_SIZE`，與 Go 版 `winio.PipeConfig` 一致） |
 | 讀寫 | blocking `ReadFile`／`WriteFile`，單一執行緒，沒有 async runtime |
 
@@ -64,6 +64,22 @@ CreateNamedPipeW
   訊息附上 pipe 名稱。
 - 每條連線用完就 drop `DuplicateHandle` 出來的 handle，再切斷 instance，
   避免 handle 洩漏。
+
+## client 端的 `ERROR_PIPE_BUSY`
+
+引擎仍是一次一條連線（見 `docs/port/tsf-pipe.md` 對此取捨的說明）。TIP 反覆
+Activate／Deactivate 時，舊連線可能還沒被引擎看到 EOF，新 worker 的
+`CreateFileW` 會拿到 `ERROR_PIPE_BUSY`（os error 231）。`jc-windows` 的
+`NamedPipe::connect_with_wait` 照微軟的用戶端範例處理：
+
+1. `CreateFileW` 成功就直接用。
+2. 拿到 `ERROR_PIPE_BUSY` 時呼叫 `WaitNamedPipeW(path, timeout_ms)`。
+3. 等待成功代表有 instance 可用，回到步驟 1 再試；`ERROR_SEM_TIMEOUT`
+   表示期限內沒等到，回報原本的 busy 錯誤給呼叫端。
+
+`Client::connect` 把 handshake 的 `timeout`（TIP 是 500 ms）同時用作忙碌等待
+上限，所以單次連線最長約 1 秒。這只能吸收短暫佔用；若第一個 client 永久佔著
+instance，TIP 仍每 2 秒重試一次，但不會再「立刻 231、立刻重試」地洗 log。
 
 ## 與 Unix 版本的差異
 

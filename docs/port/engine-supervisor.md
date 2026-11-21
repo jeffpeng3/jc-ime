@@ -43,12 +43,19 @@ jc-engine --supervise [--socket <name>] [--supervisor-log <path>]
 
 | 平台 | 機制 |
 |---|---|
-| Windows | 具名 mutex `Local\jc-ime-engine-supervisor`（`CreateMutexW` + `ERROR_ALREADY_EXISTS`）；`Local\` 命名空間是登入使用者範圍 |
+| Windows | `%LOCALAPPDATA%\jc-ime\Local-jc-ime-engine-supervisor.lock`，`CreateFileW` 以分享模式 0 開啟；第二個行程拿到 `ERROR_SHARING_VIOLATION` 就回 `AlreadyRunning` |
 | Linux | abstract unix socket `jc-ime-engine-supervisor`；名稱被佔用時 bind 回 `EADDRINUSE`，行程結束自動消失 |
 | 其他 unix | `$TMPDIR/jc-ime-engine-supervisor.sock`；偵測到殘留檔案且沒人監聽就清掉重試一次 |
 
+早期 Windows 用 `Local\jc-ime-engine-supervisor` 具名 mutex。那是 **session
+範圍**，pipe 名稱卻是 **帳號範圍**（帶 SID 尾段）。同一使用者開兩個 RDP
+session 時 mutex 有兩把，兩個監督者都通過 `InstanceLock::acquire`，各自啟動
+一個子行程搶同一條 pipe；其中一個 bind 失敗，TIP 便反覆拿到 `ERROR_PIPE_BUSY`。
+改成就近的鎖檔後，`LOCALAPPDATA` 跨 session 相同，與 pipe 名稱範圍一致。
+
 第二個監督者取得鎖失敗時回 `Error::AlreadyRunning`，`main` 記一行 info 後
-以 exit code 0 結束。登入時 `Run` key 觸發兩次不會留下錯誤視窗。
+以 exit code 0 結束。登入時 `Run` key 觸發兩次不會留下錯誤視窗。行程被殺時
+作業系統關閉 handle，鎖自動釋放；檔案留下不影響下次啟動。
 
 ## 退避曲線
 
@@ -96,8 +103,26 @@ jc-engine --supervise [--socket <name>] [--supervisor-log <path>]
 - unix：攔 `SIGINT`、`SIGTERM`。
 - 收到停止訊號後先送溫和訊號（unix `SIGTERM`、Windows `CTRL_BREAK_EVENT`
   到子行程自己的 process group），等 5 秒；沒結束才 `kill`。
+- Windows 啟動子行程時放進 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 job
+  object。監督者被工作管理員或升級程式殺掉時，子行程也跟著結束，pipe 才會
+  釋放；不會留下孤兒引擎佔著 `jc-ime-<rid>`。job 建立失敗只記警告。
 - 子行程被訊號直接結束時，unix socket 檔可能留著；下次啟動時
   `prepare_socket_path` 會偵測沒有監聽者並清掉。
+
+## 升級時不要留舊行程
+
+`MajorUpgrade` 會移除舊版再裝新版，但 MSI 本身不會停止正在執行的
+`jc-engine.exe`。正確順序：
+
+1. 先停止監督者（`taskkill /IM jc-engine.exe`，或直接登出）。job object 會
+   一起帶走子行程，pipe 跟著消失。
+2. 再執行 MSI 升級。新版由 `HKLM\...\Run` 在下次登入時啟動。
+3. 用 `Get-Process jc-engine` 與 `Get-ChildItem \\.\pipe\ | ? Name -like
+   'jc-ime*'` 確認只剩一個行程與一條 pipe。
+
+若跳過第 1 步，舊監督者仍持鎖，新監督者會拿到 `AlreadyRunning` 直接結束；
+舊行程被殺而子行程僥倖存活時，新子行程會因 pipe 已被佔用而退避。job object
+只覆蓋「監督者已把子行程指派進 job」的情況，指派失敗會寫進 supervisor.log。
 
 ## 與 IME 重連的互動
 
@@ -135,14 +160,16 @@ Linux 上已實際跑過（`--allow-empty-data` 讓子行程不需要詞典）�
 - `health_check_warns_when_socket_missing`
 
 跨平台測試：`backoff_curve_matches_spec`、`supervisor_mutex_is_per_user`、
-`log_ring_keeps_newest_lines_under_limit`。
+`log_ring_keeps_newest_lines_under_limit`。Windows 另外有
+`second_supervisor_is_rejected_by_lock`，與 unix 版同名測試對稱。
 
 ## 需要 Windows 才能驗的項目
 
-- `Local\jc-ime-engine-supervisor` 具名 mutex 的跨行程互斥。`Local\` 是 session
-  範圍，同一使用者的兩個 RDP session 會各有一個監督者；pipe 名稱只帶使用者
-  （見 `docs/port/pipe-name.md`），兩個子行程會撞名，只有一個能 bind，另一個
-  會退避並在 5 次失敗後暫停。要支援多 session 得讓名稱再帶 session 識別。
+- `%LOCALAPPDATA%` 鎖檔的跨 session 互斥：同一使用者開兩個 RDP session，
+  第二個 `--supervise` 應回 `AlreadyRunning`、exit code 0， supervisor.log
+  只有一條「監督者啟動」。
+- 殺掉監督者（`taskkill /IM jc-engine.exe` 只殺監督者）後，`Get-Process` 不
+  應留下子行程，`jc-ime-<rid>` 消失。點擊升級後也用同樣方式檢查。
 - `SetConsoleCtrlHandler` 對 Ctrl+C、關機、登出的實際事件順序。
 - 隱藏訊息視窗收到 `WM_ENDSESSION`，以及 Windows 關機時 5 秒收尾是否足夠。
 - `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT)` 對引擎子行程的效果。

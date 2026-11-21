@@ -20,7 +20,11 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-/// 監督者的單一實例名稱。Windows 用 `Local\` 命名空間，範圍是登入的使用者。
+/// 監督者的單一實例名稱。
+///
+/// Windows 用它當 `%LOCALAPPDATA%\jc-ime\` 下的鎖檔名。早期版本把同一個字串
+/// 當成 `Local\` 具名 mutex，那是 session 範圍，同一使用者的兩個 RDP session
+/// 會各自拿到一把鎖；改成帳號範圍的鎖檔才與 pipe 名稱（帶使用者 SID）一致。
 pub const SUPERVISOR_MUTEX_NAME: &str = r"Local\jc-ime-engine-supervisor";
 
 /// log 檔案上限，超過就丟掉最舊的一半。
@@ -176,13 +180,26 @@ fn run_with(config: &SupervisorConfig, stop: &dyn Fn() -> bool) -> Result<(), Er
         ),
     );
 
+    // Windows 用 job object 把子行程綁在監督者上：升級或工作管理員殺掉監督者
+    // 時子行程一起結束，pipe 才會釋放。建立失敗只記警告，不擋住引擎啟動。
+    let child_group = match platform::create_child_group() {
+        Ok(group) => Some(group),
+        Err(err) => {
+            log_line(
+                &log,
+                format!("無法建立子行程群組（異常結束時可能殘留引擎行程）：{err}"),
+            );
+            None
+        }
+    };
+
     let mut failures: u32 = 0;
     loop {
         if stop() {
             break;
         }
 
-        let mut child = match spawn_child(config, &log) {
+        let mut child = match spawn_child(config, &log, child_group.as_ref()) {
             Ok(child) => child,
             Err(err) => {
                 log_line(&log, format!("{err}"));
@@ -363,7 +380,11 @@ fn wait_or_stop(duration: Duration, stop: &dyn Fn() -> bool) -> bool {
 }
 
 /// 啟動子行程，並把 stdout、stderr 接到共用 log。
-fn spawn_child(config: &SupervisorConfig, log: &SharedLog) -> Result<Child, Error> {
+fn spawn_child(
+    config: &SupervisorConfig,
+    log: &SharedLog,
+    child_group: Option<&platform::ChildGroup>,
+) -> Result<Child, Error> {
     let mut command = Command::new(&config.program);
     command
         .args(&config.child_args)
@@ -378,6 +399,15 @@ fn spawn_child(config: &SupervisorConfig, log: &SharedLog) -> Result<Child, Erro
     }
 
     let mut child = command.spawn().map_err(Error::Spawn)?;
+    if let Some(group) = child_group {
+        if let Err(err) = platform::assign_child(group, child.id()) {
+            // 子行程已經啟動，指派失敗不能當成啟動失敗；照樣收輸出並監控。
+            log_line(
+                log,
+                format!("子行程 pid={} 加入群組失敗：{err}", child.id()),
+            );
+        }
+    }
     if let Some(stdout) = child.stdout.take() {
         pump(stdout, Arc::clone(log), "stdout");
     }
@@ -574,9 +604,12 @@ fn truncate_chars(text: &str, max: usize) -> String {
 
 /// 單一實例鎖。
 ///
-/// Windows 用具名 mutex（`Local\` 命名空間）；Linux 用 abstract unix socket；
-/// 其他 unix 用 `$TMPDIR` 下的 socket 檔。鎖在 drop 時釋放，行程被強制結束時
-/// 由作業系統回收。
+/// Windows 用 `%LOCALAPPDATA%\jc-ime\` 下以獨佔分享模式開啟的鎖檔（行程結束
+/// 作業系統會自動關閉 handle）；Linux 用 abstract unix socket；其他 unix 用
+/// `$TMPDIR` 下的 socket 檔。鎖在 drop 時釋放，行程被強制結束時由作業系統回收。
+///
+/// 鎖的範圍必須與 pipe 名稱一致：pipe 帶使用者 SID，帳號範圍的鎖擋得住同一
+/// 使用者的兩個 session；session 範圍的 `Local\` mutex 擋不住。
 pub struct InstanceLock {
     /// 平台鎖的 handle；只靠 drop 釋放，不直接讀取。
     _inner: platform::Lock,
@@ -669,6 +702,17 @@ mod platform {
         }
     }
 
+    /// 非 Windows 沒有 job object；子行程由 `terminate` 收尾。
+    pub(super) struct ChildGroup;
+
+    pub(super) fn create_child_group() -> io::Result<ChildGroup> {
+        Ok(ChildGroup)
+    }
+
+    pub(super) fn assign_child(_group: &ChildGroup, _pid: u32) -> io::Result<()> {
+        Ok(())
+    }
+
     /// 安裝 SIGINT、SIGTERM 的處理器；只設停止旗標，實際收尾在主迴圈。
     pub(super) fn install_shutdown_handlers() {
         unsafe {
@@ -696,34 +740,137 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use std::io;
-    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::path::PathBuf;
     use std::ptr;
 
-    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, ERROR_SEM_TIMEOUT};
+    use windows_sys::Win32::Foundation::{
+        GetLastError, ERROR_SEM_TIMEOUT, ERROR_SHARING_VIOLATION, GENERIC_READ, GENERIC_WRITE,
+        INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, OPEN_ALWAYS,
+    };
     use windows_sys::Win32::System::Console::{
         SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT, CTRL_LOGOFF_EVENT,
         CTRL_SHUTDOWN_EVENT,
     };
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
     use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
-    use windows_sys::Win32::System::Threading::CreateMutexW;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
 
-    /// 具名 mutex 的 handle；drop 時關閉。
+    /// 鎖檔的 handle；drop 時關閉，另一個監督者才能開啟。
     pub(super) struct Lock {
         _handle: OwnedHandle,
     }
 
+    /// 鎖檔路徑：`%LOCALAPPDATA%\jc-ime\<safe-name>.lock`。
+    ///
+    /// `LOCALAPPDATA` 是帳號範圍，跨 RDP session 相同；`Local\` mutex 則是
+    /// session 範圍，同一帳號兩個 session 會拿到兩把鎖。名稱只當檔名用，
+    /// 非法字元換成 `-`，避免路徑穿越。
+    fn lock_path(name: &str) -> PathBuf {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let safe: String = name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                    ch
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        base.join("jc-ime").join(format!("{safe}.lock"))
+    }
+
     pub(super) fn acquire(name: &str) -> io::Result<Option<Lock>> {
-        let wide = super::wide(name);
-        let handle = unsafe { CreateMutexW(ptr::null(), 0, wide.as_ptr()) };
-        if handle.is_null() {
+        let path = lock_path(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let wide = super::wide(&path.to_string_lossy());
+        // share mode 0：任何人（包括同一行程的第二次呼叫）都開不了第二個 handle。
+        // 行程結束時作業系統關閉 handle，鎖自動釋放，檔案留下也沒關係。
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                ptr::null(),
+                OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) {
+                return Ok(None);
+            }
+            return Err(err);
+        }
+        // SAFETY: handle 剛由 CreateFileW 建立，所有權交給 OwnedHandle。
+        Ok(Some(Lock {
+            _handle: unsafe { OwnedHandle::from_raw_handle(handle) },
+        }))
+    }
+
+    /// 子行程群組：Windows job object 設 `KILL_ON_JOB_CLOSE`，監督者被殺時
+    /// 子行程一起結束，不會留下孤兒引擎佔著 pipe。
+    pub(super) struct ChildGroup {
+        job: OwnedHandle,
+    }
+
+    pub(super) fn create_child_group() -> io::Result<ChildGroup> {
+        let job = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+        if job.is_null() {
             return Err(io::Error::last_os_error());
         }
-        let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
-        if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-            // 另一個監督者已經建立同名 mutex。
-            return Ok(None);
+        // SAFETY: handle 剛由 CreateJobObjectW 建立。
+        let job = unsafe { OwnedHandle::from_raw_handle(job) };
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = unsafe {
+            SetInformationJobObject(
+                job.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of_val(&info) as u32,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
         }
-        Ok(Some(Lock { _handle: handle }))
+        Ok(ChildGroup { job })
+    }
+
+    pub(super) fn assign_child(group: &ChildGroup, pid: u32) -> io::Result<()> {
+        // AssignProcessToJobObject 需要 PROCESS_SET_QUOTA；一併要 TERMINATE 才能收尾。
+        let process = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+        if process.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: handle 剛由 OpenProcess 建立。
+        let process = unsafe { OwnedHandle::from_raw_handle(process) };
+        let ok = unsafe {
+            AssignProcessToJobObject(
+                group.job.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
+                process.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     /// 安裝 console 控制處理器：Ctrl+C、關機、登出都只設停止旗標。
@@ -848,6 +995,16 @@ mod platform {
         Ok(Some(Lock))
     }
 
+    pub(super) struct ChildGroup;
+
+    pub(super) fn create_child_group() -> io::Result<ChildGroup> {
+        Ok(ChildGroup)
+    }
+
+    pub(super) fn assign_child(_group: &ChildGroup, _pid: u32) -> io::Result<()> {
+        Ok(())
+    }
+
     pub(super) fn install_shutdown_handlers() {}
 
     pub(super) fn health_ok(_socket: &std::path::Path) -> bool {
@@ -931,6 +1088,22 @@ mod tests {
     #[test]
     fn second_supervisor_is_rejected_by_lock() {
         let name = format!("jc-ime-test-lock-{}", std::process::id());
+        let first = InstanceLock::acquire(&name).expect("第一個鎖應成功");
+        let second = InstanceLock::acquire(&name);
+        assert!(
+            matches!(second, Err(Error::AlreadyRunning { .. })),
+            "第二個鎖應被拒絕"
+        );
+        drop(first);
+        let third = InstanceLock::acquire(&name).expect("釋放後應能再取得");
+        drop(third);
+    }
+
+    /// Windows 也必須擋住第二個監督者；鎖檔走帳號範圍，不受 session 影響。
+    #[cfg(windows)]
+    #[test]
+    fn second_supervisor_is_rejected_by_lock() {
+        let name = format!(r"Local\jc-ime-test-lock-{}", std::process::id());
         let first = InstanceLock::acquire(&name).expect("第一個鎖應成功");
         let second = InstanceLock::acquire(&name);
         assert!(
