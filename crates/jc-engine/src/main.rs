@@ -194,14 +194,7 @@ fn run_supervisor(options: &Options) -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(default_supervisor_log);
     let program = std::env::current_exe().context("取得目前的執行檔路徑失敗")?;
-    let mut config = SupervisorConfig::new(program, child_args(options, &socket), socket, log_path);
-    // 子行程會自己載入模型；supervisor 只負責在背景下載缺少的下載項。
-    // --allow-empty-data 不載入資料，沒有下載的必要。
-    config.download_root = if options.allow_empty_data {
-        None
-    } else {
-        data_dir_from_env(options.data.clone())
-    };
+    let config = SupervisorConfig::new(program, child_args(options, &socket), socket, log_path);
 
     match supervise::run(&config) {
         Ok(()) => Ok(()),

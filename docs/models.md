@@ -142,39 +142,6 @@ Jinen 的 GGUF 與 tokenizer 另由資料根目錄的 `manifest.json` 記錄：
 `jc-engine` 先讀 manifest 解析路徑，缺 `ja_tokenizer` 只記一次警告並維持統計
 轉換，不擋啟動；`data verify` 仍把缺席的隨附檔算成錯誤，出貨前會擋下。
 
-## 首次啟動自動下載
-
-引擎以 supervisor 模式（`--supervise`）第一次啟動時，會檢查資料根目錄 manifest
-的 `zh-select` 下載項。缺席或內容不符時，supervisor 在背景執行緒自動抓
-`models/zh-select/model.onnx`（130,723,137 bytes）與
-`models/zh-select/vocab.json`（312,708 bytes），來源是上表固定 revision 的
-HuggingFace URL，SHA-256 比對通過才改名成正式檔。
-
-- 不問使用者、不彈對話。下載在背景執行緒進行，子行程照常啟動，打字先用統計選字。
-- 用短 timeout（連線 5s、等回應標頭 10s、收本體 30s、單次請求總共 45s）避免無限等。
-  時間到就保留 `.part`，下次啟動從已抓到的位元組續傳，抓多少算多少。
-- 模型是子行程啟動時 `install_select_model()` 載入的；全部抓完並通過 SHA-256 後，
-  本次行程不會重載，log 會提示「下次重新啟動生效」（重啟子行程或重新登入皆可）。
-- 同一次 supervisor 行程只抓一次（`OnceLock`），子行程重啟不會重抓。
-- 網路錯、SHA 不符、URL 失效都只記警告，引擎繼續用統計選字，不讓啟動失敗。
-- 手動安裝可執行 `jc-cli data download`；授權是 MIT「僅下載」：模型不進 MSI、
-  不進 HF data pack，只在使用者端抓取。
-
-`supervisor.log` 的成功流程：
-
-```text
-自動下載 zh-select 模型（131035845 bytes）
-zh-select 模型已安裝，下次重新啟動生效
-```
-
-短 timeout 中斷時：
-
-```text
-zh-select 下載中斷，已保留 .part，下次啟動續傳，目前維持統計選字
-```
-
-其他失敗只會出現 `zh-select 下載失敗：...，維持統計選字`（warn），其餘流程照常。
-
 ## 散布檢查
 
 1. `models/zh-select`、`models/zh-punct` 不得出現在 release、安裝包或 git

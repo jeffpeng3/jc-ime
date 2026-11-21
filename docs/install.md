@@ -111,9 +111,7 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 
 Funmula 的 `models/zh-select` 依授權不可隨產品散布，MSI 不含它。它是目前唯一列在
 manifest 的下載項；`zh-punct` 已於 2026-11-21 從 catalog 移除，檔案保留供回溯，
-已不在 manifest。引擎第一次以 supervisor 啟動時會在背景下載它（短 timeout，
-中斷留 `.part` 下次續傳），缺檔或使用統計選字都不影響打字；模型抓完後下次重新
-啟動才會載入。手動下載用 `jc-cli data download`，詳見 [`models.md`](models.md)。
+已不在 manifest。引擎在缺檔時只警告並退回統計選字；下載流程屬於 `data-download` 任務。
 
 ### 授權文件位置
 
