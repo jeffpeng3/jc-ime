@@ -291,23 +291,21 @@ fn shutdown_closes_the_client() {
     shared.release();
 }
 
+/// 統一 transport 後非 Windows 也能連 local socket；沒有監聽者時回 Io 錯誤。
 #[cfg(not(windows))]
 #[test]
-fn connect_is_unsupported_off_windows() {
-    let err = Client::connect("jc-engine", "test", Duration::from_millis(10)).err();
-    assert!(matches!(err, Some(Error::Unsupported)));
+fn connect_fails_without_a_listener_off_windows() {
+    let name = format!("jc-ime-missing-{}", std::process::id());
+    let err = Client::connect(&name, "test", Duration::from_millis(10)).err();
+    assert!(matches!(err, Some(Error::Io(_))), "得到 {err:?}");
 }
 
 #[cfg(not(windows))]
 #[test]
-fn connect_with_retry_is_unsupported_off_windows() {
-    let err = Client::connect_with_retry(
-        "jc-engine",
-        "test",
-        Duration::from_millis(10),
-        3,
-        Duration::ZERO,
-    )
-    .err();
-    assert!(matches!(err, Some(Error::Unsupported)));
+fn connect_with_retry_fails_without_a_listener_off_windows() {
+    let name = format!("jc-ime-missing-retry-{}", std::process::id());
+    let err =
+        Client::connect_with_retry(&name, "test", Duration::from_millis(10), 3, Duration::ZERO)
+            .err();
+    assert!(matches!(err, Some(Error::Io(_))), "得到 {err:?}");
 }

@@ -1,13 +1,14 @@
 //! Windows TSF wrapper 用的引擎 client。
 //!
-//! 這個 crate 提供 named pipe 連線、握手與請求／回應往返。訊框與 JSON 一律交給
-//! [`jc_proto`]，這裡不重新實作長度前綴或訊息格式。
+//! 這個 crate 提供 [`LocalSocket`] 連線、握手與請求／回應往返。底層在 Windows
+//! 是 named pipe、在 Unix 是 unix domain socket，呼叫端只有一套程式碼。訊框與
+//! JSON 一律交給 [`jc_proto`]，這裡不重新實作長度前綴或訊息格式。
 //!
 //! # 逾時設計
 //!
 //! 每次往返都在一條背景執行緒上完成「寫出請求、讀回回應」，呼叫端用
 //! `mpsc::recv_timeout` 等結果。選這個做法而不是 overlapped I/O 的理由：同一套
-//! 程式碼可以套用在任何 `Read + Write` 串流（named pipe、stdio、測試用的假
+//! 程式碼可以套用在任何 `Read + Write` 串流（local socket、stdio、測試用的假
 //! 串流），不必為傳輸另外寫一份非同步 I/O，也不用引入 async runtime。
 //!
 //! **逾時之後這條連線就不可信**：管線裡可能還留著半個回應，下一個請求讀到的
@@ -25,19 +26,19 @@
 //! 引擎 pipe 名稱的解析規則放在 [`pipe_name`] 模組，`jc-tsf`、`jc-engine` 與這個
 //! crate 共用同一份實作。名稱帶使用者 SID 尾段，避免同機多使用者共用一條 pipe。
 
-mod pipe;
 mod pipe_name;
+mod transport;
 mod worker;
 
 use std::io::{self, Read, Write};
 use std::marker::PhantomData;
 use std::time::Duration;
 
-pub use pipe::NamedPipe;
 pub use pipe_name::{
     choose_pipe_name, current_user_sid, name_from_sid, resolve_pipe_name, ResolvedPipeName,
     BASE_PIPE_NAME, PIPE_ENV,
 };
+pub use transport::{ns_name, socket_name, LocalSocket};
 
 use jc_proto::{ErrorCode, Request, Response, PROTOCOL_VERSION};
 use worker::Worker;
@@ -67,7 +68,8 @@ pub enum Error {
     /// 等待回應逾時。連線已不可信，必須重新連線。
     #[error("等待引擎回應逾時；連線已不可信，請重新連線")]
     Timeout,
-    /// 這個平台尚未支援。非 Windows 平台呼叫 [`Client::connect`] 會得到這個錯誤。
+    /// 平台尚未支援 local socket。保留給不支援 interprocess 的平台；連線失敗
+    /// 通常是 [`Error::Io`]。
     #[error("這個平台尚未支援")]
     Unsupported,
     /// 訊框不正確（超長、截斷或 JSON 解不開）。
@@ -88,7 +90,7 @@ enum State {
 
 /// 與 `jc-engine` 連線的 client。
 ///
-/// `S` 是傳輸串流；正常情況是 [`NamedPipe`]，測試與 stdio 模式可以用任何
+/// `S` 是傳輸串流；正常情況是 [`LocalSocket`]，測試與 stdio 模式可以用任何
 /// `Read + Write` 串流。串流的所有權會移到背景執行緒，所以 `S` 必須是
 /// `Send + 'static`。
 pub struct Client<S> {
@@ -213,16 +215,16 @@ impl<S: Read + Write + Send + 'static> Client<S> {
     }
 }
 
-impl Client<NamedPipe> {
-    /// 連線到 `\\.\pipe\<name>` 並完成握手。
+impl Client<LocalSocket> {
+    /// 連到 local socket 並完成握手。
     ///
-    /// `name` 可以只寫 pipe 名稱，也可以寫完整的 `\\.\pipe\` 路徑。非 Windows
-    /// 平台回 [`Error::Unsupported`]。
+    /// `name` 是不含平台前綴的識別子：Windows 自動補 `\\.\pipe\`，Linux 走
+    /// abstract namespace。引擎一次只服務一條連線；Windows 上 instance 短暫被
+    /// 佔用時用同一個 `timeout` 呼叫 `WaitNamedPipeW` 等它釋出，避免 TSF 端
+    /// 立刻拿到 busy 也不斷重試。
     pub fn connect(name: &str, client_name: &str, timeout: Duration) -> Result<Self, Error> {
-        // 引擎一次只服務一條連線；instance 短暫被佔用時用同一個 timeout 等它
-        // 釋出，避免 TSF 端立刻拿到 ERROR_PIPE_BUSY 也不斷重試。
-        let pipe = NamedPipe::connect_with_wait(name, timeout)?;
-        Self::handshake(pipe, client_name, timeout)
+        let socket = LocalSocket::connect(name, timeout)?;
+        Self::handshake(socket, client_name, timeout)
     }
 
     /// 啟動階段的重連：最多嘗試 `attempts` 次，每次間隔 `backoff`。

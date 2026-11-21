@@ -1,15 +1,14 @@
-//! 用 unix socket 起 `jc-engine`：序列服務多條連線，`Shutdown` 後清掉 socket。
+//! 用 local socket 起 `jc-engine`：序列服務多條連線，`Shutdown` 後結束行程。
 //!
-//! 非 unix 平台沒有 unix domain socket，整份測試不編譯。
+//! 非 unix 平台原本就沒有 unix domain socket，整份測試不編譯。
 
 #![cfg(unix)]
 
-use std::io::BufReader;
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use interprocess::local_socket::{ConnectOptions, Stream};
 use jc_proto::{
     read_message, write_message, Key, Request, Response, DEFAULT_MAX_FRAME, PROTOCOL_VERSION,
 };
@@ -17,6 +16,7 @@ use jc_proto::{
 struct SocketEngine {
     child: Child,
     path: PathBuf,
+    name: String,
 }
 
 impl SocketEngine {
@@ -34,7 +34,8 @@ impl SocketEngine {
             .stderr(Stdio::null())
             .spawn()
             .expect("jc-engine 應該可以啟動");
-        let engine = Self { child, path };
+        let name = jc_windows::socket_name(&path).expect("socket 名稱");
+        let engine = Self { child, path, name };
         engine.wait_until_listening();
         engine
     }
@@ -43,19 +44,22 @@ impl SocketEngine {
     fn wait_until_listening(&self) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if UnixStream::connect(&self.path).is_ok() {
+            if self.try_connect().is_ok() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        panic!("5 秒內沒等到 {} 開始監聽", self.path.display());
+        panic!("5 秒內沒等到 {} 開始監聽", self.name);
+    }
+
+    fn try_connect(&self) -> std::io::Result<Stream> {
+        let ns = jc_windows::ns_name(&self.name)?;
+        ConnectOptions::new().name(ns).connect_sync()
     }
 
     fn connect(&self) -> Client {
-        let stream = UnixStream::connect(&self.path).expect("連上 socket");
         Client {
-            reader: BufReader::new(stream.try_clone().expect("複製 socket")),
-            writer: stream,
+            stream: self.try_connect().expect("連上 local socket"),
         }
     }
 
@@ -66,14 +70,13 @@ impl SocketEngine {
 }
 
 struct Client {
-    reader: BufReader<UnixStream>,
-    writer: UnixStream,
+    stream: Stream,
 }
 
 impl Client {
     fn call(&mut self, request: &Request) -> Response {
-        write_message(&mut self.writer, request, DEFAULT_MAX_FRAME).expect("寫請求");
-        read_message(&mut self.reader, DEFAULT_MAX_FRAME)
+        write_message(&mut self.stream, request, DEFAULT_MAX_FRAME).expect("寫請求");
+        read_message(&mut self.stream, DEFAULT_MAX_FRAME)
             .expect("讀回應")
             .expect("應該有回應")
     }
@@ -97,8 +100,8 @@ impl Drop for SocketEngine {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        if let Some(dir) = self.path.parent() {
-            let _ = std::fs::remove_dir_all(dir);
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
         }
     }
 }
@@ -106,7 +109,7 @@ impl Drop for SocketEngine {
 #[test]
 fn socket_serves_connections_sequentially_and_shutdown_cleans_up() {
     let path = temp_socket("engine.sock");
-    let mut engine = SocketEngine::spawn(path.clone());
+    let mut engine = SocketEngine::spawn(path);
 
     {
         let mut first = engine.connect();
@@ -143,8 +146,7 @@ fn socket_serves_connections_sequentially_and_shutdown_cleans_up() {
 
     assert_eq!(engine.wait(), 0, "Shutdown 應以 0 結束");
     assert!(
-        !Path::new(&path).exists(),
-        "結束後應移除 socket 檔：{}",
-        path.display()
+        engine.try_connect().is_err(),
+        "行程結束後 local socket 應不再接受連線"
     );
 }

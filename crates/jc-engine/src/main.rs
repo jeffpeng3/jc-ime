@@ -1,4 +1,4 @@
-//! 引擎行程：stdio、unix socket 或 Windows named pipe。
+//! 引擎行程：stdio 或跨平台 local socket（Windows named pipe／Unix domain socket）。
 //! 這是唯一的長期執行核心，wrapper 只透過 `jc-proto` 與它溝通。
 //!
 //! 用法：
@@ -27,16 +27,20 @@
 //! `--allow-empty-data` 跳過資料載入，只用空 session，供協定測試與除錯；
 //! 正式啟動仍要求 `--data` 或 `JC_DATA`。
 //!
-//! stdio 模式在所有平台都能跑；`--socket` 在 unix 是 unix domain socket，
-//! 在 Windows 是本機 named pipe（見 `pipe_windows`），其他平台回報尚未實作。
+//! stdio 模式在所有平台都能跑；`--socket` 走 interprocess 的 local socket，
+//! 底層在 unix 是 unix domain socket、在 Windows 是本機 named pipe，兩端的
+//! 名稱解析共用 `jc_windows`。其他平台回報尚未實作。
 
 use std::ffi::OsString;
-use std::io::{self, BufReader, BufWriter};
-#[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
+use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
+#[cfg(windows)]
+use interprocess::os::windows::local_socket::ListenerOptionsExt;
+#[cfg(windows)]
+use interprocess::os::windows::security_descriptor::SecurityDescriptor;
 use jc_core::session::{Session, SessionConfig};
 use jc_core::Mode;
 use jc_engine::config;
@@ -44,15 +48,14 @@ use jc_engine::loader::load_engine_data;
 use jc_engine::supervise::{self, SupervisorConfig};
 use jc_engine::{engine_label, serve, Engine};
 use jc_proto::{DEFAULT_MAX_FRAME, PROTOCOL_VERSION};
-
 #[cfg(windows)]
-mod pipe_windows;
+use widestring::U16CString;
 
 /// 啟動方式。
 enum Transport {
     /// 標準輸入／輸出，開發期與整合測試用。
     Stdio,
-    /// unix domain socket（unix）或 named pipe（Windows），一次服務一個連線。
+    /// local socket：unix domain socket 或 named pipe，一次服務一個連線。
     Socket(PathBuf),
 }
 
@@ -283,29 +286,47 @@ fn default_supervisor_log() -> PathBuf {
     std::env::temp_dir().join("jc-ime").join("supervisor.log")
 }
 
-/// 在 `path` 上監聽並序列處理連線，收到 `Shutdown` 才回傳。
-#[cfg(unix)]
+/// 在 `path` 對應的 local socket 上監聽並序列處理連線，收到 `Shutdown` 才回傳。
+///
+/// 平台差異全部交給 interprocess：Windows 是 named pipe，Unix 是 unix domain
+/// socket。一次只服務一條連線，維持 pipe-busy 修正後的一對一模型；連線時機由
+/// focus-pipe 統一管理。訊框仍走 `jc_proto`，這裡只負責搬位元組。
+#[cfg(any(unix, windows))]
 fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
-    prepare_socket_path(path)?;
-    let listener = UnixListener::bind(path)
-        .with_context(|| format!("綁定 unix socket 失敗：{}", path.display()))?;
-    log::info!("jc-engine 監聽 {}", path.display());
+    let name = jc_windows::socket_name(path)?;
+    #[cfg(windows)]
+    let mut options = ListenerOptions::new().name(jc_windows::ns_name(&name)?);
+    #[cfg(not(windows))]
+    let options = ListenerOptions::new().name(jc_windows::ns_name(&name)?);
+    #[cfg(windows)]
+    {
+        if let Some(sd) = windows_security_descriptor() {
+            options = options.security_descriptor(sd);
+        }
+    }
+    let listener = options
+        .create_sync()
+        .with_context(|| format!("監聽 local socket 失敗：{name}"))?;
+    log::info!("jc-engine 監聽 local socket {name}");
 
-    for connection in listener.incoming() {
-        let stream = match connection {
+    loop {
+        let stream = match listener.accept() {
             Ok(stream) => stream,
             Err(err) => {
                 log::warn!("接受連線失敗：{err}");
                 continue;
             }
         };
-        log::debug!("接受連線");
-        let reader = stream.try_clone().context("複製連線 handle 失敗")?;
-        let mut input = BufReader::new(reader);
-        let mut output = BufWriter::new(stream);
+        log::debug!("接受 local socket 連線");
+        // Stream 的共用參考同時實作 Read 與 Write，不需要複製 handle。
+        let mut input = BufReader::new(&stream);
+        let mut output = BufWriter::new(&stream);
         // 單一連線的錯誤不影響下一個連線。
         if let Err(err) = serve(engine, &mut input, &mut output, max_frame) {
             log::warn!("連線結束：{err}");
+        }
+        if let Err(err) = output.flush() {
+            log::warn!("寫出最後一個回應失敗：{err}");
         }
         if engine.is_shutdown() {
             log::debug!("收到 Shutdown，結束行程");
@@ -314,37 +335,42 @@ fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::R
         engine.reset_session();
     }
 
-    drop(listener);
-    if let Err(err) = std::fs::remove_file(path) {
-        log::warn!("移除 socket 檔失敗：{err}");
-    }
     Ok(())
 }
 
-/// Windows：`path` 是 pipe 名稱或路徑，交給 named pipe 分支。
+/// Windows pipe 的 DACL：目前使用者、SYSTEM 與 Administrators 可完整讀寫。
+///
+/// 取不到使用者 SID 時退回 interprocess 的預設 DACL 並記一次警告，不擋引擎啟動。
 #[cfg(windows)]
-fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
-    pipe_windows::serve_pipe(engine, path, max_frame)
+fn windows_security_descriptor() -> Option<SecurityDescriptor> {
+    let sid = match jc_windows::current_user_sid() {
+        Some(sid) => sid,
+        None => {
+            log::warn!("取不到目前使用者的 SID，pipe 改用預設 DACL");
+            return None;
+        }
+    };
+    let sddl = format!("O:{sid}G:BAD:(A;;GA;;;{sid})(A;;GA;;;SY)(A;;GA;;;BA)");
+    let wide = match U16CString::from_str(&sddl) {
+        Ok(wide) => wide,
+        Err(err) => {
+            log::warn!("pipe SDDL 轉 UTF-16 失敗：{err}");
+            return None;
+        }
+    };
+    match SecurityDescriptor::deserialize(&wide) {
+        Ok(sd) => Some(sd),
+        Err(err) => {
+            log::warn!("pipe SDDL 反序列化失敗：{err}");
+            None
+        }
+    }
 }
 
 /// 既不是 unix 也不是 Windows 的平台沒有 socket 傳輸，明確回報錯誤而不是 panic。
 #[cfg(not(any(unix, windows)))]
 fn serve_socket(_engine: &mut Engine, _path: &Path, _max_frame: usize) -> anyhow::Result<()> {
     bail!("這個平台不支援 --socket，只能使用 stdio 模式")
-}
-
-/// 清掉上次留下的 socket 檔；有引擎正在監聽時拒絕啟動。
-#[cfg(unix)]
-fn prepare_socket_path(path: &Path) -> anyhow::Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    if UnixStream::connect(path).is_ok() {
-        bail!("已經有引擎在 {} 監聽", path.display());
-    }
-    log::debug!("移除殘留的 socket 檔 {}", path.display());
-    std::fs::remove_file(path)
-        .with_context(|| format!("移除殘留的 socket 檔失敗：{}", path.display()))
 }
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
@@ -467,7 +493,8 @@ fn value_of(args: &[String], index: &mut usize, flag: &str) -> Result<String, St
 
 /// `--socket` 的說明文字依平台而不同。
 #[cfg(unix)]
-const SOCKET_HELP: &str = "  --socket <path>     改用 unix domain socket，一次服務一個連線\n";
+const SOCKET_HELP: &str =
+    "  --socket <path>     改用 local socket（unix domain socket），一次服務一個連線\n";
 /// Windows 的 `--socket` 是 named pipe 名稱或路徑。
 #[cfg(windows)]
 const SOCKET_HELP: &str =
