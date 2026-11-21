@@ -9,6 +9,11 @@
 //! jc-engine --supervise [--socket <name>] [--supervisor-log <path>]
 //! ```
 //!
+//! Windows 正式啟動與 autostart 都**不帶** `--socket`：引擎和 `jc-tsf` 共用
+//! `jc_windows::resolve_pipe_name()`，從 SID 尾段推出 `jc-ime-<rid>`。顯式
+//! `--socket` 會跳過 SID 推導；要手動指定，必須同時把 `JC_IME_PIPE` 或
+//! `HKCU\Software\jc-ime\EnginePipe` 設成同一個值，讓兩端一致。
+//!
 //! 啟動時讀 `settings.json`（`--settings` 或資料根目錄），轉成
 //! `SessionConfig`；CLI 參數優先於檔案。設定檔缺漏或壞掉只記警告，不讓引擎
 //! 啟動失敗。`--print-settings` 印出生效後的設定後直接結束。

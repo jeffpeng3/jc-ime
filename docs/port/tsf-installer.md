@@ -50,8 +50,22 @@ Go 參考實作沒有 MSI，Windows 安裝過程分散在 `0c-update` 與 NSIS �
 | 下載項 | 不進 MSI | `zh-select` 是唯一的下載項，Funmula 授權只允許使用者下載；`zh-punct` 已於 2026-11-21 從 catalog 移除 |
 | `settings.json` | MSI 不安裝 | 不覆蓋既有檔；第一次按「套用」由設定程式建立 |
 | 引擎啟動 | `HKLM\...\Run` 的 `REG_EXPAND_SZ` | `jc-tsf` 只連 pipe，不會拉起引擎；`%LOCALAPPDATA%` 由每位使用者各自展開 |
+| 引擎 pipe 名稱 | autostart 不帶 `--socket`，交給 `resolve_pipe_name()` | `jc-tsf` 與 `jc-engine` 共用這套規則，從 SID 尾段推出 `jc-ime-<rid>`；寫死 `--socket jc-ime` 會讓兩邊不同名，TIP 連不上時按鍵全放行成英文。自訂名稱要同時設 `JC_IME_PIPE` 或 `HKCU\Software\jc-ime\EnginePipe` |
 | 版本 | `UpgradeCode` 固定、`Version` 取自 workspace `Cargo.toml` | 升級由 `MajorUpgrade` 處理，版本號不在 WXS 手抄 |
 | CRT | `-C target-feature=+crt-static` 統一放在 `.cargo/config.toml` 的兩個 Windows target | TSF DLL 被載入 explorer，不能依賴 `vcruntime140.dll`（`docs/history.md`）；build.ps1 與 CI 共用同一組 rustflags，避免指紋失效重編 |
+
+### 引擎與 TIP 的 pipe 名稱一致性
+
+Windows 上 `jc-tsf` 的 `pipe_name()` 與 `jc-engine` 的 `default_supervisor_socket()`
+都呼叫 `jc_windows::resolve_pipe_name()`。順序是 `JC_IME_PIPE`、
+`HKCU\Software\jc-ime\EnginePipe`、SID 尾段 `jc-ime-<rid>`，最後才退回共用的
+`jc-ime`。`EngineAutostart` 只帶 `--data` 與 `--settings`，不帶 `--socket`；
+`installer/validate-linux.sh` 會檢查 autostart 沒有 `--socket`，且兩個參數還在。
+`crates/jc-windows/src/pipe_name.rs` 的測試鎖住「override 會讓兩端不同名」這件事。
+
+覆寫只適合除錯，而且兩端都要設成同一個值。只改引擎的 `--socket` 時，TIP 仍從
+SID 推出 `jc-ime-1001`，引擎監聽另一個名稱，log 會出現「連線引擎 pipe
+jc-ime-1001 失敗」，按鍵全部放行成英文。
 
 ## WiX v5 與 v3 的差異
 
@@ -129,8 +143,8 @@ WiX v5 官方只支援 Windows，Linux 上的 `wix build` 有兩個限制：
 6. 32 位元應用程式（例如舊版 Office）與 64 位元應用程式共用同一個「jc 注音」項目，
    而且都能輸入；`reg query ... /reg:32` 指到 `jc-tsf-x86.dll`、`/reg:64` 指到
    `jc-tsf.dll`。
-7. 引擎 Run 項目在多使用者、多工作階段下的行為：每個工作階段各一個引擎，pipe 同名，
-   client 連到哪個實例由 Windows 決定。
+7. 引擎 Run 項目在多使用者、多工作階段下的行為：不同 SID 的 pipe 名稱不同；
+   同一使用者的多個 RDP 工作階段仍共用名稱，client 連到哪個實例由 Windows 決定。
 8. `installer-payload` 補進來的授權文件：`%ProgramFiles%\jc-ime\legal\` 的實際
    內容、「jc 注音授權」捷徑開啟記事本的行為、反安裝移除整個 `legal\` 目錄。
 

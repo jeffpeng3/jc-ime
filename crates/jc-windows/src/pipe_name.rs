@@ -11,6 +11,13 @@
 //!
 //! 名稱含使用者識別，避免同一台機器上兩個使用者同時登入時連到同一個引擎。
 //!
+//! 引擎與 TIP 必須走這同一套規則：`jc-engine` 的 `default_supervisor_socket()`
+//! 和 `jc-tsf` 的 `pipe_name()` 都呼叫 [`resolve_pipe_name`]，autostart
+//! （`installer/jc-ime.wxs` 的 `EngineAutostart`）因此不帶 `--socket`。顯式
+//! `--socket` 是 override，會跳過 SID 推導；要手動指定，兩端都要設定同一個
+//! `JC_IME_PIPE` 或註冊機碼值，只改一方的 `--socket` 會讓 pipe 名稱不同，
+//! 按鍵全部放行成英文。
+//!
 //! 非 Windows 平台沒有 SID，固定用 [`BASE_PIPE_NAME`] 或 [`PIPE_ENV`]，不會
 //! 產生警告。
 
@@ -322,6 +329,21 @@ mod tests {
     fn blank_override_is_ignored() {
         let resolved = choose_pipe_name(Some("   "), Some("S-1-5-21-1-2-3-1001"));
         assert_eq!(resolved.name, "jc-ime-1001");
+    }
+
+    /// TIP 與引擎都呼叫 `resolve_pipe_name()`，autostart 不得帶 `--socket` 覆寫。
+    /// 一旦有 override，兩端就會得到不同名稱，TIP 連不上引擎，按鍵全放行。
+    #[test]
+    fn autostart_override_would_split_tip_and_engine() {
+        let sid = Some("S-1-5-21-1-2-3-1001");
+        let tip = choose_pipe_name(None, sid);
+        let engine = choose_pipe_name(None, sid);
+        assert_eq!(tip, engine);
+        assert_eq!(engine.name, "jc-ime-1001");
+
+        let overridden = choose_pipe_name(Some(BASE_PIPE_NAME), sid);
+        assert_eq!(overridden.name, BASE_PIPE_NAME);
+        assert_ne!(overridden.name, tip.name);
     }
 
     #[test]

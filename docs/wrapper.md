@@ -161,7 +161,8 @@ pipe 開 `PIPE_REJECT_REMOTE_CLIENTS`，一次一個 instance。Windows 分支�
 編譯與行為由 CI 的 `windows (msvc)` job 驗證。
 
 `--supervise` 沒給 `--socket` 時，名稱由 `jc-windows::resolve_pipe_name` 決定，
-`jc-tsf`、監督者與子行程共用同一份規則：
+`jc-tsf`、監督者與子行程共用同一份規則。MSI 的 `EngineAutostart` 因此不帶
+`--socket`，避免引擎拿到固定名稱而與 TIP 不同：
 
 | 順序 | 來源 | 值 |
 |---|---|---|
