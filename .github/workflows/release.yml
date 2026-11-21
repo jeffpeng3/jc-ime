@@ -1,15 +1,35 @@
 name: Release
 
-# 發佈流程：
-#   push tag v<version> -> verify -> windows MSI + linux tar.gz -> GitHub Release
-#   workflow_dispatch   -> verify -> windows MSI + linux tar.gz（不建立 Release）
+# 由 ci.yml 的 release job 呼叫，跑在 push main 的 main scope：
+#   push main（帶 annotated tag）-> ci.yml check-tag + 測試 -> 本 workflow
+#   -> windows MSI + linux tar.gz -> GitHub Release
+# workflow_dispatch 保留供手動測試，只產 artifact，不建立 Release。
 #
-# 版本號唯一來源是 Cargo.toml 的 [workspace.package] version。標籤觸發時
-# 標籤必須是 v<version>，且與 Cargo.toml 相同。發佈版本可以有 pre-release
-# 後綴（v0.1.0-rc.1）；MSI ProductVersion 另取前三段數字（0.1.0）。
+# 版本號唯一來源是 Cargo.toml 的 [workspace.package] version。ci.yml 的
+# check-tag 會確認 HEAD 的 v* 標籤去掉 v 後等於它，再把 version／msi_version
+# 傳進來。發佈版本可以有 pre-release 後綴（v0.1.0-rc.1）；MSI ProductVersion
+# 另取前三段數字（0.1.0）。
 on:
-  push:
-    tags: ["v*"]
+  workflow_call:
+    inputs:
+      version:
+        description: "完整版本（含 pre-release 後綴），由 ci.yml check-tag 傳入"
+        required: true
+        type: string
+      msi_version:
+        description: "MSI ProductVersion（三段數字），由 ci.yml check-tag 推導"
+        required: true
+        type: string
+      publish:
+        description: "是否建立 GitHub Release；只有帶版本標籤的 push main 為 true"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      SIGNING_PFX_BASE64:
+        required: false
+      SIGNING_PFX_PASSWORD:
+        required: false
   workflow_dispatch:
     inputs:
       data_bundle_url:
@@ -42,10 +62,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # 只讀 Cargo.toml 與 Git ref：不裝工具鏈、不裝系統依賴、不碰編譯快取。
+      # 只讀 Cargo.toml 與輸入：不裝工具鏈、不裝系統依賴、不碰編譯快取。
+      # workflow_call 的版本由 ci.yml check-tag 傳入並再核對一次；
+      # workflow_dispatch 沒有輸入時退回 Cargo.toml 版本，供手動測試。
       - name: 版本號一致性
         id: version
         shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_MSI_VERSION: ${{ inputs.msi_version }}
         run: |
           set -euo pipefail
 
@@ -68,14 +93,10 @@ jobs:
           PY
           )
 
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            if [[ "${GITHUB_REF_NAME}" != v* ]]; then
-              echo "::error::標籤必須是 v<version>，目前是 ${GITHUB_REF_NAME}"
-              exit 1
-            fi
-            version="${GITHUB_REF_NAME#v}"
+          if [[ -n "${INPUT_VERSION}" ]]; then
+            version="${INPUT_VERSION}"
             if [[ "${version}" != "${cargo_version}" ]]; then
-              echo "::error::標籤版本 ${version} 與 Cargo.toml 的 ${cargo_version} 不一致"
+              echo "::error::傳入版本 ${version} 與 Cargo.toml 的 ${cargo_version} 不一致"
               exit 1
             fi
           else
@@ -89,6 +110,10 @@ jobs:
             exit 1
           fi
           msi_version="${version%%-*}"
+          if [[ -n "${INPUT_MSI_VERSION}" && "${INPUT_MSI_VERSION}" != "${msi_version}" ]]; then
+            echo "::error::傳入 msi_version ${INPUT_MSI_VERSION} 與推導的 ${msi_version} 不一致"
+            exit 1
+          fi
 
           echo "Cargo.toml 版本：${cargo_version}"
           echo "本次發佈版本：${version}"
@@ -426,8 +451,10 @@ jobs:
 
   publish:
     name: publish（GitHub Release）
-    # 只在標籤 push 時建立 Release；workflow_dispatch 只產 artifact。
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # 只有 ci.yml 在帶版本標籤的 push main 傳 publish: true 時建立 Release；
+    # workflow_dispatch 只產 artifact。測試由 ci.yml caller job 的 needs 保證，
+    # 這裡不必再查 CI run。
+    if: inputs.publish
     needs: [verify, windows, linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -436,73 +463,6 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v5
-
-      # CI 是唯一跑測試的關卡。它在 push main 時觸發，所以同一 commit 必須有
-      # 成功的 CI run 才允許發 Release；查不到、還在跑、沒通過都直接擋下。
-      - name: 檢查同一 commit 的 CI 通過
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          COMMIT_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          echo "查詢 commit ${COMMIT_SHA} 的 CI run（ci.yml）..."
-          if ! runs=$(gh run list --workflow ci.yml --commit "${COMMIT_SHA}" \
-            --json databaseId,status,conclusion,html_url --limit 100); then
-            echo "::error::查詢 CI run 失敗；請確認 actions: read 權限與 GH_TOKEN 有效。"
-            exit 1
-          fi
-
-          # heredoc 會佔用 stdin，所以用環境變數把 JSON 傳給 Python。
-          ci_state=$(RUNS_JSON="${runs}" python3 - <<'PY'
-          import json
-          import os
-
-          runs = json.loads(os.environ["RUNS_JSON"])
-          if not runs:
-              print("none")
-          elif any(run.get("status") in {"in_progress", "queued", "waiting", "pending", "requested"} for run in runs):
-              print("running")
-          elif any(run.get("conclusion") == "success" for run in runs):
-              print("success")
-          else:
-              print("failed")
-          PY
-          )
-
-          echo "同一 commit 的 CI run："
-          RUNS_JSON="${runs}" python3 - <<'PY'
-          import json
-          import os
-
-          for run in json.loads(os.environ["RUNS_JSON"]):
-              print("  #{databaseId} status={status} conclusion={conclusion} {url}".format(
-                  databaseId=run.get("databaseId"),
-                  status=run.get("status"),
-                  conclusion=run.get("conclusion") or "-",
-                  url=run.get("html_url", ""),
-              ))
-          PY
-
-          case "${ci_state}" in
-            success)
-              echo "CI 已通過，繼續 publish。"
-              ;;
-            none)
-              echo "::error::查不到 commit ${COMMIT_SHA} 的 CI run。請先將此 commit push 到 main，等 CI 通過後再推送 tag 發版。"
-              exit 1
-              ;;
-            running)
-              echo "::error::commit ${COMMIT_SHA} 的 CI 仍在執行。請等 CI 跑完並通過後再發版。"
-              exit 1
-              ;;
-            failed)
-              echo "::error::commit ${COMMIT_SHA} 的 CI 未通過（見上方 conclusion）。請修正後讓 CI 通過再發版。"
-              exit 1
-              ;;
-          esac
 
       - name: 下載 Windows artifact
         uses: actions/download-artifact@v7

@@ -20,6 +20,83 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # 與測試並行起步。只讀 HEAD 上的 v* 標籤，決定要不要接著發版。
+  # fetch-depth: 0 才看得到（含 annotated）標籤。
+  check-tag:
+    name: check-tag（版本標籤檢查）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      has_tag: ${{ steps.tag.outputs.has_tag }}
+      version: ${{ steps.tag.outputs.version }}
+      msi_version: ${{ steps.tag.outputs.msi_version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: 檢查 HEAD 的版本標籤
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cargo_version=$(python3 - <<'PY'
+          import pathlib
+          import re
+
+          text = pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
+          section = re.search(r"^\[workspace\.package\]\s*$", text, re.M)
+          if not section:
+              raise SystemExit("Cargo.toml 找不到 [workspace.package]")
+          body = text[section.end():]
+          next_section = re.search(r"^\[", body, re.M)
+          if next_section:
+              body = body[:next_section.start()]
+          version = re.search(r'^version\s*=\s*"([^"]+)"', body, re.M)
+          if not version:
+              raise SystemExit("[workspace.package] 找不到 version")
+          print(version.group(1))
+          PY
+          )
+
+          v_tags=()
+          while IFS= read -r tag; do
+            [[ -n "${tag}" ]] || continue
+            [[ "${tag}" == v* ]] && v_tags+=("${tag}")
+          done < <(git tag --points-at HEAD)
+
+          if [[ ${#v_tags[@]} -eq 0 ]]; then
+            echo "HEAD 沒有 v* 標籤；一般 push，只跑測試。"
+            echo "has_tag=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ ${#v_tags[@]} -gt 1 ]]; then
+            echo "::error::HEAD 有多個 v* 標籤：${v_tags[*]}；發版需要單一版本標籤。"
+            exit 1
+          fi
+
+          tag="${v_tags[0]}"
+          version="${tag#v}"
+          if [[ "${version}" != "${cargo_version}" ]]; then
+            echo "::error::標籤版本 ${version} 與 Cargo.toml 的 ${cargo_version} 不一致"
+            exit 1
+          fi
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::版本 ${version} 不是 x.y.z 或 x.y.z-<pre-release>"
+            exit 1
+          fi
+          msi_version="${version%%-*}"
+
+          echo "標籤：${tag}；版本：${version}；MSI 版本：${msi_version}"
+          {
+            echo "has_tag=true"
+            echo "version=${version}"
+            echo "msi_version=${msi_version}"
+          } >> "${GITHUB_OUTPUT}"
+
   linux:
     name: linux (core)
     runs-on: ubuntu-24.04
@@ -268,6 +345,26 @@ jobs:
           Write-Host "資料根目錄：$dataRoot"
           Write-Host "資料版本：$dataVersion"
       # 只跑 test（debug）。原本先 build --release 再 test，等於同一份程式編兩次；
-      # release 建置改由 release workflow 在標籤上做。
+      # release 建置改由下面的 release job 呼叫 release.yml，在同一個 main scope 做。
       - name: Test
         run: cargo test --workspace
+
+  # 一般 push 跳過。帶 annotated tag 的 push main 才跑，release-* 快取因此寫在
+  # main scope，和 tag scope 無關。needs 含 linux／windows 測試，測試失敗不會發版；
+  # publish 的 needs 鏈也因此包含測試，不必再查 API。
+  release:
+    name: release（有版本標籤時發版）
+    needs: [check-tag, linux, windows]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.check-tag.outputs.has_tag == 'true'
+    # reusable workflow 只能降權不能升權；publish 要 contents: write，
+    # linux 收尾清理要 actions: write，所以 caller 先給到這兩個權限。
+    permissions:
+      contents: write
+      actions: write
+    uses: ./.github/workflows/release.yml
+    with:
+      version: ${{ needs.check-tag.outputs.version }}
+      msi_version: ${{ needs.check-tag.outputs.msi_version }}
+      publish: true
+    # 簽章 secret 要傳進 callee；沒有 secret 時 callee 自己跳過簽章。
+    secrets: inherit

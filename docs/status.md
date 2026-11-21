@@ -28,8 +28,8 @@
 | TSF 註冊 | CLSID 改由 MSI 的 `<Class>` 寫入，helper 只註冊 profile 與三個分類；反安裝不呼叫 `InstallLayoutOrTip(ILOT_UNINSTALL)` | `docs/integration-log.md` 02:40、02:50，`docs/port/tsf-installer.md` |
 | profile 啟用 | `bEnabledByDefault` 改 `true`，`Enable=1`；仍不呼叫 `ActivateProfile`，不改系統預設輸入法 | `docs/integration-log.md` 03:20，`docs/port/tsf-skeleton.md` |
 | 量測工具 | `jc-cli` 新增 `mixed-diff`、`corpus-diff`，只加工具，不改 `mixed.rs`／`mixed_latin.rs` | `docs/integration-log.md` 04:40，`docs/reports/segment-diff-2026-11-21.md`、`docs/reports/real-corpus-2026-11-21.md` |
-| workflow | `actions/checkout@v5`、`upload-artifact@v6`、`download-artifact@v7`；CI 兩個 job 在測試前下載與 release 相同的資料包，公開 variable 提供 URL／SHA-256 並寫入 `JC_IMEDATA`，空值直接失敗；release 的 `verify` 只查版本號，Windows 改跑 `scripts/verify-bundle.py`，`publish` 前查同一 commit 的 CI；Node 20 的 annotation 待下次 CI／release run 驗證消失 | `docs/integration-log.md` 05:10、`docs/release.md` |
-| 發版快取 | tag scope 讓 Windows job 每次 `No cache found.`；打 tag 前先在 `main` 用 `workflow_dispatch` 暖機 | `docs/release.md`「快取與發版流程」 |
+| workflow | `actions/checkout@v5`、`upload-artifact@v6`、`download-artifact@v7`；CI 兩個測試 job 在測試前下載與 release 相同的資料包，公開 variable 提供 URL／SHA-256 並寫入 `JC_IMEDATA`，空值直接失敗；`check-tag` 查 HEAD 的 annotated tag，`release` job（`needs: [check-tag, linux, windows]`）用 `workflow_call` 呼叫 `release.yml`；Windows 改跑 `scripts/verify-bundle.py`，`publish` 靠 needs 鏈而不查 CI；Node 20 的 annotation 待下次 CI／release run 驗證消失 | `docs/integration-log.md` 05:10、`docs/release.md` |
+| 發版快取 | 已改為 CI 在 `push main` 呼叫 release；`release-windows`／`release-linux` 寫在 main scope，不再有 tag scope miss，也不必暖機 | `docs/release.md`「快取與發版流程」 |
 | 資料 catalog | `zh_punct` 從 catalog 移除，manifest 10 筆 → 8 筆（6 個隨附、2 個 `zh_select` 下載項）；`data verify` 人讀輸出隱藏缺席的下載項 | `jc-ime-data/manifest.json`、`docs/release.md` |
 
 ## 數字

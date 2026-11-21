@@ -1,19 +1,23 @@
 # 發佈流程
 
-`release.yml` 負責 release 建置與 GitHub Release；日常 CI（`ci.yml`）跑 debug 測試與
-clippy，並在測試前下載與 release 相同的資料包，把 `JC_IMEDATA` 指向解開後的根目錄。
-測試只在 CI 跑：`verify` job 只檢查版本號，`publish` 在建立 Release 前會查同一 commit
-的 CI 是否成功。
+`ci.yml` 是唯一入口。push main 時先並行跑 `check-tag` 與測試（linux／windows）；
+兩者都成功且 HEAD 帶 annotated `v<version>` 標籤時，`release` job 才用
+`workflow_call` 呼叫 `release.yml` 做 release 建置與 GitHub Release。
+`release.yml` 的 `verify` 只檢查版本號；測試結果靠 caller job 的 `needs` 傳遞，
+`publish` 不再查 CI API。所有 job 的 ref 都是 `refs/heads/main`。
 
 ## 觸發方式
 
 | 觸發 | 行為 | 建立 GitHub Release |
 |---|---|---|
-| push tag `v<version>` | `verify` → `windows` → `linux` → `publish` | 是 |
+| push main（帶 annotated `v<version>` 標籤） | `check-tag` + 測試 → `windows` MSI + `linux` tar.gz → `publish` | 是 |
+| push main（無版本標籤）／pull request | 只跑 `check-tag` + 測試 | 否 |
 | Actions → Release → Run workflow | `verify` → `windows` → `linux` | 否，只留 artifact |
 
+`git push --follow-tags origin main` 把 commit 連同 annotated tag 一起推上 main，
+所以 release 跑在 main scope，`release-*` 快取不再掛在 tag ref。
 手動觸發可以填 `data_bundle_url`、`data_bundle_sha256` 覆寫公開 repo variable，
-適合第一次試跑或換資料包來源。手動觸發的版本號取自 `Cargo.toml`。
+適合第一次試跑或換資料包來源。手動觸發的版本號取自 `Cargo.toml`，不會發 Release。
 
 ## 版本號規則
 
@@ -23,7 +27,8 @@ clippy，並在測試前下載與 release 相同的資料包，把 `JC_IMEDATA` 
 - Release 標題、artifact 名稱、MSI 檔名都用完整版本：
   - `jc-ime-<version>-x64.msi`
   - `jc-ime-<version>-linux-x86_64.tar.gz`
-- 手動觸發不會建立 Release；要發佈仍要 push 對應的 tag。
+- 手動觸發不會建立 Release；要發佈仍要在 main commit 上打 annotated tag，並用
+  `--follow-tags` 一起 push。
 - pre-release 版本的 GitHub Release 會標成 pre-release，不會蓋掉 Latest 版。
 
 ### pre-release 版本規則
@@ -55,8 +60,8 @@ MSI 的 `ProductVersion` 只接受三段數字，但發佈版本可以有 pre-re
 發布 RC 的流程與正式版相同，只是 tag 帶後綴：
 
 ```sh
-git tag v0.1.0-rc.1
-git push origin v0.1.0-rc.1
+git tag -a v0.1.0-rc.1 -m release
+git push --follow-tags origin main
 ```
 
 ## 前置設定
@@ -194,10 +199,10 @@ signtool verify /pa /v jc-ime-<version>-x64.msi
 
 | Job | 產出 |
 |---|---|
-| `verify` | 只檢查 tag／`Cargo.toml` 版本一致且符合 `x.y.z` 或 `x.y.z-<pre-release>`，輸出完整版本與 `msi_version`；不跑測試、不編譯 |
+| `verify` | 檢查傳入版本與 `Cargo.toml` 一致且符合 `x.y.z` 或 `x.y.z-<pre-release>`，輸出完整版本與 `msi_version`；手動觸發沒有輸入時退回 `Cargo.toml` 版本；不跑測試、不編譯 |
 | `windows` | 下載資料包並比對 SHA-256 → `python scripts/verify-bundle.py`（Full 驗證，等價 `jc-cli data verify`）→ 安裝 WiX v5 → `installer/build.ps1 -MsiVersion <x.y.z>` → MSI、checksum、`data-manifest.json` |
 | `linux` | 安裝 GPUI 系統依賴 → `cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui` → 打包 tar.gz 與 checksum |
-| `publish` | 只在 tag push 執行；先查同一 commit 的 `ci.yml` 為 success，查不到／還在跑／未通過就失敗；然後下載兩個 artifact，建立或更新 GitHub Release |
+| `publish` | 只有 `ci.yml` 帶版本標籤呼叫時執行（`inputs.publish`）；needs 鏈包含 `ci.yml` 的 linux／windows 測試 job，失敗就不發版；不再查 CI run；下載兩個 artifact，建立或更新 GitHub Release |
 
 Windows 建置必須指定 target（`--target x86_64-pc-windows-msvc`），否則 `build.ps1` 的 payload 路徑會不符；x64 找不到 `target/<triple>/release` 時會退回 `target/release`，並印出警告與實際路徑。
 
@@ -207,7 +212,7 @@ Windows 的 Python 輸出必須是 UTF-8。Windows job 設 `PYTHONUTF8=1`，`bui
 
 `release.yml` 不跑 `cargo fmt`、clippy、test；那些由 `ci.yml` 在日常 push／PR 負責。`verify` 當初的 `cargo test --workspace --release` 已移除：CI 在 push main 時跑過同一批測試，release profile 重跑只是多花 8～9 分鐘。
 
-`publish` 用 `gh run list --workflow ci.yml --commit ${{ github.sha }}` 查同一 commit 的 CI。查不到 run、run 還在 in_progress／queued、或 conclusion 不是 success，就印明確訊息並讓 publish 失敗。tag 指向的 commit 若還沒讓 main CI 跑過，必須先 push 到 main 讓 CI 通過再打 tag。`workflow_dispatch` 不進 publish，不受這個檢查影響。
+`ci.yml` 的 `release` job 宣告 `needs: [check-tag, linux, windows]`，而 `release.yml` 是由它呼叫的 reusable workflow，所以 publish 的 needs 鏈包含測試 job：check-tag 失敗、任一測試失敗、或沒有版本標籤時，整個 release workflow 都不會執行。`workflow_dispatch` 不帶 `publish: true`，只產 artifact。
 
 ## 建置快取
 
@@ -244,9 +249,9 @@ Cache saved with key: ...                # 存檔
 Cache Size: ~NNN MB (NNNNNNNN B)         # 這次存了多大
 ```
 
-`release-*` 的快取寫在觸發的 ref scope：不同 tag 互不相通，`v0.1.1` 讀不到 `v0.1.0`
-存的快取。要讓 tag 觸發的 release 命中快取，得先在 `main` 手動暖機，讓它從預設分支
-fallback，程序見下面的「快取與發版流程」。
+`release-*` 快取現在寫在 `push main` 的 main scope：release 由 `ci.yml` 呼叫，ref 固定是
+`refs/heads/main`，不同版本共用同一份快取，不再有 tag scope 每次 miss 的問題。
+不需要暖機，也不需要手動 `workflow_dispatch`。
 
 快取上限是每個 repo 10 GB（超過按最久未存取淘汰，7 天沒用到自動刪）。本機 debug 建置
 量到 38 個測試執行檔共 4.5 GB，CI 的快取估計每個 OS 2–4 GB（壓縮後），Linux 加 Windows
@@ -267,7 +272,7 @@ fallback，程序見下面的「快取與發版流程」。
 
 ## 快取與發版流程
 
-### 發現：tag 觸發的 Windows job 每次都 miss
+### 發現：tag scope 讓 Windows job 每次都 miss（已修正）
 
 rc.5 與 rc.7 的 `windows` job log 都印出 `No cache found.`。跑完後
 `Post Run Swatinem/rust-cache` 又存了一份 967 MB 快取，等於每次重蓋。
@@ -279,9 +284,9 @@ Restore Key: v0-rust-release-windows-Windows_NT-x64-ea627442
 Cache Key:   v0-rust-release-windows-Windows_NT-x64-ea627442-9e16f66d
 ```
 
-差別在 scope。release 由 `push tag v*` 觸發，快取寫在該 tag 的 scope；GitHub 只允許
-從同一 ref 或預設分支 `main` 還原。下一次 tag 是新 ref，讀不到前一個 tag 存的快取，
-所以每次都 miss。
+差別在 scope。以前 release 由 `push tag v*` 觸發，快取寫在該 tag 的 scope；GitHub
+只允許從同一 ref 或預設分支 `main` 還原。下一次 tag 是新 ref，讀不到前一個 tag 存的
+快取，所以每次都 miss。
 
 rc.7 windows job 的實際時間分佈：
 
@@ -294,26 +299,31 @@ rc.7 windows job 的實際時間分佈：
 現在驗證資料包改走 `scripts/verify-bundle.py`，不再單獨編 `jc-cli`，這一步從約 6 分鐘
 降到幾秒；`verify` job 也不再跑 release 測試或寫入 `release-linux`。
 
+release 改由 `ci.yml` 在 `push main` 時呼叫後，ref 固定是 `refs/heads/main`，
+`release-windows`／`release-linux` 都寫在 main scope，後續版本直接命中這份快取。
+
 ### 操作順序
 
-1. 版本號與 `Cargo.toml` 改好、commit 並 push 到 `main`。
-2. 到 Actions → Release → Run workflow，在 `main` 手動觸發一次。這次會跑
-   `verify` → `windows` → `linux`，把 `release-windows` 快取寫在 `main` 的 scope。
-   確認 windows job 的 log 出現 `Cache saved with key:` 再繼續。
-3. 建立並 push tag。tag 觸發的 release 會從預設分支 fallback 還原剛才那份，
-   Windows job 不用從空快取開始。
+1. 版本號與 `Cargo.toml` 改好、commit 並 push 到 `main`，等 CI 測試通過。
+2. 在剛 push 的 commit 上建立 annotated tag，連同 commit 一起推上 main：
+
+   ```sh
+   git tag -a v<version> -m release
+   git push --follow-tags origin main
+   ```
+
+   `--follow-tags` 只推 annotated tag，所以必須用 `-a`；lightweight tag 不會被推上去，
+   `check-tag` 也看不到它。
+3. `ci.yml` 的 `check-tag` 讀到 tag、測試通過後，`release` job 呼叫 `release.yml`；
+   build 與 publish 都跑在 main scope。
 4. 檢查 `publish` 建立或更新的 Release assets、說明與 checksum。
 
-`workflow_dispatch` 不會建立 GitHub Release。`publish` 的條件維持
-`github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')`，暖機 run 只留
-artifact，可以重複觸發。
+`workflow_dispatch` 不會建立 GitHub Release。`publish` 的條件是 `inputs.publish`，
+只有前面的 push main 路徑才為 true；手動 run 只留 artifact，可以重複觸發。
 
 bump 版本會改 `Cargo.lock`，精確 key 末段的 hash 跟著變。
-`Swatinem/rust-cache` 還原時先用 restore key 前綴比對，仍會命中 `main` 上先前存的
-那份；差別只是 `Cargo.lock` 變動部分的增量 rebuild。
-
-不要在 `ci.yml` 加「每次 push 都跑 release build」的 job 來暖機：每次 main CI 會多
-約 20 分鐘。手動 `workflow_dispatch` 就夠。
+`Swatinem/rust-cache` 還原時先用 restore key 前綴比對，仍會命中先前存的那份；
+差別只是 `Cargo.lock` 變動部分的增量 rebuild。
 
 ## Artifact 內容
 
@@ -375,18 +385,19 @@ Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets�
 2. 改 `Cargo.toml` 的 `[workspace.package] version`；必要時讓 `Cargo.lock` 跟著更新。
    RC 就寫 `0.1.0-rc.1`，不用為了 MSI 改成三段數字。
 3. 跑 `cargo check --workspace --all-targets`，commit 到 `main` 並 push，等 main 的 CI
-   通過。tag 指向的 commit 若沒有成功的 CI run，`publish` 會直接失敗。
-4. 建立並 push 標籤：
+   測試通過。release job 的 needs 含測試，測試沒過就不會發版。
+4. 在剛 push 的 commit 上建立 annotated 標籤，連同 commit 一起推上 main：
 
    ```sh
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag -a v0.1.0 -m release
+   git push --follow-tags origin main
    ```
 
-   RC 版本帶 pre-release 後綴，例如 `v0.1.0-rc.1`；MSI `ProductVersion` 仍是
-   `0.1.0`。
+   `--follow-tags` 只推 annotated tag，所以必須用 `-a`。RC 版本帶 pre-release
+   後綴，例如 `v0.1.0-rc.1`；MSI `ProductVersion` 仍是 `0.1.0`。
 
-5. 到 Actions → Release 看 `verify`、`windows`、`linux`、`publish` 四個 job。
+5. 到 Actions → CI 看 `check-tag`、測試與 `release` job；release 內含 `verify`、
+   `windows`、`linux`、`publish` 四個 job。
 6. 檢查 Release assets、說明與 checksum；Windows 找一臺乾淨機器跑一次安裝、
    升級與反安裝。
 
@@ -423,7 +434,7 @@ release workflow 只能證明「建置與打包成功」，下面這些要在第
 ## 本機可做的驗證
 
 ```sh
-python3 -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml'))"
+python3 -c "import yaml;[yaml.safe_load(open(p)) for p in ['.github/workflows/ci.yml','.github/workflows/release.yml']]"
 bash -n scripts/data-bundle.sh
 bash scripts/test-verify-bundle.sh              # Python 與 jc-cli 六情境比對
 python3 scripts/verify-bundle.py /mnt/work/jc/jc-ime-data
