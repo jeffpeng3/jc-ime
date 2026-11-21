@@ -2070,3 +2070,13 @@ gate：
 - Windows 目標 `cargo check -p jc-windows -p jc-engine --target x86_64-pc-windows-msvc` exit 0。
 - 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
 - `git branch --no-merged main`：空（本機所有 feature branch 都已合入）。
+
+### 版本與發版（`0.1.0-rc.11`）
+
+- `27d933c`：`Cargo.toml` 版本 `0.1.0-rc.11`、CHANGELOG 補 rc.11 段落。
+- `779e589`：`Cargo.lock` 同步到 rc.11；annotated tag `v0.1.0-rc.11` 打在這個 commit。
+- push：`ca2d318..9d639c4`（整合紀錄），再 `9d639c4..779e589`（版本與 lock）。tag 已推送。
+- CI（push tag，run **44915796659**，HEAD `779e589`）：linux (core) success、windows (msvc) success、
+  check-tag success、build-linux (tar.gz) success、build-windows (MSI) success、publish success。
+  另一個 run 44915725027（`9d639c4`，tag push 前的 main）被新 run 取代而 cancelled。
+- 所有整合者以外的 worktree 已回收，branch 保留；目前只剩 `/mnt/work/jc/jc-ime`。
