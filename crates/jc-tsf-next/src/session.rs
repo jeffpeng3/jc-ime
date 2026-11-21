@@ -405,6 +405,17 @@ pub fn response_to_reply(response: &Response) -> Value {
             "ok": true, "snapshot": {"handled": true, "commit": text},
         }),
         Response::Error { message, .. } => json!({"ok": false, "error": message}),
+        // T3 擴充的 op：health 的 info 攤成 0c 的字串 map，learn_simplified()
+        // 就能讀到 output_simplified；其餘回報照 0c Reply 的形狀組。
+        Response::Health { info } => json!({
+            "ok": true, "info": info.as_info(),
+        }),
+        Response::Acknowledged { session } => json!({
+            "ok": true, "session": session,
+        }),
+        Response::Vocab { vocab } => json!({
+            "ok": true, "vocab": vocab,
+        }),
     }
 }
 

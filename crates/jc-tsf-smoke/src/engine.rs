@@ -81,6 +81,8 @@ fn describe(response: &Response) -> String {
         } => format!("State（組字 {preedit:?}、候選 {} 個）", candidates.len()),
         Response::Committed { text } => format!("Committed（{text:?}）"),
         Response::Error { code, message } => format!("Error（{code:?}：{message}）"),
+        // T3 擴充 op 的回報，smoke 只確認往返成功，不再往下拆欄位。
+        other => format!("{other:?}"),
     }
 }
 

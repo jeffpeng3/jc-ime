@@ -142,6 +142,9 @@ impl Engine {
                 self.snapshot()
             }
             Request::Unknown => Response::error(ErrorCode::UnknownOp, "未知的操作"),
+            // T3 新增的 0c op 在 T4／T6 接手前先回明確的「不支援」，不要落入
+            // UnknownOp，讓 adapter 能區分協定不認識與引擎尚未實作。
+            other => Response::error(ErrorCode::Unsupported, format!("jc 尚未支援 {other:?}")),
         }
     }
 
