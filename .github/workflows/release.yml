@@ -33,7 +33,7 @@ env:
 
 jobs:
   verify:
-    name: verify（release 測試與版本）
+    name: verify（版本號檢查）
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     outputs:
@@ -42,30 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # 與 rust-toolchain.toml 同一版（action 不讀該檔案）。
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.100.0
-          components: rustfmt, clippy
-
-      - name: 系統依賴（GPUI Kit 的 X11／Wayland／字型）
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev \
-            libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
-            libxcb-shape0-dev libxcb-xfixes0-dev libasound2-dev
-
-      # 與 linux（tar.gz）共用 release-linux：同一個 OS、同一個 release profile，
-      # 這裡編好的依賴產物可以直接給打包 job 用。verify 先跑，負責寫入快取。
-      # release 只快取依賴，不快取 workspace 產物：一份太大，會擠掉其他快取。
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-linux
-          cache-targets: "true"
-          cache-all-crates: "false"
-          cache-on-failure: "true"
-
+      # 只讀 Cargo.toml 與 Git ref：不裝工具鏈、不裝系統依賴、不碰編譯快取。
       - name: 版本號一致性
         id: version
         shell: bash
@@ -120,9 +97,6 @@ jobs:
             echo "version=${version}"
             echo "msi_version=${msi_version}"
           } >> "${GITHUB_OUTPUT}"
-
-      - name: cargo test --release
-        run: cargo test --workspace --release
 
   windows:
     name: windows（MSI）
@@ -265,15 +239,14 @@ jobs:
           Add-GitHubEnv 'JC_DATA_ROOT' $dataRoot
           Write-Host "資料根目錄：$dataRoot"
 
-      # 不先做 workspace 全量建置：build.ps1 會建它需要的 crate。
-      # 這裡只建 jc-cli 供資料驗證；crt-static 在 .cargo/config.toml，
-      # 兩邊 rustflags 一致，build.ps1 會沿用同一批編譯產物。
+      # Python 版與 `jc-cli data verify` 的 Full 驗證等價（見 scripts/verify-bundle.py），
+      # 省掉為了驗證而單獨編一次 release jc-cli 的 5～6 分鐘。build.ps1 仍會建
+      # 它需要的 crate。Windows runner 已有 Python，不必 setup-python。
       - name: 驗證資料包
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo run --release --target x86_64-pc-windows-msvc -p jc-cli -- `
-            data verify $env:JC_DATA_ROOT
+          python scripts/verify-bundle.py "$env:JC_DATA_ROOT"
           if ($LASTEXITCODE -ne 0) {
             throw "資料驗證失敗（exit $LASTEXITCODE）"
           }
@@ -391,7 +364,7 @@ jobs:
             libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
             libxcb-shape0-dev libxcb-xfixes0-dev libasound2-dev
 
-      # 與 verify 共用 release-linux，直接重用 verify 編好的 release 依賴。
+      # release 只快取依賴，不快取 workspace 產物：一份太大，會擠掉其他快取。
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-linux
@@ -463,6 +436,73 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v5
+
+      # CI 是唯一跑測試的關卡。它在 push main 時觸發，所以同一 commit 必須有
+      # 成功的 CI run 才允許發 Release；查不到、還在跑、沒通過都直接擋下。
+      - name: 檢查同一 commit 的 CI 通過
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "查詢 commit ${COMMIT_SHA} 的 CI run（ci.yml）..."
+          if ! runs=$(gh run list --workflow ci.yml --commit "${COMMIT_SHA}" \
+            --json databaseId,status,conclusion,html_url --limit 100); then
+            echo "::error::查詢 CI run 失敗；請確認 actions: read 權限與 GH_TOKEN 有效。"
+            exit 1
+          fi
+
+          # heredoc 會佔用 stdin，所以用環境變數把 JSON 傳給 Python。
+          ci_state=$(RUNS_JSON="${runs}" python3 - <<'PY'
+          import json
+          import os
+
+          runs = json.loads(os.environ["RUNS_JSON"])
+          if not runs:
+              print("none")
+          elif any(run.get("status") in {"in_progress", "queued", "waiting", "pending", "requested"} for run in runs):
+              print("running")
+          elif any(run.get("conclusion") == "success" for run in runs):
+              print("success")
+          else:
+              print("failed")
+          PY
+          )
+
+          echo "同一 commit 的 CI run："
+          RUNS_JSON="${runs}" python3 - <<'PY'
+          import json
+          import os
+
+          for run in json.loads(os.environ["RUNS_JSON"]):
+              print("  #{databaseId} status={status} conclusion={conclusion} {url}".format(
+                  databaseId=run.get("databaseId"),
+                  status=run.get("status"),
+                  conclusion=run.get("conclusion") or "-",
+                  url=run.get("html_url", ""),
+              ))
+          PY
+
+          case "${ci_state}" in
+            success)
+              echo "CI 已通過，繼續 publish。"
+              ;;
+            none)
+              echo "::error::查不到 commit ${COMMIT_SHA} 的 CI run。請先將此 commit push 到 main，等 CI 通過後再推送 tag 發版。"
+              exit 1
+              ;;
+            running)
+              echo "::error::commit ${COMMIT_SHA} 的 CI 仍在執行。請等 CI 跑完並通過後再發版。"
+              exit 1
+              ;;
+            failed)
+              echo "::error::commit ${COMMIT_SHA} 的 CI 未通過（見上方 conclusion）。請修正後讓 CI 通過再發版。"
+              exit 1
+              ;;
+          esac
 
       - name: 下載 Windows artifact
         uses: actions/download-artifact@v7

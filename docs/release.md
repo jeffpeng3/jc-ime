@@ -2,7 +2,8 @@
 
 `release.yml` 負責 release 建置與 GitHub Release；日常 CI（`ci.yml`）跑 debug 測試與
 clippy，並在測試前下載與 release 相同的資料包，把 `JC_IMEDATA` 指向解開後的根目錄。
-兩邊刻意分開：發佈前唯一一次 release 測試在 `verify` job。
+測試只在 CI 跑：`verify` job 只檢查版本號，`publish` 在建立 Release 前會查同一 commit
+的 CI 是否成功。
 
 ## 觸發方式
 
@@ -75,8 +76,8 @@ git push origin v0.1.0-rc.1
 
 `JC_DATA_BUNDLE_SHA256` 同樣只支援 variable 與輸入。workflow 下載後會實際算
 SHA-256；不一致就讓 `windows` job 失敗，錯誤訊息會印出預期與實際值。沒有提供
-這個值時只警告並繼續，之後仍由 `jc-cli data verify` 驗 manifest 內每個檔案的
-雜湊。正式發版建議一定要鎖 SHA-256。
+這個值時只警告並繼續，之後仍由 `scripts/verify-bundle.py` 驗 manifest 內每個檔案的
+大小與雜湊（與 `jc-cli data verify` 的 Full 驗證等價）。正式發版建議一定要鎖 SHA-256。
 
 CI 的 `linux`／`windows` job 也下載這同一份資料包，但只讀公開 repo variable
 `JC_DATA_BUNDLE_URL`／`JC_DATA_BUNDLE_SHA256`（不讀 secret、也不吃 workflow_dispatch
@@ -104,7 +105,7 @@ OUT_DIR=/tmp/opencode \
 scripts/data-bundle.sh /mnt/work/jc/jc-ime-data
 ```
 
-下載項（`shipped: false`）缺席是正常狀態：`jc-cli data verify` 的人類可讀輸出
+下載項（`shipped: false`）缺席是正常狀態：`scripts/verify-bundle.py` 的人類可讀輸出
 不顯示這些項目，末尾摘要也只算顯示出來的 check。`--json` 仍輸出完整 report；
 引擎啟動日誌會個別提示缺席的下載項，相關功能維持停用。
 
@@ -193,18 +194,20 @@ signtool verify /pa /v jc-ime-<version>-x64.msi
 
 | Job | 產出 |
 |---|---|
-| `verify` | 檢查 tag／`Cargo.toml` 版本一致且符合 `x.y.z` 或 `x.y.z-<pre-release>`，輸出完整版本與 `msi_version`；跑 `cargo test --workspace --release` |
-| `windows` | 下載資料包並比對 SHA-256 → `cargo run -p jc-cli -- data verify`（只建 `jc-cli`）→ 安裝 WiX v5 → `installer/build.ps1 -MsiVersion <x.y.z>`（建其餘 crate）→ MSI、checksum、`data-manifest.json` |
+| `verify` | 只檢查 tag／`Cargo.toml` 版本一致且符合 `x.y.z` 或 `x.y.z-<pre-release>`，輸出完整版本與 `msi_version`；不跑測試、不編譯 |
+| `windows` | 下載資料包並比對 SHA-256 → `python scripts/verify-bundle.py`（Full 驗證，等價 `jc-cli data verify`）→ 安裝 WiX v5 → `installer/build.ps1 -MsiVersion <x.y.z>` → MSI、checksum、`data-manifest.json` |
 | `linux` | 安裝 GPUI 系統依賴 → `cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui` → 打包 tar.gz 與 checksum |
-| `publish` | 只在 tag push 執行；下載兩個 artifact，建立或更新 GitHub Release |
+| `publish` | 只在 tag push 執行；先查同一 commit 的 `ci.yml` 為 success，查不到／還在跑／未通過就失敗；然後下載兩個 artifact，建立或更新 GitHub Release |
 
 Windows 建置必須指定 target（`--target x86_64-pc-windows-msvc`），否則 `build.ps1` 的 payload 路徑會不符；x64 找不到 `target/<triple>/release` 時會退回 `target/release`，並印出警告與實際路徑。
 
-`+crt-static` 是 Windows 出貨條件，TSF DLL 不能依賴 `vcruntime140.dll`。旗標統一放在 `.cargo/config.toml` 的 `[target.x86_64-pc-windows-msvc]` 與 `[target.i686-pc-windows-msvc]`；workflow 的 `cargo run` 與 `build.ps1` 共用同一組 rustflags，不會因 `RUSTFLAGS` 變動而全量重編。
+`+crt-static` 是 Windows 出貨條件，TSF DLL 不能依賴 `vcruntime140.dll`。旗標統一放在 `.cargo/config.toml` 的 `[target.x86_64-pc-windows-msvc]` 與 `[target.i686-pc-windows-msvc]`；`build.ps1` 的 `cargo build` 依照這組 rustflags，不會因 `RUSTFLAGS` 變動而全量重編。資料驗證改走 Python 後，workflow 不再為了驗證單獨編一次 `jc-cli`。
 
-Windows 的 Python 輸出必須是 UTF-8。Windows job 設 `PYTHONUTF8=1`，`build.ps1` 另外設 `PYTHONIOENCODING=utf-8`，避免 Python 3.12 的 cp1252 讓 `check-payload.py` 印中文時失敗。
+Windows 的 Python 輸出必須是 UTF-8。Windows job 設 `PYTHONUTF8=1`，`build.ps1` 另外設 `PYTHONIOENCODING=utf-8`，避免 Python 3.12 的 cp1252 讓 `check-payload.py` 與 `verify-bundle.py` 印中文時失敗。
 
-`release.yml` 不跑 `cargo fmt`、clippy；那些由 `ci.yml` 在日常 push／PR 負責。
+`release.yml` 不跑 `cargo fmt`、clippy、test；那些由 `ci.yml` 在日常 push／PR 負責。`verify` 當初的 `cargo test --workspace --release` 已移除：CI 在 push main 時跑過同一批測試，release profile 重跑只是多花 8～9 分鐘。
+
+`publish` 用 `gh run list --workflow ci.yml --commit ${{ github.sha }}` 查同一 commit 的 CI。查不到 run、run 還在 in_progress／queued、或 conclusion 不是 success，就印明確訊息並讓 publish 失敗。tag 指向的 commit 若還沒讓 main CI 跑過，必須先 push 到 main 讓 CI 通過再打 tag。`workflow_dispatch` 不進 publish，不受這個檢查影響。
 
 ## 建置快取
 
@@ -214,8 +217,7 @@ release 與 CI 都用 `Swatinem/rust-cache@v2`。
 |---|---|---|---|
 | `ci.yml` | `linux` | `ci-linux` | `true` |
 | `ci.yml` | `windows` | `ci-windows` | `true` |
-| `release.yml` | `verify` | `release-linux` | `false` |
-| `release.yml` | `linux` | `release-linux`（與 `verify` 共用） | `false` |
+| `release.yml` | `linux` | `release-linux` | `false` |
 | `release.yml` | `windows` | `release-windows` | `false` |
 
 CI 連 workspace crate 的產物一起快取：每個 commit 通常只改幾個 crate，還原後 cargo 只
@@ -224,10 +226,9 @@ CI 連 workspace crate 的產物一起快取：每個 commit 通常只改幾個 
 CI 現在也會在測試前下載與 release 相同的資料包；`JC_IMEDATA` 由公開 variable
 提供，fork PR 也讀得到。資料包本身不快取，每個 job 都重新下載並驗 SHA-256。
 
-`verify` 與 `linux（tar.gz）` 同為 ubuntu-24.04、同為 release profile、同一次 run、
-同一份 `Cargo.lock`，因此共用 `release-linux`：`verify` 先跑並寫入快取，打包 job
-直接命中。CI 是 debug profile，`target/debug` 與 `target/release` 的產物不能互換，
-所以 `ci-*` 與 `release-*` 不共用。
+`linux（tar.gz）` 用自己的 `release-linux` 快取。`verify` 已不再編譯，既不裝工具鏈
+也不掛 rust-cache，不會再先寫一份快取給打包 job。CI 是 debug profile，
+`target/debug` 與 `target/release` 的產物不能互換，所以 `ci-*` 與 `release-*` 不共用。
 
 第一次跑一定不會命中，這是正常的：job 照常編譯，結束後才存檔。CI 的第一個 commit 存
 一份新快取；之後的 commit key 不變（key 不含 commit SHA），還原同一份再增量重建，後續
@@ -286,9 +287,12 @@ rc.7 windows job 的實際時間分佈：
 
 | 步驟 | 時間 |
 |---|---:|
-| 驗證資料包（x64 release 建 `jc-cli`） | 5m55s |
+| 驗證資料包（x64 release 建 `jc-cli`，舊流程） | 5m55s |
 | 建置 MSI（x64 五個 crate + i686 `jc-tsf` + helper + 900 MB payload + WiX） | 19m19s |
 | 存快取 | 59s |
+
+現在驗證資料包改走 `scripts/verify-bundle.py`，不再單獨編 `jc-cli`，這一步從約 6 分鐘
+降到幾秒；`verify` job 也不再跑 release 測試或寫入 `release-linux`。
 
 ### 操作順序
 
@@ -370,7 +374,8 @@ Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets�
 1. 更新 `docs/CHANGELOG.md`，確認有 `## <version>` 段落。
 2. 改 `Cargo.toml` 的 `[workspace.package] version`；必要時讓 `Cargo.lock` 跟著更新。
    RC 就寫 `0.1.0-rc.1`，不用為了 MSI 改成三段數字。
-3. 跑 `cargo check --workspace --all-targets`，commit 到 `main` 並 push。
+3. 跑 `cargo check --workspace --all-targets`，commit 到 `main` 並 push，等 main 的 CI
+   通過。tag 指向的 commit 若沒有成功的 CI run，`publish` 會直接失敗。
 4. 建立並 push 標籤：
 
    ```sh
@@ -420,6 +425,9 @@ release workflow 只能證明「建置與打包成功」，下面這些要在第
 ```sh
 python3 -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml'))"
 bash -n scripts/data-bundle.sh
+bash scripts/test-verify-bundle.sh              # Python 與 jc-cli 六情境比對
+python3 scripts/verify-bundle.py /mnt/work/jc/jc-ime-data
+cargo run -q -p jc-cli -- data verify /mnt/work/jc/jc-ime-data
 bash installer/validate-linux.sh                # 需要 wix；沒有就跳過
 cargo build --release -p jc-engine -p jc-cli
 
