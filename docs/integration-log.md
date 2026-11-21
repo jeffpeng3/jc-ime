@@ -1906,3 +1906,46 @@ gate（`JC_IMEDATA=/mnt/work/jc/jc-ime-data`）：
   `session::tests::test_ja_neural_timeout_keeps_statistical_result`（`session/mod.rs:2494`，
   `left: "きょう"` / `right: "今日"`，stub runtime 80ms delay 對 5ms timeout）。資料包 SHA 驗證通過。
 - `gh run rerun --failed` 後：**linux (core) success、windows (msvc) success**，`hellp` 測試也通過。
+
+## 2026-11-21 07:40 activate-second-call（`13478cb` → `3242dde`）
+
+根因：冒煙測試誤用 `ITfThreadMgr::Activate()` 回傳的**應用程式** client id 去激活 TIP；
+正確的 TIP client id 要用 `ITfClientId::GetClientId(&CLSID_JC_TSF)`。
+這解釋了記事本成功（msctf 傳入正確的 TIP id）而 smoke test 失敗（拿到應用程式 id 32，
+msctf 查不到所屬 TIP，回 `E_INVALIDARG`）。
+
+- `crates/jc-tsf-smoke/src/checks.rs`：檢查 5 改用 `ITfClientId::GetClientId`，印出兩個 id；
+  `CONNECT_E_ADVISELIMIT`（已激活同 TIP）判為通過；新增重複激活測試。
+- `crates/jc-tsf/src/lib.rs`、`composition.rs`：只加診斷日誌（thread id、Unadvise HRESULT、
+  重複 Deactivate 標註），Activate 邏輯沒動。jc-tsf 的 Activate／cleanup 本身是對的
+  （記事本實機驗證兩次成功）。
+- 新文件 `docs/port/activate-second-call.md`，並更新 `activate-diagnose.md`、`tsf-smoke.md`。
+
+gate：`cargo check --workspace --all-targets` exit 0；
+`cargo check -p jc-tsf -p jc-tsf-smoke --all-targets --target x86_64-pc-windows-msvc` exit 0；
+完整 test exit 0（54 targets、1315 passed、0 failed）；clippy exit 0；fmt exit 0。
+題庫：zh-golden **45/45**、ja **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+
+## 2026-11-21 07:50 engine-pipe-name（`bff593f` → `5290a6f`）與 WXS 註解修正
+
+根因：WXS 的 EngineAutostart 寫死 `--socket jc-ime`，引擎監聽固定名；TIP 從 SID 推出
+`jc-ime-1001`，兩邊不同，pipe 連不上、按鍵全部放行成英文。這是使用者實機
+「打字全是英文」的真正原因。
+
+- `installer/jc-ime.wxs`：EngineAutostart 移除固定 `--socket`，讓引擎用
+  `resolve_pipe_name()` 從 SID 推出與 TIP 相同的名字。
+- `installer/validate-linux.sh`：加檢查擋 autostart 再出現 `--socket`。
+- `crates/jc-engine/src/main.rs`、`crates/jc-windows/src/pipe_name.rs`：加註解與一致性測試
+  （解析邏輯沒動）；文件 `docs/install.md`、`docs/wrapper.md`、`docs/port/tsf-installer.md`、
+  新檔 `docs/port/engine-pipe-name.md`。
+- 整合時另修正 WXS XML 有效性：新加的 XML 註解裡寫了 `--socket`，
+  XML 註解不容許連續 `--`，會讓 WiX 解析失敗；改寫成「不帶 socket 覆寫參數」。
+  修正後 XML parse 通過，WXS 內已無 `--socket`（validate-linux.sh 的 grep 檢查仍會擋回歸）。
+
+gate：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**
+  （54 targets、**1316 passed、0 failed**）。
+- `cargo check --workspace --all-targets` exit 0；clippy exit 0；fmt exit 0。
+- 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- WXS XML 有效；`validate-linux.sh` 本機因缺 .NET runtime 無法完成（已知限制，WIx 綁定交給 CI）。
+- worktree `w7N`、`w7P` 已回收，branch 保留；`git branch --no-merged main`：空。

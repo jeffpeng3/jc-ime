@@ -457,8 +457,8 @@
     登入時各自展開，所以同一條 HKLM 值對所有使用者都成立。settings.json 放在
     使用者目錄，資料在 ProgramData。
 
-    不帶 `--socket`：引擎與 TIP 共用 `jc-windows::resolve_pipe_name()`，從 SID
-    尾段推出 `jc-ime-<rid>`。顯式 `--socket` 會跳過 SID 推導，讓引擎與 TIP
+    不帶 socket 覆寫參數：引擎與 TIP 共用 `jc-windows::resolve_pipe_name()`，從 SID
+    尾段推出 `jc-ime-<rid>`。顯式指定 socket 會跳過 SID 推導，讓引擎與 TIP
     名稱不同，pipe 連不上時按鍵全部放行成英文。
   -->
   <Fragment>
