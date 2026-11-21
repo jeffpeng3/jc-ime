@@ -171,6 +171,7 @@ fn ready() -> Response {
     Response::Ready {
         protocol: PROTOCOL_VERSION,
         engine: "jc-engine test".into(),
+        session: 1,
     }
 }
 

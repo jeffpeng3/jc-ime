@@ -121,6 +121,7 @@ fn socket_serves_connections_sequentially_and_shutdown_cleans_up() {
             Response::Ready {
                 protocol: PROTOCOL_VERSION,
                 engine: format!("jc-engine {}", env!("CARGO_PKG_VERSION")),
+                session: 1,
             }
         );
         assert_eq!(

@@ -52,7 +52,9 @@ pub fn probe() -> Result<String, String> {
         )
         .map_err(|error| format!("Hello 往返失敗：{error}"))?;
     let hello = match hello {
-        Response::Ready { protocol, engine } => format!("Hello → 協定 {protocol}、引擎 {engine}"),
+        Response::Ready {
+            protocol, engine, ..
+        } => format!("Hello → 協定 {protocol}、引擎 {engine}"),
         other => format!("Hello → {}", describe(&other)),
     };
 
@@ -73,7 +75,9 @@ pub fn probe() -> Result<String, String> {
 /// 把回應壓成一行，避免把整個 `State` 的除錯輸出塞進報表。
 fn describe(response: &Response) -> String {
     match response {
-        Response::Ready { protocol, engine } => format!("Ready（協定 {protocol}、引擎 {engine}）"),
+        Response::Ready {
+            protocol, engine, ..
+        } => format!("Ready（協定 {protocol}、引擎 {engine}）"),
         Response::State {
             preedit,
             candidates,
@@ -120,7 +124,8 @@ mod tests {
         assert_eq!(
             describe(&Response::Ready {
                 protocol: 3,
-                engine: "jc-engine 0.1.0".to_string()
+                engine: "jc-engine 0.1.0".to_string(),
+                session: 1,
             }),
             "Ready（協定 3、引擎 jc-engine 0.1.0）"
         );

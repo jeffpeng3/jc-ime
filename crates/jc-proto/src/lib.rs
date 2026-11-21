@@ -297,8 +297,21 @@ pub enum Request {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Response {
-    /// 握手成功，附上引擎識別字串。
-    Ready { protocol: u32, engine: String },
+    /// 握手成功，附上引擎識別字串與這條連線拿到的 session id。
+    ///
+    /// `session` 由引擎在 `Hello` 配置，adapter 記住後用在同一連線的 `Close`，
+    /// 避免第二條以後的連線仍送 `session = 1` 而被歸屬檢查拒絕。舊引擎的 Ready
+    /// 沒有這個欄位，反序列化時用 [`default_ready_session`] 補 1，與 T1a 原本
+    /// 寫死 1 的行為一致。
+    Ready {
+        /// 協定版本。
+        protocol: u32,
+        /// 引擎識別字串。
+        engine: String,
+        /// 這條連線的 session id；舊訊框缺省時為 1。
+        #[serde(default = "default_ready_session")]
+        session: u64,
+    },
     /// 目前的完整組字快照。`cursor` 單位是字元（Unicode scalar value）。
     ///
     /// 版本 2 起多了 `cursor_rune`、`suggestion`、`label` 與 `navigating`；
@@ -372,6 +385,11 @@ fn is_zero(value: &usize) -> bool {
 /// `u64` 版的零值省略；session id 與 context id 用。
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
+}
+
+/// 舊引擎 Ready 沒有 `session` 欄位時補 1，與 T1a 原本的固定值一致。
+fn default_ready_session() -> u64 {
+    1
 }
 
 impl Response {
@@ -954,6 +972,34 @@ mod tests {
             minimal,
             Response::Health {
                 info: HealthInfo::default()
+            }
+        );
+    }
+
+    #[test]
+    fn ready_carries_the_engine_session_id() {
+        let ready = Response::Ready {
+            protocol: PROTOCOL_VERSION,
+            engine: "jc-engine 0.1.0".into(),
+            session: 7,
+        };
+        let text = serde_json::to_string(&ready).unwrap();
+        assert_eq!(
+            text,
+            r#"{"op":"ready","protocol":3,"engine":"jc-engine 0.1.0","session":7}"#
+        );
+        assert_eq!(serde_json::from_str::<Response>(&text).unwrap(), ready);
+    }
+
+    #[test]
+    fn ready_defaults_to_session_one_for_old_engine_shape() {
+        let old = r#"{"op":"ready","protocol":3,"engine":"jc-engine/0.1.0"}"#;
+        assert_eq!(
+            serde_json::from_str::<Response>(old).unwrap(),
+            Response::Ready {
+                protocol: PROTOCOL_VERSION,
+                engine: "jc-engine/0.1.0".into(),
+                session: 1,
             }
         );
     }

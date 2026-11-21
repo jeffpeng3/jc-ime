@@ -72,6 +72,7 @@ fn stdio_round_trip_and_clean_shutdown() {
         Response::Ready {
             protocol: PROTOCOL_VERSION,
             engine: format!("jc-engine {}", env!("CARGO_PKG_VERSION")),
+            session: 1,
         }
     );
 
