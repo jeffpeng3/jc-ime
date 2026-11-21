@@ -273,16 +273,10 @@ fn data_page(this: &Entity<SettingsView>, view: &SettingsView) -> SettingPage {
                     "需下載",
                 ))
                 .item(model_item(
-                    "日文 reranker",
-                    "實驗中的重排模型；引擎預設關閉。",
-                    &data.reranker,
-                    "未安裝",
-                ))
-                .item(model_item(
-                    "日文分詞器",
-                    "reranker 與舊標點模型共用的 SentencePiece 分詞器。",
-                    &data.tokenizer,
-                    "未安裝",
+                    "Jinen tokenizer",
+                    "Jinen 的 tokenizer；與 GGUF 一起隨 MSI 散布。",
+                    &data.jinen_tokenizer,
+                    "需下載",
                 ))
                 .item(model_item(
                     "日文詞典 pack",
@@ -374,7 +368,7 @@ fn model_status_item(view: &SettingsView) -> SettingItem {
         "選字模型狀態",
         "神經模型權重放在 models/zh-select；缺檔時引擎只記警告並用統計排序。",
         if ready {
-            "已下載".to_string()
+            "已安裝".to_string()
         } else {
             "需下載".to_string()
         },
@@ -382,6 +376,10 @@ fn model_status_item(view: &SettingsView) -> SettingItem {
     )
 }
 
+/// 顯示模型檔狀態：有檔案就寫「已安裝」，缺檔才用警告色顯示 `missing`。
+///
+/// 這裡只列仍在使用或隨 MSI 散布的角色；已移除的角色不在模型清單，
+/// 不會被誤報成「缺少」。
 fn model_item(
     title: &'static str,
     description: &'static str,
@@ -389,7 +387,7 @@ fn model_item(
     missing: &'static str,
 ) -> SettingItem {
     match path {
-        Some(path) => info_item(title, description, path.display().to_string(), false),
+        Some(_) => info_item(title, description, "已安裝".to_string(), false),
         None => info_item(title, description, missing.to_string(), true),
     }
 }

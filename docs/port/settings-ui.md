@@ -53,7 +53,7 @@ Go 版設定程式是 Tauri（`ref/0c-ime/platforms/settings`）：Rust 外殼�
 | 注音 | ㄗ／ㄓ、ㄘ／ㄔ、ㄙ／ㄕ、ㄣ／ㄥ 不分 | `fuzzy-*` | 下拉：不啟用／只在選字時／自動（預設 select） |
 | 注音 | 選字模型 | `selection` | 下拉：神經模型／統計（預設神經） |
 | 注音 | 學習 | `document-context` | 開關（預設開） |
-| 注音 | 選字模型狀態 | n/a | 唯讀；缺 `models/zh-select` 權重時顯示「需下載」 |
+| 注音 | 選字模型狀態 | n/a | 唯讀；有權重顯示「已安裝」，缺 `models/zh-select` 時顯示「需下載」 |
 | 日文 | 神經模型（Jinen） | `ja-model` | 開關（預設開） |
 | 日文 | 逐字変換 | `ja-live-conversion` | 開關（預設關） |
 | 日文 | 寫入日文個人詞庫 | `ja-learning` | 開關（預設開） |
@@ -68,6 +68,30 @@ Go 版設定程式是 Tauri（`ref/0c-ime/platforms/settings`）：Rust 外殼�
 | 輸入 | 中英混打 | `mixed-input` | 開關 |
 | 輸入 | 複製成自訂輸入習慣 | `input_profile` | 按鈕；內建風格時才出現 |
 | 資料 | 資料根目錄、設定檔、manifest、模型 | n/a | 唯讀再加「重新檢查」按鈕 |
+
+### 模型頁的狀態判斷
+
+`data.rs` 用固定相對路徑探測模型檔，`ui.rs` 的資料分頁「模型」群組只列仍在使用
+或隨 MSI 散布的角色。有檔案顯示「已安裝」（正常色），缺檔才顯示「需下載」
+（警告色）。目前列出四項：
+
+| 顯示名稱 | 探測路徑 | 缺檔時 |
+|---|---|---|
+| 注音選字模型 | `models/zh-select/model.q8_0.gguf` 等三種格式 | 需下載 |
+| 日文神經模型（Jinen） | `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | 需下載 |
+| Jinen tokenizer | `models/quant/jinen-v2-xsmall/tokenizer.json` 等三種候選 | 需下載 |
+| 日文詞典 pack | `packs/ja-lexicon-mozc-v2.pack` 或 public-core | 需下載 |
+
+這三項模型檔（zh-select GGUF、Jinen GGUF、Jinen tokenizer）隨 MSI 散布，
+正常安裝應全部顯示「已安裝」。Jinen tokenizer 的候選順序跟
+`jc-engine::resolve_ja_neural` 一致，App 不讀資料 manifest 的路徑解析。
+
+已移除的角色不再列出，也不再探測：`ja-rerank` 已棄用且 `SessionConfig::ja_rerank`
+預設 false；`ja-punct` 與舊的 `models/ja-tokenizer/public_core_ja.model`
+自 2026-11-20 起不載入、不散布，2026-11-21 起也從集合 manifest 移除。
+把它們顯示成「缺少／未安裝」是誤導，因此 UI 完全不顯示，跟 `jc-engine` 移除
+過期 tokenizer 探測的做法一致。`ja-rerank` 設定開關仍保留在日文分頁，
+那是引擎仍接受的設定值，與模型頁的檔案清單無關。
 
 日文的 `ja-model`、`ja-input-method`、`ja-ambiguous` 在 `settings-wire` 的對照
 表是「本版忽略」：引擎用 `ja-neural-mode` 決定神經轉換、只實作羅馬字、固定日英
