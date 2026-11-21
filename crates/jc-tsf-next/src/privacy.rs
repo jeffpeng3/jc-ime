@@ -76,27 +76,9 @@ fn guarded<T, F: FnOnce() -> windows_core::Result<T>>(what: &str, f: F) -> windo
 }
 
 /// 呼叫端執行緒（宿主 UI 執行緒）有沒有系統插入點。
-/// T6 接到 `crate::caret::thread_has_caret()`；這裡照 0c `caret.rs` 的讀法暫時內建。
+/// 共用 `crate::caret::thread_has_caret()` 的實作。
 fn thread_has_caret() -> bool {
-    use windows::Win32::Foundation::POINT;
-    use windows::Win32::Graphics::Gdi::ClientToScreen;
-    use windows::Win32::System::Threading::GetCurrentThreadId;
-    use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GUITHREADINFO};
-    let mut info = GUITHREADINFO {
-        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
-        ..Default::default()
-    };
-    unsafe {
-        if GetGUIThreadInfo(GetCurrentThreadId(), &mut info).is_err() || info.hwndCaret.is_invalid()
-        {
-            return false;
-        }
-        let mut point = POINT {
-            x: info.rcCaret.left,
-            y: info.rcCaret.top,
-        };
-        ClientToScreen(info.hwndCaret, &mut point).as_bool()
-    }
+    crate::caret::thread_has_caret()
 }
 
 /// 欄位政策。密碼、PIN、唯讀或無法判斷的欄位不送引擎；只標 IS_PRIVATE 的欄位
