@@ -3,12 +3,16 @@
 //! 進入點照 GPUI Kit 的用法：`application().run(...)` 內先 `init`，再開視窗。
 //! 設定檔位置與平台預設值都由 `jc-settings` 決定，這個 crate 只負責畫面。
 
+// 開始功能表的捷徑直接啟動這支程式；windows subsystem 讓 Windows 不要配置
+// console 視窗。命令列模式的 --help 輸出跟著看不到，可接受。
+#![windows_subsystem = "windows"]
+
 mod data;
 mod options;
 mod state;
 mod ui;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use gpui_kit::*;
@@ -75,15 +79,25 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<LaunchOpt
         Some(path) => path,
         None => default_data_root()?,
     };
-    let settings_path = settings_path_for(&data_root, settings);
+    let settings_path = match settings {
+        Some(path) => path,
+        None => default_settings_path(&data_root)?,
+    };
     Ok(Some(LaunchOptions {
         data_root,
         settings_path,
     }))
 }
 
-/// 資料根目錄：`JC_DATA`，否則 XDG 資料目錄的 `0c`。
+/// 資料根目錄：Windows 安裝版用 `%ProgramData%\jc-ime\data`（與 MSI 的
+/// `[DATADIR]` 一致），其餘平台照 `JC_DATA` → XDG → `HOME` 的順序找。
 fn default_data_root() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    {
+        if let Some(value) = std::env::var_os("ProgramData").filter(|value| !value.is_empty()) {
+            return Ok(PathBuf::from(value).join("jc-ime").join("data"));
+        }
+    }
     if let Some(value) = std::env::var_os("JC_DATA") {
         if !value.is_empty() {
             return Ok(PathBuf::from(value));
@@ -100,6 +114,26 @@ fn default_data_root() -> Result<PathBuf, String> {
         }
     }
     Err("找不到資料根目錄；請用 --data 指定，或設定 JC_DATA".to_string())
+}
+
+/// 設定檔路徑：Windows 安裝版展開 `%LOCALAPPDATA%\jc-ime\settings.json`，
+/// 其餘平台沿用資料根目錄下的 `settings.json`。
+///
+/// `.lnk` 的參數在啟動時不會展開環境變數，per-machine 捷徑也不能寫死單一
+/// 使用者的路徑，因此展開留給程式在執行時做。這原本是
+/// `jc-tip-register settings` 的工作；Shortcut 改為直連本程式後，職責跟著
+/// 搬過來。
+fn default_settings_path(data_root: &Path) -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    {
+        if let Some(value) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+            let dir = PathBuf::from(value).join("jc-ime");
+            std::fs::create_dir_all(&dir)
+                .map_err(|error| format!("無法建立 {}：{error}", dir.display()))?;
+            return Ok(dir.join("settings.json"));
+        }
+    }
+    Ok(settings_path_for(data_root, None))
 }
 
 fn usage() -> &'static str {

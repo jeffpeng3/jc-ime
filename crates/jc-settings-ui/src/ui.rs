@@ -126,10 +126,7 @@ fn zh_page(this: &Entity<SettingsView>, view: &SettingsView) -> SettingPage {
     let fuzzy_items = options::FUZZY
         .iter()
         .map(|opt| option_item(this, view, opt));
-    let model_items = options::ZH
-        .iter()
-        .map(|opt| option_item(this, view, opt))
-        .chain(std::iter::once(model_status_item(view)));
+    let model_items = options::ZH.iter().map(|opt| option_item(this, view, opt));
 
     SettingPage::new("注音")
         .default_open(true)
@@ -232,34 +229,12 @@ fn data_page(this: &Entity<SettingsView>, view: &SettingsView) -> SettingPage {
                     data.zh_manifest.is_none(),
                 )),
         )
-        .group(
-            SettingGroup::new()
-                .title("模型")
-                .item(model_item(
-                    "注音選字模型",
-                    "zh-select 權重；沒有時選字退回統計排序。",
-                    &data.zh_select,
-                    "需下載",
-                ))
-                .item(model_item(
-                    "日文神經模型（Jinen）",
-                    "日文轉換的主要神經模型。",
-                    &data.jinen,
-                    "需下載",
-                ))
-                .item(model_item(
-                    "Jinen tokenizer",
-                    "Jinen 的 tokenizer；與 GGUF 一起隨 MSI 散布。",
-                    &data.jinen_tokenizer,
-                    "需下載",
-                ))
-                .item(model_item(
-                    "日文詞典 pack",
-                    "Mozc 或 public-core 詞典；引擎啟動時載入。",
-                    &data.ja_pack,
-                    "需下載",
-                )),
-        )
+        .group(SettingGroup::new().title("模型").item(model_item(
+            "Jinen tokenizer",
+            "Jinen 的 tokenizer；可從 JC_JINEN_TOKENIZER 或資料 manifest 覆寫。",
+            &data.jinen_tokenizer,
+            "需下載",
+        )))
 }
 
 fn option_item(this: &Entity<SettingsView>, view: &SettingsView, opt: &Opt) -> SettingItem {
@@ -330,20 +305,6 @@ fn info_item(
         }),
     )
     .description(description.into())
-}
-
-fn model_status_item(view: &SettingsView) -> SettingItem {
-    let ready = view.data.zh_select_ready();
-    info_item(
-        "選字模型狀態",
-        "神經模型權重放在 models/zh-select；缺檔時引擎只記警告並用統計排序。",
-        if ready {
-            "已安裝".to_string()
-        } else {
-            "需下載".to_string()
-        },
-        !ready,
-    )
 }
 
 /// 顯示模型檔狀態：有檔案就寫「已安裝」，缺檔才用警告色顯示 `missing`。

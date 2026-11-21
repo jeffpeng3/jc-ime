@@ -9,7 +9,7 @@
 //! | `machine-unregister` | 提升 | 移除檔案之前 |
 //! | `user-install` | 目前使用者（immediate） | 安裝完成之後 |
 //! | `user-uninstall <0\|1>` | 目前使用者 | 解除安裝時 |
-//! | `settings` | 目前使用者 | 開始功能表的設定捷徑 |
+//! | `settings` | 目前使用者 | 相容入口；Shortcut 已直連 jc-settings-ui |
 //! | `legal` | 目前使用者 | 開始功能表的「授權」捷徑 |
 //!
 //! `machine-*` 只碰 TSF 的 profile 與分類（`HKLM\SOFTWARE\Microsoft\CTF`）。
@@ -76,7 +76,7 @@ pub enum Command {
         /// `true` 時保留 `%LOCALAPPDATA%\jc-ime`。
         keep_user_data: bool,
     },
-    /// 啟動設定程式；路徑由程式自己展開，不依賴捷徑的環境變數。
+    /// 啟動設定程式（相容入口）；路徑展開現在由 jc-settings-ui 自己負責。
     Settings,
     /// 開啟授權文件（`legal\THIRD-PARTY-NOTICES.md`）。
     Legal,

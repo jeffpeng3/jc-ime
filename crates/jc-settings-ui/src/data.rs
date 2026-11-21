@@ -38,14 +38,8 @@ pub struct DataStatus {
     pub model_manifest: Option<String>,
     /// `build-zh/manifest.json` 的摘要。
     pub zh_manifest: Option<String>,
-    /// 注音選字模型權重。
-    pub zh_select: Option<PathBuf>,
-    /// 日文神經模型（Jinen）的 GGUF 權重。
-    pub jinen: Option<PathBuf>,
-    /// Jinen 的 tokenizer；與 GGUF 分開隨 MSI 散布。
+    /// Jinen 的 tokenizer；與 GGUF 分開隨 MSI 散布，可被環境變數或 manifest 覆寫。
     pub jinen_tokenizer: Option<PathBuf>,
-    /// 日文詞典 pack。
-    pub ja_pack: Option<PathBuf>,
 }
 
 impl DataStatus {
@@ -57,20 +51,8 @@ impl DataStatus {
             settings_state,
             model_manifest: model_manifest(root),
             zh_manifest: zh_manifest(root),
-            zh_select: first_catalog_file(root, DataRole::ZhSelect, is_model_weight),
-            jinen: first_catalog_file(root, DataRole::JaNeural, |relative| {
-                relative.ends_with(".gguf")
-            }),
             jinen_tokenizer: jinen_tokenizer(root),
-            ja_pack: first_catalog_file(root, DataRole::JaLexicon, |relative| {
-                relative.ends_with(".pack")
-            }),
         }
-    }
-
-    /// 注音選字權重是否存在。
-    pub fn zh_select_ready(&self) -> bool {
-        self.zh_select.is_some()
     }
 }
 
@@ -222,30 +204,25 @@ mod tests {
     fn test_probe_reports_missing_models() {
         let dir = TempDir::new("empty");
         let status = DataStatus::probe(&dir.0, &dir.0.join("settings.json"), FileState::Missing);
-        assert!(!status.zh_select_ready());
-        assert!(status.jinen.is_none());
         assert!(status.jinen_tokenizer.is_none());
         assert!(status.model_manifest.is_none());
         assert_eq!(status.settings_state, FileState::Missing);
     }
 
     #[test]
-    fn test_probe_finds_zh_select_and_manifest() {
+    fn test_probe_finds_model_manifest() {
         let dir = TempDir::new("zh");
-        fs::create_dir_all(dir.0.join("models/zh-select")).expect("建立模型目錄");
-        fs::write(dir.0.join("models/zh-select/model.q8_0.gguf"), b"x").expect("寫入權重");
         fs::write(
             dir.0.join("models/manifest.json"),
             br#"{"schema":"jc.model-set/1","models":{}}"#,
         )
         .expect("寫入 manifest");
         let status = DataStatus::probe(&dir.0, &dir.0.join("settings.json"), FileState::Ok);
-        assert!(status.zh_select_ready());
         assert_eq!(status.model_manifest.as_deref(), Some("jc.model-set/1"));
     }
 
     #[test]
-    fn test_probe_finds_shipped_jinen_files() {
+    fn test_probe_finds_shipped_jinen_tokenizer() {
         let dir = TempDir::new("jinen");
         fs::create_dir_all(dir.0.join("models/external/jinen-v2-small"))
             .expect("建立 Jinen 模型目錄");
@@ -271,11 +248,8 @@ mod tests {
         fs::write(dir.0.join("models/ja-tokenizer/public_core_ja.model"), b"x")
             .expect("寫入舊分詞器");
 
-        let jinen_path = first_catalog_file(&dir.0, DataRole::JaNeural, is_model_weight)
-            .expect("catalog 的 Jinen 路徑");
         let tokenizer_path = dir.0.join("models/quant/jinen-v2-xsmall/tokenizer.json");
         let status = DataStatus::probe(&dir.0, &dir.0.join("settings.json"), FileState::Ok);
-        assert_eq!(status.jinen.as_deref(), Some(jinen_path.as_path()));
         assert_eq!(
             status.jinen_tokenizer.as_deref(),
             Some(tokenizer_path.as_path())

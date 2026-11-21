@@ -173,6 +173,22 @@ WiX v5 官方只支援 Windows，Linux 上的 `wix build` 有兩個限制：
 | repo 多一份 `legal/licenses/EXTRA.txt` 而 WXS 沒引用 | 失敗，回報「沒有被 WiX 引用」，結束碼 1 |
 | `wix build`（完整 MSI） | 這台 Linux 沒有 WiX 與 `msi.dll`，未執行；實機驗證項目見 `docs/install.md` |
 
+## 補充：設定程式捷徑（settings-no-console）
+
+「jc 注音設定」捷徑直接指向 `jc-settings-ui.exe`，不再經過
+`jc-tip-register settings`：
+
+| 主題 | 決定 | 理由 |
+|---|---|---|
+| 捷徑目標 | `[INSTALLFOLDER]jc-settings-ui.exe`，無參數 | `jc-tip-register` 必須維持 console subsystem（`machine-register`／`machine-unregister` 要讓管理員在 PowerShell 看到 stdout）；從它中轉會先開一個終端機 |
+| GUI subsystem | `jc-settings-ui` 加 `#![windows_subsystem = "windows"]` | 即使直接從 Shortcut 啟動也不會配置 console 視窗 |
+| 路徑展開 | 移到 `jc-settings-ui`：資料用 `%ProgramData%\jc-ime\data`，設定檔用 `%LOCALAPPDATA%\jc-ime\settings.json` | `.lnk` 的參數不展開環境變數，per-machine 捷徑不能寫死單一使用者路徑；原本由 `jc-tip-register` 展開，現在職責跟著搬過去 |
+| `machine-*` 輸出 | 不改 | console subsystem 與既有 stdout 保持原樣，PowerShell 輸出不受影響 |
+
+`jc-tip-register settings` 子命令保留作相容入口，但不再是開始功能表的路徑。
+「jc 注音授權」捷徑仍經過 `jc-tip-register legal`，開啟時仍會短暫出現
+console，這不是本次修正的範圍。
+
 ## 建置順序與 throw 前置條件（RC1／RC2 修正）
 
 RC1 的 Windows job 在 `installer/build.ps1:107` 失敗，訊息是找不到

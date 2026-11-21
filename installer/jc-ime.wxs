@@ -513,11 +513,12 @@
   </Fragment>
 
   <!--
-    開始功能表的設定程式捷徑。捷徑只帶 `settings`，由 jc-tip-register.exe
-    在執行時展開 %LOCALAPPDATA% 再啟動 jc-settings-ui.exe。
+    開始功能表的設定程式捷徑直接指向 jc-settings-ui.exe。它是 windows
+    subsystem，啟動時不會配置 console 視窗；%ProgramData% 與 %LOCALAPPDATA%
+    的路徑展開由它自己完成，不必經過 console 版的 jc-tip-register 中轉。
 
-    不在 Arguments 直接寫 `%LOCALAPPDATA%`：.lnk 的參數在啟動時不會展開環境
-    變數，per-machine 捷徑也不能寫死某個使用者的路徑。
+    .lnk 的 Arguments 在啟動時不會展開環境變數，per-machine 捷徑也不能寫死
+    某個使用者的路徑，所以不帶任何參數。
   -->
   <Fragment>
     <Component Id="StartMenuShortcut" Directory="ProgramMenuDir"
@@ -525,8 +526,7 @@
       <Shortcut Id="SettingsShortcut"
                 Name="jc 注音設定"
                 Description="調整 jc 注音的輸入模式、選字與候選數量"
-                Target="[INSTALLFOLDER]jc-tip-register.exe"
-                Arguments="settings"
+                Target="[INSTALLFOLDER]jc-settings-ui.exe"
                 WorkingDirectory="INSTALLFOLDER" />
       <RemoveFolder Id="RemoveProgramMenuDir" On="uninstall" />
     </Component>

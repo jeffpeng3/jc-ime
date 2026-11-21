@@ -317,11 +317,11 @@ pub fn user_uninstall(keep_user_data: bool) -> Result<(), Error> {
     Ok(())
 }
 
-/// 啟動 `jc-settings-ui.exe`。
+/// 啟動 `jc-settings-ui.exe`（相容入口）。
 ///
-/// 捷徑只帶 `settings` 一個字，`%LOCALAPPDATA%` 由這裡展開。MSI 建置的 `.lnk`
-/// 不會在啟動時展開環境變數；把路徑寫死在 per-machine 的捷徑也對其他使用者
-/// 不成立，所以交給這支程式在執行時組合。
+/// 早期的開始功能表捷徑只帶 `settings` 一個字，`%LOCALAPPDATA%` 由這裡展開；
+/// 現在 Shortcut 直連 `jc-settings-ui.exe`，路徑展開也搬到那支程式。保留這個
+/// 子命令給既有呼叫方式，行為不變。
 pub fn open_settings() -> Result<(), Error> {
     let current = std::env::current_exe()?;
     let dir = current
