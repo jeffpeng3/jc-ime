@@ -282,6 +282,21 @@ impl AsciiInput {
         true
     }
 
+    /// 聲調鍵是否會把待定按鍵補成一個注音音節。
+    ///
+    /// [`AsciiInput::tone`] 在組不出音節時會把聲調鍵照字面留進 pending，那種
+    /// 情況仍要交給數字選字鍵處理；這裡只回報真正完成音節的狀況。
+    pub(super) fn tone_completes(&self, key: char, lexicon: &dyn Lexicon) -> bool {
+        let Some(symbol) = Keyboard::standard().symbol(key) else {
+            return false;
+        };
+        if class_of(symbol) != Class::Tone || self.pending.is_empty() {
+            return false;
+        }
+        mixed_reading(&self.pending, symbol, &self.pieces, lexicon).is_some()
+            || self.boundary(symbol, lexicon).is_some()
+    }
+
     /// 送出前把剩下的待定按鍵照字面留下。
     pub fn flush(&mut self) {
         if !self.pending.is_empty() {
@@ -698,13 +713,20 @@ impl Session {
                 ));
             }
         }
-        for candidate in english_candidates(&self.personal, &raw, limit) {
-            let key = candidate.surface.to_lowercase();
-            if seen.contains(&key) {
-                continue;
+        // pending 顯示成注音代表它還是未完成的注音前綴（例如 su 是 ㄋㄧ）。
+        // 這時英文補全只留在 Snapshot.suggestion 提示，不進候選讓數字鍵選到，
+        // 避免組字區被補全取代而鎖死語言。hello、sug 等照字面顯示的前綴
+        // 維持原本的英文補全流程。
+        let is_zhuyin_prefix = self.ascii.display_pending(&self.lexicon) != raw;
+        if !is_zhuyin_prefix {
+            for candidate in english_candidates(&self.personal, &raw, limit) {
+                let key = candidate.surface.to_lowercase();
+                if seen.contains(&key) {
+                    continue;
+                }
+                seen.push(key);
+                self.candidates.push(candidate);
             }
-            seen.push(key);
-            self.candidates.push(candidate);
         }
         self.candidates.truncate(limit);
     }

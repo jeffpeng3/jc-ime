@@ -1502,6 +1502,109 @@ mod tests {
         assert_eq!(s.commit(), "我hello");
     }
 
+    /// 含本任務路徑所需讀音的混合 session；`su` 的注音前綴需要 ㄋㄧ 可查。
+    fn mixed_zhuyin_session() -> Session {
+        let mut lex = InMemoryLexicon::new();
+        for (surface, reading) in [
+            ("你", "ㄋㄧˇ"),
+            ("好", "ㄏㄠˇ"),
+            ("這", "ㄓㄜˋ"),
+            ("尼", "ㄋㄧ"),
+        ] {
+            lex.push(LexEntry::new(surface, reading, 0, 0));
+        }
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(lex);
+        config.english_autocomplete = true;
+        Session::new(config)
+    }
+
+    /// `su` 是未完成的注音前綴：英文補全只留在提示，數字鍵補聲調而非選補全。
+    #[test]
+    fn test_su_prefix_tone_key_wins_over_digit_selection() {
+        let mut s = mixed_zhuyin_session();
+        type_keys(&mut s, "su");
+        let surfaces: Vec<String> = s
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.surface.clone())
+            .collect();
+        assert!(
+            !surfaces
+                .iter()
+                .any(|text| text.starts_with("su") && text.len() > 2),
+            "未完成注音不該有英文補全候選：{surfaces:?}"
+        );
+        // 外殼在單一數字鍵前補 Down。
+        s.press(Key::new(KeyCode::Down, None, false));
+        type_keys(&mut s, "3cl3");
+        assert_eq!(s.snapshot().preedit, "你好");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "你好");
+    }
+
+    /// `5k4` 不回歸：數字是聲調鍵，即使外殼補 Down 也完成 ㄓㄜˋ。
+    #[test]
+    fn test_5k4_tone_key_not_regressed() {
+        let mut s = mixed_zhuyin_session();
+        type_keys(&mut s, "5k");
+        s.press(Key::new(KeyCode::Down, None, false));
+        type_keys(&mut s, "4");
+        assert_eq!(s.snapshot().preedit, "這");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "這");
+    }
+
+    /// 英文前綴不是注音，補全候選與 Tab 接受維持原行為。
+    #[test]
+    fn test_hello_tab_completion_unchanged() {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(lexicon());
+        config.english_autocomplete = true;
+        let mut s = Session::new(config);
+        type_keys(&mut s, "hellp");
+        assert_eq!(s.snapshot().suggestion.as_deref(), Some("hello"));
+        let surfaces: Vec<String> = s
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.surface.clone())
+            .collect();
+        assert!(surfaces.iter().any(|text| text == "hello"), "{surfaces:?}");
+        s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(s.snapshot().preedit, "hello");
+        // 完整英文詞沒有補全，Tab 不改內容。
+        s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(s.snapshot().preedit, "hello");
+    }
+
+    /// `sug` 已不是合法注音前綴，Down + 數字照舊選英文候選。
+    #[test]
+    fn test_sug_digit_selects_english_candidate() {
+        let mut s = mixed_zhuyin_session();
+        type_keys(&mut s, "sug");
+        s.press(Key::new(KeyCode::Down, None, false));
+        let expected = s.candidates()[2].surface.clone();
+        type_keys(&mut s, "3");
+        assert_eq!(s.snapshot().preedit, expected);
+        assert_ne!(s.snapshot().preedit, "sug3");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), expected);
+    }
+
+    /// `ji3hellp` 不回歸：注音完成後英文補全提示與 Tab 仍可用。
+    #[test]
+    fn test_ji3hellp_completion_not_regressed() {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(lexicon());
+        config.english_autocomplete = true;
+        let mut s = Session::new(config);
+        type_keys(&mut s, "ji3hellp");
+        assert_eq!(s.snapshot().preedit, "我hellp");
+        assert_eq!(s.snapshot().suggestion.as_deref(), Some("hello"));
+        s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(s.snapshot().preedit, "我hello");
+    }
+
     /// 對照 `TestCJKLatinSpaceInMixedInput`：組字區照打的顯示，送出時才補空格。
     #[test]
     fn test_cjk_latin_space_in_mixed_input() {

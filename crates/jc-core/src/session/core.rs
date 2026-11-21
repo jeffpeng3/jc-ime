@@ -194,6 +194,22 @@ impl Session {
                 _ => {}
             }
         }
+        // Mixed 模式下聲調鍵先於選字鍵：未完成的注音前綴遇到數字時先補成音節，
+        // 即使外殼在單一數字鍵前補了 Down，也不會選到英文補全候選。
+        if self.config.mode == Mode::Mixed
+            && self.candidate_window
+            && self.ascii.tone_completes(ch, &self.lexicon)
+        {
+            self.ascii.tone(ch, &self.lexicon);
+            self.accepted_completion = None;
+            self.suggestion = None;
+            self.candidate_window = false;
+            self.navigating = false;
+            self.keep_candidates = false;
+            self.highlighted = 0;
+            self.rebuild();
+            return;
+        }
         // 選字鍵先處理：超出候選數時吃掉按鍵但完全不改狀態，不能退回注音鍵。
         if self.candidate_window {
             if let Some(selected) = self.select_by_digit(ch) {

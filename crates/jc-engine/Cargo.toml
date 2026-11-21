@@ -6,7 +6,6 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-interprocess = "2.4.9"
 jc-core = { path = "../jc-core" }
 jc-data = { path = "../jc-data" }
 jc-model = { path = "../jc-model" }
@@ -29,6 +28,7 @@ windows-sys = { version = "0.61", features = [
     # supervise 測試註冊視窗類別用到的 WNDCLASSW 掛在這個 feature 底下。
     "Win32_Graphics_Gdi",
     "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_IO",
@@ -40,5 +40,8 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 # 監督者送 SIGTERM 給子行程；Windows 用 console 事件，不需要這個。
+# interprocess 只給 Unix 的 unix domain socket 監聽用；Windows 監聽端直接用
+# CreateNamedPipeW，不讓含 G: 的 SDDL 流經它的 SecurityDescriptor::deserialize。
 [target.'cfg(unix)'.dependencies]
+interprocess = "2.4.9"
 libc = "0.2"

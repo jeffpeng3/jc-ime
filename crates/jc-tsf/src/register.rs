@@ -42,7 +42,7 @@
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use windows::core::{Result, PCWSTR};
+use windows::core::{Result, GUID, PCWSTR};
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HMODULE, WIN32_ERROR};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
@@ -72,6 +72,48 @@ use crate::guids::{
 /// 存取違規。這裡的指標有效可讀，長度 0，等於「沒有圖示」。
 static NO_ICON: [u16; 1] = [0];
 
+/// 一組可註冊的 TSF 身分。
+///
+/// 已發行的舊 DLL 用 [`Registration::default()`]，值與 `guids.rs` 完全一致；新版 DLL
+/// 用自己的 CLSID／profile／描述／pipe 前綴呼叫 [`register_with`]，兩組可以同時註冊。
+/// 這個結構刻意不放 DLL 路徑：`InprocServer32` 永遠指向呼叫 `DllRegisterServer` 的那份 DLL。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Registration {
+    /// 文字服務的 CLSID，同時是 `RegisterCategory` 的物件識別。
+    pub clsid: GUID,
+    /// 語言 profile 的 GUID。
+    pub profile: GUID,
+    /// 出現在系統輸入法清單的名稱。
+    pub description: &'static str,
+    /// profile 的語言 ID。
+    pub langid: u16,
+    /// 引擎 pipe 前綴；寫入 CLSID 機碼供啟動器讀取，也用來推導 pipe 名稱。
+    pub pipe_prefix: &'static str,
+}
+
+impl Default for Registration {
+    /// 已發行值。任何情況下都不能改這個預設，否則舊使用者的輸入法設定會失效。
+    fn default() -> Self {
+        Self {
+            clsid: CLSID_JC_TSF,
+            profile: GUID_PROFILE_JC_TSF,
+            description: PROFILE_DESCRIPTION,
+            langid: LANGID_ZH_TW,
+            pipe_prefix: "jc-ime",
+        }
+    }
+}
+
+impl Registration {
+    /// 依 SID 尾段推出這組身分對應的引擎 pipe 名稱，不含 `\\.\pipe\`。
+    ///
+    /// 舊 DLL 自己不連 pipe，這個方法留給新版 DLL 的啟動器與測試使用。
+    #[allow(dead_code)]
+    pub fn engine_pipe_name(&self, rid: &str) -> String {
+        format!("{}-{rid}", self.pipe_prefix)
+    }
+}
+
 /// `jc-tip-register` 傳進來的安裝日誌路徑。
 const INSTALL_LOG_ENV: &str = "JC_INSTALL_LOG";
 
@@ -86,9 +128,21 @@ const REGISTRY_VIEW: REG_SAM_FLAGS = windows::Win32::System::Registry::KEY_WOW64
 #[cfg(target_pointer_width = "32")]
 const REGISTRY_VIEW: REG_SAM_FLAGS = windows::Win32::System::Registry::KEY_WOW64_32KEY;
 
-/// 註冊文字服務。
+/// 用已發行的舊身分註冊文字服務；`DllRegisterServer` 走這條，行為與以往相同。
 pub fn register() -> Result<()> {
-    install_log("jc-tsf register：開始");
+    register_with(&Registration::default())
+}
+
+/// 用指定的身分註冊文字服務，供新版 DLL 平行註冊。
+///
+/// 舊 DLL 請用 [`register`]；新 DLL 傳入自己的 [`Registration`]。
+pub fn register_with(reg: &Registration) -> Result<()> {
+    install_log(&format!(
+        "jc-tsf register：開始（CLSID {}，描述 {}，pipe 前綴 {}）",
+        registry_key(&reg.clsid),
+        reg.description,
+        reg.pipe_prefix
+    ));
     let dll = match module_path() {
         Ok(dll) => {
             install_log(&format!("module_path：{dll}"));
@@ -99,7 +153,7 @@ pub fn register() -> Result<()> {
             return Err(error);
         }
     };
-    if let Err(error) = write_com_registration(&dll) {
+    if let Err(error) = write_com_registration(&dll, reg) {
         install_log(&format!("寫入 InprocServer32：失敗（{error}）"));
         return Err(error);
     }
@@ -120,19 +174,19 @@ pub fn register() -> Result<()> {
                 })?;
         install_log("CoCreateInstance(CLSID_TF_InputProcessorProfiles)：成功");
 
-        let result = profiles.Register(&CLSID_JC_TSF);
+        let result = profiles.Register(&reg.clsid);
         log_result("ITfInputProcessorProfiles::Register", &result);
         result?;
 
-        let description = crate::wide(PROFILE_DESCRIPTION);
+        let description = crate::wide(reg.description);
         // 去掉結尾的 NUL：cchDesc 是字元數，不是緩衝長度。
         let description = &description[..description.len() - 1];
         // `&[]` 的 as_ptr() 是非 NULL 的對齊位址，msctf 可能先讀再判斷長度；
         // 指向真正的 NUL、長度 0 才是「沒有圖示」。
         let result = profiles.AddLanguageProfile(
-            &CLSID_JC_TSF,
-            LANGID_ZH_TW,
-            &GUID_PROFILE_JC_TSF,
+            &reg.clsid,
+            reg.langid,
+            &reg.profile,
             description,
             &NO_ICON[..0],
             0,
@@ -154,16 +208,15 @@ pub fn register() -> Result<()> {
         install_log("CoCreateInstance(CLSID_TF_CategoryMgr)：成功（HRESULT 0x00000000）");
 
         install_log("RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)：開始");
-        let result =
-            categories.RegisterCategory(&CLSID_JC_TSF, &GUID_TFCAT_TIP_KEYBOARD, &CLSID_JC_TSF);
+        let result = categories.RegisterCategory(&reg.clsid, &GUID_TFCAT_TIP_KEYBOARD, &reg.clsid);
         log_result("RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)", &result);
         result?;
         // 沒有這個能力分類，Windows 不會接受 ITfUIElementMgr::BeginUIElement。
         install_log("RegisterCategory(GUID_TFCAT_TIPCAP_UIELEMENTENABLED)：開始");
         let result = categories.RegisterCategory(
-            &CLSID_JC_TSF,
+            &reg.clsid,
             &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
-            &CLSID_JC_TSF,
+            &reg.clsid,
         );
         log_result(
             "RegisterCategory(GUID_TFCAT_TIPCAP_UIELEMENTENABLED)",
@@ -173,9 +226,9 @@ pub fn register() -> Result<()> {
         // 組字底線：這個 CLSID 同時是 ITfDisplayAttributeProvider 的實作。
         install_log("RegisterCategory(GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER)：開始");
         let result = categories.RegisterCategory(
-            &CLSID_JC_TSF,
+            &reg.clsid,
             &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
-            &CLSID_JC_TSF,
+            &reg.clsid,
         );
         log_result(
             "RegisterCategory(GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER)",
@@ -189,9 +242,17 @@ pub fn register() -> Result<()> {
     Ok(())
 }
 
-/// 反註冊文字服務；個別步驟失敗不阻止其他步驟。
+/// 用已發行的舊身分反註冊；`DllUnregisterServer` 走這條。
 pub fn unregister() -> Result<()> {
-    install_log("jc-tsf unregister：開始");
+    unregister_with(&Registration::default())
+}
+
+/// 用指定的身分反註冊；個別步驟失敗不阻止其他步驟。
+pub fn unregister_with(reg: &Registration) -> Result<()> {
+    install_log(&format!(
+        "jc-tsf unregister：開始（CLSID {}）",
+        registry_key(&reg.clsid)
+    ));
     // SAFETY: 與註冊相同，COM 沒有初始化時 CoCreateInstance 會失敗，忽略即可。
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -200,33 +261,28 @@ pub fn unregister() -> Result<()> {
             None,
             CLSCTX_INPROC_SERVER,
         ) {
-            let _ =
-                profiles.RemoveLanguageProfile(&CLSID_JC_TSF, LANGID_ZH_TW, &GUID_PROFILE_JC_TSF);
-            let _ = profiles.Unregister(&CLSID_JC_TSF);
+            let _ = profiles.RemoveLanguageProfile(&reg.clsid, reg.langid, &reg.profile);
+            let _ = profiles.Unregister(&reg.clsid);
         }
         if let Ok(categories) =
             CoCreateInstance::<_, ITfCategoryMgr>(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER)
         {
+            let _ = categories.UnregisterCategory(&reg.clsid, &GUID_TFCAT_TIP_KEYBOARD, &reg.clsid);
             let _ = categories.UnregisterCategory(
-                &CLSID_JC_TSF,
-                &GUID_TFCAT_TIP_KEYBOARD,
-                &CLSID_JC_TSF,
-            );
-            let _ = categories.UnregisterCategory(
-                &CLSID_JC_TSF,
+                &reg.clsid,
                 &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
-                &CLSID_JC_TSF,
+                &reg.clsid,
             );
             let _ = categories.UnregisterCategory(
-                &CLSID_JC_TSF,
+                &reg.clsid,
                 &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
-                &CLSID_JC_TSF,
+                &reg.clsid,
             );
         }
     }
 
     // 只刪這份 DLL 自己那個檢視；另一個檢視由另一個架構的 DLL（或安裝器）負責。
-    let result = delete_clsid_tree();
+    let result = delete_clsid_tree(reg);
     match &result {
         Ok(()) => install_log("jc-tsf unregister：成功"),
         Err(error) => install_log(&format!("delete_clsid_tree：失敗（{error}）")),
@@ -235,7 +291,7 @@ pub fn unregister() -> Result<()> {
 }
 
 /// 刪掉這個檢視的 `HKCR\CLSID\{...}` 整棵樹。
-fn delete_clsid_tree() -> Result<()> {
+fn delete_clsid_tree(reg: &Registration) -> Result<()> {
     let root_path = crate::wide("CLSID");
     let mut root = HKEY::default();
     // SAFETY: root_path 以 NUL 結尾；root 成功時由 RegOpenKeyExW 寫入。
@@ -255,7 +311,7 @@ fn delete_clsid_tree() -> Result<()> {
         return Err(win32_error(status));
     }
 
-    let path = crate::wide(&registry_key(&CLSID_JC_TSF));
+    let path = crate::wide(&registry_key(&reg.clsid));
     // SAFETY: path 以 NUL 結尾；root 是上面開啟的 handle，檢視由它決定。
     let status = unsafe { RegDeleteTreeW(root, PCWSTR(path.as_ptr())) };
     // SAFETY: root 由成功的 RegOpenKeyExW 取得。
@@ -269,12 +325,14 @@ fn delete_clsid_tree() -> Result<()> {
     }
 }
 
-/// 寫 `InprocServer32`。
-fn write_com_registration(dll: &str) -> Result<()> {
-    let base = format!("CLSID\\{}", registry_key(&CLSID_JC_TSF));
+/// 寫 `InprocServer32` 與這組身分的 pipe 前綴。
+fn write_com_registration(dll: &str, reg: &Registration) -> Result<()> {
+    let base = format!("CLSID\\{}", registry_key(&reg.clsid));
     let inproc = format!("{base}\\InprocServer32");
     set_string(&inproc, None, dll)?;
     set_string(&inproc, Some("ThreadingModel"), "Apartment")?;
+    // T9：讓讀取這個 CLSID 的啟動器知道該連哪一條引擎 pipe。Windows 忽略不認識的值。
+    set_string(&base, Some("PipePrefix"), reg.pipe_prefix)?;
     Ok(())
 }
 
@@ -408,4 +466,44 @@ fn timestamp_millis() -> u128 {
 /// `WIN32_ERROR` 轉成 `windows::core::Error`。
 fn win32_error(status: WIN32_ERROR) -> windows::core::Error {
     windows::core::HRESULT::from_win32(status.0).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 舊 DLL 的預設值必須與 guids.rs 的已發行值一致。
+    #[test]
+    fn default_registration_keeps_published_values() {
+        let reg = Registration::default();
+        assert_eq!(
+            registry_key(&reg.clsid),
+            "{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}"
+        );
+        assert_eq!(
+            registry_key(&reg.profile),
+            "{8F0A9B3C-2D4E-4F50-A1B2-C3D4E5F60718}"
+        );
+        assert_eq!(reg.description, "jc 注音");
+        assert_eq!(reg.langid, 0x0404);
+        assert_eq!(reg.pipe_prefix, "jc-ime");
+    }
+
+    /// 新舊身分可以同時註冊，pipe 名稱也跟著前綴分開。
+    #[test]
+    fn parallel_registration_uses_new_values() {
+        let old = Registration::default();
+        let next = Registration {
+            clsid: GUID::from_u128(0x2f6b41d8_9e07_4c3a_b5f1_8d2c6a9e0473),
+            profile: GUID::from_u128(0xc4e8d217_5b3f_4a96_8e0c_7f1a2b3d4e56),
+            description: "jc 注音（新版）",
+            langid: 0x0404,
+            pipe_prefix: "jc-ime-next",
+        };
+        assert_ne!(old.clsid, next.clsid);
+        assert_ne!(old.profile, next.profile);
+        assert_ne!(old.description, next.description);
+        assert_eq!(old.engine_pipe_name("1001"), "jc-ime-1001");
+        assert_eq!(next.engine_pipe_name("1001"), "jc-ime-next-1001");
+    }
 }

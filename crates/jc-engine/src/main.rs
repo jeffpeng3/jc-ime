@@ -6,7 +6,9 @@
 //! ```text
 //! jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>]
 //!           [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]
+//!           [--personal-prefix <name>]
 //! jc-engine --supervise [--socket <name>] [--supervisor-log <path>]
+//!           [--instance <name>]
 //! ```
 //!
 //! Windows 正式啟動與 autostart 都要用 `--supervise`，且**不帶** `--socket`：
@@ -27,22 +29,35 @@
 //! `--allow-empty-data` 跳過資料載入，只用空 session，供協定測試與除錯；
 //! 正式啟動仍要求 `--data` 或 `JC_DATA`。
 //!
-//! stdio 模式在所有平台都能跑；`--socket` 走 interprocess 的 local socket，
-//! 底層在 unix 是 unix domain socket、在 Windows 是本機 named pipe，兩端的
-//! 名稱解析共用 `jc_windows`。其他平台回報尚未實作。
+//! stdio 模式在所有平台都能跑。`--socket` 在 Windows 直接走 Win32
+//! `CreateNamedPipeW`（見 [`pipe_listener`]），在 unix 走 interprocess 的 unix
+//! domain socket；兩端的名稱解析共用 `jc_windows`。其他平台回報尚未實作。
+
+#[cfg(windows)]
+mod pipe_listener;
 
 use std::ffi::OsString;
-use std::io::{self, BufReader, BufWriter, Write};
+#[cfg(unix)]
+use std::io::Write;
+use std::io::{self, BufReader, BufWriter};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+#[cfg(unix)]
+use std::time::Duration;
 
 use anyhow::{bail, Context};
-use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
+#[cfg(not(windows))]
+use interprocess::local_socket::traits::Listener as _;
+#[cfg(unix)]
+use interprocess::local_socket::ListenerOptions;
+#[cfg(unix)]
+use interprocess::local_socket::{traits::Stream as _, ListenerNonblockingMode};
 use jc_core::session::{Session, SessionConfig};
 use jc_core::Mode;
 use jc_engine::config;
 use jc_engine::loader::load_engine_data;
-use jc_engine::supervise::{self, SupervisorConfig};
-use jc_engine::{engine_label, serve, Engine};
+use jc_engine::supervise::{self, SupervisorConfig, SUPERVISOR_MUTEX_NAME};
+use jc_engine::{engine_label, serve, Engine, SessionFactory, DEFAULT_PERSONAL_PREFIX};
 use jc_proto::{DEFAULT_MAX_FRAME, PROTOCOL_VERSION};
 
 /// 啟動方式。
@@ -71,6 +86,22 @@ struct Options {
     supervise: bool,
     /// `--supervisor-log`：監督者 log 路徑；未指定時用平台預設位置。
     supervisor_log: Option<PathBuf>,
+    /// `--personal-prefix`：個人學習檔名前綴；平行建置讓新版用不同值。
+    personal_prefix: String,
+    /// `--instance`：監督者實例名；平行建置讓新版有獨立的鎖與 log。
+    instance: String,
+}
+
+/// 已發行的預設實例名。非預設值才會改鎖名與 log 檔名。
+const DEFAULT_INSTANCE: &str = "main";
+
+/// 監督者的鎖名；預設實例保持已發行值，其他實例加後綴。
+fn supervisor_lock_name(instance: &str) -> String {
+    if instance == DEFAULT_INSTANCE {
+        SUPERVISOR_MUTEX_NAME.to_string()
+    } else {
+        format!("{SUPERVISOR_MUTEX_NAME}-{instance}")
+    }
 }
 
 /// 命令列解析結果。
@@ -141,15 +172,18 @@ fn run(options: Options) -> anyhow::Result<()> {
         effective.space_selects,
         effective.document_context
     );
-    let mut engine = if options.allow_empty_data {
-        log::info!("--allow-empty-data：不載入資料，使用空 session（僅測試用）");
-        let base = SessionConfig::default();
-        Engine::with_session(Session::new(config::session_config(base, &effective)))
+    // T4：每條連線在 worker thread 裡用自己的 factory 建 Session，避免在
+    // thread 間移動非 Send 的 Session／SessionConfig。
+    let personal_dir = if options.allow_empty_data {
+        None
     } else {
-        let dir = data_dir.ok_or_else(missing_data_dir)?;
+        Some(data_dir.clone().ok_or_else(missing_data_dir)?)
+    };
+    let factory: SessionFactory = if let Some(dir) = &personal_dir {
         log::debug!("資料根目錄：{}", dir.display());
-        let data =
-            load_engine_data(&dir).with_context(|| format!("載入資料失敗：{}", dir.display()))?;
+        let data = Arc::new(
+            load_engine_data(dir).with_context(|| format!("載入資料失敗：{}", dir.display()))?,
+        );
         log::info!(
             "載入 {} 個注音詞條{}，日文解碼器就緒",
             data.zh.lexicon.len(),
@@ -159,9 +193,21 @@ fn run(options: Options) -> anyhow::Result<()> {
                 ""
             }
         );
-        let base = data.session_config(effective.mode);
-        Engine::with_session(Session::new(config::session_config(base, &effective)))
+        // 個人資料由各 session 自己持有並存到 personal-<id>.json；T4 不讀回
+        // 舊檔，ResetPersonal 重建 session 時才能保證拿到真正的空白 store。
+        Arc::new(move || {
+            let base = data.session_config(effective.mode);
+            Session::new(config::session_config(base, &effective))
+        })
+    } else {
+        log::info!("--allow-empty-data：不載入資料，使用空 session（僅測試用）");
+        Arc::new(move || Session::new(config::session_config(SessionConfig::default(), &effective)))
     };
+    let mut engine = Engine::with_factory(factory, personal_dir);
+    if options.personal_prefix != DEFAULT_PERSONAL_PREFIX {
+        log::info!("個人資料檔名前綴：{}", options.personal_prefix);
+        engine.set_personal_prefix(options.personal_prefix.clone());
+    }
     match options.mode {
         Transport::Stdio => {
             let stdin = io::stdin();
@@ -173,7 +219,7 @@ fn run(options: Options) -> anyhow::Result<()> {
             log::debug!("stdio 結束");
             Ok(())
         }
-        Transport::Socket(path) => serve_socket(&mut engine, &path, options.max_frame),
+        Transport::Socket(path) => serve_socket(&engine, &path, options.max_frame),
     }
 }
 
@@ -186,12 +232,15 @@ fn run_supervisor(options: &Options) -> anyhow::Result<()> {
         Transport::Socket(path) => path.clone(),
         Transport::Stdio => default_supervisor_socket(),
     };
+    let instance = options.instance.clone();
     let log_path = options
         .supervisor_log
         .clone()
-        .unwrap_or_else(default_supervisor_log);
+        .unwrap_or_else(|| default_supervisor_log_for(&instance));
     let program = std::env::current_exe().context("取得目前的執行檔路徑失敗")?;
-    let config = SupervisorConfig::new(program, child_args(options, &socket), socket, log_path);
+    let mut config = SupervisorConfig::new(program, child_args(options, &socket), socket, log_path);
+    // 平行建置：新舊引擎的監督者不能搶同一把鎖，否則第二個永遠回 AlreadyRunning。
+    config.lock_name = supervisor_lock_name(&instance);
 
     match supervise::run(&config) {
         Ok(()) => Ok(()),
@@ -225,6 +274,11 @@ fn child_args(options: &Options, socket: &Path) -> Vec<OsString> {
     }
     if options.allow_empty_data {
         args.push("--allow-empty-data".into());
+    }
+    // 舊版命令列保持不變；只有新版非預設前綴才多帶一個參數給子行程。
+    if options.personal_prefix != DEFAULT_PERSONAL_PREFIX {
+        args.push("--personal-prefix".into());
+        args.push(options.personal_prefix.as_str().into());
     }
     args.push("--max-frame".into());
     args.push(options.max_frame.to_string().into());
@@ -262,68 +316,98 @@ fn default_supervisor_socket() -> PathBuf {
 }
 
 /// 監督者 log 的預設位置：`%LOCALAPPDATA%\jc-ime\supervisor.log`，其他平台用
-/// `XDG_STATE_HOME` 或 `~/.local/state`。
-fn default_supervisor_log() -> PathBuf {
+/// `XDG_STATE_HOME` 或 `~/.local/state`。非預設實例用 `supervisor-<instance>.log`。
+fn default_supervisor_log_for(instance: &str) -> PathBuf {
+    let file = if instance == DEFAULT_INSTANCE {
+        "supervisor.log".to_string()
+    } else {
+        format!("supervisor-{instance}.log")
+    };
     if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
-        return PathBuf::from(dir).join("jc-ime").join("supervisor.log");
+        return PathBuf::from(dir).join("jc-ime").join(file);
     }
     if let Some(dir) = std::env::var_os("XDG_STATE_HOME") {
-        return PathBuf::from(dir).join("jc-ime").join("supervisor.log");
+        return PathBuf::from(dir).join("jc-ime").join(file);
     }
     if let Some(home) = std::env::var_os("HOME") {
         return PathBuf::from(home)
             .join(".local")
             .join("state")
             .join("jc-ime")
-            .join("supervisor.log");
+            .join(file);
     }
-    std::env::temp_dir().join("jc-ime").join("supervisor.log")
+    std::env::temp_dir().join("jc-ime").join(file)
 }
 
-/// 在 `path` 對應的 local socket 上監聽並序列處理連線，收到 `Shutdown` 才回傳。
+/// Windows 在 `path` 對應的 named pipe 上監聽，直接呼叫 `CreateNamedPipeW`。
 ///
-/// 平台差異全部交給 interprocess：Windows 是 named pipe，Unix 是 unix domain
-/// socket。一次只服務一條連線，維持 pipe-busy 修正後的一對一模型；連線時機由
-/// focus-pipe 統一管理。訊框仍走 `jc_proto`，這裡只負責搬位元組。
-///
-/// Windows 不指定自訂 SDDL，用 named pipe 的預設 DACL：建立者（目前使用者）、
-/// SYSTEM 與 Administrators 有完整控制權，同使用者的 TIP 能連上。`interprocess`
-/// 2.4.9 的 `SecurityDescriptor::deserialize` 在複製含 `G:` 的 SDDL 時會把 group
-/// SID 誤設成 owner（`try_clone` 呼叫 `set_owner` 而非 `set_group`），讓
-/// `CreateNamedPipeW` 回 ERROR_INVALID_OWNER (1307)，pipe 根本建立不起來。
-#[cfg(any(unix, windows))]
-fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
+/// SDDL 照 0c 逐字設定，含 AppContainer 的兩組 SID；不流經 `interprocess`，
+/// 因此避開它複製含 `G:` 的 SDDL 時回 ERROR_INVALID_OWNER (1307) 的 bug。
+/// T4 起每條連線一個 worker thread，共用同一份 engine registry。
+#[cfg(windows)]
+fn serve_socket(engine: &Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
+    pipe_listener::serve(engine, path, max_frame)
+}
+
+/// 在 `path` 對應的 unix domain socket 上監聽；T4 起每條連線一個 worker
+/// thread，共用同一份 registry。listener 設為 nonblocking，每 50ms 輪一次，
+/// 讓 drain／Shutdown 在沒有新連線時也能結束 accept 迴圈。
+#[cfg(unix)]
+fn serve_socket(engine: &Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
+    use std::thread;
+
     let name = jc_windows::socket_name(path)?;
     let options = ListenerOptions::new().name(jc_windows::ns_name(&name)?);
     let listener = options
         .create_sync()
         .with_context(|| format!("監聽 local socket 失敗：{name}"))?;
-    log::info!("jc-engine 監聽 local socket {name}");
+    listener
+        .set_nonblocking(ListenerNonblockingMode::Accept)
+        .context("設定 nonblocking accept 失敗")?;
+    log::info!("jc-engine 監聽 local socket {name}（多連線）");
 
     loop {
-        let stream = match listener.accept() {
-            Ok(stream) => stream,
+        match listener.accept() {
+            Ok(stream) => {
+                log::debug!("接受 local socket 連線");
+                let connection = engine.accept();
+                // interprocess 的 Stream 不暴露 raw fd，改用 receive timeout：
+                // worker 每 250ms 醒來一次檢查全域收線旗標，drain／Shutdown
+                // 因此能即時收掉所有連線，不必 async runtime。
+                stream
+                    .set_recv_timeout(Some(Duration::from_millis(250)))
+                    .context("設定 socket receive timeout 失敗")?;
+                let spawned =
+                    thread::Builder::new()
+                        .name("jc-engine-conn".into())
+                        .spawn(move || {
+                            let mut view = connection.into_engine();
+                            let mut input = BufReader::new(&stream);
+                            let mut output = BufWriter::new(&stream);
+                            if let Err(err) = serve(&mut view, &mut input, &mut output, max_frame) {
+                                log::warn!("連線結束：{err}");
+                            }
+                            if let Err(err) = output.flush() {
+                                log::warn!("寫出最後一個回應失敗：{err}");
+                            }
+                            view.finish_connection();
+                        });
+                if let Err(err) = spawned {
+                    log::warn!("衍生連線 worker 失敗：{err}");
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(50));
+            }
             Err(err) => {
                 log::warn!("接受連線失敗：{err}");
-                continue;
+                thread::sleep(Duration::from_millis(50));
             }
-        };
-        log::debug!("接受 local socket 連線");
-        // Stream 的共用參考同時實作 Read 與 Write，不需要複製 handle。
-        let mut input = BufReader::new(&stream);
-        let mut output = BufWriter::new(&stream);
-        // 單一連線的錯誤不影響下一個連線。
-        if let Err(err) = serve(engine, &mut input, &mut output, max_frame) {
-            log::warn!("連線結束：{err}");
         }
-        if let Err(err) = output.flush() {
-            log::warn!("寫出最後一個回應失敗：{err}");
-        }
-        if engine.is_shutdown() {
-            log::debug!("收到 Shutdown，結束行程");
+        if engine.is_shutdown() || engine.is_drain_done() {
+            log::debug!("行程結束旗標已設定，離開 accept 迴圈");
             break;
         }
-        engine.reset_session();
     }
 
     Ok(())
@@ -331,7 +415,7 @@ fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::R
 
 /// 既不是 unix 也不是 Windows 的平台沒有 socket 傳輸，明確回報錯誤而不是 panic。
 #[cfg(not(any(unix, windows)))]
-fn serve_socket(_engine: &mut Engine, _path: &Path, _max_frame: usize) -> anyhow::Result<()> {
+fn serve_socket(_engine: &Engine, _path: &Path, _max_frame: usize) -> anyhow::Result<()> {
     bail!("這個平台不支援 --socket，只能使用 stdio 模式")
 }
 
@@ -347,6 +431,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut allow_empty_data = false;
     let mut supervise = false;
     let mut supervisor_log: Option<PathBuf> = None;
+    let mut personal_prefix = DEFAULT_PERSONAL_PREFIX.to_string();
+    let mut instance = DEFAULT_INSTANCE.to_string();
     let mut index = 0;
 
     while index < args.len() {
@@ -372,6 +458,22 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--supervisor-log" => {
                 let value = value_of(args, &mut index, "--supervisor-log")?;
                 supervisor_log = Some(PathBuf::from(value));
+            }
+            "--personal-prefix" => {
+                let value = value_of(args, &mut index, "--personal-prefix")?;
+                if value.is_empty() || value.contains('/') || value.contains('\\') {
+                    return Err(format!(
+                        "--personal-prefix 必須是非空白的檔名前綴，收到 {value}"
+                    ));
+                }
+                personal_prefix = value;
+            }
+            "--instance" => {
+                let value = value_of(args, &mut index, "--instance")?;
+                if value.is_empty() || value.contains('/') || value.contains('\\') {
+                    return Err(format!("--instance 必須是非空白的實例名，收到 {value}"));
+                }
+                instance = value;
             }
             "--mode" => {
                 let value = value_of(args, &mut index, "--mode")?;
@@ -414,6 +516,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         allow_empty_data,
         supervise,
         supervisor_log,
+        personal_prefix,
+        instance,
     }))
 }
 
@@ -470,7 +574,9 @@ fn print_usage() {
         "jc-engine {}（協定 {}）\n\n\
          用法：\n  jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>]\n\
          \x20           [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]\n\
-         \x20 jc-engine --supervise [--socket <name>] [--supervisor-log <path>]\n\n\
+         \x20           [--personal-prefix <name>]\n\
+\x20 jc-engine --supervise [--socket <name>] [--supervisor-log <path>]\n\
+\x20           [--instance <name>]\n\n\
          選項：\n\
          \x20 --data <dir>        資料根目錄；未指定時讀 JC_DATA\n\
          \x20 --settings <path>   設定檔；未指定時讀資料根目錄的 settings.json\n\
@@ -478,6 +584,8 @@ fn print_usage() {
          \x20 --allow-empty-data  不載入資料，只用空 session（測試／除錯用）\n\
          \x20 --supervise         常駐監督子行程，結束後依退避曲線重啟\n\
          \x20 --supervisor-log <path>  監督者 log 路徑（預設 %LOCALAPPDATA%\\jc-ime\\supervisor.log）\n\
+\x20 --personal-prefix <name> 個人資料檔名前綴，預設 personal（新版用 personal-next）\n\
+\x20 --instance <name>        監督者實例名，預設 main（新版用 next，鎖與 log 各自獨立）\n\
          \x20 --mode <mode>       輸入模式：zh、ja、mixed、en；預設由設定檔決定\n\
          \x20 --neural <on|off>   日文神經轉換；預設由設定檔的 selection 決定\n\
         {SOCKET_HELP}\
@@ -491,8 +599,8 @@ fn print_usage() {
 
 fn print_usage_to_stderr() {
     eprintln!(
-        "用法：jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>] [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]\n\
-         \x20     jc-engine --supervise [--socket <name>] [--supervisor-log <path>]"
+        "用法：jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>] [--neural <on|off>] [--socket <path>] [--max-frame <bytes>] [--personal-prefix <name>]\n\
+         \x20     jc-engine --supervise [--socket <name>] [--supervisor-log <path>] [--instance <name>]"
     );
 }
 
@@ -518,6 +626,35 @@ mod tests {
         assert_eq!(options.neural, None, "神經轉換預設由設定檔決定");
         assert!(!options.print_settings);
         assert!(!options.allow_empty_data, "預設不可跳過資料載入");
+        assert_eq!(options.personal_prefix, DEFAULT_PERSONAL_PREFIX);
+        assert_eq!(options.instance, DEFAULT_INSTANCE);
+    }
+
+    /// T9：新版引擎的執行個體前綴不能落到舊版預設值上。
+    #[test]
+    fn parallel_build_flags_are_parsed() {
+        let Ok(Parsed::Run(options)) = parse(&[
+            "--personal-prefix",
+            "personal-next",
+            "--instance",
+            "next",
+            "--supervise",
+        ]) else {
+            panic!("應該解析成功");
+        };
+        assert_eq!(options.personal_prefix, "personal-next");
+        assert_eq!(options.instance, "next");
+        assert!(options.supervise);
+        assert_eq!(
+            default_supervisor_log_for(&options.instance)
+                .file_name()
+                .unwrap(),
+            "supervisor-next.log"
+        );
+        assert_eq!(
+            supervisor_lock_name(&options.instance),
+            format!("{SUPERVISOR_MUTEX_NAME}-next")
+        );
     }
 
     #[test]
