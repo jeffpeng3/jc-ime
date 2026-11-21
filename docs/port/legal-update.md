@@ -12,6 +12,10 @@ Worktree：`/mnt/work/jc/wt/legal-update`（branch `legal-update`）
 > **補記（2026-11-21，`data-pack-english-meta`）**：catalog 新增
 > `english/manifest.json`、`english/NOTICE.txt` 兩筆，同屬 L-08、皆為
 > `shipped: true`，是 `english/words.bin` 的驗證中繼檔；本文對照表保留舊值。
+>
+> **補記（2026-11-21，`build-zh-manifest`）**：catalog 再新增
+> `build-zh/manifest.json`，角色 `zh_lexicon`、授權 L-04～L-17、`shipped: true`，
+> 是 `Bundle::open` 驗證注音資料包用的中繼檔；本文對照表保留舊值。
 
 ## 移植對照
 
@@ -42,6 +46,7 @@ manifest 來源：[`docs/port/data-pack.md`](data-pack.md) 的實際產物，`sc
 | `packs/ja-lexicon-mozc-v2.pack` | `ja_lexicon` | L-01 | L-01 | 是 | 是 |
 | `build-zh/lexicon.bin` | `zh_lexicon` | L-04、L-05、L-06、L-13～L-17 | L-04、L-05、L-06、L-13～L-17 | 是 | 是 |
 | `build-zh/lm.bin` | `zh_lm` | L-04、L-05、L-06、L-13～L-17 | L-04、L-05、L-06、L-13～L-17 | 是 | 是 |
+| `build-zh/manifest.json` | `zh_lexicon` | L-04、L-05、L-06、L-13～L-17 | L-04、L-05、L-06、L-13～L-17 | 是 | 是（2026-11-21 補） |
 | `english/words.bin` | `english` | L-08 | L-08 | 是 | 是 |
 | `english/manifest.json` | `english` | L-08 | L-08 | 是 | 是（2026-11-21 補） |
 | `english/NOTICE.txt` | `english` | L-08 | L-08 | 是 | 是（2026-11-21 補） |
