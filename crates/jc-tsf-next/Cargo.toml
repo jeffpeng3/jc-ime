@@ -6,6 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 description = "0c session.rs 移植與 jc State → 0c Snapshot 轉換層（adapter spike，不進 TSF／註冊）"
 
+[lib]
+# 新版 DLL 自己也是 cdylib；rlib 讓 host test 與其他 crate 能引用型別。
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -18,6 +22,9 @@ windows-core = "0.62"
 # T0：windows-core 是直接依賴，供 #[implement] 展開使用；不依賴 windows-link，
 # 0c msctf.rs 的 windows_link::link! 到 T6 才需要改成 windows_core::link!。
 [target.'cfg(windows)'.dependencies]
+# T10a：借用 jc-tsf 已參數化的 register::Registration／register_with()／
+# unregister_with()。關掉預設功能，避免它的 DllGetClassObject 等匯出進到新版 DLL。
+jc-tsf = { path = "../jc-tsf", default-features = false }
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",

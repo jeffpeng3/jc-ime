@@ -21,7 +21,9 @@ mod engine;
 mod guids;
 mod keys;
 mod logging;
-mod register;
+/// 註冊常式與 [`register::Registration`]。T10a 起公開，讓新版 DLL 能把自己的
+/// CLSID／profile／描述／pipe 前綴傳進 `register_with()` 平行註冊。
+pub mod register;
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -29,12 +31,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use windows::core::{
     implement, ComObjectInterface, IUnknown, IUnknownImpl, Interface, Ref, Result, BOOL, GUID,
-    HRESULT,
 };
-use windows::Win32::Foundation::{
-    CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_INVALIDARG, E_NOINTERFACE, LPARAM, S_FALSE,
-    S_OK, WPARAM,
-};
+use windows::Win32::Foundation::{CLASS_E_NOAGGREGATION, E_INVALIDARG, LPARAM, WPARAM};
+// 只有 jc-tsf.dll 自己的 COM 匯出用得到；以 rlib 被 jc-tsf-next 相依時不編。
+#[cfg(feature = "dll-exports")]
+use windows::core::HRESULT;
+#[cfg(feature = "dll-exports")]
+use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_NOINTERFACE, S_FALSE, S_OK};
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::TextServices::{
@@ -46,12 +49,15 @@ use windows::Win32::UI::TextServices::{
 
 use composition::Control;
 use display::{DisplayAttributeEnumerator, DisplayAttributeInfo};
-use guids::{registry_key, CLSID_JC_TSF, GUID_DISPLAY_ATTRIBUTE_INPUT};
+use guids::GUID_DISPLAY_ATTRIBUTE_INPUT;
+#[cfg(feature = "dll-exports")]
+use guids::{registry_key, CLSID_JC_TSF};
 
 /// 目前仍然活著的文字服務物件數量，供 [`DllCanUnloadNow`] 判斷能否卸載。
 static LIVE_OBJECTS: AtomicUsize = AtomicUsize::new(0);
 
 /// 日誌用：這份 DLL 的架構與 CLSID。
+#[cfg(feature = "dll-exports")]
 fn build_identity() -> String {
     format!(
         "{}，{}",
@@ -340,6 +346,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
 /// # Safety
 ///
 /// 由 COM 呼叫，`rclsid`／`riid`／`ppv` 必須符合 COM 的指標約定。
+#[cfg(feature = "dll-exports")]
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "system" fn DllGetClassObject(
@@ -364,6 +371,7 @@ pub unsafe extern "system" fn DllGetClassObject(
 }
 
 /// COM 進入點：還有物件或 lock 時回 `S_FALSE`。
+#[cfg(feature = "dll-exports")]
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
@@ -377,6 +385,7 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
 /// COM 進入點：註冊文字服務。
 ///
 /// 需要系統管理員權限（寫 `HKCR` 與 TSF 的 profile 資料庫）。
+#[cfg(feature = "dll-exports")]
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn DllRegisterServer() -> HRESULT {
@@ -393,6 +402,7 @@ pub extern "system" fn DllRegisterServer() -> HRESULT {
 }
 
 /// COM 進入點：反註冊文字服務。
+#[cfg(feature = "dll-exports")]
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn DllUnregisterServer() -> HRESULT {
