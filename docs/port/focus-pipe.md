@@ -42,6 +42,17 @@ TSF 同一時間只有一個文字框在組字，pipe 一對一夠用。連線�
 - 不碰 `engine.rs` 的連線 API、`pipe_name.rs`、supervisor 互斥、
   `mode_from_settings`、CI、版本號與 catalog。
 
+## 按需啟動引擎（補充）
+
+`focus-pipe` 的狀態機與 120 ms 寬限期沒有變動。`OnSetFocus` 啟動 worker 後，
+worker 在 `engine.rs::connect()` 連不上 pipe 時（pipe 不存在或忙碌）會 detached
+spawn 引擎：用 `CreateProcessW` + `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`
+啟動後立刻 `CloseHandle`，引擎是獨立行程。3 秒冷卻避免反覆連線失敗造成 spawn
+風暴；supervisor 的 lockfile 保證全系統只有一個引擎，第二個 spawn 直接結束不算
+錯誤。Run 機碼仍是主要啟動路徑，按需啟動只是 kill 引擎後的補救。
+
+spawn 程式碼、指令路徑推導與測試見 `docs/port/engine-on-demand.md`。
+
 ## 移植對照
 
 | Go 檔案 | Rust 檔案 | 狀態 |

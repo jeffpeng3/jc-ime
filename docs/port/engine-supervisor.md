@@ -135,6 +135,23 @@ session 時 mutex 有兩把，兩個監督者都通過 `InstanceLock::acquire`�
 - 監督者只保證「引擎回來」，不重送失敗的請求。組字狀態在引擎記憶體裡，
   崩潰會遺失當下未提交的組字，這是既有架構的限制。
 
+## TIP 按需啟動（補充）
+
+`HKLM\...\Run` 只負責登入時啟動；supervisor 只照顧「子行程死了、父行程還在」。
+使用者把 supervisor 與子行程一起 kill 後，TIP 會在 `OnSetFocus` 連不上 pipe 時
+detached spawn 引擎，補上這條路徑。引擎仍是獨立行程（TIP 立刻 `CloseHandle`），
+不是 TIP 的子行程。
+
+- 觸發點：`crates/jc-tsf/src/engine.rs::connect()` 的 `NotFound`／`PipeBusy` 分支。
+- 指令優先讀本文件的 `EngineAutostart` Run 值，展開環境變數後直接使用；機碼
+  不存在時由 TIP 的 DLL 模組路徑推 INSTALLFOLDER，再搭配 `%ProgramData%` 與
+  `%LOCALAPPDATA%` 組出相同參數。
+- 3 秒冷卻避免 spawn 風暴；spawn 後等 10 × 100 ms 讓 pipe 出現再連一次。
+- 上面描述的 lockfile 仍是最重要的保護：第二個 spawn 拿不到鎖會以
+  exit code 0 結束，所以「同時有多個 TIP 發現 pipe 不見」也不會產生第二個引擎。
+
+詳細程式碼位置與真機驗證見 `docs/port/engine-on-demand.md`。
+
 ## 驗證
 
 ```sh
