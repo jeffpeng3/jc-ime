@@ -1988,3 +1988,34 @@ gate：
 
 - linux (core)：success；windows (msvc)：success；check-tag：success。
 - build-linux／build-windows／publish：skipped（main scope，標籤流程才會跑）。
+
+## 2026-11-21 08:40 punct-cleanup（`9af1be0`，已在 main）與 pipe-busy（`576bb65`，ff → `576bb65`）
+
+### punct-cleanup
+
+明確過濾已移除的 ja-punct／zh-punct 角色、移除過期 tokenizer 探測；新增
+`scripts/clean-model-set-manifest.sh`。Orchestrator 已清資料、重產 manifest、重新打包上傳 HF，
+公開 `JC_DATA_BUNDLE_SHA256` 已更新為 `58395f56b9223ff03a23dacad6bd76d78f6a94729ac1b0354dd25510f6a48e4e`。
+
+### pipe-busy
+
+根因：舊 mutex `Local\jc-ime-engine-supervisor` 是 session 範圍，兩個 RDP session 拿到兩把鎖，
+兩個 supervisor 各 spawn 子行程搶同一 pipe。
+
+- 鎖改成 `%LOCALAPPDATA%\jc-ime\Local-jc-ime-engine-supervisor.lock`（分享模式 0）。
+- 子行程放 `KILL_ON_JOB_CLOSE` job object。
+- TIP 端 `connect_with_wait` 處理 `ERROR_PIPE_BUSY`，用 `WaitNamedPipeW` 等待。
+- `MaxInstances` 維持 1（Session 不是 `Send`，改多 instance 超出範圍，見 `docs/port/tsf-pipe.md`）。
+- 新增兩個 Windows 測試（只寫未跑）；`docs/port/tsf-pipe.md` 新檔，`engine-supervisor.md`／
+  `named-pipe.md`／`pipe-name.md` 更新。TSF Activate／pipe 解析沒改。
+
+gate：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**（54 targets、
+  **1319 passed、0 failed**，比上一輪 1317 多 2）。
+- `cargo check --workspace --all-targets` exit 0；clippy exit 0；fmt exit 0。
+- Windows 目標縮小範圍 `cargo check -p jc-windows -p jc-engine --target x86_64-pc-windows-msvc` exit 0。
+  全 workspace 的 Windows clippy 在本機卡在 `ring v0.17.14` 的 build script
+  （缺 Windows MSVC C 工具鏈，環境限制，與本筆無關；CI 的 windows job 會驗證）。
+- 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：`settings-default-file`、`romaji-input`、`model-ui-status`（都還在跑，未動）。
+- worktree `w7W`（pipe-busy）與 `punct-cleanup` 的 worktree 已回收，branch 保留。
