@@ -8,7 +8,7 @@
 
   建置方式見 installer/README.md。這份檔案需要兩個前置變數：
 
-    -d Version=0.1.0
+    -d Version=0.1.0.9
     -d PayloadDir=<staging 目錄>
 
   安裝順序（InstallExecuteSequence）：
@@ -53,14 +53,20 @@
   檔案與機碼都由 MSI 或上述自訂動作建立／移除；沒有 Permanent 元件。
 -->
 <?ifndef Version ?>
-  <?error 未指定 Version：wix build -d Version=<x.y.z> -d PayloadDir=<dir> installer/jc-ime.wxs ?>
+  <?error 未指定 Version：wix build -d Version=<x.y.z.n> -d PayloadDir=<dir> installer/jc-ime.wxs ?>
 <?endif ?>
 <?ifndef PayloadDir ?>
-  <?error 未指定 PayloadDir：wix build -d Version=<x.y.z> -d PayloadDir=<dir> installer/jc-ime.wxs ?>
+  <?error 未指定 PayloadDir：wix build -d Version=<x.y.z.n> -d PayloadDir=<dir> installer/jc-ime.wxs ?>
 <?endif ?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!--
+    ProductCode（PackageCode）每次 build 由 WiX 自動產生。WiX v5 省略時本來就
+    是這個行為，在這裡明寫 `*`；UpgradeCode 是產品識別，必須固定，舊版才會被
+    當成升級目標。
+  -->
   <Package
       Name="jc 注音"
+      ProductCode="*"
       Manufacturer="jc-ime"
       Version="$(var.Version)"
       UpgradeCode="{6A97C593-1BE9-414D-B654-650FBDC98B66}"
@@ -73,8 +79,12 @@
         Description="jc 注音（TSF 輸入法）"
         Manufacturer="jc-ime" />
 
-    <!-- AllowSameVersionUpgrades：開發期版本號常停在 0.1.0，重裝同一版時要
-         就地升級，不要留下兩個「jc 注音」項目。 -->
+    <!-- AllowSameVersionUpgrades 必須保持 yes：Windows Installer 比較版本只看
+         前三段，第四段的 rc 序號會被忽略，0.1.0.8 與 0.1.0.9 在 MSI 眼中是同一版。
+         這個屬性讓 Upgrade table 把同版本也當成 major upgrade（見 WiX v5 官方
+         文件 MajorUpgrade/@AllowSameVersionUpgrades）。第四段只讓 ProductVersion
+         字串、ARP 顯示與升級 log 能區分相鄰 rc。副作用是前三段相同時也接受降級，
+         rc 發版順序要遞增。 -->
     <MajorUpgrade
         AllowSameVersionUpgrades="yes"
         DowngradeErrorMessage="已安裝較新版本的 jc 注音。請先從「應用程式與功能」移除目前版本，再安裝這一版。" />

@@ -40,7 +40,7 @@ tag 到達 runner 有 race，只靠 `git tag --points-at HEAD` 會漏掉（run 4
 
 ### pre-release 版本規則
 
-MSI 的 `ProductVersion` 只接受三段數字，但發佈版本可以有 pre-release 後綴。
+MSI 的 `ProductVersion` 用四段數字，但完整版本仍可帶 pre-release 後綴。
 兩者分開處理：
 
 | 用途 | 值 | 來源 |
@@ -48,20 +48,29 @@ MSI 的 `ProductVersion` 只接受三段數字，但發佈版本可以有 pre-re
 | git tag | `v0.1.0-rc.1` | 人工建立 |
 | `Cargo.toml` version | `0.1.0-rc.1` | 必須與 tag 去掉 `v` 相同 |
 | Release 標題／artifact 名稱／MSI 檔名 | `0.1.0-rc.1` | 完整版本 |
-| MSI `ProductVersion` | `0.1.0` | `check-tag`／`verify` 推導後傳給 `build.ps1 -MsiVersion` |
+| MSI `ProductVersion` | `0.1.0.1` | `check-tag`／`verify` 輸出三段，`build.ps1` 補上 rc 序號 |
 
 規則：
 
 - `check-tag`／`verify` 用 `^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$` 驗完整版本，接受 `-rc.1`。
-- `msi_version` 取完整版本 `-` 之前的三段數字；`check-tag`／`verify` 輸出這個值，
-  Windows job 用 `-MsiVersion` 傳進 `installer/build.ps1`。
-- `build.ps1` 的 `-MsiVersion` 是選項。沒給時由 `Cargo.toml` 版本去掉
-  pre-release 自己推導，本機建置不必手動指定。
-- `wix build -d Version=` 只拿 MSI 版本；檔名、Release 標題與說明仍用完整版本。
-- MSI 升級判斷看 `ProductVersion`，所以 `0.1.0-rc.1` 與 `0.1.0-rc.2` 在
-  Windows 眼中是同一個版本，會走「同版本就地升級」。RC 之間不需要先移除舊版。
-- 正式版 `0.1.0` 的 `ProductVersion` 也是 `0.1.0`；從最後一個 RC 升到正式版
-  同樣是同版本升級，安裝後不會出現兩個項目。
+- `msi_version` 仍是完整版本 `-` 之前的三段數字；Windows job 用 `-MsiVersion`
+  傳進 `installer/build.ps1`。
+- `build.ps1` 的 `-MsiVersion` 是選項，接受三段或四段。沒給時從 `Cargo.toml` 推導：
+  正式版是 `x.y.z.0`，`x.y.z-rc.N` 是 `x.y.z.N`。給三段時補上從完整版本推出的
+  rc 序號，所以現有 CI 不必改。第四段只認 `rc.<數字>`，其他 pre-release 要明確
+  傳四段 `-MsiVersion`。本機建置不必手動指定。
+- `wix build -d Version=` 只拿四段 MSI 版本；檔名、Release 標題與說明仍用完整版本。
+- Windows Installer 比較版本只用前三段，第四段被忽略。所以 `0.1.0-rc.8` 與
+  `0.1.0-rc.9` 在 MSI 眼中仍是同一版，WXS 的 `AllowSameVersionUpgrades="yes"`
+  必須保留，升級才會先移除舊版。第四段讓 `ProductVersion` 字串、ARP 顯示與升級
+  log 能區分相鄰 rc。
+- `PackageCode`（WXS 的 `Package/@ProductCode`）每次 build 由 WiX 自動產生，
+  WXS 明寫 `ProductCode="*"`；`UpgradeCode` 固定不變，舊版才會被認成升級目標。
+- `MajorUpgrade` 的預設排程是 `afterInstallValidate`，會先完整移除舊版再裝新版，
+  不需要另外加 `RemoveExistingProducts`。
+- 正式版 `0.1.0` 的 `ProductVersion` 是 `0.1.0.0`；從最後一個 RC（`0.1.0.9`）升到
+  正式版時前三段相同，靠 `AllowSameVersionUpgrades` 就地升級，不會出現兩個項目。
+  副作用是前三段相同也接受降級，rc 發版順序要遞增。
 - 版本一致性檢查沒有放寬：tag 去掉 `v` 仍必須等於 `Cargo.toml` 的完整版本。
 
 發布 RC 的流程與正式版相同，只是 tag 帶後綴：
@@ -209,7 +218,7 @@ signtool verify /pa /v jc-ime-<version>-x64.msi
 | `check-tag` | `fetch-tags: true` + `git fetch --tags --force origin`，用 `github.sha` 比對 `v*` 標籤（最多三次，間隔 3 秒）；輸出 `has_tag`／`version`／`msi_version` |
 | `linux`（測試） | 下載資料包 → fmt／clippy／Windows target check／test → 清理快取 |
 | `windows`（測試） | 下載資料包 → `cargo test --workspace` |
-| `build-windows` | `needs: check-tag`，與測試同時起步；下載資料包並驗 SHA → `verify-bundle.py` → WiX v5 → `installer/build.ps1 -MsiVersion <x.y.z>` → MSI、checksum、`data-manifest.json`，輸出 `signed` |
+| `build-windows` | `needs: check-tag`，與測試同時起步；下載資料包並驗 SHA → `verify-bundle.py` → WiX v5 → `installer/build.ps1 -MsiVersion <x.y.z>`（腳本補上 rc 序號）→ MSI、checksum、`data-manifest.json`，輸出 `signed` |
 | `build-linux` | `needs: check-tag`，與測試同時起步；GPUI 系統依賴 → `cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui` → tar.gz 與 checksum → 清理快取 |
 | `publish` | `needs: [check-tag, linux, windows, build-windows, build-linux]`；全部成功才下載兩個 artifact、建立或更新 GitHub Release，不查 CI run |
 
@@ -380,7 +389,7 @@ tar.gz 旁附 `.sha256`。Linux 版沒有 Fcitx5／IBus 整合，`jc-settings-ui
 `publish` 會產生並附上：
 
 - 版本與發佈日期（UTC）；版本有 pre-release 後綴時，另外註明 MSI
-  `ProductVersion` 只有三段數字
+  `ProductVersion` 的第四段是 rc 序號
 - 模型與資料版本：安裝包內 `manifest.json` 的 `version`（涵蓋詞典與模型）
 - `docs/CHANGELOG.md` 中 `## <version>` 的段落
 - 兩個平台的下載檔名與 `.sha256` 提示
@@ -396,7 +405,7 @@ Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets�
 
 1. 更新 `docs/CHANGELOG.md`，確認有 `## <version>` 段落。
 2. 改 `Cargo.toml` 的 `[workspace.package] version`；必要時讓 `Cargo.lock` 跟著更新。
-   RC 就寫 `0.1.0-rc.1`，不用為了 MSI 改成三段數字。
+   RC 就寫 `0.1.0-rc.1`，MSI 版本會自動推出 `0.1.0.1`。
 3. 跑 `cargo check --workspace --all-targets`，commit 到 `main` 並 push。等 main 的
    CI 測試通過；`publish` 的 needs 含測試，測試沒過就不會發版。
 4. 在剛 push 的 commit 上建立 annotated 標籤，連同 commit 一起推上 main：
@@ -407,7 +416,7 @@ Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets�
    ```
 
    `--follow-tags` 只推 annotated tag，所以必須用 `-a`。RC 版本帶 pre-release
-   後綴，例如 `v0.1.0-rc.1`；MSI `ProductVersion` 仍是 `0.1.0`。
+   後綴，例如 `v0.1.0-rc.1`；MSI `ProductVersion` 是 `0.1.0.1`。
 
 5. 到 Actions → CI 看 `check-tag`、兩個測試、`build-windows`／`build-linux` 與
    `publish`。build 與測試同時起步，publish 等兩邊。
@@ -435,7 +444,8 @@ release workflow 只能證明「建置與打包成功」，下面這些要在第
       2026-11-21 從 catalog 移除）。
 - [ ] `LICENSE`、`NOTICE`、`legal/` 已打進 MSI（`installer-payload` 的缺口）。
 - [ ] `Cargo.toml` 版本符合 `x.y.z` 或 `x.y.z-<pre-release>`，`v<version>` 標籤
-      與它完全一致；RC 的 MSI `ProductVersion` 是去掉後綴的三段數字。
+      與它完全一致；RC 的 MSI `ProductVersion` 是三段數字加 rc 序號
+      （`0.1.0-rc.9` → `0.1.0.9`）。
 - [ ] `docs/CHANGELOG.md` 有對應版本段落，內容沒有承諾未實作的功能。
 - [ ] 要簽章的話，`SIGNING_PFX_BASE64`、`SIGNING_PFX_PASSWORD` 已設定，而且
       憑證沒有過期；不簽章則接受 Release 標「未簽章」。
@@ -455,23 +465,25 @@ cargo run -q -p jc-cli -- data verify /mnt/work/jc/jc-ime-data
 bash installer/validate-linux.sh                # 需要 wix；沒有就跳過
 cargo build --release -p jc-engine -p jc-cli
 
-# 版本推導乾跑：完整版本可含 pre-release，MSI 版只取三段數字
+# 版本推導乾跑：完整版本可含 pre-release，MSI 版補上 rc 序號
 python3 - <<'PY'
 import re
 
-for full in ("0.1.0", "0.1.0-rc.1", "0.1.0-rc.2"):
+for full in ("0.1.0", "0.1.0-rc.1", "0.1.0-rc.9"):
     assert re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?", full), full
-    print(full, "-> msi", full.split("-", 1)[0])
+    core, _, prerelease = full.partition("-")
+    rc = 0 if not prerelease else int(re.fullmatch(r"rc\.(\d+)", prerelease).group(1))
+    print(full, "-> msi", f"{core}.{rc}")
 PY
 ```
 
 PowerShell 的版本推導與 `wix build` 只能在 Windows 驗；本機 Linux 最多做到
-上面這些。`build.ps1` 的 `-MsiVersion` 若沒給，會自己從 `Cargo.toml` 版本推導。
+上面這些。`build.ps1` 的 `-MsiVersion` 若沒給，會自己從 `Cargo.toml` 推出四段版本；
+給三段時會補上 rc 序號。
 
 `installer/validate-linux.sh` 目前直接把 `Cargo.toml` 的完整版本傳給 WiX
 `-d Version=`；`Cargo.toml` 是 pre-release（例如 `0.1.0-rc.1`）時，這支腳本會
-被 WiX 拒絕。要本機驗 WiX 語法，先暫時把版本改成三段數字，或等它套用同樣的
-`-pre-release` 推導。
+被 WiX 拒絕。要本機驗 WiX 語法，先暫時把版本改成四段數字（例如 `0.1.0.1`）。
 
 MSI 的完整建置、ICE 驗證與實機安裝只能在 Windows 做；release workflow 的
 `windows` job 是第一個實際產出 MSI 的地方。

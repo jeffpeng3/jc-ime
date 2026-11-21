@@ -63,10 +63,12 @@ TSF DLL）。
 6. 有憑證時簽 `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe`、`jc-cli.exe`、
    `jc-settings-ui.exe`、`jc-tsf-smoke.exe`、`jc-tip-register.exe`，再簽 MSI。
    沒憑證時輸出未簽章 MSI。
-7. `wix build -arch x64 -d Version=<Cargo 版本> -d PayloadDir=<暫存目錄>`。
+7. `wix build -arch x64 -d Version=<MSI 版本> -d PayloadDir=<暫存目錄>`。
 
-版本號取自 workspace `Cargo.toml` 的 `version`；MSI 只接受 `x.y.z`，pre-release
-字串會讓腳本停下。
+版本號取自 workspace `Cargo.toml` 的 `version`。MSI `ProductVersion` 是四段
+`x.y.z.N`，N 是 rc 序號：`0.1.0` → `0.1.0.0`，`0.1.0-rc.9` → `0.1.0.9`。
+`-MsiVersion` 可覆寫，給三段時補上從完整版本推出的 rc 序號。PackageCode 由 WiX
+每次 build 自動產生（`ProductCode="*"`）。
 
 ## MSI 內部
 
@@ -87,6 +89,11 @@ TSF DLL）。
 授權文件在 payload 內的路徑與 repo 相同，`check-payload.py` 因此可以直接比對
 雜湊。WXS 的 `LegalFiles` 群組把它們放進 `LEGALDIR`／`LICENSEDIR`；這些是普通
 元件，反安裝跟著 `RemoveFiles` 一起刪。
+
+`ProductVersion` 的第四段是 rc 序號，Windows Installer 比較版本時只看前三段，
+所以 WXS 保留 `AllowSameVersionUpgrades="yes"`。固定的 `UpgradeCode` 搭配每次
+build 自動產生的 `ProductCode`，讓相鄰 rc 直接上升級，不必先手動移除舊版。
+第四段讓 ARP 顯示與升級 log 能區分 rc；前三段相同時也接受降級，發版順序仍要遞增。
 
 自訂動作：
 
