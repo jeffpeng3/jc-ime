@@ -14,10 +14,12 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use jc_data::download::{download_missing_with, DownloadEvent, DownloadPolicy, DownloadReport};
+use jc_data::manifest::{DataManifest, DataRole, MANIFEST_FILE};
 use thiserror::Error;
 
 /// 監督者的單一實例名稱。Windows 用 `Local\` 命名空間，範圍是登入的使用者。
@@ -75,6 +77,8 @@ pub struct SupervisorConfig {
     pub poll_interval: Duration,
     /// 收到停止訊號時，等子行程自己結束的寬限時間。
     pub shutdown_grace: Duration,
+    /// 自動下載的資料根目錄；`None` 表示不觸發（`--allow-empty-data` 或沒指定資料）。
+    pub download_root: Option<PathBuf>,
 }
 
 impl SupervisorConfig {
@@ -99,6 +103,7 @@ impl SupervisorConfig {
             stable_after: STABLE_AFTER,
             poll_interval: Duration::from_millis(100),
             shutdown_grace: Duration::from_secs(5),
+            download_root: None,
         }
     }
 }
@@ -176,6 +181,9 @@ fn run_with(config: &SupervisorConfig, stop: &dyn Fn() -> bool) -> Result<(), Er
         ),
     );
 
+    // 背景下載不擋子行程啟動：缺模型時統計選字先頂著，抓完後下次啟動生效。
+    start_auto_download(config, &log);
+
     let mut failures: u32 = 0;
     loop {
         if stop() {
@@ -232,6 +240,118 @@ fn run_with(config: &SupervisorConfig, stop: &dyn Fn() -> bool) -> Result<(), Er
 
     log_line(&log, "監督者結束");
     Ok(())
+}
+
+/// 自動下載在一個行程內只觸發一次；子行程被重啟時不會重抓。
+static AUTO_DOWNLOAD: OnceLock<()> = OnceLock::new();
+
+/// 啟動背景下載 zh-select 模型。
+///
+/// 模型在子行程啟動時由 `install_select_model()` 載入。下載放在 supervisor 的背景
+/// 執行緒，不擋子行程與打字：缺席時統計選字先頂著。短 timeout 到了就保留 `.part`，
+/// 下次啟動續傳；全部抓完並驗證後，下次啟動才會載入模型。失敗只寫 log。
+fn start_auto_download(config: &SupervisorConfig, log: &SharedLog) {
+    let Some(root) = config.download_root.clone() else {
+        return;
+    };
+    let _ = AUTO_DOWNLOAD.get_or_init(|| {
+        let log = Arc::clone(log);
+        if let Err(err) = thread::Builder::new()
+            .name("jc-supervisor-download".to_string())
+            .spawn({
+                let log = Arc::clone(&log);
+                move || download_zh_select(&root, &log)
+            })
+        {
+            log_line(
+                &log,
+                format!("自動下載 zh-select 模型無法啟動執行緒：{err}，維持統計選字"),
+            );
+        }
+    });
+}
+
+/// 背景下載主體：只處理 zh-select 的下載項，失敗只警告。
+fn download_zh_select(root: &Path, log: &SharedLog) {
+    let manifest_path = root.join(MANIFEST_FILE);
+    let manifest = match DataManifest::load(&manifest_path) {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            log_line(
+                log,
+                format!(
+                    "zh-select 下載失敗：讀取 {} 失敗：{err}，維持統計選字",
+                    manifest_path.display()
+                ),
+            );
+            return;
+        }
+    };
+    let manifest = DataManifest {
+        files: manifest
+            .files
+            .into_iter()
+            .filter(|file| file.role == DataRole::ZhSelect && !file.shipped)
+            .collect(),
+        ..manifest
+    };
+    if manifest.files.is_empty() {
+        return;
+    }
+    let report = DownloadReport::inspect(root, &manifest);
+    let pending: Vec<&jc_data::download::DownloadStatus> = report
+        .items
+        .iter()
+        .filter(|item| !item.state.is_present())
+        .collect();
+    if pending.is_empty() {
+        // 檔案已存在且驗證通過：不印 log。
+        return;
+    }
+    let total: u64 = pending.iter().map(|item| item.bytes).sum();
+    log_line(log, format!("自動下載 zh-select 模型（{total} bytes）"));
+
+    let failures = Mutex::new(Vec::new());
+    let interrupted = AtomicBool::new(false);
+    let summary = download_missing_with(
+        root,
+        &manifest,
+        |event| {
+            if let DownloadEvent::Failed {
+                path,
+                reason,
+                resumable,
+            } = event
+            {
+                if *resumable {
+                    interrupted.store(true, Ordering::SeqCst);
+                } else {
+                    failures
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(format!("{path}：{reason}"));
+                }
+            }
+        },
+        DownloadPolicy::background(),
+    );
+    if interrupted.load(Ordering::SeqCst) {
+        log_line(
+            log,
+            "zh-select 下載中斷，已保留 .part，下次啟動續傳，目前維持統計選字",
+        );
+    }
+    if !summary.is_success() {
+        let reasons = failures
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .join("；");
+        if !reasons.is_empty() {
+            log_line(log, format!("zh-select 下載失敗：{reasons}，維持統計選字"));
+        }
+        return;
+    }
+    log_line(log, "zh-select 模型已安裝，下次重新啟動生效");
 }
 
 /// 等待子行程結束，期間做健康檢查並注意停止訊號。

@@ -12,6 +12,8 @@ serde_json.workspace = true
 memmap2.workspace = true
 sha2 = "0.10"
 crc32fast = "1"
+# 引擎自動下載 zh-select 用；與 jc-cli 共用同一個同步 HTTP 客戶端。
+ureq = { version = "3.3", default-features = false, features = ["rustls", "gzip"] }
 
 [dev-dependencies]
 jc-testdata = { path = "../jc-testdata" }
