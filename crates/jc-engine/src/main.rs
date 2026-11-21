@@ -6,7 +6,9 @@
 //! ```text
 //! jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>]
 //!           [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]
+//!           [--personal-prefix <name>]
 //! jc-engine --supervise [--socket <name>] [--supervisor-log <path>]
+//!           [--instance <name>]
 //! ```
 //!
 //! Windows 正式啟動與 autostart 都要用 `--supervise`，且**不帶** `--socket`：
@@ -54,8 +56,8 @@ use jc_core::session::{Session, SessionConfig};
 use jc_core::Mode;
 use jc_engine::config;
 use jc_engine::loader::load_engine_data;
-use jc_engine::supervise::{self, SupervisorConfig};
-use jc_engine::{engine_label, serve, Engine, SessionFactory};
+use jc_engine::supervise::{self, SupervisorConfig, SUPERVISOR_MUTEX_NAME};
+use jc_engine::{engine_label, serve, Engine, SessionFactory, DEFAULT_PERSONAL_PREFIX};
 use jc_proto::{DEFAULT_MAX_FRAME, PROTOCOL_VERSION};
 
 /// 啟動方式。
@@ -84,6 +86,22 @@ struct Options {
     supervise: bool,
     /// `--supervisor-log`：監督者 log 路徑；未指定時用平台預設位置。
     supervisor_log: Option<PathBuf>,
+    /// `--personal-prefix`：個人學習檔名前綴；平行建置讓新版用不同值。
+    personal_prefix: String,
+    /// `--instance`：監督者實例名；平行建置讓新版有獨立的鎖與 log。
+    instance: String,
+}
+
+/// 已發行的預設實例名。非預設值才會改鎖名與 log 檔名。
+const DEFAULT_INSTANCE: &str = "main";
+
+/// 監督者的鎖名；預設實例保持已發行值，其他實例加後綴。
+fn supervisor_lock_name(instance: &str) -> String {
+    if instance == DEFAULT_INSTANCE {
+        SUPERVISOR_MUTEX_NAME.to_string()
+    } else {
+        format!("{SUPERVISOR_MUTEX_NAME}-{instance}")
+    }
 }
 
 /// 命令列解析結果。
@@ -186,6 +204,10 @@ fn run(options: Options) -> anyhow::Result<()> {
         Arc::new(move || Session::new(config::session_config(SessionConfig::default(), &effective)))
     };
     let mut engine = Engine::with_factory(factory, personal_dir);
+    if options.personal_prefix != DEFAULT_PERSONAL_PREFIX {
+        log::info!("個人資料檔名前綴：{}", options.personal_prefix);
+        engine.set_personal_prefix(options.personal_prefix.clone());
+    }
     match options.mode {
         Transport::Stdio => {
             let stdin = io::stdin();
@@ -210,12 +232,15 @@ fn run_supervisor(options: &Options) -> anyhow::Result<()> {
         Transport::Socket(path) => path.clone(),
         Transport::Stdio => default_supervisor_socket(),
     };
+    let instance = options.instance.clone();
     let log_path = options
         .supervisor_log
         .clone()
-        .unwrap_or_else(default_supervisor_log);
+        .unwrap_or_else(|| default_supervisor_log_for(&instance));
     let program = std::env::current_exe().context("取得目前的執行檔路徑失敗")?;
-    let config = SupervisorConfig::new(program, child_args(options, &socket), socket, log_path);
+    let mut config = SupervisorConfig::new(program, child_args(options, &socket), socket, log_path);
+    // 平行建置：新舊引擎的監督者不能搶同一把鎖，否則第二個永遠回 AlreadyRunning。
+    config.lock_name = supervisor_lock_name(&instance);
 
     match supervise::run(&config) {
         Ok(()) => Ok(()),
@@ -249,6 +274,11 @@ fn child_args(options: &Options, socket: &Path) -> Vec<OsString> {
     }
     if options.allow_empty_data {
         args.push("--allow-empty-data".into());
+    }
+    // 舊版命令列保持不變；只有新版非預設前綴才多帶一個參數給子行程。
+    if options.personal_prefix != DEFAULT_PERSONAL_PREFIX {
+        args.push("--personal-prefix".into());
+        args.push(options.personal_prefix.as_str().into());
     }
     args.push("--max-frame".into());
     args.push(options.max_frame.to_string().into());
@@ -286,22 +316,27 @@ fn default_supervisor_socket() -> PathBuf {
 }
 
 /// 監督者 log 的預設位置：`%LOCALAPPDATA%\jc-ime\supervisor.log`，其他平台用
-/// `XDG_STATE_HOME` 或 `~/.local/state`。
-fn default_supervisor_log() -> PathBuf {
+/// `XDG_STATE_HOME` 或 `~/.local/state`。非預設實例用 `supervisor-<instance>.log`。
+fn default_supervisor_log_for(instance: &str) -> PathBuf {
+    let file = if instance == DEFAULT_INSTANCE {
+        "supervisor.log".to_string()
+    } else {
+        format!("supervisor-{instance}.log")
+    };
     if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
-        return PathBuf::from(dir).join("jc-ime").join("supervisor.log");
+        return PathBuf::from(dir).join("jc-ime").join(file);
     }
     if let Some(dir) = std::env::var_os("XDG_STATE_HOME") {
-        return PathBuf::from(dir).join("jc-ime").join("supervisor.log");
+        return PathBuf::from(dir).join("jc-ime").join(file);
     }
     if let Some(home) = std::env::var_os("HOME") {
         return PathBuf::from(home)
             .join(".local")
             .join("state")
             .join("jc-ime")
-            .join("supervisor.log");
+            .join(file);
     }
-    std::env::temp_dir().join("jc-ime").join("supervisor.log")
+    std::env::temp_dir().join("jc-ime").join(file)
 }
 
 /// Windows 在 `path` 對應的 named pipe 上監聽，直接呼叫 `CreateNamedPipeW`。
@@ -396,6 +431,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut allow_empty_data = false;
     let mut supervise = false;
     let mut supervisor_log: Option<PathBuf> = None;
+    let mut personal_prefix = DEFAULT_PERSONAL_PREFIX.to_string();
+    let mut instance = DEFAULT_INSTANCE.to_string();
     let mut index = 0;
 
     while index < args.len() {
@@ -421,6 +458,22 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--supervisor-log" => {
                 let value = value_of(args, &mut index, "--supervisor-log")?;
                 supervisor_log = Some(PathBuf::from(value));
+            }
+            "--personal-prefix" => {
+                let value = value_of(args, &mut index, "--personal-prefix")?;
+                if value.is_empty() || value.contains('/') || value.contains('\\') {
+                    return Err(format!(
+                        "--personal-prefix 必須是非空白的檔名前綴，收到 {value}"
+                    ));
+                }
+                personal_prefix = value;
+            }
+            "--instance" => {
+                let value = value_of(args, &mut index, "--instance")?;
+                if value.is_empty() || value.contains('/') || value.contains('\\') {
+                    return Err(format!("--instance 必須是非空白的實例名，收到 {value}"));
+                }
+                instance = value;
             }
             "--mode" => {
                 let value = value_of(args, &mut index, "--mode")?;
@@ -463,6 +516,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         allow_empty_data,
         supervise,
         supervisor_log,
+        personal_prefix,
+        instance,
     }))
 }
 
@@ -519,7 +574,9 @@ fn print_usage() {
         "jc-engine {}（協定 {}）\n\n\
          用法：\n  jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>]\n\
          \x20           [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]\n\
-         \x20 jc-engine --supervise [--socket <name>] [--supervisor-log <path>]\n\n\
+         \x20           [--personal-prefix <name>]\n\
+\x20 jc-engine --supervise [--socket <name>] [--supervisor-log <path>]\n\
+\x20           [--instance <name>]\n\n\
          選項：\n\
          \x20 --data <dir>        資料根目錄；未指定時讀 JC_DATA\n\
          \x20 --settings <path>   設定檔；未指定時讀資料根目錄的 settings.json\n\
@@ -527,6 +584,8 @@ fn print_usage() {
          \x20 --allow-empty-data  不載入資料，只用空 session（測試／除錯用）\n\
          \x20 --supervise         常駐監督子行程，結束後依退避曲線重啟\n\
          \x20 --supervisor-log <path>  監督者 log 路徑（預設 %LOCALAPPDATA%\\jc-ime\\supervisor.log）\n\
+\x20 --personal-prefix <name> 個人資料檔名前綴，預設 personal（新版用 personal-next）\n\
+\x20 --instance <name>        監督者實例名，預設 main（新版用 next，鎖與 log 各自獨立）\n\
          \x20 --mode <mode>       輸入模式：zh、ja、mixed、en；預設由設定檔決定\n\
          \x20 --neural <on|off>   日文神經轉換；預設由設定檔的 selection 決定\n\
         {SOCKET_HELP}\
@@ -540,8 +599,8 @@ fn print_usage() {
 
 fn print_usage_to_stderr() {
     eprintln!(
-        "用法：jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>] [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]\n\
-         \x20     jc-engine --supervise [--socket <name>] [--supervisor-log <path>]"
+        "用法：jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>] [--neural <on|off>] [--socket <path>] [--max-frame <bytes>] [--personal-prefix <name>]\n\
+         \x20     jc-engine --supervise [--socket <name>] [--supervisor-log <path>] [--instance <name>]"
     );
 }
 
@@ -567,6 +626,35 @@ mod tests {
         assert_eq!(options.neural, None, "神經轉換預設由設定檔決定");
         assert!(!options.print_settings);
         assert!(!options.allow_empty_data, "預設不可跳過資料載入");
+        assert_eq!(options.personal_prefix, DEFAULT_PERSONAL_PREFIX);
+        assert_eq!(options.instance, DEFAULT_INSTANCE);
+    }
+
+    /// T9：新版引擎的執行個體前綴不能落到舊版預設值上。
+    #[test]
+    fn parallel_build_flags_are_parsed() {
+        let Ok(Parsed::Run(options)) = parse(&[
+            "--personal-prefix",
+            "personal-next",
+            "--instance",
+            "next",
+            "--supervise",
+        ]) else {
+            panic!("應該解析成功");
+        };
+        assert_eq!(options.personal_prefix, "personal-next");
+        assert_eq!(options.instance, "next");
+        assert!(options.supervise);
+        assert_eq!(
+            default_supervisor_log_for(&options.instance)
+                .file_name()
+                .unwrap(),
+            "supervisor-next.log"
+        );
+        assert_eq!(
+            supervisor_lock_name(&options.instance),
+            format!("{SUPERVISOR_MUTEX_NAME}-next")
+        );
     }
 
     #[test]
