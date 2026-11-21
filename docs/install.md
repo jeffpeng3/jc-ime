@@ -49,8 +49,12 @@ msiexec /i jc-ime-0.1.0-x64.msi /qn /l*v install.log
 
    ```bat
    "%ProgramFiles%\jc-ime\jc-engine.exe" --data "%ProgramData%\jc-ime\data" ^
-     --settings "%LOCALAPPDATA%\jc-ime\settings.json" --socket jc-ime
+     --settings "%LOCALAPPDATA%\jc-ime\settings.json"
    ```
+
+   不要手動加 `--socket`：引擎會用目前使用者的 SID 尾段推出 `jc-ime-<rid>`，
+   與 TIP 相同。只有在 `JC_IME_PIPE` 環境變數或
+   `HKCU\Software\jc-ime\EnginePipe` 同時設成同一個自訂名稱時，才能兩邊都指定。
 
    引擎沒跑時，`jc 注音` 仍然可以選取，但按鍵會直接放行，看起來像「打了沒反應」。
 3. 設定程式在「開始功能表 → jc 注音 → jc 注音設定」。修改後要重新啟動引擎
@@ -86,7 +90,7 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 |---|---|
 | `%ProgramFiles%\jc-ime\jc-tsf.dll` | TSF 文字服務（x64） |
 | `%ProgramFiles%\jc-ime\jc-tsf-x86.dll` | TSF 文字服務（x86，給 32 位元程式用；同一個 CLSID） |
-| `%ProgramFiles%\jc-ime\jc-engine.exe` | 引擎，named pipe `jc-ime` |
+| `%ProgramFiles%\jc-ime\jc-engine.exe` | 引擎，named pipe `jc-ime-<SID 尾段>`，與 TIP 同名 |
 | `%ProgramFiles%\jc-ime\jc-cli.exe` | 資料驗證與評測工具 |
 | `%ProgramFiles%\jc-ime\jc-settings-ui.exe` | 設定程式 |
 | `%ProgramFiles%\jc-ime\jc-tsf-smoke.exe` | 免管理員冒煙測試 |
@@ -240,7 +244,9 @@ Linux 只能驗證 WiX 專案能被編譯器解析與 payload 清單一致，下
 
 1. `wix build` 完整產出 MSI，以及 `msiexec /i` 的 ICE 驗證與安裝日誌。
 2. 安裝後 `Win+Space` 看得到「jc 注音」，選取後可打注音、選字、提交。
-3. 安裝後重新登入，`jc-engine.exe` 是否由 Run 項目自動啟動，pipe `jc-ime` 是否建立。
+3. 安裝後重新登入，`jc-engine.exe` 是否由 Run 項目自動啟動，pipe
+   `jc-ime-<目前使用者的 SID 尾段>` 是否建立；`tsf.log` 不應出現「連線引擎 pipe
+   … 失敗」。
 4. 組字外觀、游標、Enter／Esc／Backspace 與應用程式（記事本、Word、Chromium、
    PowerShell）的相容性。
 5. UWP 應用程式（例如 Windows 設定或小算盤）能否載入 TIP；若不行，檢查安裝目錄上
@@ -262,9 +268,8 @@ Linux 只能驗證 WiX 專案能被編譯器解析與 payload 清單一致，下
 - 只提供 x64 的引擎、CLI 與設定程式。TSF DLL 有 x64 與 x86 兩份（共用同一個
   CLSID），但引擎本身是獨立行程，32 位元程式一樣連得到。
 - 引擎啟動靠 `HKLM\...\Run`，不是服務，也沒有監督程式。多人同時登入時每個工作階段
-  各有一個 `jc-engine.exe`，但 pipe 名稱都是 `jc-ime`，Windows 會把 client 接到其中
-  一個實例；個人化資料目前還沒持久化，所以只有連線分配的問題，尚未造成資料混淆。
-  真正隔離需要每個使用者不同的 pipe 名稱，屬後續工作。
+  各有一個 `jc-engine.exe`；pipe 名稱含 SID 尾段，不同使用者各自連到自己的引擎。
+  同一使用者開多個 RDP 工作階段仍共用同一個名稱，client 會連到其中一個實例。
 - 語言清單只對執行安裝與反安裝的帳號生效；由 SYSTEM 或部署工具代裝時，使用者的
   `HKCU` 不會被加到。
 - 設定變更後需要重啟引擎。

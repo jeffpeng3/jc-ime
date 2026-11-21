@@ -21,6 +21,19 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 wxs="$repo_root/installer/jc-ime.wxs"
 
+# 引擎 autostart 不得用 --socket 覆寫 pipe 名稱：引擎與 TIP 共用
+# jc_windows::resolve_pipe_name()，從 SID 尾段推出 jc-ime-<rid>。顯式 --socket
+# 會讓兩邊名稱不同，TIP 連不上，按鍵全部放行成英文。
+autostart=$(sed -n '/<Component Id="EngineAutostart"/,/<\/Component>/p' "$wxs")
+if grep -q -- '--socket' <<<"$autostart"; then
+    echo "EngineAutostart 不得帶 --socket；pipe 名稱要交給 resolve_pipe_name() 解析" >&2
+    exit 1
+fi
+if ! grep -q -- '--data' <<<"$autostart" || ! grep -q -- '--settings' <<<"$autostart"; then
+    echo "EngineAutostart 必須保留 --data 與 --settings" >&2
+    exit 1
+fi
+
 if command -v wix >/dev/null 2>&1; then
     wix=wix
 elif [ -x "$HOME/.dotnet/tools/wix" ]; then
