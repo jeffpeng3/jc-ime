@@ -22,6 +22,8 @@ windows-core = "0.62"
 # T0：windows-core 是直接依賴，供 #[implement] 展開使用；不依賴 windows-link，
 # 0c msctf.rs 的 windows_link::link! 到 T6 才需要改成 windows_core::link!。
 [target.'cfg(windows)'.dependencies]
+# T12a：候選窗協定型別（UiMessage/UiCandidate）與繪製共用 jc-ui，DLL 側不重複定義。
+jc-ui = { path = "../jc-ui" }
 # T10a：借用 jc-tsf 已參數化的 register::Registration／register_with()／
 # unregister_with()。關掉預設功能，避免它的 DllGetClassObject 等匯出進到新版 DLL。
 jc-tsf = { path = "../jc-tsf", default-features = false }

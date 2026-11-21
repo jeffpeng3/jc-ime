@@ -3934,6 +3934,7 @@ version = "0.1.0-rc.14"
 dependencies = [
  "jc-proto",
  "jc-tsf",
+ "jc-ui",
  "serde",
  "serde_json",
  "windows 0.62.2",
