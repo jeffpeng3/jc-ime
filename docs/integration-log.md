@@ -2160,3 +2160,39 @@ gate（合併後，本機實測）：
   --target x86_64-pc-windows-msvc` exit 0。
 - 題库：zh-golden **45/45（100.0%）**、ja modern-500 **92.2%**、
   fuzzy **44.5%**、mixed **6/6**，與 rc.12 完全相同。
+
+### rc.13 發版結果（補記）
+
+`v0.1.0-rc.13` 已打在 `404b316` 並推送；CI run **44936718106** 六個 job 全 success
+（linux core、windows msvc、check-tag、build-linux、build-windows、publish）。
+
+## 2026-11-22 03:05 三筆 UI／引擎整合（adeb66e／faa6492／5b067d3→de3d37c）
+
+- `settings-no-console`（`adeb66e`，parent `404b316`，直接 ff）：設定捷徑從
+  `jc-tip-register.exe` 改直連 `jc-settings-ui.exe`，避免先冒 console 視窗；
+  GUI 自行展開 `%ProgramData%` 與 `%LOCALAPPDATA%`。`jc-tip-register settings`
+  保留為相容入口，machine-register／machine-unregister 的 console stdout 保留。
+  模型頁移除注音選字模型、Jinen GGUF、日文詞典 pack 三個恆為已安裝的狀態列，
+  注音分頁的選字模型狀態也移除。7 檔。
+- `settings-ui-polish`（`faa6492`，parent `adeb66e`，直接 ff）：預設值說明從全形空格
+  改成換行，設定程式用 GPUI 的 Theme／Appearance API 跟隨系統主題。只改
+  `jc-settings-ui`。
+- `engine-no-window`（`5b067d3`，parent `adeb66e`）：先 rebase 到 `faa6492` 變成
+  `de3d37c`，再 ff。引擎 spawn 的 creation_flags 從 `DETACHED_PROCESS` 改成
+  `CREATE_NO_WINDOW`，避免彈終端機。rebase 後與 main 的差異只剩
+  `jc-tsf/src/engine.rs` 與 `docs/port/engine-on-demand.md`。
+
+`socket-acl-invalid-sid` 還在跑，沒有合入；留到下一版。
+
+gate（三筆全部合完後，本機實測）：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**
+  （54 targets、**1332 passed、0 failed、1 ignored**，與 rc.13 的 1332 持平，
+  符合只增不減）。
+- `cargo check --workspace --all-targets` exit 0；
+  `cargo clippy --workspace --all-targets -- -D warnings` exit 0；
+  `cargo fmt --all -- --check` exit 0。
+- Windows 目標 `cargo check --workspace --all-targets --exclude jc-cli --exclude jc-settings-ui
+  --target x86_64-pc-windows-msvc` exit 0。
+- 題库：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、
+  mixed **6/6**，四個都 exit 0，與 rc.13 完全相同。
+- 本次只 push main 讓 CI 跑，不 bump 版本、不改 CHANGELOG、不打新 tag。
