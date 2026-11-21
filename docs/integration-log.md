@@ -2080,3 +2080,40 @@ gate：
   check-tag success、build-linux (tar.gz) success、build-windows (MSI) success、publish success。
   另一個 run 44915725027（`9d639c4`，tag push 前的 main）被新 run 取代而 cancelled。
 - 所有整合者以外的 worktree 已回收，branch 保留；目前只剩 `/mnt/work/jc/jc-ime`。
+
+## 2026-11-22 00:06 rc.12 三筆整合（1296cc7／e9c9b4c→8c2294e／a322b9c→4b456c5）
+
+三筆原本都從 `b34a4f8` 平行長出，彼此沒有祖先關係，無法連續三次純 ff。
+依指示先把 `engine-on-demand`、`smoke-timestamp` 依序 rebase 到前一筆之上，
+再依 `settings-cleanup` → `engine-on-demand` → `smoke-timestamp` 三次 ff。
+結果是線性歷史、沒有 merge commit，branch 全部保留且都算已合入。
+
+| Branch | 原始 commit | main 上的 commit | 異動 |
+|---|---|---|---|
+| `settings-cleanup` | `1296cc7` | `1296cc7`（直接 ff） | 27 檔 |
+| `engine-on-demand` | `e9c9b4c` | `8c2294e`（rebase） | 5 檔 |
+| `smoke-timestamp` | `a322b9c` | `4b456c5`（rebase） | 2 檔 |
+
+- `settings-cleanup`：移除 8 個死設定 UI，保留 JSON 相容；`mixed_input` 從 JSON 契約
+  完全移除，舊檔欄位忽略。Shift 單按改送 `Request::Toggle` 切換純英文，
+  `toggle_previous_mode` 回到原本的 Mixed／Ja。模型頁改 catalog 解析。
+  驗證範圍：`jc-settings`、`jc-settings-ui`、`jc-proto`、`jc-core`、`jc-engine`、`jc-cli`。
+- `engine-on-demand`：TIP 連不上 pipe 時 detached spawn 引擎
+  （`CreateProcessW` + `DETACHED_PROCESS`，立刻關 handle）；指令從 Run 機碼讀取並展開
+  環境變數；3 秒冷卻 + 10×100ms 等待；lockfile 擋跨行程重複啟動。
+  只改 `jc-tsf/Cargo.toml`、`engine.rs` 與三份文件。
+- `smoke-timestamp`：在 `jc-tsf-smoke` 的 Deactivate／probe 卡點加時間戳 `eprintln` +
+  flush，純診斷不改行為。只改 `smoke-timestamp/src/checks.rs` 與
+  `docs/port/smoke-hang.md`。
+
+gate（合併後，本機實測）：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**
+  （54 targets、**1332 passed、0 failed、1 ignored**，比 rc.11 的 1323 多 9）。
+- `cargo check --workspace --all-targets` exit 0；
+  `cargo clippy --workspace --all-targets -- -D warnings` exit 0；
+  `cargo fmt --all -- --check` exit 0。
+- Windows 目標 `cargo check --workspace --all-targets --exclude jc-cli --exclude jc-settings-ui
+  --target x86_64-pc-windows-msvc` exit 0（與 CI 的 Windows 型別檢查同範圍）。
+- 題庫：zh-golden **45/45（100.0%）**、ja modern-500 **92.2%**、
+  fuzzy **44.5%**、mixed **6/6**，與 rc.11 完全相同。
+- 三筆檔案範圍不重疊；`Cargo.toml` 只新增 windows feature，不需要動 `Cargo.lock` 的依賴版本。
