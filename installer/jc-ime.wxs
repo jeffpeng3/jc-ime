@@ -273,6 +273,10 @@
         <File Id="FileEnglishWords"
               Source="$(var.PayloadDir)/data/english/words.bin"
               KeyPath="yes" />
+        <File Id="FileEnglishManifest"
+              Source="$(var.PayloadDir)/data/english/manifest.json" />
+        <File Id="FileEnglishNotice"
+              Source="$(var.PayloadDir)/data/english/NOTICE.txt" />
       </Component>
 
       <Component Id="JaNeural" Directory="JINENDIR"
