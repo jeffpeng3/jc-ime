@@ -3,8 +3,9 @@
     建置 jc 注音的可攜 payload 與 WiX v5 MSI。
 
 .DESCRIPTION
-    步驟：cargo build（x64 全部程式 + i686 的 jc-tsf，以及 jc-tip-register）→ 使用或
-    產生資料 manifest → 暫存 payload（程式、資料、授權文件）→ wix build → 選用簽章。
+    步驟：cargo build（x64 全部程式含 jc-tsf-next，i686 的 jc-tsf 與 jc-tsf-next，
+    以及 jc-tip-register）→ 使用或產生資料 manifest → 暫存 payload（程式、資料、
+    授權文件）→ wix build → 選用簽章。
 
     版本號取自 workspace Cargo.toml 的 [workspace.package] version，可以是
     pre-release（例如 0.1.0-rc.1）。MSI 的 ProductVersion 用四段 x.y.z.N，
@@ -12,9 +13,9 @@
     比較版本只看前三段，所以 WXS 的 AllowSameVersionUpgrades 必須保持 yes。MSI 檔名
     一律用完整版本，例如 jc-ime-0.1.0-rc.1-x64.msi。
 
-    安裝包同時帶兩個架構的 TSF 文字服務：x64 的 jc-tsf.dll 與 i686 的
-    jc-tsf-x86.dll。TSF 依宿主行程的位元數載入對應的那一份，兩份各自註冊一個
-    CLSID，理由見 docs/port/x86-tip.md。
+    安裝包同時帶新舊兩版 TSF 文字服務，各有 x64 與 i686 兩份：jc-tsf.dll、
+    jc-tsf-x86.dll、jc-tsf-next.dll、jc-tsf-next-x86.dll。TSF 依宿主行程的位元數
+    載入對應的那一份；每份各有自己的 CLSID，理由見 docs/port/x86-tip.md。
 
     需要：
       - Visual Studio 2022 的 MSVC 工具鏈，Rust target x86_64-pc-windows-msvc 與
@@ -100,9 +101,12 @@ if ($Configuration -eq 'release') {
 # 實際執行的 cargo 參數只定義一次，建置與錯誤訊息共用，避免兩者不一致。
 $cargoX64Args = @('build') + $profileArgs + @(
     '--target', $Target,
-    '-p', 'jc-tsf', '-p', 'jc-engine', '-p', 'jc-cli', '-p', 'jc-settings-ui', '-p', 'jc-tsf-smoke'
+    '-p', 'jc-tsf', '-p', 'jc-tsf-next', '-p', 'jc-engine', '-p', 'jc-cli',
+    '-p', 'jc-settings-ui', '-p', 'jc-tsf-smoke'
 )
-$cargoX86Args = @('build') + $profileArgs + @('--target', $TargetX86, '-p', 'jc-tsf')
+$cargoX86Args = @('build') + $profileArgs + @(
+    '--target', $TargetX86, '-p', 'jc-tsf', '-p', 'jc-tsf-next'
+)
 $cargoHelperArgs = @('build') + $profileArgs + @(
     '--target', $Target,
     '--target-dir', $HelperTarget,
@@ -134,9 +138,9 @@ Invoke-Checked '建置 workspace 程式' {
     & cargo @cargoX64Args
 }
 
-# 32 位元的 TSF DLL。TSF 依宿主行程的位元數載入 TIP，沒有這一份舊版 Office 等
-# 32 位元程式就看不到輸入法。引擎、CLI 與設定程式只有 x64 版。
-Invoke-Checked '建置 x86 jc-tsf' {
+# 32 位元的 TSF DLL，新舊兩版都建。TSF 依宿主行程的位元數載入 TIP，沒有這一份
+# 舊版 Office 等 32 位元程式就看不到輸入法。引擎、CLI 與設定程式只有 x64 版。
+Invoke-Checked '建置 x86 jc-tsf 與 jc-tsf-next' {
     & cargo @cargoX86Args
 }
 
@@ -213,11 +217,13 @@ Write-Host '==> 暫存 payload'
 if (Test-Path $Payload) { Remove-Item $Payload -Recurse -Force }
 New-Item -ItemType Directory -Path $Payload | Out-Null
 
-# jc-tsf 是 cdylib，Cargo 的 lib target 名稱是 jc_tsf（底線），產物因此是
-# jc_tsf.dll；payload 內才改成 WXS 使用的 jc-tsf.dll 與 jc-tsf-x86.dll。
+# jc-tsf 與 jc-tsf-next 都是 cdylib，Cargo 的 lib target 名稱用底線，產物因此是
+# jc_tsf.dll、jc_tsf_next.dll；payload 內才改成 WXS 使用的 jc-tsf.dll、
+# jc-tsf-x86.dll、jc-tsf-next.dll、jc-tsf-next-x86.dll。
 # 其餘 bin target 保留連字號：jc-engine.exe、jc-cli.exe、jc-settings-ui.exe、
 # jc-tsf-smoke.exe，已用 cargo metadata 確認。
 $tsfLibName = 'jc_tsf.dll'
+$tsfNextLibName = 'jc_tsf_next.dll'
 $programs = @(
     'jc-engine.exe', 'jc-cli.exe', 'jc-settings-ui.exe', 'jc-tsf-smoke.exe'
 )
@@ -233,13 +239,27 @@ if (-not (Test-Path $x64Dll)) {
 }
 Copy-Item $x64Dll (Join-Path $Payload 'jc-tsf.dll')
 
-# x86 的 DLL 改名進 payload：兩份都叫 jc-tsf.dll，安裝後放在同一個目錄，
+# 新版 x64 的 DLL 比照舊版改名進 payload，檔名對齊 WXS。
+$nextX64Dll = Join-Path $ReleaseDir $tsfNextLibName
+if (-not (Test-Path $nextX64Dll)) {
+    throw "建置輸出缺少預期的 $tsfNextLibName（$nextX64Dll）。目錄中實際存在的 .dll：$(Get-DllNames $ReleaseDir)"
+}
+Copy-Item $nextX64Dll (Join-Path $Payload 'jc-tsf-next.dll')
+
+# x86 的 DLL 改名進 payload：兩份都叫 jc_tsf.dll，安裝後放在同一個目錄，
 # 檔名必須分得出來，WXS 才引用得到兩個檔案。
 $x86Dll = Join-Path $ReleaseDirX86 $tsfLibName
 if (-not (Test-Path $x86Dll)) {
     throw "建置輸出缺少預期的 $tsfLibName（$x86Dll）。目錄中實際存在的 .dll：$(Get-DllNames $ReleaseDirX86)；請先 rustup target add $TargetX86"
 }
 Copy-Item $x86Dll (Join-Path $Payload 'jc-tsf-x86.dll')
+
+# 新版 x86 的 DLL 同樣改名，避免與新版 x64 同名而被覆蓋。
+$nextX86Dll = Join-Path $ReleaseDirX86 $tsfNextLibName
+if (-not (Test-Path $nextX86Dll)) {
+    throw "建置輸出缺少預期的 $tsfNextLibName（$nextX86Dll）。目錄中實際存在的 .dll：$(Get-DllNames $ReleaseDirX86)；請先 rustup target add $TargetX86"
+}
+Copy-Item $nextX86Dll (Join-Path $Payload 'jc-tsf-next-x86.dll')
 
 Copy-Item (Join-Path $HelperRelease 'jc-tip-register.exe') $Payload
 
@@ -316,7 +336,10 @@ if (-not $SkipSign -and $Certificate) {
     $signArgs = @('sign', '/fd', 'sha256', '/tr', $TimestampUrl, '/td', 'sha256',
         '/f', $Certificate)
     if ($CertificatePassword) { $signArgs += @('/p', $CertificatePassword) }
-    foreach ($name in @($programs + 'jc-tsf-x86.dll' + 'jc-tip-register.exe')) {
+    # 四份 TSF DLL 全部簽章。jc-tsf.dll 先前從 $programs 移出改到這裡手動列時
+    # 漏掉，與 docs/install.md 的簽章清單不符，一併補回。
+    $tsfDllNames = @('jc-tsf.dll', 'jc-tsf-x86.dll', 'jc-tsf-next.dll', 'jc-tsf-next-x86.dll')
+    foreach ($name in @($programs + $tsfDllNames + 'jc-tip-register.exe')) {
         Invoke-Checked "簽章 $name" { & $signtool.Source @signArgs (Join-Path $Payload $name) }
     }
 } else {
