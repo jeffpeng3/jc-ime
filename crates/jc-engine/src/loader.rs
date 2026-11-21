@@ -35,9 +35,6 @@ pub const DEFAULT_JA_PACK: &str = "packs/ja-lexicon-mozc-v2.pack";
 /// 找不到 v2 時退回的 v1 pack（只有詞性連接成本）。
 pub const FALLBACK_JA_PACK: &str = "packs/ja-lexicon-public-core.pack";
 
-/// 預設的日文 tokenizer（相對於資料根目錄）。
-pub const JA_TOKENIZER: &str = "models/ja-tokenizer/public_core_ja.model";
-
 /// 預設的 Jinen small GGUF（相對於資料根目錄）。
 pub const JA_NEURAL_GGUF: &str = "models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf";
 
@@ -679,8 +676,6 @@ pub struct EngineData {
     pub zh: ZhResources,
     /// 日文解碼器；重排器已接上延遲載入包裝。
     pub ja: Arc<JaDecoder>,
-    /// 日文 tokenizer；模型缺席時為 `None`。
-    pub ja_tokenizer: Option<Arc<jc_model::Tokenizer>>,
     /// Jinen 推論 worker；模型缺席或 `JC_JINEN=off` 時為 `None`。
     pub ja_neural: Option<Arc<NeuralRuntime>>,
 }
@@ -694,7 +689,6 @@ impl std::fmt::Debug for EngineData {
                 "has_bigram",
                 &self.zh.lm.as_ref().is_some_and(|lm| lm.bigrams() > 0),
             )
-            .field("ja_tokenizer", &self.ja_tokenizer.is_some())
             .field("ja_neural", &self.ja_neural.is_some())
             .finish()
     }
@@ -811,7 +805,11 @@ fn check_data_manifest(root: &Path) -> Result<(), EngineDataError> {
 /// - 注音 `lexicon.bin`、日文 pack 缺失或壞掉 → 啟動失敗。
 /// - `build-zh-bigram/lm.bin` 缺席 → 警告，退回 `build-zh/lm.bin`。
 /// - zh-select 存在就安裝；載入失敗只警告一次，維持統計排序。
-/// - 其餘模型（日文 tokenizer、reranker）缺席或壞掉 → 各記一次警告後繼續。
+/// - reranker 缺席或壞掉 → 記一次警告後繼續。
+///
+/// 不再探測 `models/ja-tokenizer/public_core_ja.model`：那是 reranker 與已移除的
+/// 標點模型共用的分詞器，`EngineData` 沒有使用它。Jinen 的 tokenizer 由
+/// [`resolve_ja_neural`] 解析，走資料 manifest 的 `ja_tokenizer` 或 Jinen 隨附檔。
 pub fn load_engine_data(root: &Path) -> Result<EngineData, EngineDataError> {
     if !root.is_dir() {
         return Err(EngineDataError::MissingRoot(root.to_path_buf()));
@@ -853,19 +851,6 @@ pub fn load_engine_data(root: &Path) -> Result<EngineData, EngineDataError> {
             models.display()
         );
     }
-    let tokenizer_path = root.join(JA_TOKENIZER);
-    let ja_tokenizer = if tokenizer_path.is_file() {
-        match jc_model::Tokenizer::load(&tokenizer_path) {
-            Ok(tokenizer) => Some(Arc::new(tokenizer)),
-            Err(err) => {
-                log::warn!("讀取 {} 失敗：{err}", tokenizer_path.display());
-                None
-            }
-        }
-    } else {
-        log::warn!("找不到日文 tokenizer：{}", tokenizer_path.display());
-        None
-    };
     // 日文預設接上 Jinen；缺席只警告一次，維持統計轉換。
     let neural_off = std::env::var(JA_NEURAL_ENV)
         .map(|value| value.eq_ignore_ascii_case("off"))
@@ -891,7 +876,6 @@ pub fn load_engine_data(root: &Path) -> Result<EngineData, EngineDataError> {
         root: root.to_path_buf(),
         zh,
         ja: Arc::new(decoder),
-        ja_tokenizer,
         ja_neural,
     })
 }

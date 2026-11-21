@@ -225,8 +225,9 @@ impl ModelSet {
     /// 目錄或 `manifest.json` 缺席時回傳全部 `Unavailable` 的集合，
     /// 不視為錯誤；manifest 損壞才回傳 [`ModelError::Manifest`]。
     ///
-    /// manifest 可能由較新或較舊的版本寫入，含有不支援的角色（例如已移除的
-    /// 標點模型）。這些條目只記警告並跳過，不讓整個集合載入失敗。
+    /// manifest 可能由較新或較舊的版本寫入，含有不支援的角色。`drop-punct`
+    /// 移除的 [`Role::is_legacy_role`] 條目直接跳過且不印警告；其他不認得的
+    /// 角色只記警告並跳過，不讓整個集合載入失敗。
     pub fn load(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         let mut specs = BTreeMap::new();
@@ -243,6 +244,11 @@ impl ModelSet {
                     }
                 }
                 for (name, spec) in m.models {
+                    if Role::is_legacy_role(&name) {
+                        // 舊資料目錄仍可能列著已移除的標點角色；靜默忽略，
+                        // 不讓每次啟動都印兩則警告。
+                        continue;
+                    }
                     match name.parse::<Role>() {
                         Ok(role) => {
                             specs.insert(role, spec);
@@ -357,6 +363,34 @@ fn absolute(base: &Path, path: &str) -> PathBuf {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Mutex, Once};
+
+    struct CapturingLogger;
+    static LOGGER: CapturingLogger = CapturingLogger;
+    static LOGGER_INIT: Once = Once::new();
+    static WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    impl log::Log for CapturingLogger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::Level::Warn
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) {
+                WARNINGS.lock().unwrap().push(record.args().to_string());
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    fn install_logger() {
+        LOGGER_INIT.call_once(|| {
+            log::set_logger(&LOGGER).unwrap();
+            log::set_max_level(log::LevelFilter::Warn);
+        });
+        WARNINGS.lock().unwrap().clear();
+    }
 
     fn tempdir(tag: &str) -> PathBuf {
         static SEQ: AtomicU32 = AtomicU32::new(0);
@@ -475,6 +509,45 @@ mod tests {
             set.model_path(Role::JaRerank).unwrap(),
             dir.join("rerank/model.safetensors")
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_punct_roles_are_filtered_without_warning() {
+        install_logger();
+        assert!(Role::is_legacy_role("zh-punct"));
+        assert!(Role::is_legacy_role("ja-punct"));
+        assert!(!Role::is_legacy_role("zh-select"));
+        assert!(!Role::is_legacy_role("klingon"));
+
+        let dir = tempdir("legacy");
+        fs::create_dir_all(dir.join("rerank")).unwrap();
+        fs::write(dir.join("rerank/model.safetensors"), vec![0u8; 5]).unwrap();
+        fs::write(dir.join("rerank/vocab.json"), b"{}").unwrap();
+        fs::write(
+            dir.join("manifest.json"),
+            r#"{"schema":"jc.model-set/1","models":{
+              "zh-punct":{"dir":"zh-punct"},
+              "ja-punct":{"dir":"punctuation-public-core"},
+              "ja-rerank":{"dir":"rerank"}
+            }}"#,
+        )
+        .unwrap();
+
+        // 兩個已移除角色直接跳過，同一份 manifest 的已知角色仍要載入。
+        let set = ModelSet::load(&dir).unwrap();
+        assert!(set.spec(Role::JaRerank).is_some());
+        assert_eq!(
+            set.model_path(Role::JaRerank).unwrap(),
+            dir.join("rerank/model.safetensors")
+        );
+        {
+            let warnings = WARNINGS.lock().unwrap();
+            assert!(
+                warnings.iter().all(|line| !line.contains("punct")),
+                "已移除的標點角色不該印警告：{warnings:?}"
+            );
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 

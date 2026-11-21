@@ -162,7 +162,7 @@ Public Domain，`ja/ajimee_200.json` 是 CC-BY-SA-3.0。若要隨產品散布題
 | L-09 | `jeffpeng3/0c-ja-reranker` | rev `7450e10fe8b673560044c5db08ad3006a06d7a6e` | CC-BY-SA-4.0 | 日文 reranker 與共用分詞器 | 否 | [`licenses/CC-BY-SA-4.0.txt`](licenses/CC-BY-SA-4.0.txt)、`models/reranker-extra/` |
 | L-10 | `jeffpeng3/0c-ja-punct` | rev `ff9166abc620b6716ac7de73cfa67335e6b985d2` | MIT | 日文標點（2026-11-20 起不再使用；共用分詞器仍由 ja-rerank 使用） | 否（不再使用） | [`licenses/MIT.txt`](licenses/MIT.txt)、`models/punctuation-public-core/` |
 | L-11 | `Funmula/0c-sequence-d512`（第三方） | rev `3533e34ef25896afeacc928d136ba7f35783bba7` | MIT | 注音選字 | **是（隨 MSI 散布 GGUF）** | `models/zh-select/model.q8_0.gguf` 等；[`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt) |
-| L-12 | `Funmula/0c-punct-d512`（第三方） | rev `105c2770e0b7cf4ce44a792b3b186000dd1727d9` | MIT | 注音標點（2026-11-20 起不再使用） | **否，僅下載** | `models/zh-punct/`；[`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt) |
+| L-12 | `Funmula/0c-punct-d512`（第三方） | rev `105c2770e0b7cf4ce44a792b3b186000dd1727d9` | MIT | 注音標點（**已移除**：2026-11-20 起不再使用，2026-11-21 從 catalog 與集合 manifest 移除；本列保留作歷史） | **否，僅下載** | `models/zh-punct/`；[`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt) |
 | L-13 | 小麥注音（McBopomofo）詞庫 | commit `a5ad2e94a173d6721b9d52e60f4d0266251a76ba` | MIT | 注音詞條與破音字優先表 | 是 | [`licenses/ZH-DATA-NOTICE.txt`](licenses/ZH-DATA-NOTICE.txt) |
 | L-14 | 全字庫 CNS11643 | `Properties.zip` SHA-256 `3d56ef14cc809989…`；`MapingTables.zip` SHA-256 `4502fcf7b433d679…` | 政府資料開放授權條款第 1 版 | 注音字表與 CNS 對照 | 是 | [`licenses/ZH-DATA-NOTICE.txt`](licenses/ZH-DATA-NOTICE.txt) |
 | L-15 | CC-CEDICT | 2026-09-19；SHA-256 `38e1697e3925a2c7…` | CC-BY-SA-4.0 | 注音詞條 | 是 | [`licenses/ZH-DATA-NOTICE.txt`](licenses/ZH-DATA-NOTICE.txt) |

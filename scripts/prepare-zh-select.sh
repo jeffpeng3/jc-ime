@@ -11,7 +11,8 @@
 #   1. 缺 model.onnx 時從固定 revision 抓，並驗 SHA-256。
 #   2. 用 candle-zh-check --convert --quant q8_0 轉出 model.q8_0.gguf。
 #   3. 刪掉 ONNX 與中間的 model.safetensors，只留 GGUF。
-#   4. 把 models/manifest.json 的 zh-select model 指向 GGUF。
+#   4. 把 models/manifest.json 的 zh-select model 指向 GGUF，並移除已廢棄的
+#      zh-punct、ja-punct 角色（drop-punct 的殘留）。
 #   5. 重新產生資料根目錄的 manifest.json，讓 GGUF 與 vocab.json 成為 shipped 檔。
 #
 # 環境：
@@ -73,11 +74,18 @@ from pathlib import Path
 root = Path(sys.argv[1])
 path = root / "models" / "manifest.json"
 data = json.loads(path.read_text(encoding="utf-8"))
-spec = data.get("models", {}).get("zh-select")
+models = data.get("models", {})
+spec = models.get("zh-select")
 if spec is not None:
     spec["model"] = "model.q8_0.gguf"
     spec["vocab"] = "vocab.json"
+# drop-punct 已移除這兩個角色；順手清掉舊資料目錄的殘留鍵。
+removed = [name for name in ("zh-punct", "ja-punct") if name in models]
+for name in removed:
+    del models[name]
 path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+if removed:
+    print(f"已從集合 manifest 移除角色：{', '.join(removed)}")
 PY
 
 "${cli[@]}" data manifest "$root" --out "$root/manifest.json"

@@ -17,6 +17,11 @@ Worktree：`/mnt/work/jc/wt/legal-update`（branch `legal-update`）
 > **補記（2026-11-21，`build-zh-manifest`）**：catalog 再新增
 > `build-zh/manifest.json`，角色 `zh_lexicon`、授權 L-04～L-17、`shipped: true`，
 > 是 `Bundle::open` 驗證注音資料包用的中繼檔；本文對照表保留舊值。
+>
+> **補記（2026-11-21，`punct-cleanup`）**：集合 manifest `models/manifest.json`
+> 移除 `zh-punct`、`ja-punct` 兩鍵，解析器改為明確過濾、不印警告；catalog 與 L-12
+> 仍保留歷史。`models/ja-tokenizer/public_core_ja.model` 不再是引擎啟動探測路徑，
+> 只供 `jc-cli tokenize ja` 與回溯，不需要進 `shipped` 清單；本文對照表保留舊值。
 
 ## 移植對照
 
@@ -71,7 +76,7 @@ manifest 來源：[`docs/port/data-pack.md`](data-pack.md) 的實際產物，`sc
 | `packs/ja-lexicon-public-core.pack`、`.manifest.json` | L-02、L-03、L-19 | 只在 `resolve_ja_pack` 當備援，不在 manifest |
 | `models/reranker-extra/model.int8.onnx`、`vocab.json` | L-09 | reranker 已棄用，不在 manifest |
 | `models/punctuation-public-core/model.int8.onnx`、`vocab.json` | L-10 | 2026-11-20 起不再使用 |
-| `models/ja-tokenizer/public_core_ja.model` | L-09、L-10 | 僅 reranker／標點使用，未隨附 |
+| `models/ja-tokenizer/public_core_ja.model` | L-09、L-10 | 僅 `jc-cli tokenize ja` 與 reranker／標點回溯使用，引擎已不探測，未隨附 |
 | `models/manifest.json` | L-00 | 角色索引，安裝時重建 |
 | `models/quant/jinen-v2-xsmall/tokenizer.json` | L-21 | Jinen 執行時需要，manifest 待補 |
 

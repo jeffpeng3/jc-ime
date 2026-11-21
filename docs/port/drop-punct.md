@@ -32,6 +32,23 @@ manifest 不再引用。`ctrl_punct`（`Ctrl+,` 全形逗號）與 `punct_mark`�
 - `crates/jc-core/src/output/mod.rs` 的半形轉全形規則。
 - `legal/` 的授權紀錄與 `docs/models.md` 的歷史雜湊。
 
+## 集合 manifest 殘留（punct-cleanup，2026-11-21）
+
+`models/manifest.json`（schema `jc.model-set/1`）不在 catalog 管理範圍，
+`drop-punct` 時留下 `zh-punct`、`ja-punct` 兩個鍵，讓 `supervisor.log` 每次啟動
+印「manifest 忽略不支援的模型角色」。採用做法 B：`Role::is_legacy_role` 明確
+辨識這兩個已知舊角色，`ModelSet::load` 直接跳過且不印警告；其他不認得角色仍
+照舊警告。`crates/jc-model/src/manifest.rs` 加測試驗證過濾與不印警告。
+
+`scripts/prepare-zh-select.sh` 重新產生集合 manifest 時會一併移除兩鍵；一次性
+清理用新增的 `scripts/clean-model-set-manifest.sh`。本次沒有直接改
+`/mnt/work/jc/jc-ime-data/**`，由 orchestrator 在自己的資料目錄執行清理。
+
+同一份 log 的「找不到日文 tokenizer：`models/ja-tokenizer/public_core_ja.model`」
+也是 `drop-punct` 的殘留：那是 reranker 與標點共用的 SentencePiece 分詞器，
+`EngineData` 沒有使用它，Jinen 走自己的 `tokenizer.json`。`jc-engine` 已移除啟動
+探測與 `EngineData::ja_tokenizer`；檔案留給 `jc-cli tokenize ja` 與回溯。
+
 ## 驗證
 
 ```sh

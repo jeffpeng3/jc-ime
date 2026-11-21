@@ -25,6 +25,14 @@ impl Role {
     pub const fn all() -> [Role; 2] {
         [Self::ZhSelect, Self::JaRerank]
     }
+
+    /// `drop-punct` 移除、但舊資料目錄的 manifest 仍可能列出的角色。
+    ///
+    /// 解析集合 manifest 時遇到這些名稱要直接跳過，不印警告；它們不會回到
+    /// [`Role`] 列舉，也不該讓每次啟動都洗版。
+    pub fn is_legacy_role(name: &str) -> bool {
+        matches!(name, "zh-punct" | "ja-punct")
+    }
 }
 
 impl fmt::Display for Role {

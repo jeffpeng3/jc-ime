@@ -2,7 +2,8 @@
 
 本表列出模型來源、固定 revision、授權、實際檔案雜湊與散布方式。2026-11-20
 起標點模型已從程式移除，`zh-punct` 與 `ja-punct` 只保留歷史紀錄，模型檔仍在
-資料目錄，不再被載入，也不隨安裝包出貨。資料來源：
+資料目錄，不再被載入，也不隨安裝包出貨。2026-11-21 起兩者也不再列於集合
+manifest，解析器明確過濾舊資料目錄的殘留鍵。資料來源：
 
 - 注音：`jc-ime-data/models/zh-select/manifest.json`；`zh-punct/manifest.json` 是
   歷史來源，2026-11-21 從 catalog 移除，仍保留供回溯（下載時追加的 `download` 區塊）。
@@ -35,8 +36,9 @@
 兩筆都標 `shipped: true`、授權 `L-21`；引擎優先用 manifest 解析這兩條路徑，
 manifest 沒有對應項目時才退回寫死的候選路徑。
 
-標點模型的資料檔案保留在原目錄，方便回溯；程式與資料 manifest 都不再引用它們
-（2026-11-21 重新產生 manifest 後生效）。
+標點模型的資料檔案保留在原目錄，方便回溯；程式與集合 manifest 都不再引用它們。
+舊資料目錄的 `models/manifest.json` 若仍列著 `zh-punct`、`ja-punct`，可用
+`scripts/clean-model-set-manifest.sh` 清除；解析器會靜默忽略這兩個鍵。
 
 ## 推論 runtime
 
@@ -131,19 +133,26 @@ Q8_0 是量測與建議使用的注音選字權重：33.9 MiB、推論 p50 9.36 
 `model.safetensors`。引擎在集合 manifest 仍指向 ONNX 或 manifest 缺席時退回
 `models/zh-select`，因此舊資料根目錄也能載入隨 MSI 安裝的 GGUF。
 
-`zh-punct` 與 `ja-punct` 已於 2026-11-20 從程式移除；本專案的 manifest 範本
-不再列出。資料目錄的既有 `manifest.json` 仍可能保留這兩個鍵，載入時會忽略
-不支援的角色。Jinen 不在這個集合 manifest 內，路徑寫在 `jc-engine` 的
-`loader.rs`，可用 `JC_JINEN_GGUF` 覆寫；資料根目錄的 `manifest.json` 另有
-`ja_neural` 一筆，`shipped` 為 `true`。
+`zh-punct` 與 `ja-punct` 已於 2026-11-20 從程式移除，2026-11-21 也從集合
+manifest 移除。`crates/jc-model/src/role.rs` 把兩者列為已知舊角色，
+`ModelSet::load` 遇到時直接跳過且不印警告；其他不認得角色仍照舊警告。
+舊資料目錄可用 `scripts/clean-model-set-manifest.sh` 清除兩鍵，
+`scripts/prepare-zh-select.sh` 重新產生集合 manifest 時也會一併移除。
+Jinen 不在這個集合 manifest 內，路徑由 `jc-engine` 的 `resolve_ja_neural` 解析，
+可用 `JC_JINEN_GGUF` 覆寫；資料根目錄的 `manifest.json` 另有 `ja_neural` 一筆，
+`shipped` 為 `true`。
 
-資料目錄現況的 SHA-256：`c069d44ff0aaa68fcec47f8030fe5075468dba0ef0c63ebc27a02a7acce0f56c`
-（387 bytes，仍含兩個標點鍵）。
+清理前資料目錄的 SHA-256：`c069d44ff0aaa68fcec47f8030fe5075468dba0ef0c63ebc27a02a7acce0f56c`
+（387 bytes，仍含兩個標點鍵）。移除兩鍵後大小與雜湊都會變，orchestrator 重新
+打包時要更新此值。
 
 Jinen 的 GGUF 與 tokenizer 另由資料根目錄的 `manifest.json` 記錄：
 `ja_neural` 與 `ja_tokenizer` 各一筆、`shipped: true`、授權 `L-21`。
 `jc-engine` 先讀 manifest 解析路徑，缺 `ja_tokenizer` 只記一次警告並維持統計
 轉換，不擋啟動；`data verify` 仍把缺席的隨附檔算成錯誤，出貨前會擋下。
+`models/ja-tokenizer/public_core_ja.model` 是 reranker 與標點時代的共用分詞器，
+引擎啟動已不再探測它；檔案只供 `jc-cli tokenize ja` 與回溯使用，因此不需要
+進 catalog 的隨附清單。
 
 ## 首次啟動
 

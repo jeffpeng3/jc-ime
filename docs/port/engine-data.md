@@ -32,7 +32,8 @@ Go 參考實作沒有獨立的「資料載入」套件；載入散在 server 啟
    三個都沒有就啟動失敗。
 5. 日文重排器：只記住 `<root>/models`（或 `JC_JA_MODELS`），第一次日文
    轉換才載入 ONNX。
-6. 日文 tokenizer：`<root>/models/ja-tokenizer/public_core_ja.model`。
+6. 日文 tokenizer：引擎不再於啟動時探測 `models/ja-tokenizer/public_core_ja.model`；
+   Jinen 的 tokenizer 由 `resolve_ja_neural` 解析。
 7. zh-select：模型集合有這個角色就立刻安裝，與 defaults-policy 的預設一致；
    缺檔或 ONNX 不可用只警告一次，維持統計排序。
 8. 標點模型：只由 `jc-cli` 的明確旗標（`--punct`）觸發；引擎目前不自動
@@ -49,7 +50,7 @@ Go 參考實作沒有獨立的「資料載入」套件；載入散在 server 啟
 | `build-zh/lexicon.bin` | 啟動失敗，訊息指出路徑 | 沒有詞典就完全無法轉注音 |
 | `build-zh-bigram/lm.bin` | 警告一次，退回 `build-zh/lm.bin` | unigram 仍可轉換，只是少了 bigram |
 | 日文 pack | 啟動失敗，訊息列出兩個候選路徑 | 沒有詞典就完全無法轉日文 |
-| `models/ja-tokenizer/*.model` | 警告一次，`EngineData::ja_tokenizer` 為 `None` | 引擎轉換不依賴它 |
+| `models/ja-tokenizer/*.model` | 不再探測，不印警告 | 引擎轉換不依賴它，Jinen 有自己的 tokenizer |
 | reranker ONNX | 第一次使用時警告一次，退回統計排序 | 模型是加分項，不是必要資料 |
 | zh-select ONNX | 啟動時警告一次，維持統計排序 | 有模型就安裝；載入失敗不該擋住轉換 |
 | punct ONNX | 不自動載入；由 CLI 旗標決定 | 預設行為要與統計排序一致 |
