@@ -4,6 +4,34 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.11 - 2026-11-21
+
+### 修正
+
+- Windows 多工作階段：監督者互斥從 session 範圍的 named mutex 改成
+  `%LOCALAPPDATA%\jc-ime\Local-jc-ime-engine-supervisor.lock`（分享模式 0），
+  避免兩個 RDP session 各拿到一把鎖、各啟動一個子行程搶同一條 pipe。
+  子行程改放 `KILL_ON_JOB_CLOSE` job object，TIP 遇到 `ERROR_PIPE_BUSY` 時用
+  `WaitNamedPipeW` 等待，`MaxInstances` 維持 1。
+- Windows 打字：TSF 改在取得輸入焦點時才連引擎 pipe（`OnSetFocus`），
+  `OnKillFocus` 排 120ms 寬限期後釋放，`Deactivate` 立刻清 sender。
+  Activate 只建立訊息視窗與註冊 sink；狀態機吸收重複事件，focus 早於 Activate
+  時用 `pending_focus` 保留意圖。
+- Windows 設定：設定視窗首次開啟即可修改，移除「複製」與鎖定。
+  `mixed-input` 開關完全移除，中文使用者永遠進入混合輸入模式；舊設定檔的欄位
+  仍保留在 JSON 契約做相容，不影響行為。
+- Windows 模型頁：不再把已移除的 reranker／舊分詞器顯示為缺少，改探測 Jinen
+  tokenizer 的正確路徑。
+- 資料包：catalog 過濾已移除的 ja-punct／zh-punct 角色，移除過期 tokenizer 探測並
+  重新產生 manifest；`build-zh/manifest.json` 隨 MSI 散布。
+
+### 變更
+
+- 引擎與 client transport 統一改用 `interprocess::local_socket`：Windows 底層是
+  named pipe，Linux 是 abstract UDS。Windows ACL 改用 SDDL，pipe-busy 等待改用
+  `ConnectWaitMode::Timeout`，舊的 `pipe.rs`／`pipe_windows.rs` 移除。
+- 混合輸入：新增 `watashi` → `わたし` 的回歸測試，路由、開關與預設值未變。
+
 ## 0.1.0-rc.10 - 2026-11-21
 
 ### 修正
