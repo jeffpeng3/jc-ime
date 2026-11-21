@@ -4,6 +4,18 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.9 - 2026-11-21
+
+### 修正
+
+- Windows 打字：引擎自動啟動的 `--socket jc-ime` 移除。引擎與 TSF 現在都用
+  `resolve_pipe_name()` 從使用者 SID 推導同一個 pipe 名稱（例如 `jc-ime-1001`）。
+  rc.8 之前兩邊名稱不同，TSF 連不上引擎，按鍵全部放行成英文。
+- 冒煙測試：檢查 5 原本誤用 `ITfThreadMgr::Activate()` 回傳的應用程式 client id
+  激活 TIP，msctf 查不到該 id 所屬的文字服務而回 `0x80070057`。改用
+  `ITfClientId::GetClientId(&CLSID_JC_TSF)` 取得 TIP 自己的 id。jc-tsf 的
+  `Activate` 本身正確，未改邏輯，只補診斷日誌（thread id、反註冊 HRESULT）。
+
 ## 0.1.0-rc.8 - 2026-11-21
 
 ### 修正
