@@ -1168,6 +1168,28 @@ mod tests {
         assert_eq!(s.mode(), Mode::Mixed);
     }
 
+    /// `Mode::Mixed` 下 `watashi` 走羅馬字路徑出假名，空白與後續按鍵仍可
+    /// 繼續輸入；注音模式（`Mode::Zh`）把同一串拉丁鍵解成注音是設計，不是
+    /// 路由 bug。
+    #[test]
+    fn test_watashi_continues_in_mixed_mode() {
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+        for ch in "watashi".chars() {
+            s.press(Key::char(ch, false));
+        }
+        assert_eq!(s.mode(), Mode::Mixed);
+        assert_eq!(s.snapshot().preedit, "わたし");
+
+        s.press(Key::new(KeyCode::Space, None, false));
+        assert_eq!(s.snapshot().preedit, "わたし ");
+        for ch in "desu".chars() {
+            s.press(Key::char(ch, false));
+        }
+        assert_eq!(s.snapshot().preedit, "わたしです");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "わたしです");
+    }
+
     /// 對照 `language_learning.go`：混打送出時把注音片段記成中文、
     /// 照字面的英數片段記成英文。
     #[test]
