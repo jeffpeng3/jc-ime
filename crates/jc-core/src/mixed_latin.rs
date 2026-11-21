@@ -1251,6 +1251,8 @@ mod tests {
         check("shinjuku", &[("ja", "shinjuku", "しんじゅく")]);
         check("kitte", &[("ja", "kitte", "きって")]);
         check("kanji", &[("ja", "kanji", "かんじ")]);
+        // 使用者回報的 `watashi`：整段是合法羅馬字，不能被英語或注音詞表搶走。
+        check("watashi", &[("ja", "watashi", "わたし")]);
     }
 
     #[test]

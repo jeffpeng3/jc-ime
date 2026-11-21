@@ -250,3 +250,50 @@ answer = argmax over L of cells[n][L]
 - `crates/jc-core/src/ja/input.rs`：`Table::entries`、`can_sokuon` 可見性
 - `crates/jc-cli/src/split_cmd.rs`（新）、`cli.rs`、`lib.rs`：`mixed-split`
 - `docs/port/mixed-latin.md`
+
+## 附錄：`watashi` 被當成注音與「卡住」案例（2026-11-21）
+
+### 靜態重現
+
+`JC_TESTDATA=/mnt/work/jc/jc-ime-data/0c-testdata ./target/debug/jc-cli mixed-split --keys watashi --steps`：
+
+```
+輸出："私"
+DP（1 個 run）：
+  run "watashi"
+    ja   0..7   "watashi" → "わたし"
+後處理 3/3 片段合併：
+  ja latin   0..7   "watashi"
+片段：
+  ja latin "watashi" → "私"
+```
+
+DP（A）與路由（B）都能把 `watashi` 解成 `わたし`，有日文解碼器時輸出 `私`。
+路由沒有 bug。
+
+逐鍵模擬 `Session`（同一份注音詞典與資料）顯示：
+
+| 模式 | 逐鍵結果 | 空白與後續 |
+|---|---|---|
+| `Mode::Zh` | `w a t a s h i` 各鍵覆蓋同一個注音槽，依次顯示 `ㄊ ㄇ ㄔ ㄇ ㄋ ㄘ ㄘㄛ` | 空白只把 `ㄘㄛ` 放進候選；外觀像卡在注音 |
+| `Mode::Mixed` | `w → w → わ → わ吃 → わた → watas → watash → わたし` | 空白後接 `desu` 得 `わたしです`，Enter 送出 `わたしです` |
+
+`Mode::Zh` 把拉丁鍵當注音鍵是設計；模式中每一鍵仍會改組字區，核心沒有
+狀態死結。`Mode::Mixed` 下所有按鍵都能推進，也沒有卡住。
+
+### 歸因與處置
+
+`crates/jc-engine/src/config.rs` 的 `mode_from_settings` 順序是「混打 → 日文 →
+英文 → 注音」。原本 `mixed-input = off` 讓引擎進 `Mode::Zh`，才是使用者看到
+注音與無法繼續打字的根本原因。
+
+依使用者指示，`mixed-input` 開關直接移除，引擎對中文使用者永遠進
+`Mode::Mixed`。本 task 不改開關、不改預設值、不改路由邏輯，只補回歸測試：
+`watashi` 進 mixed 題庫、路由器語言判定與表面輸出、`Mode::Mixed` session 的
+連續輸入與送出。
+
+### 驗證
+
+- `cargo test -p jc-core -p jc-settings`：890 passed。
+- `cargo test -p jc-core watashi`：3 passed。
+- `mixed-split --keys watashi --steps`：輸出 `私`，片段 `ja latin`。

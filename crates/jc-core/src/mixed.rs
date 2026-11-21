@@ -3863,6 +3863,27 @@ mod tests {
     }
 
     #[test]
+    fn test_watashi_routes_to_japanese() {
+        let english = English::new(None);
+        let r = Router::new().with_english(&english);
+        assert_eq!(r.detect("watashi"), Mode::Ja);
+        let segs = r.segments("watashi");
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].mode, Mode::Ja);
+        assert_eq!(segs[0].script, Script::Latin);
+        assert_eq!(r.convert("watashi").expect("轉換").surface, "わたし");
+
+        let ja = JaDecoder::new(Arc::new(MemorySource::new(&[(
+            "私",
+            "わたし",
+            100,
+            "名詞,普通名詞,一般,*",
+        )])));
+        let r = Router::new().with_english(&english).with_ja(&ja);
+        assert_eq!(r.convert("watashi").expect("轉換").surface, "私");
+    }
+
+    #[test]
     fn test_segments_use_utf8_offsets_and_modes() {
         let r = Router::new();
         let input = "watashiwaㄉㄚˋㄐㄧdesu";
