@@ -559,9 +559,13 @@ pub fn load_zhconv(root: &Path) -> Result<jc_core::zhconv::Converter, LoadError>
 }
 
 /// 載入並安裝注音選字模型。
+///
+/// 模型集合 manifest 缺席或仍指向未隨安裝包散布的 ONNX 時，退回固定的
+/// `models/zh-select` 目錄。GGUF、`vocab.json` 與模型自己的 `manifest.json`
+/// 都隨 MSI 安裝，因此這種情況仍可載入。
 pub fn install_select_model(models: &Path) -> Result<(), LoadError> {
-    let dir = jc_core::zh::select::resolve_model_dir(models)
-        .map_err(|err| LoadError(format!("找不到 zh-select 模型：{err}")))?;
+    let dir =
+        jc_core::zh::select::resolve_model_dir(models).unwrap_or_else(|_| models.join("zh-select"));
     let model = jc_core::zh::select::SelectModel::load(&dir)
         .map_err(|err| LoadError(format!("載入 zh-select 模型失敗：{err}")))?;
     jc_core::zh::select::install(model);

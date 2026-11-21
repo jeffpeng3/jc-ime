@@ -103,15 +103,18 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%ProgramData%\jc-ime\data\packs\ja-lexicon-mozc-v2.pack` | Mozc 日文詞典 |
 | `%ProgramData%\jc-ime\data\build-zh\lexicon.bin` | 注音詞典 |
 | `%ProgramData%\jc-ime\data\build-zh\lm.bin` | 注音語言模型 |
+| `%ProgramData%\jc-ime\data\models\zh-select\model.q8_0.gguf` | 注音選字模型（candle Q8_0，33.9 MiB） |
+| `%ProgramData%\jc-ime\data\models\zh-select\vocab.json` | 注音選字詞表，選字模型載入必要檔 |
 | `%ProgramData%\jc-ime\data\english\words.bin` | 英文詞表 |
 | `%ProgramData%\jc-ime\data\models\external\jinen-v2-small\jinen-v2-small-Q5_K_M.gguf` | 日文神經模型 |
 | `%LOCALAPPDATA%\jc-ime\settings.json` | 使用者設定；第一次按「套用」才建立，MSI 不覆蓋既有檔 |
 | `%LOCALAPPDATA%\jc-ime\personal.json` | 個人化資料（引擎之後才會寫） |
 | `%LOCALAPPDATA%\jc-ime\tsf.log` | 只有 `JC_TSF_LOG=1` 時才寫 |
 
-Funmula 的 `models/zh-select` 依授權不可隨產品散布，MSI 不含它。它是目前唯一列在
-manifest 的下載項；`zh-punct` 已於 2026-11-21 從 catalog 移除，檔案保留供回溯，
-已不在 manifest。引擎在缺檔時只警告並退回統計選字；下載流程屬於 `data-download` 任務。
+Funmula 的 `zh-select` 依 `legal\licenses\MIT-Funmula.txt` 可散布，MSI 從 ONNX 轉好
+`model.q8_0.gguf`（33.9 MiB）後隨附，並帶 `vocab.json` 與兩份 model manifest。catalog
+不再有下載項，`zh-punct` 已於 2026-11-21 移除。引擎第一次啟動直接載入 GGUF，沒有
+背景下載或轉檔；缺檔時只警告並退回統計選字。原始 `model.onnx` 不進 MSI。
 
 ### 授權文件位置
 
@@ -132,8 +135,8 @@ manifest 的下載項；`zh-punct` 已於 2026-11-21 從 catalog 移除，檔案
 
 反安裝會連 `legal\` 整個目錄一起刪除，不留孤兒檔。使用者資料
 （`%LOCALAPPDATA%\jc-ime`）與 `data-download` 另外下載的模型不受影響。
-Funmula 兩個模型的授權說明在 `legal\licenses\MIT-Funmula.txt`，即使模型不由
-本安裝包散布，聲明仍隨安裝包提供。
+Funmula 模型的授權說明在 `legal\licenses\MIT-Funmula.txt`，隨 MSI 安裝並保留
+copyright，符合 MIT 的散布條件。
 
 ### 機碼
 
@@ -273,5 +276,5 @@ Linux 只能驗證 WiX 專案能被編譯器解析與 payload 清單一致，下
 - 語言清單只對執行安裝與反安裝的帳號生效；由 SYSTEM 或部署工具代裝時，使用者的
   `HKCU` 不會被加到。
 - 設定變更後需要重啟引擎。
-- 注音神經選字模型（Funmula `zh-select`）依授權只能由使用者下載，安裝包不含。
+- 注音神經選字模型（Funmula `zh-select`）的 Q8_0 GGUF 隨安裝包散布；原始 ONNX 不含。
 - 沒有候選窗自繪、沒有 `ITfDisplayAttributeProvider`；這些屬於其他任務或後續版本。

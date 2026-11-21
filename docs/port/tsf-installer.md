@@ -47,7 +47,7 @@ Go 參考實作沒有 MSI，Windows 安裝過程分散在 `0c-update` 與 NSIS �
 | 註冊失敗 | `Return="check"` | 不留半套 TIP；rollback 動作會反向清除 |
 | 移除失敗 | `Return="ignore"`，且自訂動作不碰 DLL | 防毒隔離 `jc-tsf.dll` 不影響反安裝；CLSID 由 MSI 自己移除，profile 殘留只記日誌 |
 | 資料位置 | `%ProgramData%\jc-ime\data`（共用）、`%LOCALAPPDATA%\jc-ime`（使用者） | 程式與資料只裝一次；設定與個人化是使用者資料 |
-| 下載項 | 不進 MSI | `zh-select` 是唯一的下載項，Funmula 授權只允許使用者下載；`zh-punct` 已於 2026-11-21 從 catalog 移除 |
+| Funmula 模型 | Q8_0 GGUF 進 MSI | `zh-select` 依 MIT 全文可散布，`model.q8_0.gguf`／`vocab.json`／兩份 manifest 隨 MSI 安裝；原始 ONNX 與 `zh-punct` 不進 MSI |
 | `settings.json` | MSI 不安裝 | 不覆蓋既有檔；第一次按「套用」由設定程式建立 |
 | 引擎啟動 | `HKLM\...\Run` 的 `REG_EXPAND_SZ` | `jc-tsf` 只連 pipe，不會拉起引擎；`%LOCALAPPDATA%` 由每位使用者各自展開 |
 | 引擎 pipe 名稱 | autostart 不帶 `--socket`，交給 `resolve_pipe_name()` | `jc-tsf` 與 `jc-engine` 共用這套規則，從 SID 尾段推出 `jc-ime-<rid>`；寫死 `--socket jc-ime` 會讓兩邊不同名，TIP 連不上時按鍵全放行成英文。自訂名稱要同時設 `JC_IME_PIPE` 或 `HKCU\Software\jc-ime\EnginePipe` |

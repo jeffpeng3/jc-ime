@@ -5,8 +5,9 @@ Worktree：`/mnt/work/jc/wt/legal-update`（branch `legal-update`）
 這輪只改文件：Jinen 改列可散布、補 GPUI Kit／GPUI 條目、標點模型標成不再使用，
 並把帳本與資料 manifest 的 `shipped` 清單逐項對照。沒有改程式。
 
-> **現況（2026-11-21）**：`zh_punct` 已從 catalog 移除，不再是下載項。L-12 在
-> `legal/README.md` 保留是正確的，由授權帳本繼續記載 Funmula 標點模型；本文的
+> **現況（2026-11-21）**：`zh_punct` 已從 catalog 移除。L-11 改為可散布：
+> `model.q8_0.gguf`、`vocab.json` 與兩份 manifest 隨 MSI 安裝，並保留
+> `MIT-Funmula.txt` 全文；L-12 仍在帳本記載 Funmula 標點模型但不散布。本文的
 > manifest 對照表是 2026-11-20 的歷史紀錄。
 >
 > **補記（2026-11-21，`data-pack-english-meta`）**：catalog 新增

@@ -111,35 +111,34 @@ log 印出根目錄與 manifest 的 `version` 供核對。
 的那一層。Windows runner 的 `tar` 若不支援 zstd，workflow 會退回 7-Zip；兩者都
 沒有時請改用 `.tar.gz`。
 
-用 `scripts/data-bundle.sh` 打包。它只收 manifest 的 `shipped: true` 項目與
-`manifest.json`，不會把 Funmula 的下載項放進去。catalog 目前只有 `zh-select`
-是下載項；`zh-punct` 已於 2026-11-21 從 catalog 移除：
+Funmula 的 `zh-select` 依 MIT 全文（`legal/licenses/MIT-Funmula.txt`）可散布。打包前先
+用 `scripts/prepare-zh-select.sh` 從固定 revision 的 ONNX 轉出 `model.q8_0.gguf`，並把
+GGUF、`vocab.json` 與兩份 model manifest 變成 catalog 的 `shipped: true` 項目。原始
+ONNX 與中間的 safetensors 會被刪掉；`zh-punct` 已於 2026-11-21 從 catalog 移除：
 
 ```sh
-# 1. 產生完整 manifest。資料根目錄可以唯讀，manifest 放 repo 外。
-cargo run -p jc-cli --release -- data manifest /mnt/work/jc/jc-ime-data \
-  --out /tmp/opencode/jc-ime-data-manifest.json
+# 1. 轉檔並重算 manifest（需要 jc-cli；ONNX 缺席時腳本會抓並驗 SHA-256）。
+scripts/prepare-zh-select.sh /mnt/work/jc/jc-ime-data
 
-# 2. 打包。腳本會先印檔案清單、總大小與 bundle SHA-256。
-JC_DATA_MANIFEST=/tmp/opencode/jc-ime-data-manifest.json \
+# 2. 打包。腳本只收 manifest 的 shipped: true 項目與 manifest.json。
+JC_DATA_MANIFEST=/mnt/work/jc/jc-ime-data/manifest.json \
 OUT_DIR=/tmp/opencode \
 scripts/data-bundle.sh /mnt/work/jc/jc-ime-data
 ```
 
-下載項（`shipped: false`）缺席是正常狀態：`scripts/verify-bundle.py` 的人類可讀輸出
-不顯示這些項目，末尾摘要也只算顯示出來的 check。`--json` 仍輸出完整 report；
-引擎啟動日誌會個別提示缺席的下載項，相關功能維持停用。
+catalog 目前沒有 `shipped: false` 的下載項。`scripts/verify-bundle.py` 會把 GGUF、
+`vocab.json` 與兩份 manifest 當成必須存在的隨附檔；缺席就擋下。引擎不再背景下載或
+轉檔，安裝完第一次啟動直接載入 GGUF。
 
 腳本用 `tar --sort=name`、固定 mtime、固定 UID/GID 與 `gzip -n`／`zstd -n`
 讓同一份 manifest 產生相同 SHA-256。沒有 `zstd` 時會退回 `.tar.gz` 並在輸出
 說明。檔名預設是 `jc-ime-data-<manifest version>.tar.zst`。
 
 workflow 會把 `-Manifest <資料根>/manifest.json` 傳給 `build.ps1`，直接複製這份
-對完整資料根目錄產生的 manifest；因此安裝包會保留 `shipped: false` 的下載項與
-URL，但 payload 仍只複製 `shipped: true` 的檔案，Funmula 權重不會進 MSI 或
-Release。如果沒有 `-Manifest`，`build.ps1` 會退回原本行為，用
-`jc-cli data manifest` 重新掃描資料根目錄；那種情況資料包必須含下載項，否則
-安裝後的 `data download` 會找不到 URL。
+對完整資料根目錄產生的 manifest。payload 只複製 `shipped: true` 的檔案，所以
+`model.q8_0.gguf`、`vocab.json` 與兩份 manifest 會進 MSI，原始 ONNX 不會。
+如果沒有 `-Manifest`，`build.ps1` 會用 `jc-cli data manifest` 重新掃描資料根目錄；
+那種情況資料包必須含上述四筆隨附檔。
 
 ### 2. 資料 bundle 託管
 
@@ -440,8 +439,11 @@ release workflow 只能證明「建置與打包成功」，下面這些要在第
       `Dictionary::load_pack` 三者都要過大小與 SHA 檢查；少任一個就會退回原型
       詞彙，英文輸入查不到正式詞表。可用 `tar -tf <bundle> | grep '^english/'`
       確認三筆都在。
-- [ ] `models/zh-select` 沒有出現在資料包、MSI 或 Release assets（`zh-punct` 已於
-      2026-11-21 從 catalog 移除）。
+- [ ] `models/zh-select/model.q8_0.gguf`、`vocab.json`、`manifest.json` 與
+      `models/manifest.json` 都在資料包與 MSI，catalog 標 `shipped: true`；
+      原始 `model.onnx` 與 `models/zh-punct/` 不在（`zh-punct` 已於 2026-11-21
+      從 catalog 移除）。
+- [ ] `legal/licenses/MIT-Funmula.txt` 已隨 MSI 安裝，copyright 與授權全文保留。
 - [ ] `LICENSE`、`NOTICE`、`legal/` 已打進 MSI（`installer-payload` 的缺口）。
 - [ ] `Cargo.toml` 版本符合 `x.y.z` 或 `x.y.z-<pre-release>`，`v<version>` 標籤
       與它完全一致；RC 的 MSI `ProductVersion` 是三段數字加 rc 序號

@@ -53,7 +53,8 @@ cargo run -p jc-cli --release --bin candle-zh-check -- --convert --quant q8_0
 
 輸出 `models/zh-select/model.safetensors`（58 個張量、32,638,412 個參數、
 124.5 MiB）與 `models/zh-select/model.q8_0.gguf`（33.9 MiB、8.500
-bits/weight）。模型檔不進 git。
+bits/weight）。模型檔不進 git；2026-11-21 起 GGUF 已隨 MSI 散布（MIT 全文允許），
+`vocab.json` 與兩份 manifest 也一併列進 catalog。
 
 - 命名換成 forward 用的語意名稱；MatMul 的 `[in, out]` 權重轉成 `[out, in]`。
 - q／k／v 沿輸出維度合併成一條 `in_proj`，gate／up 保持合併，少兩次 matmul。

@@ -83,9 +83,11 @@ repo 內的檔案相對於本 repo 根目錄。同一個資料包目錄的 `mani
 
 | 散布檔案 | 大小 | SHA-256 | 授權條目 | 散布 |
 |---|---:|---|---|---|
-| `models/zh-select/model.onnx` | 130,723,137 | `4a80caf18acbaddde10c908dcbf35919908d616e94618cdde71fc3409c969261` | L-11 | 否（下載） |
-| `models/zh-select/vocab.json` | 312,708 | `556dffaffbf4c05211a846dcee55ef735cea68c5754f9bffcc6f9588124172b3` | L-11 | 否（下載） |
-| `models/zh-select/manifest.json`、`LICENSE`、`README.md`、`NOTICE` | 2,901／1,077／8,365／753 | 見 `models/zh-select/NOTICE` | L-11 | 否（下載） |
+| `models/zh-select/model.q8_0.gguf` | 35,515,136 | `fbbafa210ad640ae4cba79b21ce7a28ca993d3f2f0528385e3be3d4ea5bbaed4` | L-11 | 是（隨 MSI 散布 GGUF） |
+| `models/zh-select/vocab.json` | 312,708 | `556dffaffbf4c05211a846dcee55ef735cea68c5754f9bffcc6f9588124172b3` | L-11 | 是 |
+| `models/zh-select/manifest.json` | 2,901 | 見 `models/zh-select/manifest.json` | L-11 | 是 |
+| `models/manifest.json` | 387 | 見 `models/manifest.json` | L-11 | 是 |
+| `models/zh-select/model.onnx`、`LICENSE`、`README.md`、`NOTICE` | 130,723,137／1,077／8,365／753 | 見 `models/zh-select/NOTICE` | L-11 | 否（只當轉檔來源，不進 MSI） |
 | `models/zh-punct/model.onnx` | 130,584,075 | `4db3ed40df777347d9c455da01285b01de192d4c210c5f7cd9f0646c727880d8` | L-12 | 否（下載） |
 | `models/zh-punct/vocab.json` | 312,708 | `556dffaffbf4c05211a846dcee55ef735cea68c5754f9bffcc6f9588124172b3` | L-12 | 否（下載） |
 | `models/zh-punct/manifest.json`、`LICENSE`、`README.md`、`NOTICE` | 2,270／1,077／5,596／745 | 見 `models/zh-punct/NOTICE` | L-12 | 否（下載） |
@@ -96,7 +98,9 @@ repo 內的檔案相對於本 repo 根目錄。同一個資料包目錄的 `mani
 | `models/ja-tokenizer/public_core_ja.model` | 614,451 | `b25260c9c3d90a754c719e62eea6b8125f08448d48dd4d1755c18edbd00e2078` | L-09、L-10 | 否 |
 | `models/manifest.json` | 387 | — | L-00 | 否（安裝時重建） |
 
-`zh-select` 與 `zh-punct` 是 Funmula 的第三方模型：只列出下載來源與雜湊，**不隨本專案散布**。
+`zh-select` 是 Funmula 的第三方模型：MIT 全文允許散布，安裝包帶本地從 ONNX 轉出的 Q8_0 GGUF
+與載入所需的 `vocab.json`、兩份 manifest，並保留 [`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt)
+與 copyright。`model.onnx` 只當轉檔來源，不進 MSI。`zh-punct` 只列出下載來源與雜湊，**不隨本專案散布**。
 `reranker-extra` 與 `punctuation-public-core` 已不在資料 manifest 的隨附清單，權重留在資料目錄
 供回溯；`ja-tokenizer` 是兩者共用的分詞器，若重新散布，兩份 notice 都要附。`zh-punct` 與
 `punctuation-public-core` 自 2026-11-20 起不再被程式載入，檔案保留。模型清單與逐檔雜湊另見
@@ -157,7 +161,7 @@ Public Domain，`ja/ajimee_200.json` 是 CC-BY-SA-3.0。若要隨產品散布題
 | L-08 | English Speller Database（ESDB／SCOWL） | 2026.02.25，commit `7e99edab8e32f9f9ea2b15f249ca8d4d67237410` | SCOWL／ESDB permission（MIT-like） | 英文詞表 `words.bin` | 是 | [`licenses/ESDB-SCOWL-LICENSE.txt`](licenses/ESDB-SCOWL-LICENSE.txt)、[`licenses/ENGLISH-DATA-NOTICE.txt`](licenses/ENGLISH-DATA-NOTICE.txt) |
 | L-09 | `jeffpeng3/0c-ja-reranker` | rev `7450e10fe8b673560044c5db08ad3006a06d7a6e` | CC-BY-SA-4.0 | 日文 reranker 與共用分詞器 | 否 | [`licenses/CC-BY-SA-4.0.txt`](licenses/CC-BY-SA-4.0.txt)、`models/reranker-extra/` |
 | L-10 | `jeffpeng3/0c-ja-punct` | rev `ff9166abc620b6716ac7de73cfa67335e6b985d2` | MIT | 日文標點（2026-11-20 起不再使用；共用分詞器仍由 ja-rerank 使用） | 否（不再使用） | [`licenses/MIT.txt`](licenses/MIT.txt)、`models/punctuation-public-core/` |
-| L-11 | `Funmula/0c-sequence-d512`（第三方） | rev `3533e34ef25896afeacc928d136ba7f35783bba7` | MIT | 注音選字 | **否，僅下載** | `models/zh-select/`；[`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt) |
+| L-11 | `Funmula/0c-sequence-d512`（第三方） | rev `3533e34ef25896afeacc928d136ba7f35783bba7` | MIT | 注音選字 | **是（隨 MSI 散布 GGUF）** | `models/zh-select/model.q8_0.gguf` 等；[`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt) |
 | L-12 | `Funmula/0c-punct-d512`（第三方） | rev `105c2770e0b7cf4ce44a792b3b186000dd1727d9` | MIT | 注音標點（2026-11-20 起不再使用） | **否，僅下載** | `models/zh-punct/`；[`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt) |
 | L-13 | 小麥注音（McBopomofo）詞庫 | commit `a5ad2e94a173d6721b9d52e60f4d0266251a76ba` | MIT | 注音詞條與破音字優先表 | 是 | [`licenses/ZH-DATA-NOTICE.txt`](licenses/ZH-DATA-NOTICE.txt) |
 | L-14 | 全字庫 CNS11643 | `Properties.zip` SHA-256 `3d56ef14cc809989…`；`MapingTables.zip` SHA-256 `4502fcf7b433d679…` | 政府資料開放授權條款第 1 版 | 注音字表與 CNS 對照 | 是 | [`licenses/ZH-DATA-NOTICE.txt`](licenses/ZH-DATA-NOTICE.txt) |
@@ -178,25 +182,23 @@ Public Domain，`ja/ajimee_200.json` 是 CC-BY-SA-3.0。若要隨產品散布題
 
 ## 與資料 manifest 的散布對照
 
-來源是 [`docs/port/data-pack.md`](../docs/port/data-pack.md) 記錄的實際產物：`schema`
-`0c.data-pack/1`、`version` 2026-11-20，共 9 筆，隨附 5 筆、下載 4 筆。下表逐項對回本帳本。
+對應 [`crates/jc-data/src/manifest.rs`](../crates/jc-data/src/manifest.rs) 的 `CATALOG`：
+`schema` `0c.data-pack/1`，12 筆全是 `shipped: true`，沒有下載項。
 
-| manifest 路徑 | role | manifest `license` | 帳本條目 | manifest `shipped` | 帳本「散布」 |
-|---|---|---|---|---|---|
-| `packs/ja-lexicon-mozc-v2.pack` | `ja_lexicon` | L-01 | L-01 | `true` | 是 |
-| `build-zh/lexicon.bin` | `zh_lexicon` | L-04、L-05、L-06、L-13～L-17 | L-04、L-05、L-06、L-13～L-17 | `true` | 是 |
-| `build-zh/lm.bin` | `zh_lm` | L-04、L-05、L-06、L-13～L-17 | L-04、L-05、L-06、L-13～L-17 | `true` | 是 |
-| `english/words.bin` | `english` | L-08 | L-08 | `true` | 是 |
-| `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | `ja_neural` | L-21 | L-21 | `true` | 是 |
-| `models/zh-select/model.onnx` | `zh_select` | L-11 | L-11 | `false` | 否（下載） |
-| `models/zh-select/vocab.json` | `zh_select` | L-11 | L-11 | `false` | 否（下載） |
-| `models/zh-punct/model.onnx` | `zh_punct` | L-12 | L-12 | `false` | 否（下載） |
-| `models/zh-punct/vocab.json` | `zh_punct` | L-12 | L-12 | `false` | 否（下載） |
+| manifest 路徑 | role | 帳本條目 | 散布 |
+|---|---|---|---|
+| `packs/ja-lexicon-mozc-v2.pack` | `ja_lexicon` | L-01 | 是 |
+| `build-zh/lexicon.bin`、`build-zh/lm.bin` | `zh_lexicon`、`zh_lm` | L-04～L-06、L-13～L-17 | 是 |
+| `english/words.bin`、`english/manifest.json`、`english/NOTICE.txt` | `english` | L-08 | 是 |
+| `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | `ja_neural` | L-21 | 是 |
+| `models/quant/jinen-v2-xsmall/tokenizer.json` | `ja_tokenizer` | L-21 | 是 |
+| `models/manifest.json`、`models/zh-select/manifest.json` | `zh_select` | L-11 | 是 |
+| `models/zh-select/vocab.json` | `zh_select` | L-11 | 是 |
+| `models/zh-select/model.q8_0.gguf` | `zh_select` | L-11 | 是 |
 
-對照結果：manifest 的 5 筆 `shipped: true` 與帳本「是」的資料檔完全一致；4 筆下載項與帳本
-「否（下載）」一致。帳本另有幾筆資料目錄檔案（public-core pack、reranker、日文標點、共用
-分詞器、`models/manifest.json`）標「否」，不進 manifest 的隨附清單；Jinen tokenizer 已列入
-`JaTokenizer` 並標「是」，與 catalog 一致。
+帳本另有幾筆資料目錄檔案（public-core pack、reranker、日文標點、共用分詞器、Funmula 的
+`model.onnx`、`LICENSE`、`README.md`、`NOTICE`）標「否」，不進 manifest 的隨附清單。`L-12`
+的 `zh-punct` 已於 2026-11-21 從 catalog 移除。
 
 ### 已補
 

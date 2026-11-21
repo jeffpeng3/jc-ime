@@ -18,14 +18,16 @@
 
 | 角色 | 目錄 | repo | revision | 授權 | 隨安裝包出貨 | 狀態 |
 |---|---|---|---|---|---|---|
-| `zh-select` | `models/zh-select` | `Funmula/0c-sequence-d512` | `3533e34ef25896afeacc928d136ba7f35783bba7`（`3533e34e`） | MIT | 否，第三方僅下載 | 使用中，candle Q8_0 |
+| `zh-select` | `models/zh-select` | `Funmula/0c-sequence-d512` | `3533e34ef25896afeacc928d136ba7f35783bba7`（`3533e34e`） | MIT | 是，Q8_0 GGUF 與 vocab.json | 使用中，candle Q8_0 |
 | `zh-punct` | `models/zh-punct` | `Funmula/0c-punct-d512` | `105c2770e0b7cf4ce44a792b3b186000dd1727d9`（`105c2770`） | MIT | 否 | 已移除（2026-11-20） |
 | `ja-rerank` | `models/reranker-extra` | `jeffpeng3/0c-ja-reranker` | `7450e10fe8b673560044c5db08ad3006a06d7a6e`（`7450e10f`） | CC-BY-SA-4.0 | 否 | 棄用，僅保留模型與訓練碼 |
 | `ja-punct` | `models/punctuation-public-core` | `jeffpeng3/0c-ja-punct` | `ff9166abc620b6716ac7de73cfa67335e6b985d2`（`ff9166ab`） | MIT | 否 | 已移除（2026-11-20） |
 | `ja-neural` | `models/external/jinen-v2-small` | `togatogah/jinen-v2-small.gguf`（訓練：`jeffpeng3/0c-training`） | `3461d0573ab447985badde3174165b967d06076c` | CC-BY-SA-4.0 | 是，隨附；資料 manifest 標 `shipped: true` | 使用中，預設 |
 
-`Funmula` 兩個模型是第三方模型，只隨下載腳本取得，不進 git，也不得放進本專案的
-release 或安裝包。日文 reranker 不再是預設路徑：`SessionConfig::ja_rerank`
+`Funmula` 的 `zh-select` 是第三方模型，MIT 全文允許散布，安裝包帶本地從 ONNX 轉出的
+`model.q8_0.gguf`（35,515,136 bytes）、`vocab.json` 與兩份 manifest，並保留
+`legal/licenses/MIT-Funmula.txt` 的 copyright 與授權全文。`model.onnx` 只是轉檔來源，
+不進 MSI。`zh-punct` 已移除，不散布。日文 reranker 不再是預設路徑：`SessionConfig::ja_rerank`
 預設 `false`，由 Jinen small 的門檻混合取代。`ja-neural` 沒有 `Role` 列舉，
 `jc-engine` 直接依 `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf`
 載入；tokenizer 沿用 `models/quant/jinen-v2-xsmall/tokenizer.json`。資料根目錄
@@ -48,7 +50,7 @@ jc-core / jc-cli / jc-engine
 ```
 
 - `models/<角色>/model.safetensors` 走 fp32。
-- `models/<角色>/model.gguf` 走量化；副檔名自動分派。
+- `models/<角色>/model.gguf` 與 `models/zh-select/model.q8_0.gguf` 走量化；副檔名自動分派。
 - `JC_RERANK_WEIGHTS`、`JC_ZH_SELECT_WEIGHTS` 可覆寫權重路徑。
 - ONNX Runtime 與 `--backend ort` 已移除；資料目錄的 `*.onnx` 保留，只當
   `candle-zh-check --convert` 的轉檔來源。
@@ -61,10 +63,10 @@ jc-core / jc-cli / jc-engine
 
 | 角色 | 檔案 | 大小 | SHA-256 |
 |---|---|---:|---|
-| `zh-select` | `model.q8_0.gguf` | 35,515,136 | `fbbafa210ad640ae4cba79b21ce7a28ca993d3f2f0528385e3be3d4ea5bbaed4` |
+| `zh-select` | `model.q8_0.gguf`（隨 MSI 散布） | 35,515,136 | `fbbafa210ad640ae4cba79b21ce7a28ca993d3f2f0528385e3be3d4ea5bbaed4` |
 | `zh-select` | `model.safetensors` | 130,559,104 | `098e8d47b9e658dd6859e3668783942abafebdf97de2f53592f42dc0daba85d4` |
 | `zh-select` | `model.onnx` | 130,723,137 | `4a80caf18acbaddde10c908dcbf35919908d616e94618cdde71fc3409c969261` |
-| `zh-select` | `vocab.json` | 312,708 | `556dffaffbf4c05211a846dcee55ef735cea68c5754f9bffcc6f9588124172b3` |
+| `zh-select` | `vocab.json`（隨 MSI 散布） | 312,708 | `556dffaffbf4c05211a846dcee55ef735cea68c5754f9bffcc6f9588124172b3` |
 | `zh-select` | `manifest.json`（下載時追加 `download` 區塊） | 2,901 | `8a7ee717f17c8449666f4c128c96a64a2b2e595f314f303f59822b0e51a67847` |
 | `zh-select` | `LICENSE` | 1,077 | `ab1525e5aba48f95223228d1fcd045820783e6b3846972fbec67970314177e4f` |
 | `zh-select` | `README.md` | 8,365 | `c1cda3b9ab51321317bfafc12a634b404ca393611cdbc97ac0c98b229648a027` |
@@ -118,15 +120,16 @@ Q8_0 是量測與建議使用的注音選字權重：33.9 MiB、推論 p50 9.36 
 {
   "schema": "jc.model-set/1",
   "models": {
-    "zh-select": { "dir": "zh-select", "model": "model.onnx", "vocab": "vocab.json" },
+    "zh-select": { "dir": "zh-select", "model": "model.q8_0.gguf", "vocab": "vocab.json" },
     "ja-rerank": { "dir": "reranker-extra" }
   }
 }
 ```
 
-`model` 欄位只決定模型集合的可用性判定；實際載入的權重由 candle 的
-`weights_path` 找 `model.safetensors` 或 `model.gguf`。未填 `model` 時預設
-`model.safetensors`。
+`model` 欄位只決定模型集合的可用性判定；實際載入的權重由 candle 的 `weights_path`
+找 `model.safetensors`、`model.gguf` 或 `model.q8_0.gguf`。未填 `model` 時預設
+`model.safetensors`。引擎在集合 manifest 仍指向 ONNX 或 manifest 缺席時退回
+`models/zh-select`，因此舊資料根目錄也能載入隨 MSI 安裝的 GGUF。
 
 `zh-punct` 與 `ja-punct` 已於 2026-11-20 從程式移除；本專案的 manifest 範本
 不再列出。資料目錄的既有 `manifest.json` 仍可能保留這兩個鍵，載入時會忽略
@@ -142,9 +145,17 @@ Jinen 的 GGUF 與 tokenizer 另由資料根目錄的 `manifest.json` 記錄：
 `jc-engine` 先讀 manifest 解析路徑，缺 `ja_tokenizer` 只記一次警告並維持統計
 轉換，不擋啟動；`data verify` 仍把缺席的隨附檔算成錯誤，出貨前會擋下。
 
+## 首次啟動
+
+GGUF 隨 MSI 安裝，引擎第一次啟動就直接由 `install_select_model()` 載入，沒有背景下載、
+沒有轉檔、也不會重啟子行程。`vocab.json` 與兩份 manifest 是 `SelectModel::load` 的必要檔，
+一起隨 MSI 安裝。清除 `models/zh-select` 後會退回統計選字，需重新安裝或手動補回檔案。
+
 ## 散布檢查
 
-1. `models/zh-select`、`models/zh-punct` 不得出現在 release、安裝包或 git
+1. `models/zh-select/model.q8_0.gguf`、`vocab.json` 與兩份 manifest 隨 MSI 散布，
+   catalog 全標 `shipped: true`、授權 `L-11`，並附 `MIT-Funmula.txt` 全文。
+   `model.onnx` 與 `models/zh-punct/` 不得出現在 release、安裝包或 git
    （`zh-punct` 已於 2026-11-21 從 catalog 移除）。
 2. Jinen v2 small 隨安裝包出貨，資料 manifest 標 `shipped: true`。散布時附
    `legal/licenses/CC-BY-SA-4.0.txt` 與 `legal/THIRD-PARTY-NOTICES.md` 第 15 節，

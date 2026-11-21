@@ -121,24 +121,25 @@ LICENSE 全文，不移除 COCA 段落。
 - 狀態：2026-11-20 起不再使用，程式不載入，權重留在資料目錄供回溯；不隨安裝包散布。
 - 全文：[`licenses/MIT.txt`](licenses/MIT.txt)。
 
-## 11. 注音模型：第三方、僅下載、不轉散布（L-11、L-12）
+## 11. 注音模型：第三方 Funmula（L-11、L-12）
 
-這兩個模型是第三方（Funmula）提供的 MIT 模型。**本專案不隨產品、安裝包、release
-或 git 散布這兩個模型**；使用者必須自行從 Hugging Face 下載，並自行遵守 MIT 的
-著作權與許可聲明。
+這兩個模型是第三方（Funmula）提供的 MIT 模型。`MIT-Funmula.txt` 明確允許
+distribute，條件是保留 copyright 與授權全文；本專案已遵守，因此 `zh-select`
+**隨 MSI 散布本地轉出的 Q8_0 GGUF**（L-11）。`zh-punct` 已移除，仍不散布（L-12）。
 
-| 角色 | repo | rev | 下載 |
+| 角色 | repo | rev | 來源 |
 |---|---|---|---|
 | `zh-select` | `Funmula/0c-sequence-d512` | `3533e34ef25896afeacc928d136ba7f35783bba7`（`3533e34e`） | <https://huggingface.co/Funmula/0c-sequence-d512/tree/3533e34ef25896afeacc928d136ba7f35783bba7> |
 | `zh-punct` | `Funmula/0c-punct-d512` | `105c2770e0b7cf4ce44a792b3b186000dd1727d9`（`105c2770`） | <https://huggingface.co/Funmula/0c-punct-d512/tree/105c2770e0b7cf4ce44a792b3b186000dd1727d9> |
 
-`zh-punct` 自 2026-11-20 起不再被程式載入，下載與否由使用者決定；檔案仍標「不轉散布」。
+`zh-punct` 自 2026-11-20 起不再被程式載入，2026-11-21 從 catalog 移除；檔案仍標「不轉散布」。
 
 - 授權：MIT；Copyright (c) 2026 Funmula Corp Limited。
-- 全文：[`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt)。
-- 下載腳本：`scripts/fetch_zh_models.sh`；腳本只抓檔、驗大小與 SHA-256，不把權重放進 git。
-- 散布檢查：release／安裝包不得包含 `models/zh-select/model.onnx`、
-  `models/zh-punct/model.onnx` 或其餘 Funmula 模型檔。
+- 全文：[`licenses/MIT-Funmula.txt`](licenses/MIT-Funmula.txt)，已隨 MSI 安裝到 `legal\licenses\`。
+- 散布檢查（L-11）：`model.q8_0.gguf`、`vocab.json`、`models/manifest.json` 與
+  `models/zh-select/manifest.json` 隨 MSI 散布，四筆都是 catalog 的 `shipped: true`；
+  `model.onnx` 只是本機轉檔來源，不進 MSI、Release 或 git。
+- 散布檢查（L-12）：`models/zh-punct/` 全部檔案不進 MSI、Release 或 git。
 
 ## 12. 注音詞典其他來源（L-13～L-17）
 

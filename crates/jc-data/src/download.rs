@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn real_root_reports_download_items() {
+    fn real_root_has_no_download_items() {
         let Some(root) = jc_testdata::root() else {
             eprintln!("缺少測試資料：JC_TESTDATA");
             return;
@@ -362,10 +362,7 @@ mod tests {
         // 用現行 catalog 重新產生，避免讀到舊 manifest 裡已移除的角色。
         let manifest = DataManifest::generate_now(&root).unwrap();
         let report = DownloadReport::inspect(&root, &manifest);
-        assert_eq!(report.items.len(), 2);
-        assert!(
-            report.items.iter().all(|item| item.url.is_some()),
-            "下載項要帶 URL"
-        );
+        assert_eq!(report.items.len(), 0, "zh-select 改為隨 MSI 散布");
+        assert!(report.is_complete());
     }
 }

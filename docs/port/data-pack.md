@@ -68,8 +68,9 @@ Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
 `models/external/jinen-v2-small/` 是 `jc-engine` 的預設路徑（`JA_NEURAL_GGUF`）。
 引擎優先讀資料 manifest 的 `ja_neural`、`ja_tokenizer` 兩筆解析路徑；manifest
 沒有對應項目時才退回寫死的路徑與候選清單，因此舊資料根目錄仍可載入。
-`models/zh-select/model.q8_0.gguf` 是本機從 ONNX 轉出的量化衍生物，不是上游
-下載檔，因此不列進 manifest，避免安裝器把它當成可下載的原始檔。
+`models/zh-select/model.q8_0.gguf` 是本機從 ONNX 轉出的量化衍生物。2026-11-21
+起 Funmula 的 MIT 全文確認可散布，它已列進 catalog 當 `shipped: true`，隨 MSI
+安裝；原始 ONNX 仍不進資料包。此段其餘描述是 2026-11-20 的歷史紀錄。
 
 使用者資料（`settings.json`、`personal.json`）不列入 manifest。
 

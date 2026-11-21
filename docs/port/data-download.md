@@ -2,9 +2,10 @@
 
 Worktree：`/mnt/work/jc/wt/data-download`（branch `data-download`，base 是 `data-pack` 合併後的 `main`）
 
-> **現況（2026-11-21）**：`zh_punct` 已從 catalog 移除，不再下載。manifest 從 10 筆
-> 改成 8 筆，下載項只剩 2 個 `zh_select`。本文的下載清單、狀態實測與測試數字是
-> 2026-11-20 的移植歷史，保留供回溯。
+> **現況（2026-11-21）**：`zh_punct` 已從 catalog 移除。`zh_select` 改為隨 MSI 散布，
+> 由 `scripts/prepare-zh-select.sh` 先把 ONNX 轉成 `model.q8_0.gguf`，連同 `vocab.json`
+> 與兩份 manifest 列為 `shipped: true`；catalog 已無下載項，引擎不再背景下載。
+> 本文的下載清單、狀態實測與測試數字是 2026-11-20 的移植歷史，保留供回溯。
 
 ## 目標
 

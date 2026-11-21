@@ -494,7 +494,8 @@ const ZH_LICENSES: &[&str] = &[
 /// 目前產品資料檔的清單。
 ///
 /// 注音詞典與語言模型的授權見 `legal/licenses/ZH-DATA-NOTICE.txt`；Funmula
-/// 的選字模型只允許下載，`shipped` 固定 `false`。
+/// 的選字模型依 MIT 全文可散布，安裝包帶轉好的 Q8_0 GGUF、`vocab.json` 與
+/// 兩份模型 manifest，原始 ONNX 不進資料包。
 pub const CATALOG: &[DataFileSpec] = &[
     DataFileSpec {
         role: DataRole::JaLexicon,
@@ -563,23 +564,36 @@ pub const CATALOG: &[DataFileSpec] = &[
         candidates: &["models/quant/jinen-v2-xsmall/tokenizer.json"],
         url: None,
     },
+    // Funmula 模型集合與 zh-select 自己的 runtime manifest；兩者都是載入
+    // SelectModel 的路徑解析依據，體積很小，跟 GGUF 一起隨 MSI 安裝。
     DataFileSpec {
         role: DataRole::ZhSelect,
         licenses: &["L-11"],
-        shipped: false,
-        candidates: &["models/zh-select/model.onnx"],
-        url: Some(
-            "https://huggingface.co/Funmula/0c-sequence-d512/resolve/3533e34ef25896afeacc928d136ba7f35783bba7/model.onnx",
-        ),
+        shipped: true,
+        candidates: &["models/manifest.json"],
+        url: None,
     },
     DataFileSpec {
         role: DataRole::ZhSelect,
         licenses: &["L-11"],
-        shipped: false,
+        shipped: true,
+        candidates: &["models/zh-select/manifest.json"],
+        url: None,
+    },
+    DataFileSpec {
+        role: DataRole::ZhSelect,
+        licenses: &["L-11"],
+        shipped: true,
         candidates: &["models/zh-select/vocab.json"],
-        url: Some(
-            "https://huggingface.co/Funmula/0c-sequence-d512/resolve/3533e34ef25896afeacc928d136ba7f35783bba7/vocab.json",
-        ),
+        url: None,
+    },
+    // ONNX 上游檔只當轉檔來源；GGUF 是本地衍生物，隨 MSI 散布並附 L-11 全文。
+    DataFileSpec {
+        role: DataRole::ZhSelect,
+        licenses: &["L-11"],
+        shipped: true,
+        candidates: &["models/zh-select/model.q8_0.gguf"],
+        url: None,
     },
 ];
 
@@ -779,8 +793,11 @@ mod tests {
         let manifest = DataManifest::generate(&dir, "2026-11-20", "2026-11-20T00:00:00Z").unwrap();
         assert_eq!(manifest.schema, SCHEMA);
         assert_eq!(manifest.version, "2026-11-20");
-        // 只列出存在的隨附檔；下載項不存在就略過。
-        assert_eq!(manifest.files.len(), 9);
+        // 只列出存在的隨附檔；現在 zh-select 的四個檔也都是隨附檔。
+        assert_eq!(
+            manifest.files.len(),
+            CATALOG.iter().filter(|spec| spec.shipped).count()
+        );
         let lexicon = manifest
             .files
             .iter()
@@ -1029,20 +1046,18 @@ mod tests {
         };
         let manifest = DataManifest::generate_now(&root).unwrap();
         assert_eq!(manifest.files.len(), CATALOG.len());
-        assert_eq!(manifest.shipped_files().count(), 9);
         assert_eq!(
-            manifest
-                .download_files()
-                .filter(|file| file.role == DataRole::ZhSelect)
-                .count(),
-            2
+            manifest.shipped_files().count(),
+            CATALOG.iter().filter(|spec| spec.shipped).count()
         );
-        assert!(
-            manifest
-                .download_files()
-                .all(|file| !file.shipped && file.url.is_some()),
-            "下載項要帶 URL"
-        );
+        assert_eq!(manifest.download_files().count(), 0, "不再有下載項");
+        let gguf = manifest
+            .shipped_files()
+            .find(|file| file.path == "models/zh-select/model.q8_0.gguf")
+            .expect("GGUF 要隨 MSI 散布");
+        assert_eq!(gguf.role, DataRole::ZhSelect);
+        assert_eq!(gguf.license, vec!["L-11".to_string()]);
+        assert!(gguf.bytes > 30 * 1024 * 1024);
         let report = manifest.verify(&root, VerifyLevel::Full);
         assert!(report.is_ok(), "{}", report.summary());
         assert_eq!(report.warnings(), 0);

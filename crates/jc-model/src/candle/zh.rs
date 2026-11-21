@@ -47,6 +47,8 @@ use crate::error::{ModelError, Result};
 pub const DEFAULT_WEIGHTS_FILE: &str = "model.safetensors";
 /// 量化權重檔的預設檔名。
 pub const DEFAULT_QUANT_FILE: &str = "model.gguf";
+/// 隨安裝包散布的 Q8_0 檔名；由 `candle-zh-check --convert --quant q8_0` 產生。
+pub const DEFAULT_Q8_0_FILE: &str = "model.q8_0.gguf";
 /// 覆寫注音選字權重路徑的環境變數。
 pub const WEIGHTS_ENV: &str = "JC_ZH_SELECT_WEIGHTS";
 /// ggml 量化區塊的張量命名空間；與 `candle-quant` 的 reranker 檔一致。
@@ -742,7 +744,8 @@ fn tensor_names(config: &ZhConfig) -> Vec<String> {
     names
 }
 
-/// 權重檔路徑：`JC_ZH_SELECT_WEIGHTS` → `model.safetensors` → `model.gguf`。
+/// 權重檔路徑：`JC_ZH_SELECT_WEIGHTS` → `model.safetensors` → `model.gguf`
+/// → `model.q8_0.gguf`。安裝包只帶最後一筆，其餘是開發過程的產物。
 pub fn weights_path(dir: &Path) -> Option<PathBuf> {
     if let Some(value) = std::env::var_os(WEIGHTS_ENV) {
         let path = PathBuf::from(value);
@@ -750,7 +753,7 @@ pub fn weights_path(dir: &Path) -> Option<PathBuf> {
             return Some(path);
         }
     }
-    for name in [DEFAULT_WEIGHTS_FILE, DEFAULT_QUANT_FILE] {
+    for name in [DEFAULT_WEIGHTS_FILE, DEFAULT_QUANT_FILE, DEFAULT_Q8_0_FILE] {
         let path = dir.join(name);
         if path.is_file() {
             return Some(path);
@@ -1549,6 +1552,25 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn weights_path_accepts_shipped_q8_0_gguf() {
+        if std::env::var_os(WEIGHTS_ENV).is_some() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("jc-zh-weights-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let gguf = dir.join(DEFAULT_Q8_0_FILE);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&gguf, b"gguf").unwrap();
+        assert_eq!(weights_path(&dir), Some(gguf.clone()));
+
+        // fp32 與通用量化檔優先；兩者都在時 installer 只帶 gguf，不會有這個衝突。
+        let fp32 = dir.join(DEFAULT_WEIGHTS_FILE);
+        std::fs::write(&fp32, b"st").unwrap();
+        assert_eq!(weights_path(&dir), Some(fp32));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

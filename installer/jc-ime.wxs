@@ -145,6 +145,7 @@
           <Directory Id="BUILDZHDIR" Name="build-zh" />
           <Directory Id="ENGLISHDIR" Name="english" />
           <Directory Id="MODELSDIR" Name="models">
+            <Directory Id="ZHSELECTDIR" Name="zh-select" />
             <Directory Id="EXTERNALDIR" Name="external">
               <Directory Id="JINENDIR" Name="jinen-v2-small" />
             </Directory>
@@ -244,9 +245,10 @@
   </Fragment>
 
   <!--
-    隨產品散布的資料。清單來自資料根目錄的 manifest.json（shipped: true）；
-    下載項（Funmula 的 zh-select、zh-punct）依授權不可隨產品散布，因此不在這裡。
-    manifest.json 本身要一起裝，引擎啟動時用它比對存在與大小。
+    隨產品散布的資料。清單來自資料根目錄的 manifest.json（shipped: true）。
+    Funmula 的 zh-select 依 MIT 全文可散布，安裝包帶本地轉好的 Q8_0 GGUF、
+    vocab.json 與兩份模型 manifest；原始 ONNX 不在這裡。manifest.json 本身要
+    一起裝，引擎啟動時用它比對存在與大小。
   -->
   <Fragment>
     <ComponentGroup Id="DataFiles">
@@ -289,6 +291,24 @@
               Source="$(var.PayloadDir)/data/english/manifest.json" />
         <File Id="FileEnglishNotice"
               Source="$(var.PayloadDir)/data/english/NOTICE.txt" />
+      </Component>
+
+      <Component Id="ZhSelect" Directory="ZHSELECTDIR"
+                 Guid="{41030CC8-EC1D-44F4-8972-5A3C1E02F06E}">
+        <File Id="FileZhSelectGguf"
+              Source="$(var.PayloadDir)/data/models/zh-select/model.q8_0.gguf"
+              KeyPath="yes" />
+        <File Id="FileZhSelectVocab"
+              Source="$(var.PayloadDir)/data/models/zh-select/vocab.json" />
+        <File Id="FileZhSelectRuntimeManifest"
+              Source="$(var.PayloadDir)/data/models/zh-select/manifest.json" />
+      </Component>
+
+      <Component Id="ModelSetManifest" Directory="MODELSDIR"
+                 Guid="{0DB04D61-4BD0-469D-96CA-F43338FE5F98}">
+        <File Id="FileModelSetManifest"
+              Source="$(var.PayloadDir)/data/models/manifest.json"
+              KeyPath="yes" />
       </Component>
 
       <Component Id="JaNeural" Directory="JINENDIR"
