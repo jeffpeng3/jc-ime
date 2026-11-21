@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use jc_proto::Request;
-use jc_windows::{Client, NamedPipe};
+use jc_windows::{Client, LocalSocket};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 use crate::logging;
@@ -193,7 +193,7 @@ fn run(jobs: Receiver<Job>, queue: Arc<Queue>) {
 
 /// 有退避的重連：距離上次嘗試不到 [`RECONNECT_BACKOFF`] 就跳過。
 fn try_connect(
-    client: &mut Option<Client<NamedPipe>>,
+    client: &mut Option<Client<LocalSocket>>,
     last_attempt: &mut Option<std::time::Instant>,
     queue: &Queue,
 ) {
@@ -206,7 +206,7 @@ fn try_connect(
 }
 
 /// 連上引擎並握手；失敗只記日誌。
-fn connect(queue: &Queue) -> Option<Client<NamedPipe>> {
+fn connect(queue: &Queue) -> Option<Client<LocalSocket>> {
     let name = pipe_name();
     match Client::connect(&name, CLIENT_NAME, REQUEST_TIMEOUT) {
         Ok(client) => {

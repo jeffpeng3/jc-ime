@@ -630,6 +630,7 @@ impl InstanceLock {
 #[cfg(unix)]
 mod platform {
     use std::io;
+    #[cfg(not(target_os = "linux"))]
     use std::os::unix::net::UnixStream;
 
     /// 平台鎖。
@@ -732,8 +733,20 @@ mod platform {
     }
 
     /// 連一次 socket 當健康檢查。連上就立刻關閉，引擎會看到一次空的連線。
+    ///
+    /// 引擎改用 interprocess 後，Linux 監聽的是 abstract namespace，沒有 socket
+    /// 檔可以探測；因此健康檢查也用同一套名稱解析與連線 API。
     pub(super) fn health_ok(socket: &std::path::Path) -> bool {
-        UnixStream::connect(socket).is_ok()
+        let Ok(name) = jc_windows::socket_name(socket) else {
+            return false;
+        };
+        let Ok(ns) = jc_windows::ns_name(&name) else {
+            return false;
+        };
+        interprocess::local_socket::ConnectOptions::new()
+            .name(ns)
+            .connect_sync()
+            .is_ok()
     }
 }
 
@@ -1017,7 +1030,7 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// 把 socket 設定轉成完整 pipe 名稱；與 `pipe_windows` 的規則一致。
+/// 把 socket 設定轉成完整 pipe 名稱；與 `jc_windows::socket_name` 的規則一致。
 #[cfg(windows)]
 fn pipe_path(socket: &Path) -> String {
     let raw = socket.as_os_str().to_string_lossy();

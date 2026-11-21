@@ -6,11 +6,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+interprocess = "2.4.9"
 jc-core = { path = "../jc-core" }
 jc-data = { path = "../jc-data" }
 jc-model = { path = "../jc-model" }
 jc-proto = { path = "../jc-proto" }
 jc-settings = { path = "../jc-settings" }
+jc-windows = { path = "../jc-windows" }
 anyhow.workspace = true
 thiserror.workspace = true
 log.workspace = true
@@ -21,9 +23,9 @@ serde_json.workspace = true
 [dev-dependencies]
 jc-testdata = { path = "../jc-testdata" }
 
-# Windows named pipe 的 blocking Win32 API；只在 Windows 目標編譯。
+# Windows 的 SDDL 序列化需要 widestring；其餘平台用不到。
 [target.'cfg(windows)'.dependencies]
-jc-windows = { path = "../jc-windows" }
+widestring = "1"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     # supervise 測試註冊視窗類別用到的 WNDCLASSW 掛在這個 feature 底下。

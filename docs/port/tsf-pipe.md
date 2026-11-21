@@ -53,8 +53,9 @@ Notepad（5116）。TIP（pid 15132）反覆 Activate／shutdown，每次連
 
 ### 實際修法：client 端 `WaitNamedPipeW`
 
-`jc-windows/src/pipe.rs` 新增 `NamedPipe::connect_with_wait`：`CreateFileW`
-拿到 `ERROR_PIPE_BUSY` 時呼叫 `WaitNamedPipeW`，有 instance 釋出就再試，
+`jc-windows/src/transport.rs` 的 `LocalSocket::connect` 保留原本
+`NamedPipe::connect_with_wait` 的行為：Windows 底層 `CreateFileW` 拿到
+`ERROR_PIPE_BUSY` 時呼叫 `WaitNamedPipeW`，有 instance 釋出就再試，
 `ERROR_SEM_TIMEOUT` 時回報原本的 busy。`Client::connect` 把原本給 handshake
 的 `timeout`（TIP 為 500 ms）也用作等待上限。微軟的
 [Named Pipe Client](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-client)
@@ -93,7 +94,7 @@ TSF 的 `ITfThreadMgrEventSink` 沒有 `OnKillFocus` 方法，所以 kill focus 
 | Go 檔案 | Rust 檔案 | 狀態 |
 |---|---|---|
 | n/a（Go 版沒有監督者） | `crates/jc-engine/src/supervise.rs` | rewritten：Windows 單一實例改帳號範圍鎖檔＋job object |
-| n/a | `crates/jc-windows/src/pipe.rs` | rewritten：client 端加 `WaitNamedPipeW` |
+| n/a | `crates/jc-windows/src/transport.rs` | rewritten：client 端保留 `WaitNamedPipeW`，底層改 interprocess |
 | n/a | `crates/jc-windows/src/lib.rs` | 小改：`Client::connect` 帶等待 |
 | n/a | `docs/port/named-pipe.md`、`docs/port/engine-supervisor.md`、`docs/port/pipe-name.md` | 文件更新 |
 

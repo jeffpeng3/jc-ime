@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+interprocess = "2.4.9"
 jc-proto = { path = "../jc-proto" }
 thiserror.workspace = true
 
