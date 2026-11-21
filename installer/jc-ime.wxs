@@ -101,6 +101,7 @@
       <ComponentGroupRef Id="DataFiles" />
       <ComponentGroupRef Id="LegalFiles" />
       <ComponentRef Id="EngineAutostart" />
+      <ComponentRef Id="EngineAutostartNext" />
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentRef Id="LegalShortcut" />
     </Feature>
@@ -110,6 +111,9 @@
            與分類，RegisterCategory 執行時類別工廠已經查得到。 -->
       <Custom Action="RollbackRegisterTip" Before="RegisterTip" Condition="NOT REMOVE" />
       <Custom Action="RegisterTip" After="WriteRegistryValues" Condition="NOT REMOVE" />
+      <!-- 新版與舊版分開註冊；用 After="RegisterTip" 固定相對順序。 -->
+      <Custom Action="RollbackRegisterTipNext" Before="RegisterTipNext" Condition="NOT REMOVE" />
+      <Custom Action="RegisterTipNext" After="RegisterTip" Condition="NOT REMOVE" />
 
       <!-- 反安裝：先移除 profile，再讓 MSI 移除 CLSID 與檔案。
            UnregisterTip 一定要排在 RemoveRegistryValues 之前：<Class> 用
@@ -120,10 +124,15 @@
       <Custom Action="RollbackUnregisterTip" Before="UnregisterTip"
               Condition='REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' />
       <Custom Action="UnregisterTip" Before="RemoveRegistryValues" Condition='REMOVE~="ALL"' />
+      <!-- 新版反註冊只清自己的 CLSID 與 profile，排在舊版之後、RemoveRegistryValues 之前。 -->
+      <Custom Action="RollbackUnregisterTipNext" Before="UnregisterTipNext"
+              Condition='REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' />
+      <Custom Action="UnregisterTipNext" Before="UnregisterTip" Condition='REMOVE~="ALL"' />
 
       <!-- 使用者語言清單：必須在 SYSTEM 的註冊完成之後、且以使用者身分執行。
            RemoveTipLayout 只清使用者資料，不從語言清單移除 layout。 -->
       <Custom Action="InstallTipLayout" After="InstallFinalize" Condition="NOT REMOVE" />
+      <Custom Action="InstallTipLayoutNext" After="InstallTipLayout" Condition="NOT REMOVE" />
       <Custom Action="RemoveTipLayout" After="InstallFinalize"
               Condition='REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' />
     </InstallExecuteSequence>
@@ -206,6 +215,54 @@
                  Advertise="no"
                  Description="jc 注音" />
         </File>
+      </Component>
+
+      <!--
+        T10b：T9 平行建置的兩份新版 DLL。CLSID、component Guid 與檔名全部新配，
+        不做 SharedDllRefCount／Priority 之類的共享設定，也沒有 Permanent 或
+        NeverOverwrite。舊版解除安装或 major upgrade 移除舊 component 時，只會刪
+        jc-tsf.dll 與 jc-tsf-x86.dll，碰不到這兩個檔案。
+      -->
+      <Component Id="TsfDllNext" Guid="{0E94D6B1-5A73-4C8E-B2F1-6D3C7A9E0415}">
+        <File Id="FileTsfDllNext"
+              Source="$(var.PayloadDir)/jc-tsf-next.dll"
+              KeyPath="yes"
+              Vital="yes">
+          <Class Id="2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473"
+                 Context="InprocServer32"
+                 ThreadingModel="apartment"
+                 Advertise="no"
+                 Description="jc 注音（新版）" />
+        </File>
+        <!--
+          T9 的 register_with() 在 regsvr32 路徑寫 PipePrefix；MSI 路徑的 <Class>
+          只寫 InprocServer32，所以在這裡補同一個值。Windows 忽略不認識的值，
+          啟動器靠它知道這組 CLSID 該連 jc-ime-next-<rid>。
+        -->
+        <RegistryKey Root="HKCR"
+                     Key="CLSID\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}">
+          <RegistryValue Name="PipePrefix" Type="string" Value="jc-ime-next" />
+        </RegistryKey>
+      </Component>
+
+      <Component Id="TsfDllNextX86"
+                 Guid="{D2A6F4C8-1B57-4E90-A3D6-7C8E9F0A1B24}"
+                 Bitness="always32">
+        <File Id="FileTsfDllNextX86"
+              Source="$(var.PayloadDir)/jc-tsf-next-x86.dll"
+              KeyPath="yes"
+              Vital="yes">
+          <!-- 同一個新 CLSID；Bitness="always32" 讓 WiX 寫進 Wow6432Node。 -->
+          <Class Id="2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473"
+                 Context="InprocServer32"
+                 ThreadingModel="apartment"
+                 Advertise="no"
+                 Description="jc 注音（新版）" />
+        </File>
+        <RegistryKey Root="HKCR"
+                     Key="CLSID\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}">
+          <RegistryValue Name="PipePrefix" Type="string" Value="jc-ime-next" />
+        </RegistryKey>
       </Component>
 
       <Component Id="EngineExe" Guid="{B47CE81B-061C-48BC-BF03-4BB96A5CDEFD}">
@@ -513,6 +570,29 @@
   </Fragment>
 
   <!--
+    T10b：新版引擎的 autostart。另寫一個 Run 值，不覆蓋上面的 jc-ime-engine。
+
+    新版 TIP 的 pipe 是 jc-ime-next-<SID 尾段>，而 jc-engine 的
+    default_supervisor_socket() 仍走 jc-windows::resolve_pipe_name() 推出舊前綴；
+    instance 參數 next 只改監督者鎖名與 log 名，不改 pipe 名稱，所以新版必須明確帶
+    socket 參數。HKLM Run 是 per-machine，沒有內建環境變數能展開每位使用者的 SID 尾段，
+    因此用 PowerShell 在登入時從 whoami 算出 RID 再組出完整的 socket 名稱。
+    個人資料前綴用 personal-next，只改檔名，不改 %LOCALAPPDATA%\jc-ime 資料根目錄。
+  -->
+  <Fragment>
+    <Component Id="EngineAutostartNext" Directory="INSTALLFOLDER"
+               Guid="{5F8C2E17-9D64-4A3B-8C1E-2B7D6A4F9038}">
+      <RegistryKey Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run">
+        <RegistryValue
+            Name="jc-ime-engine-next"
+            Type="expandable"
+            KeyPath="yes"
+            Value="powershell.exe -NoProfile -WindowStyle Hidden -Command &quot;$rid=(whoami /user /fo csv /nh) -replace '.*-','' -replace '\D',''; &amp; '[INSTALLFOLDER]jc-engine.exe' --supervise --data '[DATADIR]' --settings '%LOCALAPPDATA%\jc-ime\settings.json' --socket jc-ime-next-$rid --personal-prefix personal-next --instance next&quot;" />
+      </RegistryKey>
+    </Component>
+  </Fragment>
+
+  <!--
     開始功能表的設定程式捷徑直接指向 jc-settings-ui.exe。它是 windows
     subsystem，啟動時不會配置 console 視窗；%ProgramData% 與 %LOCALAPPDATA%
     的路徑展開由它自己完成，不必經過 console 版的 jc-tip-register 中轉。
@@ -577,6 +657,21 @@
                   Impersonate="no"
                   Return="ignore" />
 
+    <!-- T10b：新版 CLSID 的註冊與回滾，與舊版各跑各的子命令。 -->
+    <CustomAction Id="RegisterTipNext"
+                  FileRef="FileTipRegister"
+                  ExeCommand="machine-register-next"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <CustomAction Id="RollbackRegisterTipNext"
+                  FileRef="FileTipRegister"
+                  ExeCommand="machine-unregister-next"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+
     <CustomAction Id="UnregisterTip"
                   FileRef="FileTipRegister"
                   ExeCommand="machine-unregister"
@@ -591,9 +686,31 @@
                   Impersonate="no"
                   Return="ignore" />
 
+    <CustomAction Id="UnregisterTipNext"
+                  FileRef="FileTipRegister"
+                  ExeCommand="machine-unregister-next"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <CustomAction Id="RollbackUnregisterTipNext"
+                  FileRef="FileTipRegister"
+                  ExeCommand="machine-register-next"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+
     <CustomAction Id="InstallTipLayout"
                   FileRef="FileTipRegister"
                   ExeCommand="user-install"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="ignore" />
+
+    <!-- 新版語言清單用新 CLSID 與 profile 並存新增；移除端照舊不呼叫 ILOT_UNINSTALL。 -->
+    <CustomAction Id="InstallTipLayoutNext"
+                  FileRef="FileTipRegister"
+                  ExeCommand="user-install-next"
                   Execute="immediate"
                   Impersonate="yes"
                   Return="ignore" />
