@@ -123,3 +123,81 @@ impl Cuas for Win32Cuas {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyboardState, SetKeyboardState, VK_LCONTROL, VK_LMENU, VK_LSHIFT,
+    };
+
+    fn set_mods(state: &mut [u8; 256], ctrl: bool, alt: bool, shift: bool) {
+        for (v, on) in [
+            (VK_CONTROL.0, ctrl),
+            (VK_LCONTROL.0, ctrl),
+            (VK_MENU.0, alt),
+            (VK_LMENU.0, alt),
+            (VK_SHIFT.0, shift),
+            (VK_LSHIFT.0, shift),
+        ] {
+            state[v as usize] = if on { 0x80 } else { 0 };
+        }
+    }
+
+    #[test]
+    fn win32_cuas_recognizes_registered_hotkeys() {
+        // #66：ime_hotkey 對系統實際登記的熱鍵回答是（登記帶 MOD_ON_KEYUP 的按下時不算），對一般鍵回答否。
+        // 期望值來自系統自己的 ImmGetHotKey 回傳值，不是寫死的表。
+        const MOD_ALT: u32 = 0x1;
+        const MOD_CONTROL: u32 = 0x2;
+        const MOD_SHIFT: u32 = 0x4;
+        const MOD_ON_KEYUP: u32 = 0x800;
+        const MOD_IGNORE_ALL_MODIFIER: u32 = 0x400;
+        let cuas = Win32Cuas;
+        let mut saved = [0u8; 256];
+        unsafe { GetKeyboardState(&mut saved).unwrap() };
+        // 測試自己列舉 SDK 的 ID，不借用實作的清單（實作少列時才抓得到）。
+        let ids = hotkey_ids();
+        let registered: Vec<(u32, u32, u32)> = ids
+            .filter_map(|id| registered_hotkey(id).map(|(m, k)| (id, m, k)))
+            .collect();
+        let mut state = saved;
+        for &(id, mods, vk) in &registered {
+            let (ctrl, alt, shift) = (
+                mods & MOD_CONTROL != 0,
+                mods & MOD_ALT != 0,
+                mods & MOD_SHIFT != 0,
+            );
+            set_mods(&mut state, ctrl, alt, shift);
+            unsafe { SetKeyboardState(&state).unwrap() };
+            // 同一個 vk、修飾鍵也相同的另一筆登記（不帶 MOD_ON_KEYUP）會讓答案變成是。
+            let matched = registered.iter().any(|&(_, m, k)| {
+                m & MOD_ON_KEYUP == 0
+                    && k == vk
+                    && (m & MOD_IGNORE_ALL_MODIFIER != 0
+                        || (m & MOD_CONTROL != 0, m & MOD_ALT != 0, m & MOD_SHIFT != 0)
+                            == (ctrl, alt, shift))
+            }) || (vk == VK_SPACE.0 as u32 && ctrl && !alt);
+            assert_eq!(
+                cuas.ime_hotkey(vk),
+                matched,
+                "熱鍵 id={id:#x} mods={mods:#x} vk={vk:#x}"
+            );
+        }
+        set_mods(&mut state, true, false, false);
+        unsafe { SetKeyboardState(&state).unwrap() };
+        let ctrl_space = cuas.ime_hotkey(VK_SPACE.0 as u32);
+        set_mods(&mut state, false, false, false);
+        unsafe { SetKeyboardState(&state).unwrap() };
+        let plain_s = cuas.ime_hotkey('S' as u32);
+        unsafe { SetKeyboardState(&saved).unwrap() };
+        assert!(ctrl_space, "Ctrl+Space 是輸入法開關");
+        assert!(!plain_s, "沒有修飾鍵的 S 不是熱鍵");
+        if std::env::var("ZUIN_TEST_IME_HOTKEYS").as_deref() == Ok("1") {
+            assert!(
+                !registered.is_empty(),
+                "繁中 Windows 至少登記一筆輸入法熱鍵（Ctrl+Shift+0 的 0x104）"
+            );
+        }
+    }
+}

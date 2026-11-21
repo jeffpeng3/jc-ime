@@ -98,3 +98,96 @@ pub fn choose(
     }
     around()
 }
+
+#[cfg(test)]
+mod tests {
+    //! 移植自 0c `caret.rs:191-276`。T6 的 service 移植把本模組縮成「退路順序 + Notes 去重」
+    //! 四個函式；0c 的 `around_field(field, recent, line)` 幾何、`system_caret`、`field`、
+    //! `line_height` 與 `Source::Recent/Field` 已不存在，相關子案例在回報列为 n/a。
+    use super::*;
+    use windows::Win32::UI::TextServices::TS_E_NOLAYOUT;
+
+    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
+        RECT {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    #[test]
+    fn missing_layout_falls_back_instead_of_hiding_candidates() {
+        let caret = rect(100, 200, 101, 220);
+        let older = rect(80, 200, 81, 220);
+        let field_rect = rect(50, 180, 600, 240);
+        let missing = Err(crate::edit::Miss::Failed(TS_E_NOLAYOUT));
+        // GetTextExt 有結果：其他來源都不查。
+        assert_eq!(
+            choose(Ok(caret), || unreachable!(), Some(older), || unreachable!()),
+            Some((caret, Source::Exact))
+        );
+        // 有系統插入點的程式照舊用它，即使同一次組字有較舊的位置（#144 之前的行為）。
+        assert_eq!(
+            choose(missing, || Some(caret), Some(older), || unreachable!()),
+            Some((caret, Source::SystemCaret))
+        );
+        // Chromium 新打的字版面還沒回來（TS_E_NOLAYOUT）、沒有系統插入點：用同一次組字上一次的位置。
+        assert_eq!(
+            choose(
+                Err(crate::edit::Miss::Failed(TS_E_NOLAYOUT)),
+                || None,
+                Some(caret),
+                || unreachable!()
+            ),
+            Some((caret, Source::Previous))
+        );
+        // 組字的第一個字：退到輸入框範圍，候選窗不能不出現（#144）。
+        assert_eq!(
+            choose(
+                Err(crate::edit::Miss::Failed(TS_E_NOLAYOUT)),
+                || None,
+                None,
+                || around_field(Some(field_rect))
+            ),
+            Some((field_rect, Source::AroundField))
+        );
+        // 沒有任何位置就真的沒有位置（空輸入框範圍不算）。
+        assert_eq!(
+            choose(
+                Err(crate::edit::Miss::Failed(TS_E_NOLAYOUT)),
+                || None,
+                None,
+                || around_field(None)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn notes_are_keyed_by_class_and_details_are_built_once() {
+        let notes = Notes::default();
+        let mut built = 0;
+        for x in 0..100 {
+            // 座標每次不同，類別相同：只組一次字串、只記一次，不會把上限吃光。
+            notes.once("empty", || {
+                built += 1;
+                Some(format!("空矩形 ({x},0,0,0)"))
+            });
+        }
+        assert_eq!(built, 1);
+        notes.once("foreground", || Some("前景執行緒沒有插入點".into()));
+        notes.once("foreground", || unreachable!());
+        assert_eq!(notes.seen.borrow().len(), 2);
+    }
+
+    #[test]
+    fn system_caret_without_window_does_not_panic() {
+        // 測試行程沒有插入點；只確認探測無效視窗不會出錯。
+        let _ = thread_has_caret();
+        assert_eq!(Source::Exact.name(), "GetTextExt");
+        assert_eq!(Source::SystemCaret.name(), "系統插入點");
+        assert_eq!(Source::Previous.name(), "上一次位置");
+        assert_eq!(Source::AroundField.name(), "輸入框範圍");
+    }
+}

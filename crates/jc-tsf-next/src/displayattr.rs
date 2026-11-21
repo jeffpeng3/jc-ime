@@ -295,3 +295,234 @@ impl IEnumTfDisplayAttributeInfo_Impl for AttributeEnum_Impl {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::Segment;
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use windows_core::Interface;
+
+    #[test]
+    fn utf16_styles_cover_surrogates_empty_and_unknown_segments() {
+        let segments = [
+            ("你", "normal"),
+            ("𠮷", "locked"),
+            ("", "locked"),
+            ("好", "corrected"),
+            ("ㄋ", "pending"),
+            ("a", "future"),
+            ("世傑", "marked"),
+            ("20", "reading"),
+            ("今日", "clause"),
+            ("は", "clause_active"),
+        ]
+        .into_iter()
+        .map(|(text, style)| Segment {
+            text: text.into(),
+            style: style.into(),
+        })
+        .collect::<Vec<_>>();
+        let ranges = style_ranges(&segments).unwrap();
+        assert_eq!(
+            ranges
+                .iter()
+                .map(|r| (r.start, r.end, r.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 1, Kind::Input),
+                (1, 3, Kind::Locked),
+                (3, 4, Kind::Corrected),
+                (4, 5, Kind::Input),
+                (5, 6, Kind::Input),
+                (6, 8, Kind::Marked),
+                (8, 10, Kind::Reading),
+                (10, 12, Kind::Clause),
+                (12, 13, Kind::ClauseActive)
+            ]
+        );
+        let marked = Kind::Marked.attributes();
+        assert!(marked.fBoldLine.as_bool());
+        assert_eq!(marked.lsStyle, TF_LS_DOT);
+        assert_eq!(marked.bAttr, TF_ATTR_TARGET_CONVERTED);
+        for c in [marked.crBk, marked.crLine, marked.crText] {
+            assert_eq!(c.r#type, TF_CT_COLORREF);
+        }
+        assert_eq!(unsafe { marked.crBk.Anonymous.cr.0 }, unsafe {
+            GetSysColor(COLOR_HIGHLIGHT)
+        });
+        assert_eq!(unsafe { marked.crLine.Anonymous.cr.0 }, unsafe {
+            GetSysColor(COLOR_HIGHLIGHT)
+        });
+        assert_eq!(unsafe { marked.crText.Anonymous.cr.0 }, unsafe {
+            GetSysColor(COLOR_HIGHLIGHTTEXT)
+        });
+        // #162：按空白會組成中文的數字是灰字、灰色細點線，一般輸入屬性。
+        let reading = Kind::Reading.attributes();
+        assert_eq!(reading.lsStyle, TF_LS_DOT);
+        assert!(!reading.fBoldLine.as_bool());
+        assert_eq!(reading.bAttr, TF_ATTR_INPUT);
+        assert_eq!(reading.crText.r#type, TF_CT_COLORREF);
+        assert_eq!(unsafe { reading.crText.Anonymous.cr.0 }, unsafe {
+            GetSysColor(COLOR_GRAYTEXT)
+        });
+        assert_eq!(unsafe { reading.crLine.Anonymous.cr.0 }, unsafe {
+            GetSysColor(COLOR_GRAYTEXT)
+        });
+        // T15：日文変換的一般文節細實線、目前文節粗實線；bAttr 分別是已変換與目前変換。
+        let clause = Kind::Clause.attributes();
+        assert_eq!(clause.lsStyle, TF_LS_SOLID);
+        assert!(!clause.fBoldLine.as_bool());
+        assert_eq!(clause.bAttr, TF_ATTR_CONVERTED);
+        let active = Kind::ClauseActive.attributes();
+        assert_eq!(active.lsStyle, TF_LS_SOLID);
+        assert!(active.fBoldLine.as_bool());
+        assert_eq!(active.bAttr, TF_ATTR_TARGET_CONVERTED);
+        // 各種屬性的 GUID 各不相同，索引就是在 KINDS 的位置（atom 陣列依此存取）。
+        for (i, kind) in KINDS.into_iter().enumerate() {
+            assert_eq!(kind.index(), i);
+            assert!(KINDS.iter().filter(|k| k.guid() == kind.guid()).count() == 1);
+        }
+        assert!(Kind::Locked.attributes().fBoldLine.as_bool());
+        assert_eq!(Kind::Corrected.attributes().lsStyle, TF_LS_DOT);
+        assert_eq!(Kind::Input.attributes().lsStyle, TF_LS_SOLID);
+    }
+
+    #[test]
+    fn attribute_enumerator_batches_clones_and_reports_end() {
+        let list: IEnumTfDisplayAttributeInfo =
+            ComObject::new(AttributeEnum::new()).into_interface();
+        unsafe {
+            let mut first = [None];
+            let mut fetched = 0;
+            list.Next(&mut first, &mut fetched).unwrap();
+            assert_eq!(fetched, 1);
+            assert_eq!(
+                first[0].as_ref().unwrap().GetGUID().unwrap(),
+                Kind::Input.guid()
+            );
+            let clone = list.Clone().unwrap();
+            let mut rest = [None, None, None, None, None, None, None];
+            let _ = clone.Next(&mut rest, &mut fetched);
+            assert_eq!(fetched, 6);
+            assert_eq!(
+                rest[0].as_ref().unwrap().GetGUID().unwrap(),
+                Kind::Locked.guid()
+            );
+            assert_eq!(
+                rest[1].as_ref().unwrap().GetGUID().unwrap(),
+                Kind::Corrected.guid()
+            );
+            assert_eq!(
+                rest[2].as_ref().unwrap().GetGUID().unwrap(),
+                Kind::Marked.guid()
+            );
+            assert_eq!(
+                rest[3].as_ref().unwrap().GetGUID().unwrap(),
+                Kind::Reading.guid()
+            );
+            assert_eq!(
+                rest[4].as_ref().unwrap().GetGUID().unwrap(),
+                Kind::Clause.guid()
+            );
+            assert_eq!(
+                rest[5].as_ref().unwrap().GetGUID().unwrap(),
+                Kind::ClauseActive.guid()
+            );
+            list.Next(&mut first, &mut fetched).unwrap();
+            assert_eq!(
+                first[0].as_ref().unwrap().GetGUID().unwrap(),
+                Kind::Locked.guid()
+            );
+            list.Reset().unwrap();
+            let _ = list.Skip(8);
+            let _ = list.Next(&mut first, &mut fetched);
+            assert_eq!(fetched, 0);
+        }
+    }
+
+    /// 只有 IUnknown vtable 的計數物件：記錄被 Release 幾次，當作呼叫端陣列裡的「舊值」。
+    #[repr(C)]
+    struct Sentinel {
+        vtbl: *const windows_core::IUnknown_Vtbl,
+        releases: AtomicU32,
+    }
+    unsafe extern "system" fn sentinel_query(
+        _: *mut c_void,
+        _: *const GUID,
+        out: *mut *mut c_void,
+    ) -> windows_core::HRESULT {
+        if !out.is_null() {
+            out.write(std::ptr::null_mut());
+        }
+        windows::Win32::Foundation::E_NOINTERFACE
+    }
+    unsafe extern "system" fn sentinel_add_ref(_: *mut c_void) -> u32 {
+        1
+    }
+    unsafe extern "system" fn sentinel_release(this: *mut c_void) -> u32 {
+        (*(this as *const Sentinel))
+            .releases
+            .fetch_add(1, Ordering::SeqCst);
+        1
+    }
+    static SENTINEL_VTBL: windows_core::IUnknown_Vtbl = windows_core::IUnknown_Vtbl {
+        QueryInterface: sentinel_query,
+        AddRef: sentinel_add_ref,
+        Release: sentinel_release,
+    };
+
+    #[test]
+    fn next_overwrites_uninitialized_outputs_without_releasing_them() {
+        // msctf（Outlook 啟動時）傳進來的 [out] 陣列沒有初始化（#89）。前七格放計數物件的指標
+        // 當垃圾值：Next 必須直接覆寫、不能 Release；超出 count 的第八格填 0xDD，必須原封不動。
+        let sentinel = Sentinel {
+            vtbl: &SENTINEL_VTBL,
+            releases: AtomicU32::new(0),
+        };
+        let garbage = &sentinel as *const Sentinel as *mut c_void;
+        let poison = usize::from_ne_bytes([0xDD; std::mem::size_of::<usize>()]) as *mut c_void;
+        let mut out = [
+            garbage, garbage, garbage, garbage, garbage, garbage, garbage, poison,
+        ];
+        let mut fetched = 0xDDDD_DDDDu32;
+        let list: IEnumTfDisplayAttributeInfo =
+            ComObject::new(AttributeEnum::new()).into_interface();
+        let hr = unsafe {
+            (Interface::vtable(&list).Next)(
+                Interface::as_raw(&list),
+                7,
+                out.as_mut_ptr(),
+                &mut fetched,
+            )
+        };
+        assert_eq!(hr, windows_core::HRESULT(0));
+        assert_eq!(fetched, 7);
+        assert_eq!(
+            sentinel.releases.load(Ordering::SeqCst),
+            0,
+            "Next 把呼叫端的垃圾值當成介面 Release 了"
+        );
+        assert_eq!(out[7], poison, "count 以外的格子不能動");
+        for (slot, kind) in out[..7].iter().zip(KINDS) {
+            assert_ne!(*slot, garbage);
+            let info = unsafe { ITfDisplayAttributeInfo::from_raw(*slot) };
+            assert_eq!(unsafe { info.GetGUID() }.unwrap(), kind.guid());
+        }
+        // 已到結尾：再要一個時回 S_FALSE、fetched 為 0，輸出格同樣不讀不放。
+        let mut tail = [garbage];
+        let hr = unsafe {
+            (Interface::vtable(&list).Next)(
+                Interface::as_raw(&list),
+                1,
+                tail.as_mut_ptr(),
+                &mut fetched,
+            )
+        };
+        assert_eq!(hr, windows::Win32::Foundation::S_FALSE);
+        assert_eq!(fetched, 0);
+        assert_eq!(tail[0], garbage);
+        assert_eq!(sentinel.releases.load(Ordering::SeqCst), 0);
+    }
+}
