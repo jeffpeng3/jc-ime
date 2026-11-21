@@ -13,8 +13,10 @@
 
 pub mod session;
 
-// T1b 移植的 Win32 IPC client 與按鍵對照表。Linux host 上不編這兩塊，
-// 讓 `cargo check --workspace` 不被 Windows API 擋住。
+// T1b 移植的 Win32 IPC client 與按鍵對照表，以及 T5 移植的 edit session。
+// Linux host 上不編這幾塊，讓 `cargo check --workspace` 不被 Windows API 擋住。
+#[cfg(windows)]
+pub mod edit;
 #[cfg(windows)]
 pub mod ipc;
 #[cfg(windows)]
