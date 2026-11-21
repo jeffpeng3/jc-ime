@@ -610,6 +610,11 @@ impl Client {
     /// 送出請求並讀回 0c 形狀的 reply；翻譯與轉換都在 `parse()` 之前。
     pub fn call(&mut self, envelope: &Value) -> Option<Value> {
         if !self.connect() {
+            // 對端已經關掉連線（引擎退出／重啟）時，連不上的這一次就要記下重啟期限；
+            // 和 alive() 與 close_after_failure() 的判斷一致，讓 Preflight 立刻知道要等。
+            if !self.transport.alive() {
+                self.expect_restart();
+            }
             return None;
         }
         let request = to_jc_request(envelope);
@@ -818,6 +823,9 @@ pub struct Session {
     id: u64,
     generation: u32,
     english: bool,
+    /// 不含 Caps Lock 暫時英文的程式模式；關掉 Caps Lock 要回到這裡。
+    /// jc 的 snapshot 沒有 caps_english，外殼必須自己記住這層。
+    base_english: bool,
     replay_english: bool,
     pub english_state: Snapshot,
     down: bool,
@@ -867,6 +875,7 @@ impl Session {
             id: 0,
             generation: 0,
             english: false,
+            base_english: false,
             replay_english: false,
             english_state: Snapshot::default(),
             down: false,
@@ -978,6 +987,7 @@ impl Session {
         let before = (self.english, self.japanese);
         if let Some(mode) = initial_mode(&reply["info"]) {
             self.english = mode == Mode::English;
+            self.base_english = self.english;
             self.japanese = mode == Mode::Japanese;
             self.caps_english = false;
         }
@@ -1288,6 +1298,29 @@ impl Session {
         let generation_before = self.client.generation();
         let english_before = self.english;
         let kind = request["type"].as_str().unwrap_or("").to_string();
+        // jc 的 State 只有組字片段帶模式，Committed 完全不帶；0c 快照的
+        // mode／caps_english 得由外殼自己記住，成功後補回快照。
+        let mut base = self.base_english;
+        let mut want_english = self.english;
+        let mut want_caps = self.caps_english;
+        match kind.as_str() {
+            "mode" => {
+                base = request["on"].as_bool().unwrap_or(false);
+                want_english = base;
+                want_caps = false;
+            }
+            "toggle" => {
+                base = !base;
+                want_english = base;
+                want_caps = false;
+            }
+            "caps_lock" => {
+                let on = request["on"].as_bool().unwrap_or(false);
+                want_caps = on && !base;
+                want_english = on || base;
+            }
+            _ => {}
+        }
         #[cfg(test)]
         self.sent.push(kind.clone());
         let mut cleared = None;
@@ -1323,6 +1356,19 @@ impl Session {
             }
             let mut s = parse(&reply);
             s.reconnected = generation_before != self.client.generation();
+            // 有組字片段時引擎的模式是權威值；空組字與提交則補外殼記得的模式。
+            if s.commit.is_empty() && !s.preedit.is_empty() {
+                // 引擎的模式照用。
+            } else {
+                s.english = want_english;
+                s.japanese = self.japanese && self.japanese_cap;
+            }
+            s.caps_english = want_caps;
+            s.caps_lock = want_caps;
+            s.output_simplified = self.simplified;
+            if matches!(kind.as_str(), "mode" | "caps_lock" | "output_simplified") {
+                s.handled = true;
+            }
             if !s.commit.is_empty() {
                 self.pending_context =
                     (self.context_enabled && !self.private && s.context_id != 0 && !s.reconnected)
@@ -1331,6 +1377,7 @@ impl Session {
                 self.pending_context = None;
             }
             self.english = s.english;
+            self.base_english = base;
             self.caps_english = s.caps_english;
             self.japanese = s.japanese && self.japanese_cap;
             apply_clause_capability(&mut s, self.clause_display());
@@ -1946,6 +1993,12 @@ mod tests {
         session: u64,
         /// `true` 時 hello 回真正的 jc Ready 訊框，用來驗證 session id 流轉。
         ready_wire: bool,
+        /// 每次按鍵都提交：模擬 Go 的 RestartServer／HandoffServer 假引擎。
+        commit_keys: bool,
+        /// 交接後第一個按鍵直接提交這段文字。
+        handoff_commit: Option<String>,
+        /// toggle 清掉的注音，restore 時放回。
+        cleared_keys: Vec<String>,
     }
 
     impl MockState {
@@ -1964,6 +2017,9 @@ mod tests {
                 start_english: false,
                 session: 1,
                 ready_wire: false,
+                commit_keys: false,
+                handoff_commit: None,
+                cleared_keys: Vec::new(),
             }
         }
     }
@@ -2002,10 +2058,26 @@ mod tests {
         }
     }
 
+    /// hello 與 health 共用的 info：開始時英文的引擎要同時回報 start_mode／initial_mode。
+    fn mock_info(st: &MockState) -> Value {
+        let mut info = st.info.clone();
+        if let Some(v) = &st.vocab_keys {
+            info["vocab_keys"] = Value::from(v.clone());
+        }
+        if st.start_english {
+            info["start_mode"] = Value::from("english");
+            info["initial_mode"] = Value::from("english");
+        }
+        info
+    }
+
     /// 小型假引擎：注音按鍵序列對到具體組字字串，其餘照 0c 的 reply 形狀回。
     fn toy_response(request: &Value, st: &mut MockState) -> Option<Value> {
         if st.hang {
             return None;
+        }
+        if let Some(error) = st.info["error"].as_str() {
+            return Some(json!({"ok": false, "error": error}));
         }
         if st.reject_left > 0 {
             st.reject_left -= 1;
@@ -2013,7 +2085,12 @@ mod tests {
         }
         match request["op"].as_str().unwrap_or("") {
             "hello" => {
+                // 新 session 從開始模式重新起，舊的注音緩衝留在舊 session。
+                st.english = st.info["initial_mode"] == "english" || st.start_english;
+                st.keys.clear();
+                st.cleared_keys.clear();
                 if st.ready_wire {
+                    // T12d：驗證 session id 流轉時回真正的 jc Ready 訊框。
                     let ready = Response::Ready {
                         protocol: PROTOCOL_VERSION,
                         engine: "toy".into(),
@@ -2021,17 +2098,9 @@ mod tests {
                     };
                     return serde_json::to_value(ready).ok();
                 }
-                let mut info = st.info.clone();
-                if let Some(v) = &st.vocab_keys {
-                    info["vocab_keys"] = Value::from(v.clone());
-                }
-                if st.start_english {
-                    info["start_mode"] = Value::from("english");
-                    info["initial_mode"] = Value::from("english");
-                }
-                Some(json!({"ok": true, "session": st.session, "info": info}))
+                Some(json!({"ok": true, "session": st.session, "info": mock_info(st)}))
             }
-            "health" => Some(json!({"ok": true, "info": st.info.clone()})),
+            "health" => Some(json!({"ok": true, "info": mock_info(st)})),
             "mode" => {
                 st.english = request["on"].as_bool().unwrap_or(false);
                 st.keys.clear();
@@ -2039,12 +2108,24 @@ mod tests {
             }
             "key" => {
                 let key = request["key"].as_str().unwrap_or("").to_string();
+                if st.commit_keys {
+                    st.keys.push(key.clone()); // 假引擎照 Go 的 RestartServer 記下收到的鍵
+                    return Some(json!(Response::Committed { text: key }));
+                }
+                if let Some(text) = st.handoff_commit.clone() {
+                    return Some(json!(Response::Committed { text }));
+                }
                 st.keys.push(key);
                 Some(json!(toy_state(st)))
             }
             "toggle" => {
                 st.english = !st.english;
-                st.keys.clear();
+                if request["restore"].as_bool().unwrap_or(false) {
+                    st.keys = st.cleared_keys.clone();
+                } else {
+                    st.cleared_keys = st.keys.clone();
+                    st.keys.clear();
+                }
                 Some(json!(toy_state(st)))
             }
             "caps_lock" => {
@@ -2060,15 +2141,26 @@ mod tests {
         }
     }
 
-    fn toy_state(st: &MockState) -> Response {
+    fn toy_state(st: &mut MockState) -> Response {
+        // Enter 提交組字、KP 數字鍵盤在半形交還宿主、英文的字詞邊界鍵也交還宿主，
+        // 都不進組字區（boundary 判斷仍看最後一個實際收到的鍵）。
         let seq: Vec<&str> = st
             .keys
             .iter()
             .map(String::as_str)
-            .filter(|k| *k != "Enter")
+            .filter(|k| {
+                *k != "Enter"
+                    && !k.starts_with("KP")
+                    && !matches!(*k, " " | "Left" | "Delete" | ".")
+            })
             .collect();
         let joined = seq.concat();
-        let mut preedit = if st.english {
+        let last = st.keys.last().map(String::as_str).unwrap_or("");
+        // Caps Lock 帶來的暫時英文：大寫字母直接交給應用程式（不進自動補全）。
+        let passthrough = st.english && last.len() == 1 && last.as_bytes()[0].is_ascii_uppercase();
+        let mut preedit = if passthrough {
+            String::new()
+        } else if st.english {
             joined.clone()
         } else if joined == "su3cl3" {
             "你好".to_string()
@@ -2092,7 +2184,6 @@ mod tests {
             joined.clone()
         };
 
-        let last = st.keys.last().map(String::as_str).unwrap_or("");
         let boundary = st.english && matches!(last, " " | "Left" | "Delete" | ".");
         let selected = st.english && last == "Tab" && !st.candidates.is_empty();
         let mut commit = String::new();
@@ -2101,8 +2192,13 @@ mod tests {
         } else if selected {
             commit = st.candidates[0].clone();
             preedit.clear();
+        } else if joined == "==" {
+            // Emoji 面板開著時第二個 = 提交字面。
+            commit = "=".to_string();
+            preedit.clear();
         }
         if !commit.is_empty() {
+            st.keys.clear(); // 提交後清空組字緩衝
             return Response::Committed { text: commit };
         }
 
@@ -2161,6 +2257,15 @@ mod tests {
     fn toy_session() -> (Session, Arc<Mutex<MockState>>) {
         let (client, state) = mock_client(toy_response);
         (Session::with_client(client), state)
+    }
+
+    /// 多個 session 共用同一個假引擎（模擬同一個程式開在不同欄位）。
+    fn toy_session_with_state(state: &Arc<Mutex<MockState>>) -> Session {
+        let transport = MockTransport {
+            state: state.clone(),
+            respond: Box::new(toy_response),
+        };
+        Session::with_client(Client::with_transport(Box::new(transport)))
     }
 
     #[test]
@@ -2372,7 +2477,7 @@ mod tests {
             "設定關閉時不送 caps_lock"
         );
         st.lock().unwrap().info = json!({"caps_lock_english": "true", "initial_mode": "zhuyin"});
-        let (mut other, _) = toy_session();
+        let mut other = toy_session_with_state(&st);
         other.learn_mode(true);
         assert!(other.mode_known && !other.english());
         assert!(other.caps_needs_sync(true) && !other.caps_needs_sync(false));
@@ -2499,6 +2604,7 @@ mod tests {
     fn closing_writer_waits_for_replacement_and_commits_once() {
         let (mut s, st) = toy_session();
         st.lock().unwrap().reject_left = 1;
+        st.lock().unwrap().handoff_commit = Some("你好".into());
         let snap = s.key("Enter");
         assert!(snap.ok && snap.handled, "handoff must retain the key");
         assert_eq!(snap.commit, "你好", "mock 的 Enter 提交目前組字");
@@ -2512,11 +2618,14 @@ mod tests {
     #[test]
     fn idle_letters_during_handoff_go_to_the_engine() {
         let (mut s, st) = toy_session();
-        assert!(s.idle_key("a"), "從沒問到過：字母交給引擎（同 0.2.4）");
+        // Go 的 HandoffServer 從第一個請求就拒絕：先設好拒絕與引擎設定，
+        // 第一次 preflight 才會同時驗證「回落舊推算」與「記下交接期限」。
+        let hsu = json!({"idle_keys": "!\"&'(),.:;<=>?[\\]^_`abcdefghijklmnoprstuvwxyz{}~"});
+        st.lock().unwrap().info = hsu.clone();
         st.lock().unwrap().reject_left = 1;
+        assert!(s.idle_key("a"), "從沒問到過：字母交給引擎（同 0.2.4）");
         assert!(s.client.restart_pending(), "引擎回了「引擎正在切換」");
-        s.idle_info =
-            Some(json!({"idle_keys": "!\"&'(),.:;<=>?[\\]^_`abcdefghijklmnoprstuvwxyz{}~"}));
+        s.idle_info = Some(hsu);
         assert!(s.idle_key("a") && s.idle_key("j"));
         assert!(!s.idle_key("1") && !s.idle_key("q"));
         st.lock().unwrap().keys.clear();
@@ -2585,6 +2694,7 @@ mod tests {
     #[test]
     fn typing_through_a_handover_between_words_loses_nothing() {
         let (mut s, st) = toy_session();
+        st.lock().unwrap().commit_keys = true;
         for k in ["s", "u", "3"] {
             assert!(s.key(k).ok, "{k}");
         }
@@ -2611,6 +2721,7 @@ mod tests {
     #[test]
     fn composition_survives_the_restart_and_is_replayed_once() {
         let (mut s, st) = toy_session();
+        st.lock().unwrap().commit_keys = true;
         assert!(s.key("a").handled);
         s.log.push(json!({"type": "key", "key": "a"}));
         {
