@@ -524,6 +524,21 @@ pub const CATALOG: &[DataFileSpec] = &[
         candidates: &["english/words.bin"],
         url: None,
     },
+    // words.bin 的驗證中繼檔；英文載入器要求三者同時存在，缺一就退回原型詞彙。
+    DataFileSpec {
+        role: DataRole::English,
+        licenses: &["L-08"],
+        shipped: true,
+        candidates: &["english/manifest.json"],
+        url: None,
+    },
+    DataFileSpec {
+        role: DataRole::English,
+        licenses: &["L-08"],
+        shipped: true,
+        candidates: &["english/NOTICE.txt"],
+        url: None,
+    },
     DataFileSpec {
         role: DataRole::JaNeural,
         licenses: &["L-21"],
@@ -756,7 +771,7 @@ mod tests {
         assert_eq!(manifest.schema, SCHEMA);
         assert_eq!(manifest.version, "2026-11-20");
         // 只列出存在的隨附檔；下載項不存在就略過。
-        assert_eq!(manifest.files.len(), 6);
+        assert_eq!(manifest.files.len(), 8);
         let lexicon = manifest
             .files
             .iter()
@@ -781,6 +796,34 @@ mod tests {
         );
         assert_eq!(tokenizer.license, vec!["L-21".to_string()]);
         assert!(tokenizer.shipped);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn english_pack_metadata_is_cataloged() {
+        let dir = temp_dir("english-meta");
+        for spec in CATALOG.iter().filter(|spec| spec.shipped) {
+            write(&dir, spec.candidates[0], b"data");
+        }
+        let manifest = DataManifest::generate(&dir, "2026-11-20", "2026-11-20T00:00:00Z").unwrap();
+        let english: Vec<_> = manifest
+            .files
+            .iter()
+            .filter(|file| file.role == DataRole::English)
+            .collect();
+        assert_eq!(english.len(), 3, "英文資料包要一次收錄詞表與兩份中繼檔");
+        for path in [
+            "english/words.bin",
+            "english/manifest.json",
+            "english/NOTICE.txt",
+        ] {
+            let file = english
+                .iter()
+                .find(|file| file.path == path)
+                .unwrap_or_else(|| panic!("manifest 缺少 {path}"));
+            assert_eq!(file.license, vec!["L-08".to_string()]);
+            assert!(file.shipped);
+        }
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -937,7 +980,8 @@ mod tests {
             return;
         };
         let manifest = DataManifest::generate_now(&root).unwrap();
-        assert!(manifest.files.len() >= 5);
+        assert_eq!(manifest.files.len(), CATALOG.len());
+        assert_eq!(manifest.shipped_files().count(), 8);
         assert_eq!(
             manifest
                 .download_files()

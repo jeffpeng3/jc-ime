@@ -6,6 +6,11 @@ Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
 > `manifest.json` 由 10 筆改成 8 筆（6 個 `shipped: true`、2 個 `zh_select` 下載項）。
 > 本文是移植歷史：配置、真實 manifest JSON、role 列舉與 `zh-punct` 範例保留舊值供
 > 回溯；現行的 `data verify` 人讀輸出見下方「驗證」。
+>
+> **現況（2026-11-21，`data-pack-english-meta`）**：catalog 補進
+> `english/manifest.json` 與 `english/NOTICE.txt`，manifest 從 8 筆變成 10 筆
+> （8 個 `shipped: true`、2 個 `zh_select` 下載項）。這兩筆是 `english/words.bin`
+> 的驗證中繼檔，英文載入器要求三者同時存在。下方表格保留移植當時的 6 筆隨附清單。
 
 ## 目標
 
@@ -288,6 +293,8 @@ jc-engine: 載入資料失敗：… 資料 manifest 檢查失敗：1 個致命�
 | `build-zh/lexicon.bin` | `zh_lexicon` | L-04、L-05、L-06、L-13～L-17 | 自製詞條、libchewing、政府開放資料等，全部允許散布 |
 | `build-zh/lm.bin` | `zh_lm` | 同上 | 同上 |
 | `english/words.bin` | `english` | L-08 | ESDB／SCOWL 為 MIT 類授權，附 NOTICE |
+| `english/manifest.json` | `english` | L-08 | 2026-11-21 補：詞表驗證中繼檔，與 `words.bin` 同授權，隨資料包散布 |
+| `english/NOTICE.txt` | `english` | L-08 | 2026-11-21 補：詞表授權通知，與 `words.bin` 同授權，隨資料包散布 |
 | `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | `ja_neural` | L-21 | Jinen v2 small 為 CC-BY-SA-4.0，散布需附授權全文與 notice |
 | `models/quant/jinen-v2-xsmall/tokenizer.json` | `ja_tokenizer` | L-21 | small 沿用 xsmall 的 tokenizer，授權同 Jinen 權重 |
 
