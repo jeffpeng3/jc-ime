@@ -4,6 +4,25 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.14 - 2026-11-22
+
+### 修正
+
+- Windows 引擎 pipe：移除自建 SDDL，改用 named pipe 的預設 DACL。interprocess 2.4.9
+  的 `SecurityDescriptor::to_owned_sd()` 複製 group 時誤呼叫 `set_owner`，把 owner
+  從使用者 SID 覆蓋成 BA 群組；群組 SID 不能當 owner，`CreateNamedPipeW` 回
+  os error 1307，pipe 建立失敗，TIP 因此一直重複 spawn。單機單使用者沒有安全損失，
+  interprocess 預設會加 `PIPE_REJECT_REMOTE_CLIENTS`。
+- Windows 引擎啟動：spawn 的 creation_flags 從 `DETACHED_PROCESS` 改成
+  `CREATE_NO_WINDOW`，不再彈出終端機視窗。
+- Windows 設定：捷徑改直連 `jc-settings-ui.exe`，開啟設定不再先冒 terminal。
+  `jc-tip-register settings` 保留為相容入口。
+- Windows 模型頁：移除注音選字模型、Jinen GGUF、日文詞典 pack 三個恆為「已安裝」
+  的狀態列，只保留 Jinen tokenizer。
+- 設定：移除 8 個已失效的設定 UI；`mixed_input` 從 JSON 契約完全移除，舊設定檔
+  的欄位忽略；Shift 單按改送 `Request::Toggle` 切換純英文，回到原本的 Mixed／Ja。
+- 設定 UI：預設值說明從全形空格改成換行顯示，程式跟隨系統主題。
+
 ## 0.1.0-rc.13 - 2026-11-22
 
 ### 修正
