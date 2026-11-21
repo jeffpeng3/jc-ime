@@ -2195,4 +2195,31 @@ gate（三筆全部合完後，本機實測）：
   --target x86_64-pc-windows-msvc` exit 0。
 - 題库：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、
   mixed **6/6**，四個都 exit 0，與 rc.13 完全相同。
-- 本次只 push main 讓 CI 跑，不 bump 版本、不改 CHANGELOG、不打新 tag。
+- 該次只 push main 讓 CI 跑（`404b316..1c3a700`，CI run **44939087098**），
+  沒有當場發版；後續 user 決定發 rc.14，版本與 tag 記在下一節。
+
+## 2026-11-22 03:12 socket-acl-invalid-sid（`2ca24ff` → rebase `edf2530`）
+
+`socket-acl-invalid-sid` 的 parent 是 `adeb66e`，先 rebase 到 `1c3a700` 變成
+`edf2530`，再 ff 合併。rebase 後與 main 的差異只有 4 檔：
+`jc-engine/src/main.rs`、`jc-engine/Cargo.toml`、`Cargo.lock`、`docs/port/transport.md`。
+
+根因：不是 SID 格式。interprocess 2.4.9 的 `SecurityDescriptor::to_owned_sd()`
+複製 group 時誤呼叫 `set_owner`，把 owner 從使用者 SID 覆蓋成 BA 群組；
+群組 SID 不能當 owner，`CreateNamedPipeW` 回 os error 1307，pipe 沒建立，
+TIP 因此一直 spawn。
+
+修法：移除自訂 SDDL，改用 named pipe 預設 DACL。單機單使用者沒有安全損失，
+interprocess 預設會加 `PIPE_REJECT_REMOTE_CLIENTS`。`widestring` 相依一併移除。
+
+gate（合併後，本機實測）：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**
+  （54 targets、**1332 passed、0 failed、1 ignored**，與 rc.13 的 1332 持平，
+  符合只增不減）。
+- `cargo check --workspace --all-targets` exit 0；
+  `cargo clippy --workspace --all-targets -- -D warnings` exit 0；
+  `cargo fmt --all -- --check` exit 0。
+- Windows 目標 `cargo check --workspace --all-targets --exclude jc-cli --exclude jc-settings-ui
+  --target x86_64-pc-windows-msvc` exit 0。
+- 題库：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、
+  mixed **6/6**，四個都 exit 0，與 rc.13 完全相同。
