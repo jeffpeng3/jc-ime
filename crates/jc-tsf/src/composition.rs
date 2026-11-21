@@ -12,8 +12,9 @@ use std::mem::ManuallyDrop;
 use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::mpsc::{channel, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use jc_proto::{CandidateDetail, Key, KeyCode, Request, Response};
 use windows::core::{implement, IUnknown, IUnknownImpl, Interface, Ref, Result, PCWSTR};
@@ -45,6 +46,12 @@ use crate::display;
 use crate::engine::{self, Job, Queue};
 use crate::keys;
 use crate::logging;
+
+/// `OnKillFocus` 到真正放掉 pipe 的寬限期。
+///
+/// Windows 同一個文字框內的點擊常先後送出 `OnKillFocus`、`OnSetFocus`。這段
+/// 時間內只取消斷線，不重建 worker，避免連線風暴。
+const DISCONNECT_GRACE: Duration = Duration::from_millis(120);
 
 /// 私有訊息視窗的 class 名稱。
 const WINDOW_CLASS: &str = "jc-tsf-message-window";
@@ -95,6 +102,107 @@ struct StateData {
     label: Option<String>,
 }
 
+/// UI 執行緒看到的 pipe 連線狀態。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipeState {
+    /// 沒有 worker，也沒有 pipe handle。
+    Off,
+    /// worker 已啟動並持有（或正在取得）pipe。
+    Active,
+    /// 已要求斷開，寬限期還沒到期；pipe 仍由 worker 持有。
+    Draining,
+}
+
+/// [`FocusPipe`] 要求 [`Control`] 做的事。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipeAction {
+    /// 狀態沒變，不用動作。
+    None,
+    /// 建立新的請求通道並啟動 worker。
+    Start,
+    /// 取消進行中的寬限期，保留原本的 worker。
+    Cancel,
+    /// 安排寬限期到期後放掉 worker。
+    Disconnect,
+    /// 立刻放掉 worker（Deactivate）。
+    Stop,
+}
+
+/// focus 事件到 pipe 動作的狀態機。
+///
+/// 只描述 UI 執行緒的意圖，不碰 COM 或 pipe。`OnKillFocus` 緊接 `OnSetFocus`
+/// 時只回 [`PipeAction::Cancel`]，不重新連整條 pipe。
+#[derive(Debug)]
+pub struct FocusPipe {
+    state: PipeState,
+}
+
+impl FocusPipe {
+    /// 尚未連線的初始狀態。
+    pub fn new() -> Self {
+        Self {
+            state: PipeState::Off,
+        }
+    }
+
+    /// 目前的連線狀態。
+    pub fn state(&self) -> PipeState {
+        self.state
+    }
+
+    /// `OnSetFocus`：沒有 worker 就啟動，寬限期內就取消斷線。
+    pub fn focus_gained(&mut self) -> PipeAction {
+        match self.state {
+            PipeState::Off => {
+                self.state = PipeState::Active;
+                PipeAction::Start
+            }
+            PipeState::Active => PipeAction::None,
+            PipeState::Draining => {
+                self.state = PipeState::Active;
+                PipeAction::Cancel
+            }
+        }
+    }
+
+    /// `OnKillFocus`：要求寬限期後放掉 pipe；重複呼叫不做事。
+    pub fn focus_lost(&mut self) -> PipeAction {
+        match self.state {
+            PipeState::Off | PipeState::Draining => PipeAction::None,
+            PipeState::Active => {
+                self.state = PipeState::Draining;
+                PipeAction::Disconnect
+            }
+        }
+    }
+
+    /// `Deactivate`：不論目前狀態為何都確保 worker 被放掉。
+    pub fn deactivate(&mut self) -> PipeAction {
+        let action = if self.state == PipeState::Off {
+            PipeAction::None
+        } else {
+            PipeAction::Stop
+        };
+        self.state = PipeState::Off;
+        action
+    }
+}
+
+impl Default for FocusPipe {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// 目前 worker 的 sender 與它的代號。
+///
+/// 代號用來讓延遲斷線的計時器只關掉它對應的那一代 worker；focus 恢復或
+/// Deactivate 會把代號往前推，舊計時器因此不會誤關新 worker。
+struct ActiveWorker {
+    generation: u64,
+    sender: Option<Sender<Job>>,
+}
+
 /// 文字服務的執行期狀態（UI 執行緒專用）。
 pub struct Control {
     thread_mgr: ITfThreadMgr,
@@ -110,7 +218,13 @@ pub struct Control {
     navigation_armed: Cell<Option<u64>>,
     hwnd: HWND,
     queue: Arc<Queue>,
-    jobs: Sender<Job>,
+    /// 長期的請求通道；候選清單與 `Control` 共用，由 dispatch 執行緒轉送給
+    /// 當前的 engine worker。worker 隨 focus 今生今滅，這條通道不跟著換。
+    bridge_tx: Sender<Job>,
+    /// 目前 worker 的 sender；`None` 代表沒有 worker。
+    active: Arc<Mutex<ActiveWorker>>,
+    /// focus 事件到 pipe 動作的狀態機。
+    pipe: RefCell<FocusPipe>,
     /// 交給 Windows 畫的候選清單；只在 UI 執行緒使用。
     candidate: RefCell<CandidateHost>,
     /// `GUID_DISPLAY_ATTRIBUTE_INPUT` 的 `TfGuidAtom`；`None` 代表底線停用。
@@ -126,12 +240,38 @@ pub struct Control {
 }
 
 impl Control {
-    /// 建立狀態並啟動 worker 執行緒。
+    /// 建立狀態；worker 等到 `OnSetFocus` 才啟動。
     pub fn new(thread_mgr: ITfThreadMgr, client_id: u32) -> Self {
-        let (jobs, receiver) = std::sync::mpsc::channel();
         let queue = Arc::new(Queue::new());
-        let queue_for_worker = Arc::clone(&queue);
-        engine::spawn(receiver, queue_for_worker);
+        let active = Arc::new(Mutex::new(ActiveWorker {
+            generation: 0,
+            sender: None,
+        }));
+
+        // 候選清單持有的是一個普通 `Sender<Job>`；讓 dispatch 執行緒當中介，
+        // worker 隨 focus 結束時只要清掉 `active`，不必改候選清單的型別。
+        let (bridge_tx, bridge_rx) = channel();
+        let active_for_dispatch = Arc::clone(&active);
+        if std::thread::Builder::new()
+            .name("jc-tsf-dispatch".into())
+            .spawn(move || {
+                for job in bridge_rx {
+                    let Ok(active) = active_for_dispatch.lock() else {
+                        continue;
+                    };
+                    let Some(sender) = active.sender.as_ref() else {
+                        logging::debug("pipe 未連線，請求被丟棄");
+                        continue;
+                    };
+                    if sender.send(job).is_err() {
+                        logging::warn("worker 已結束，請求被丟棄");
+                    }
+                }
+            })
+            .is_err()
+        {
+            logging::warn("啟動 dispatch 執行緒失敗");
+        }
 
         // 候選清單一定要從 thread manager 取得；拿不到就只影響候選窗，
         // 組字與提交照常運作。
@@ -155,7 +295,7 @@ impl Control {
         // 滑鼠點選與一般按鍵共用同一個世代計數器與請求通道。
         let generation = Rc::new(Cell::new(0));
         let actions = Rc::new(CandidateActions::new(
-            jobs.clone(),
+            bridge_tx.clone(),
             Rc::clone(&generation),
             Arc::clone(&queue),
         ));
@@ -170,7 +310,9 @@ impl Control {
             navigation_armed: Cell::new(None),
             hwnd: HWND::default(),
             queue,
-            jobs,
+            bridge_tx,
+            active,
+            pipe: RefCell::new(FocusPipe::new()),
             candidate: RefCell::new(CandidateHost::new(ui_manager, actions)),
             display_atom,
             sink_state,
@@ -204,6 +346,102 @@ impl Control {
             return Err(error);
         }
         Ok(control)
+    }
+
+    /// `OnSetFocus`：清掉舊 context，並確保 engine worker 已啟動、pipe 已連線。
+    pub fn on_focus_changed(&self) {
+        self.clear_focus_state();
+        let action = self.pipe.borrow_mut().focus_gained();
+        // 寬限期已到期時 worker 的 sender 會是 None；此時 Cancel 沒有對象，
+        // 必須改成重新啟動，否則焦點回來後永遠不再連 pipe。
+        let action = if action == PipeAction::Cancel && !self.has_active_worker() {
+            PipeAction::Start
+        } else {
+            action
+        };
+        self.apply_pipe_action(action);
+    }
+
+    /// `OnKillFocus`：清掉組字，並安排寬限期後放掉 worker 與 pipe。
+    pub fn on_focus_lost(&self) {
+        self.clear_focus_state();
+        let action = self.pipe.borrow_mut().focus_lost();
+        self.apply_pipe_action(action);
+    }
+
+    /// 目前是否還有 worker 持有請求通道。
+    fn has_active_worker(&self) -> bool {
+        self.active
+            .lock()
+            .map(|active| active.sender.is_some())
+            .unwrap_or(false)
+    }
+
+    /// 執行 [`FocusPipe`] 的決定。
+    fn apply_pipe_action(&self, action: PipeAction) {
+        match action {
+            PipeAction::None => {}
+            PipeAction::Start => self.start_engine_worker(),
+            PipeAction::Cancel => self.cancel_disconnect(),
+            PipeAction::Disconnect => self.schedule_disconnect(),
+            PipeAction::Stop => self.stop_engine_worker(),
+        }
+    }
+
+    /// 建立新的請求通道並啟動 engine worker；worker 自己會連 pipe。
+    fn start_engine_worker(&self) {
+        let (sender, receiver) = channel();
+        if let Ok(mut active) = self.active.lock() {
+            active.generation = active.generation.wrapping_add(1);
+            active.sender = Some(sender);
+        }
+        // 不帶 join handle：worker 結束時自己會把 `Queue` 標成未連線。
+        engine::spawn(receiver, Arc::clone(&self.queue));
+        logging::debug("OnSetFocus：已啟動引擎 worker");
+    }
+
+    /// 取消進行中的寬限期；worker 與 pipe 保持不變。
+    fn cancel_disconnect(&self) {
+        if let Ok(mut active) = self.active.lock() {
+            active.generation = active.generation.wrapping_add(1);
+        }
+        logging::debug("OnSetFocus：取消前一次的 OnKillFocus，保留引擎 pipe");
+    }
+
+    /// 延遲放掉 worker；同一文字框內立刻回來的 focus 會讓計時器失效。
+    fn schedule_disconnect(&self) {
+        let generation = match self.active.lock() {
+            Ok(active) => active.generation,
+            Err(error) => {
+                logging::warn(format!("讀取 active worker 失敗：{error}"));
+                return;
+            }
+        };
+        let active = Arc::clone(&self.active);
+        let spawned = std::thread::Builder::new()
+            .name("jc-tsf-disconnect".into())
+            .spawn(move || {
+                std::thread::sleep(DISCONNECT_GRACE);
+                if let Ok(mut active) = active.lock() {
+                    if active.generation == generation {
+                        active.sender = None;
+                        logging::debug("OnKillFocus：寬限期到期，已釋放引擎 pipe");
+                    } else {
+                        logging::debug("OnKillFocus：已取消，保留引擎 pipe");
+                    }
+                }
+            });
+        if spawned.is_err() {
+            logging::warn("啟動延遲斷線計時器失敗，過期請求不會被清理");
+        }
+    }
+
+    /// 立刻放掉 worker；`Deactivate` 與 `Drop` 用它確保 pipe 最終會釋放。
+    fn stop_engine_worker(&self) {
+        if let Ok(mut active) = self.active.lock() {
+            active.generation = active.generation.wrapping_add(1);
+            active.sender = None;
+        }
     }
 
     /// 是否正在組字（有 `preedit` 或有候選）。
@@ -261,7 +499,7 @@ impl Control {
     }
 
     /// 焦點換到別的文件：丟掉舊 context 與組字，並清掉引擎裡殘留的狀態。
-    pub fn on_focus_changed(&self) {
+    fn clear_focus_state(&self) {
         let was_composing = self.composing();
         self.composition.replace(None);
         self.context.replace(None);
@@ -336,6 +574,14 @@ impl Control {
 
     /// 停止 worker 與 sink；訊息視窗在 [`Drop`] 收掉。
     pub fn shutdown(&mut self) {
+        // Deactivate 必須確保 pipe 一定放掉，不論現在是不是在寬限期內。
+        logging::debug(format!(
+            "Deactivate：pipe 狀態 {:?}",
+            self.pipe.borrow().state()
+        ));
+        let action = self.pipe.borrow_mut().deactivate();
+        self.apply_pipe_action(action);
+
         // SAFETY: 這兩個 sink 都是在 Activate 時註冊的，只有這裡會反註冊。
         // 把反註冊的 HRESULT 也記下來：下一次同 id 重新 Activate 若失敗，
         // 就能從 log 判斷是這裡沒清乾淨，還是 msctf 自己還留著 sink。
@@ -574,10 +820,10 @@ impl Control {
         });
     }
 
-    /// 丟給 worker；worker 已經結束時只記日誌。
+    /// 丟給 dispatch 執行緒；它會轉送給當前的 worker。
     fn send(&self, job: Job) {
-        if self.jobs.send(job).is_err() {
-            logging::warn("worker 已結束，請求被丟棄");
+        if self.bridge_tx.send(job).is_err() {
+            logging::warn("dispatch 已結束，請求被丟棄");
         }
     }
 
@@ -795,6 +1041,8 @@ impl Control {
 
 impl Drop for Control {
     fn drop(&mut self) {
+        // 萬一沒走 Deactivate 就要被釋放，也要先把 worker 的 sender 清掉。
+        self.stop_engine_worker();
         self.sink_state.detach();
         self.queue.attach(0);
         self.candidate.borrow_mut().end();
@@ -1054,6 +1302,46 @@ unsafe extern "system" fn window_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Activate 不連；OnSetFocus 連；OnKillFocus 後立刻回來只取消，不重連；
+    /// Deactivate 確保放掉。
+    #[test]
+    fn focus_pipe_connects_once_and_releases_on_deactivate() {
+        let mut pipe = FocusPipe::new();
+        assert_eq!(pipe.state(), PipeState::Off);
+
+        // Activate 本身沒有任何 pipe 動作。
+        assert_eq!(pipe.focus_gained(), PipeAction::Start);
+        assert_eq!(pipe.state(), PipeState::Active);
+        // 同一個文字框再收到一次 set focus，不重複連線。
+        assert_eq!(pipe.focus_gained(), PipeAction::None);
+        assert_eq!(pipe.state(), PipeState::Active);
+
+        assert_eq!(pipe.focus_lost(), PipeAction::Disconnect);
+        assert_eq!(pipe.state(), PipeState::Draining);
+        assert_eq!(pipe.focus_lost(), PipeAction::None);
+        assert_eq!(pipe.state(), PipeState::Draining);
+
+        // 寬限期內的 OnSetFocus 只取消斷線。
+        assert_eq!(pipe.focus_gained(), PipeAction::Cancel);
+        assert_eq!(pipe.state(), PipeState::Active);
+
+        assert_eq!(pipe.deactivate(), PipeAction::Stop);
+        assert_eq!(pipe.state(), PipeState::Off);
+        assert_eq!(pipe.deactivate(), PipeAction::None);
+    }
+
+    /// 從 Draining 直接 Deactivate 也要收斂到 Off，之後仍能重新啟動。
+    #[test]
+    fn focus_pipe_deactivate_from_draining_stops() {
+        let mut pipe = FocusPipe::new();
+        assert_eq!(pipe.focus_gained(), PipeAction::Start);
+        assert_eq!(pipe.focus_lost(), PipeAction::Disconnect);
+        assert_eq!(pipe.state(), PipeState::Draining);
+        assert_eq!(pipe.deactivate(), PipeAction::Stop);
+        assert_eq!(pipe.state(), PipeState::Off);
+        assert_eq!(pipe.focus_gained(), PipeAction::Start);
+    }
 
     #[test]
     fn composing_needs_preedit_or_candidates() {
