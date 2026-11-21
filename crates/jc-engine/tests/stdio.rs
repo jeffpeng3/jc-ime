@@ -16,8 +16,12 @@ struct EngineProcess {
 
 impl EngineProcess {
     fn spawn() -> Self {
+        // 這些協定測試拿單一注音鍵當組字輸入；Mixed 模式會多出 literal 候選，
+        // 明確用 Zh 模式執行，保留原本的 State 與提交語意。
         let mut child = Command::new(env!("CARGO_BIN_EXE_jc-engine"))
             .arg("--allow-empty-data")
+            .arg("--mode")
+            .arg("zh")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

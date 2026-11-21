@@ -21,8 +21,12 @@ struct SocketEngine {
 
 impl SocketEngine {
     fn spawn(path: PathBuf) -> Self {
+        // 這筆用單一注音鍵驗證 session 隔離；Mixed 模式會多出 literal 候選，
+        // 明確用 Zh 模式執行，保留原本「未完成的注音沒有候選」的語意。
         let child = Command::new(env!("CARGO_BIN_EXE_jc-engine"))
             .arg("--allow-empty-data")
+            .arg("--mode")
+            .arg("zh")
             .arg("--socket")
             .arg(&path)
             .stdin(Stdio::null())

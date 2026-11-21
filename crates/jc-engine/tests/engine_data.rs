@@ -91,7 +91,14 @@ fn engine_converts_zhuyin_with_data() {
         return;
     };
     let root = root.into_os_string();
-    let mut child = spawn(&[std::ffi::OsStr::new("--data"), &root]);
+    // 這筆驗證注音轉出的候選清單；Mixed 模式會直接轉出文字但不列候選，
+    // 所以明確用 Zh 模式執行，不要靠已改成 mixed 的預設。
+    let mut child = spawn(&[
+        std::ffi::OsStr::new("--data"),
+        &root,
+        std::ffi::OsStr::new("--mode"),
+        std::ffi::OsStr::new("zh"),
+    ]);
     let mut output = hello(&mut child);
     press(&mut child, &mut output, "ji3");
     let snapshot = state(&mut child, &mut output);

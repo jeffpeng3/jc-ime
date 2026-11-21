@@ -56,7 +56,7 @@ fn print_settings_without_file_reports_defaults() {
     assert!(output.status.success(), "{output:?}");
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["settings_state"], "missing");
-    assert_eq!(value["mode"], "zh");
+    assert_eq!(value["mode"], "mixed");
     assert_eq!(value["neural"], true);
     assert_eq!(value["punct_mark"], serde_json::Value::Null);
 }
@@ -72,7 +72,7 @@ fn corrupt_settings_prints_warning_and_defaults() {
     );
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["settings_state"], "corrupt");
-    assert_eq!(value["mode"], "zh");
+    assert_eq!(value["mode"], "mixed");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("使用預設值"),
