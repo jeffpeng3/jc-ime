@@ -1,29 +1,44 @@
-//! `jc-tsf-next`：0c `session.rs` 的移植與 jc State → 0c Snapshot 轉換層。
+//! `jc-tsf-next`：照 0c 架構完整重做 TSF 的外殼。
 //!
-//! 這是 T1 的 adapter spike。範圍只有三件事：
+//! 目前階段（T6）已具備：T1a 的 `session` 與 State→Snapshot 轉換層、T1b 的
+//! `ipc`／`keys`、T5 的 `edit`、T7a 的 `privacy`，以及本階段的 `service`（TIP
+//! 狀態機、Present、兩條 su 硬要求）與 `langbar`（完整 ITfLangBarItemButton）。
 //!
-//! 1. 把 0c 的 `Snapshot`、`Session` 狀態機、generation、log 重播、
-//!    `restore_requests`、3 次重試加 20ms 等待原樣搬過來。
-//! 2. `open_request` 改成 jc 的 `hello{protocol:3, client}`。
-//! 3. 在 0c 的 `parse()` 之前，把 jc `Response::State` 轉成 0c snapshot 的
-//!    JSON 形狀，讓移植過來的 `parse()` 不必改。
-//!
-//! 不碰 TSF、不碰註冊、不碰 jc-engine。IPC 透過 [`Transport`] 抽象；
-//! T2 再提供 windows-rs 0.62 的 overlapped I/O 實作。
+//! 非 Windows 平台只編 `session` 與 `log`，讓 Linux CI 的 `cargo check --workspace`
+//! 不被 Windows API 擋住。真正的 DLL 註冊與 COM 工廠仍在舊 `jc-tsf` crate。
 
 pub mod session;
 
-// T1b 移植的 Win32 IPC client 與按鍵對照表，以及 T5 移植的 edit session。
-// Linux host 上不編這幾塊，讓 `cargo check --workspace` 不被 Windows API 擋住。
+/// 診斷紀錄、COM 邊界 `guarded`、物件計數。T7a 的過渡實作在 T6 改接這裡。
+pub mod log;
+
+// 讓移植自 0c 的模組維持 `crate::guarded()` / `crate::object_created()` 的寫法。
+#[cfg(windows)]
+#[allow(unused_imports)]
+pub(crate) use log::{guarded, object_created, object_destroyed};
+
+#[cfg(windows)]
+pub mod caret;
+#[cfg(windows)]
+pub mod context;
+#[cfg(windows)]
+pub mod displayattr;
 #[cfg(windows)]
 pub mod edit;
+#[cfg(windows)]
+pub mod guids;
 #[cfg(windows)]
 pub mod ipc;
 #[cfg(windows)]
 pub mod keys;
-// T7a 移植的欄位政策：三態、密碼／PIN 擋下、無痕／私密標記、Accessible 探測不讀文件文字。
+#[cfg(windows)]
+pub mod langbar;
+#[cfg(windows)]
+pub mod msctf;
 #[cfg(windows)]
 pub mod privacy;
+#[cfg(windows)]
+pub mod service;
 
 pub use session::{
     response_to_reply, state_to_snapshot_value, to_jc_request, Client, Mode, Segment, Session,

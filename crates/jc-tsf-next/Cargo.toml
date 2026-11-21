@@ -10,6 +10,8 @@ description = "0c session.rs 移植與 jc State → 0c Snapshot 轉換層（adap
 serde = { workspace = true }
 serde_json = { workspace = true }
 jc-proto = { path = "../jc-proto" }
+# log.rs 在非 Windows 也要用到 windows_core 的 Result／HRESULT 型別。
+windows-core = "0.62"
 
 # session.rs 本身不直接呼叫 Win32；真正的 overlapped I/O Client 是 T2 的範圍。
 # 這裡先固定 jc 使用的 0.62，T2 在 Transport 實作中使用。
@@ -24,10 +26,12 @@ windows = { version = "0.62", features = [
   "Win32_Storage_FileSystem",
   # edit.rs 的 VARIANT 被 cfg(all(Com, Ole, Variant)) 擋住，三個都要開。
   "Win32_System_Com",
+  "Win32_System_Diagnostics_Debug",
   "Win32_System_IO",
   "Win32_System_LibraryLoader",
   "Win32_System_Ole",
   "Win32_System_Pipes",
+  "Win32_System_Registry",
   "Win32_System_Threading",
   "Win32_System_SystemInformation",
   "Win32_System_Variant",
@@ -40,4 +44,3 @@ windows = { version = "0.62", features = [
   # 以及 host tests 的 CreateWindowExW／GetGUIThreadInfo／ClientToScreen。
   "Win32_UI_WindowsAndMessaging",
 ] }
-windows-core = "0.62"

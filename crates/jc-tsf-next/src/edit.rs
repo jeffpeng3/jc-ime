@@ -28,28 +28,9 @@ use windows_core::{implement, ComObject, Interface, HRESULT};
 
 use crate::session::Snapshot;
 
-/// adapter spike 不帶檔案 I/O：保留呼叫點，不產生輸出。T6 再接到 `logging`。
-macro_rules! zlog {
-    ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }};
-}
-macro_rules! zdebug {
-    ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }};
-}
-
-/// COM 物件計數。新 crate 還沒有 DLL 生命週期管理，T6 接到 `lib.rs` 的 LIVE_OBJECTS。
-fn object_created() {}
-fn object_destroyed() {}
-
-/// 攔截 panic：COM 邊界不得 unwind。與 0c `lib.rs::guarded` 行為相同。
-fn guarded<T, F: FnOnce() -> windows_core::Result<T>>(what: &str, f: F) -> windows_core::Result<T> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-        Ok(r) => r,
-        Err(_) => {
-            zlog!("panic 已攔截：{}", what);
-            Err(windows::Win32::Foundation::E_FAIL.into())
-        }
-    }
-}
+// T6：diagnostic log、物件計數與 COM 邊界的 guarded 已提升到 crate 層，
+// 與 service.rs／langbar.rs／privacy.rs 共用同一份 LIVE_OBJECTS 與 tsf.log。
+use crate::log::{guarded, object_created, object_destroyed, zdebug, zlog};
 
 /// 顯示屬性的最小定義。0c 放在 `displayattr.rs`；T7 才註冊真正的七種 GUID 與樣式，
 /// 這裡先保留種類與 `style_ranges`，讓 commit／preedit 的寫入順序能原樣移植。
@@ -300,7 +281,8 @@ pub struct Locate {
     ctx: ITfContext,
     composition: Option<ITfComposition>,
     cursor: usize,
-    done: Box<dyn Fn(Located)>,
+    /// FnOnce 只能呼叫一次：host 可能同步或非同步執行 edit session，用 Option 取出。
+    done: RefCell<Option<Box<dyn FnOnce(Located)>>>,
 }
 
 impl Drop for Locate {
@@ -313,7 +295,9 @@ impl ITfEditSession_Impl for Locate_Impl {
     fn DoEditSession(&self, ec: u32) -> windows_core::Result<()> {
         guarded("Locate", || {
             let located = unsafe { locate(&self.ctx, ec, self.composition.as_ref(), self.cursor) };
-            (self.done)(located);
+            if let Some(done) = self.done.borrow_mut().take() {
+                done(located);
+            }
             Ok(())
         })
     }
@@ -327,14 +311,14 @@ pub(crate) fn request_locate(
     client_id: u32,
     composition: Option<ITfComposition>,
     cursor: usize,
-    done: Box<dyn Fn(Located)>,
+    done: Box<dyn FnOnce(Located)>,
 ) -> windows_core::Result<()> {
     object_created();
     let es: ITfEditSession = ComObject::new(Locate {
         ctx: ctx.clone(),
         composition,
         cursor,
-        done,
+        done: RefCell::new(Some(done)),
     })
     .into_interface();
     let hr = unsafe { ctx.RequestEditSession(client_id, &es, TF_ES_ASYNCDONTCARE | TF_ES_READ) }?;
