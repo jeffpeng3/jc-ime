@@ -7,8 +7,9 @@
     產生資料 manifest → 暫存 payload（程式、資料、授權文件）→ wix build → 選用簽章。
 
     版本號取自 workspace Cargo.toml 的 [workspace.package] version，可以是
-    pre-release（例如 0.1.0-rc.1）。MSI 的 ProductVersion 只接受 x.y.z，所以
-    另外用 -MsiVersion 指定；沒給時由完整版本去掉 -pre-release 推導。MSI 檔名
+    pre-release（例如 0.1.0-rc.1）。MSI 的 ProductVersion 用四段 x.y.z.N，
+    N 是 rc 序號（正式版為 0），例如 0.1.0-rc.9 推出 0.1.0.9。Windows Installer
+    比較版本只看前三段，所以 WXS 的 AllowSameVersionUpgrades 必須保持 yes。MSI 檔名
     一律用完整版本，例如 jc-ime-0.1.0-rc.1-x64.msi。
 
     安裝包同時帶兩個架構的 TSF 文字服務：x64 的 jc-tsf.dll 與 i686 的
@@ -35,16 +36,17 @@
     shipped: false 下載項 URL 的情況。預設讀 JC_DATA_MANIFEST。
 
 .PARAMETER MsiVersion
-    MSI 的 ProductVersion，必須是 x.y.z。預設讀 JC_MSI_VERSION；兩者都沒給時由
-    完整版本推導，也就是去掉 `-rc.1` 這類 pre-release 後綴。只用於 MSI 內部
-    版本與升級判斷，檔名與顯示版本仍是完整版本。
+    MSI 的 ProductVersion，x.y.z 或 x.y.z.N。預設讀 JC_MSI_VERSION；兩者都沒給時
+    由完整版本推導：正式版是 x.y.z.0，x.y.z-rc.N 是 x.y.z.N。給三段時會補上從
+    完整版本推出的 rc 序號，方便既有 CI 只傳 x.y.z。只用於 MSI 內部版本與升級
+    判斷，檔名與顯示版本仍是完整版本。
 
 .EXAMPLE
     .\installer\build.ps1 -DataRoot Z:\mnt\work\jc\jc-ime-data
 
 .EXAMPLE
-    # Cargo.toml 是 0.1.0-rc.1：MSI ProductVersion 0.1.0，檔名含 -rc.1。
-    .\installer\build.ps1 -DataRoot Z:\mnt\work\jc\jc-ime-data -MsiVersion 0.1.0
+    # Cargo.toml 是 0.1.0-rc.1：MSI ProductVersion 0.1.0.1，檔名含 -rc.1。
+    .\installer\build.ps1 -DataRoot Z:\mnt\work\jc\jc-ime-data -MsiVersion 0.1.0.1
 #>
 
 # 說明區塊必須是檔案的第一個元素，Get-Help 才讀得到，所以 #Requires 放在它
@@ -177,7 +179,7 @@ if (-not (Test-Path $DataRoot)) {
 }
 
 # 版本：只認 workspace.package 的 version。完整版本可以有 pre-release 後綴，
-# 例如 0.1.0-rc.1；MSI ProductVersion 另外處理。
+# 例如 0.1.0-rc.1；MSI ProductVersion 用四段，第四段是 rc 序號。
 $match = Select-String -Path (Join-Path $Root 'Cargo.toml') -Pattern '^version\s*=\s*"([^"]+)"' -List
 if (-not $match) { throw 'Cargo.toml 找不到 [workspace.package] version' }
 $Version = $match.Matches[0].Groups[1].Value
@@ -185,11 +187,25 @@ if ($Version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
     throw "版本必須是 x.y.z 或 x.y.z-<pre-release>（Cargo.toml 是 $Version）。"
 }
 
-if (-not $MsiVersion) {
-    $MsiVersion = ($Version -split '-', 2)[0]
+$versionParts = $Version -split '-', 2
+$rcNumber = 0
+if ($versionParts.Count -gt 1) {
+    if ($versionParts[1] -match '^rc\.(\d+)$') {
+        $rcNumber = [int]$matches[1]
+    } else {
+        throw "不支援的 pre-release：$($versionParts[1])。目前只認 rc.<序號>（Cargo.toml 是 $Version）。"
+    }
 }
-if ($MsiVersion -notmatch '^\d+\.\d+\.\d+$') {
-    throw "MSI ProductVersion 必須是 x.y.z（目前是 $MsiVersion）；pre-release 後綴只留在檔名與顯示版本。"
+
+# CI 到這裡仍只傳三段；補上 rc 序號，讓 ProductVersion 在相鄰 rc 之間不同。
+if (-not $MsiVersion) {
+    $MsiVersion = $versionParts[0]
+}
+if ($MsiVersion -match '^\d+\.\d+\.\d+$') {
+    $MsiVersion = "$MsiVersion.$rcNumber"
+}
+if ($MsiVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+    throw "MSI ProductVersion 必須是 x.y.z 或 x.y.z.n（目前是 $MsiVersion）；pre-release 後綴只留在檔名與顯示版本。"
 }
 Write-Host "==> 發佈版本 $Version（MSI ProductVersion $MsiVersion）"
 
