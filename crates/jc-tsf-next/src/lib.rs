@@ -24,6 +24,8 @@ pub mod context;
 #[cfg(windows)]
 pub mod displayattr;
 #[cfg(windows)]
+pub mod dll;
+#[cfg(windows)]
 pub mod edit;
 #[cfg(windows)]
 pub mod guids;
