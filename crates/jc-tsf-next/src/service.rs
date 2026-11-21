@@ -1686,3 +1686,16 @@ fn foreground_pid() -> u32 {
     unsafe { GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid)) };
     pid
 }
+
+// T8a host 測試：要注入 TextService 的私有 State 與假文件，必須是 service 的子模組。
+#[cfg(all(test, windows))]
+#[path = "t8a_support.rs"]
+mod support;
+
+#[cfg(all(test, windows))]
+#[path = "focus_host_tests.rs"]
+mod focus_host_tests;
+
+#[cfg(all(test, windows))]
+#[path = "imm32_order_tests.rs"]
+mod imm32_order_tests;

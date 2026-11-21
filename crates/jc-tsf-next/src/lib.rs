@@ -50,3 +50,6 @@ pub use session::{
 pub mod cuas;
 #[cfg(windows)]
 pub mod uielement;
+
+// T8a 的 host 測試模組宣告在 service.rs 末端：它們要注入 TextService 的私有 State，
+// 必須是 service 模組的子模組（見 service.rs 的 #[cfg(test)] #[path] mod 宣告）。
