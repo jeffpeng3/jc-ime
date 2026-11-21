@@ -2025,3 +2025,30 @@ gate：
 - linux (core)：success；windows (msvc)：success；check-tag：success。
 - build-linux／build-windows／publish：skipped（main scope，標籤流程才會跑）。
   本機全 workspace Windows clippy 卡在 `ring` 的 C 工具鏈，CI windows job 已驗證通過。
+
+## 2026-11-21 09:10 focus-pipe（`7e38a14` → rebase `683735f` → `18741be`）與 settings-default-file 修正（`51422c9` → rebase `15828cc` → `9cc1ab5`）
+
+### focus-pipe
+
+把引擎 pipe 連線從 Activate 移到 focus 事件：Activate 只建訊息視窗與註冊 sink；
+`OnSetFocus` 才 spawn worker 連 pipe；`OnKillFocus` 排 120ms 寬限期後釋放；
+`Deactivate` 立刻清 sender。用狀態機吸收重複事件，`pending_focus` 處理 focus 早於 Activate。
+Scope 只有 `jc-tsf/src/lib.rs`、`composition.rs`、`jc-tsf-smoke/src/checks.rs` 與兩份文件，
+沒碰 `engine.rs`、`pipe_name.rs`、supervisor、`Cargo.toml`、CI、版本號、catalog。
+
+合併後第一次完整 test 是 1317 passed、6 failed：五個已知的 `settings-default-file` 整合測試失敗，
+加上 `supervise::tests::second_supervisor_is_rejected_by_lock` 鎖檔 flake。該 flake 單獨跑 1 passed，
+第二次全量 **1318 passed、5 failed**，五筆都在同樣的 `jc-engine` 整合測試，focus-pipe 沒有新增失敗。
+
+### settings-default-file 修正
+
+修正 mixed 預設導致的五筆 `jc-engine` 整合測試：`engine_data.rs`／`socket.rs`／`stdio.rs`
+明確指定 `--mode zh`，`settings.rs` 兩筆期望 zh→mixed。保留原本 state／提交語意，沒有弱化測試。
+
+gate（合併後）：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**
+  （54 targets、**1323 passed、0 failed、1 ignored**）。
+- `cargo check --workspace --all-targets` exit 0；clippy exit 0；fmt exit 0。
+- Windows 目標 `cargo check -p jc-tsf -p jc-tsf-smoke --all-targets --target x86_64-pc-windows-msvc` exit 0。
+- 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- **不 push**：`transport-unified` 還在跑，等它完成後一次 push 並回收所有 worktree。
