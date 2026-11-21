@@ -4,6 +4,22 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.10 - 2026-11-21
+
+### 修正
+
+- Windows 打字：引擎自動啟動改用 `--supervise`，讓引擎開啟 named pipe 並在子行程
+  結束時自動重啟。rc.9 拿掉固定 `--socket` 後引擎退回 stdio，完全不開 pipe，
+  TSF 連不上，按鍵全部放行成英文。
+- Windows 打字：注音資料包補上 `build-zh/manifest.json`。引擎的 `Bundle::open()`
+  必須讀它驗證 `lexicon.bin`／`lm.bin`，缺檔會讓引擎啟動失敗。
+- Windows 安裝：MSI `ProductVersion` 第四段帶 rc 序號（`0.1.0.10`），PackageCode
+  每次建置自動產生，rc 版可以直接覆蓋安裝，不必先解除卸載。
+- 注音選字模型：Funmula `0c-sequence-d512` 的 Q8_0 GGUF（33.9 MB）與
+  `vocab.json`、兩份模型 manifest 隨 MSI 散布。MIT 授權允許散布，授權全文
+  `MIT-Funmula.txt` 已在 MSI。原先的 ONNX 下載項移除，安裝後立即有模型選字，
+  無需用戶端下載或轉換。
+
 ## 0.1.0-rc.9 - 2026-11-21
 
 ### 修正
