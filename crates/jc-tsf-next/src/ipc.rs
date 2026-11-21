@@ -7,8 +7,9 @@
 //!   也不流經 `interprocess::SecurityDescriptor::deserialize`（see [`PIPE_SDDL_TEMPLATE`]）。
 //! - **spawn 保留 jc 做法**：用 [`std::process::Command::args()`] 而不是 0c 的字串
 //!   組法，用 `CREATE_NO_WINDOW` 而不是 `DETACHED_PROCESS`（see [`spawn_engine`]）。
-//! - **pipe 名稱改用 jc 的** `jc-ime-<RID>`，不再用 0c 的 `0c-<SID>`／`zuin-<SID>`；
+//! - **pipe 名稱用平行建置的新前綴** `jc-ime-next-<RID>`，與舊版 `jc-ime-<RID>` 隔開；
 //!   boundary 由 [`server_pipe`] 決定，呼叫端也能用 [`Client::with_pipe`] 覆寫。
+//!   資料格式維持 4-byte LE + JSON，回退後舊引擎讀得到同一份語料。
 //! - 0c 的 `engine.json`／installer 版本目錄解析（`dll_dir`、`engine_dir`、
 //!   `programs_dir`）依重做計畫捨棄，改由 adapter 用 [`Client::set_engine_command`]
 //!   注入已解析好的引擎執行檔與 argv。
@@ -62,10 +63,12 @@ pub const RESTART_WAIT: Duration = Duration::from_secs(5);
 /// 單一訊框上限：與 `jc_proto::frame::DEFAULT_MAX_FRAME` 相同（1 MiB）。
 pub const MAX_FRAME: u32 = jc_proto::frame::DEFAULT_MAX_FRAME as u32;
 
-/// pipe 名稱前綴，與 `jc_windows::BASE_PIPE_NAME` 一致。平行建置改這裡避開舊引擎。
-pub const PIPE_PREFIX: &str = "jc-ime";
-/// 覆寫 pipe 名稱的環境變數，與 `jc_windows::PIPE_ENV` 一致。
-pub const PIPE_ENV: &str = "JC_IME_PIPE";
+/// 新版 DLL 的 pipe 前綴。定義在 `guids.rs`，與新 CLSID／描述同一份來源。
+pub const PIPE_PREFIX: &str = crate::guids::PIPE_PREFIX_NEXT;
+/// 舊版已發行的前綴；只給 rollback 與對照用，新版 TIP 不連它。
+pub const OLD_PIPE_PREFIX: &str = crate::guids::PIPE_PREFIX_OLD;
+/// 新版 TIP 專用的覆寫變數；不讀舊版 `JC_IME_PIPE`，避免舊引擎覆寫洩漏到新版。
+pub const PIPE_ENV: &str = crate::guids::NEXT_PIPE_ENV;
 
 /// 與 0c `transport_windows.go:76` 逐字相同的 SDDL；`{SID}` 由目前使用者的 SID 代入。
 ///
@@ -122,9 +125,9 @@ pub fn user_sid() -> Option<String> {
 
 /// 引擎 pipe 的完整 Win32 路徑：`\\.\pipe\<name>`。
 ///
-/// 名稱解析順序同 `jc_windows::resolve_pipe_name`：`JC_IME_PIPE` 覆寫 > SID 最後一段
-/// （`jc-ime-<RID>`）> 共用名稱 `jc-ime`。取不到 SID 時退回共用名稱，由 T9 的平行建置
-/// 決定是否換新前綴。
+/// T9 平行建置用新前綴解析： [`PIPE_ENV`]（`JC_IME_NEXT_PIPE`）覆寫 > SID 最後一段
+/// （`jc-ime-next-<RID>`）> `jc-ime-next`。不讀舊版 `JC_IME_PIPE`，所以舊版引擎的
+/// 覆寫值不會把新版 TIP 導到舊 pipe。資料格式仍是 4-byte LE + JSON，與舊版共用。
 pub fn server_pipe() -> String {
     let name = env::var_os(PIPE_ENV)
         .map(|v| v.to_string_lossy().into_owned())
@@ -133,17 +136,19 @@ pub fn server_pipe() -> String {
             user_sid().and_then(|sid| {
                 let rid = sid.rsplit('-').next().unwrap_or_default();
                 (!rid.is_empty() && rid.bytes().all(|b| b.is_ascii_digit()))
-                    .then(|| format!("{PIPE_PREFIX}-{rid}"))
+                    .then(|| crate::guids::next_engine_pipe(rid))
             })
         })
         .unwrap_or_else(|| PIPE_PREFIX.to_string());
     format!(r"\\.\pipe\{name}")
 }
 
-/// 相容用舊管道名稱。jc 沒有 0c 的 `zuin-server`，預設不連；adapter 可用
-/// [`Client::with_legacy_pipe`] 明確指定。
+/// 舊版管道名稱，只供對照與 rollback 文件使用。
+///
+/// jc 沒有 0c 的 `zuin-server`，新版 adapter 預設不連舊引擎；若要過渡期連它，
+/// 用 [`Client::with_legacy_pipe`] 明確指定這個值。
 pub fn legacy_server_pipe() -> String {
-    format!(r"\\.\pipe\{PIPE_PREFIX}-legacy")
+    format!(r"\\.\pipe\{OLD_PIPE_PREFIX}-legacy")
 }
 
 /// 引擎執行檔與 argv，由 adapter（T1a／session）解析後注入。

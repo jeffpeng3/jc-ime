@@ -38,6 +38,9 @@ pub type ConnId = u64;
 /// stdio 與直接使用 [`Engine::handle`] 的呼叫端所用的連線 id。
 pub const DEFAULT_CONN: ConnId = 0;
 
+/// 個人學習資料的預設檔名前綴；已發行的舊引擎用這個值。
+pub const DEFAULT_PERSONAL_PREFIX: &str = "personal";
+
 /// 中斷一條連線的回呼。drain／shutdown 時由 watcher 跨連線廣播。
 ///
 /// Unix 端呼叫 `shutdown(fd, SHUT_RDWR)`，Windows 端呼叫 `CancelIoEx`，
@@ -145,6 +148,8 @@ pub struct Connection {
     shared: Arc<Mutex<Registry>>,
     conn: ConnId,
     personal_dir: Option<PathBuf>,
+    /// 個人資料檔名前綴，跟著連線進 worker。
+    personal_prefix: String,
 }
 
 impl Connection {
@@ -161,6 +166,7 @@ impl Connection {
             hello: false,
             close_connection: false,
             personal_dir: self.personal_dir,
+            personal_prefix: self.personal_prefix,
         }
     }
 
@@ -179,6 +185,8 @@ pub struct Engine {
     close_connection: bool,
     /// 個人資料存檔目錄；`None`（stdio／測試）時不存檔。
     personal_dir: Option<PathBuf>,
+    /// 個人資料檔名前綴；平行建置用不同前綴避免新舊互寫。
+    personal_prefix: String,
 }
 
 impl Default for Engine {
@@ -212,7 +220,17 @@ impl Engine {
             hello: false,
             close_connection: false,
             personal_dir,
+            personal_prefix: DEFAULT_PERSONAL_PREFIX.to_string(),
         }
+    }
+
+    /// 設定個人資料檔名前綴；不改變資料根目錄，只讓新舊引擎各寫各的檔。
+    ///
+    /// 預設是 `"personal"`（`personal-<id>.json`）。新版引擎用 `--personal-prefix
+    /// personal-next` 呼叫它，存成 `personal-next-<id>.json`，回退後舊引擎讀不到也不會
+    /// 覆寫新版資料。必須在 `accept()` 之前呼叫。
+    pub fn set_personal_prefix(&mut self, prefix: impl Into<String>) {
+        self.personal_prefix = prefix.into();
     }
 
     /// 用指定的工作階段建立引擎；session 裝在預設連線上，id 為 1。
@@ -251,6 +269,7 @@ impl Engine {
             shared: Arc::clone(&self.shared),
             conn,
             personal_dir: self.personal_dir.clone(),
+            personal_prefix: self.personal_prefix.clone(),
         }
     }
 
@@ -705,18 +724,21 @@ impl Engine {
         }
     }
 
-    /// 個人資料取捨：每 session 一份 store，各自存到 `personal-<id>.json`。
+    /// 個人資料取捨：每 session 一份 store，各自存到 `<前綴>-<id>.json`。
     ///
     /// `jc_core::Session` 自有 `PersonalStore`，沒有 merge API，T4 也不能改
     /// jc-core，因此不共享、不 last-writer-wins，沒有覆寫別人資料的風險。
-    /// 限制是個人學習不跨 session／跨行程合併，重開引擎不讀回 `personal-<id>`，
+    /// 限制是個人學習不跨 session／跨行程合併，重開引擎不讀回舊檔，
     /// 合併與載入留給後續任務。ResetPersonal 重建 session 並立刻寫入空白檔。
+    ///
+    /// T9 平行建置：前綴預設是 `personal`，新版引擎用 `personal-next`，
+    /// 兩個引擎共用資料根目錄也不會互寫同一個檔案。
     fn save_personal(&self, stores: &[(u64, PersonalStore)]) {
         let Some(dir) = &self.personal_dir else {
             return;
         };
         for (id, store) in stores {
-            let path = dir.join(format!("personal-{id}.json"));
+            let path = dir.join(format!("{}-{id}.json", self.personal_prefix));
             if let Err(err) = store.save(&path) {
                 log::warn!("存檔個人資料 {} 失敗：{err}", path.display());
             }
