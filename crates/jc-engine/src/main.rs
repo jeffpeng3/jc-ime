@@ -193,8 +193,8 @@ fn run(options: Options) -> anyhow::Result<()> {
                 ""
             }
         );
-        // 個人資料由各 session 自己持有並存到 personal-<id>.json；T4 不讀回
-        // 舊檔，ResetPersonal 重建 session 時才能保證拿到真正的空白 store。
+        // session 建立在 Engine::open_session 裡會從全行程共用的 PersonalStore
+        // 灌入快照，因此工廠本身不需要碰個人資料；它只負責建立空白 session。
         Arc::new(move || {
             let base = data.session_config(effective.mode);
             Session::new(config::session_config(base, &effective))
@@ -206,8 +206,9 @@ fn run(options: Options) -> anyhow::Result<()> {
     let mut engine = Engine::with_factory(factory, personal_dir);
     if options.personal_prefix != DEFAULT_PERSONAL_PREFIX {
         log::info!("個人資料檔名前綴：{}", options.personal_prefix);
-        engine.set_personal_prefix(options.personal_prefix.clone());
     }
+    engine.set_personal_prefix(options.personal_prefix.clone());
+    engine.load_personal();
     match options.mode {
         Transport::Stdio => {
             let stdin = io::stdin();
