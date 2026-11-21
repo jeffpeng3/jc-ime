@@ -27,59 +27,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows_core::{implement, ComObject, Interface};
 
-/// 診斷紀錄：adapter spike 不帶檔案 I/O，保留去重語意，T6 接到 `crate::log`。
-mod log {
-    use std::sync::Mutex;
-
-    const ONCE_LIMIT: usize = 32;
-
-    pub fn log(_msg: &str) {}
-
-    pub fn once(msg: &str) {
-        static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
-        let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
-        if seen.len() < ONCE_LIMIT && !seen.iter().any(|m| m == msg) {
-            seen.push(msg.to_owned());
-            log(msg);
-        }
-    }
-
-    pub fn exe_name() -> &'static str {
-        use std::sync::OnceLock;
-        static NAME: OnceLock<String> = OnceLock::new();
-        NAME.get_or_init(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .unwrap_or_else(|| "?".into())
-        })
-    }
-}
-
-macro_rules! zdebug {
-    ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }};
-}
-
-/// COM 物件計數。新 crate 還沒有 DLL 生命週期管理，T6 接到 `lib.rs` 的 LIVE_OBJECTS。
-fn object_created() {}
-fn object_destroyed() {}
-
-/// 攔截 panic：COM 邊界不得 unwind。與 0c `lib.rs::guarded` 行為相同。
-fn guarded<T, F: FnOnce() -> windows_core::Result<T>>(what: &str, f: F) -> windows_core::Result<T> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-        Ok(r) => r,
-        Err(_) => {
-            let _ = what;
-            Err(E_FAIL.into())
-        }
-    }
-}
-
-/// 呼叫端執行緒（宿主 UI 執行緒）有沒有系統插入點。
-/// 共用 `crate::caret::thread_has_caret()` 的實作。
-fn thread_has_caret() -> bool {
-    crate::caret::thread_has_caret()
-}
+// T6：log／物件計數／guarded 改接真正的 crate 層（與 service、langbar、edit 共用）；
+// 插入點探測改接 crate::caret。
+use crate::log::{self, guarded, object_created, object_destroyed, zdebug};
 
 /// 欄位政策。密碼、PIN、唯讀或無法判斷的欄位不送引擎；只標 IS_PRIVATE 的欄位
 /// （Chrome 無痕／訪客、Firefox 私密視窗的所有欄位都是）照常組字，但整段組字以
@@ -309,7 +259,11 @@ fn island_field(class: &str, static_flags: u32) -> Option<Field> {
 /// 所以要暫時 context、沒有宣告 TS_SS_NOHIDDENTEXT、由相容層啟用，三者都成立才算 IMM32 程式。
 /// 注音模式照舊組字（同其他注音輸入法，要用快捷鍵先切英文）。
 pub fn english_passthrough(ctx: &ITfContext, activate_flags: u32) -> bool {
-    imm32_without_caret(static_flags(ctx), activate_flags, thread_has_caret())
+    imm32_without_caret(
+        static_flags(ctx),
+        activate_flags,
+        crate::caret::thread_has_caret(),
+    )
 }
 
 /// 這個 context 是不是 IMM32 程式經系統相容層（CUAS）建立的（判斷同 [`english_passthrough`]，不看插入點）。

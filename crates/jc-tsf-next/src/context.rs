@@ -1,9 +1,8 @@
-//! 已確認前文：只核對游標前是否仍緊接著自己剛提交的文字。讀到的文字只拿來比對，
-//! 不送給引擎、不記錄；有選取範圍、讀不到或不相符都視為未確認（對應 Fcitx 外殼的 DocumentContext）。
-//!
-//! 移植自 0c `platforms/windows/tsf/src/context.rs`（main `8f443af`）的生產碼。
+//! 已確認前文：只核對游標前是否仍緊接著自己剛提交的文字。
+//! 讀到的文字只拿來比對，不送給引擎、不記錄（移植自 0c `context.rs`）。
 
 use std::cell::Cell;
+use std::mem::ManuallyDrop;
 
 use windows::Win32::UI::TextServices::{
     ITfContext, ITfEditSession, ITfEditSession_Impl, TF_DEFAULT_SELECTION, TF_ES_READ, TF_ES_SYNC,
@@ -11,25 +10,7 @@ use windows::Win32::UI::TextServices::{
 };
 use windows_core::{implement, ComObject};
 
-/// adapter spike 不帶檔案 I/O：保留呼叫點，不產生輸出。T6 再接到 `logging`。
-macro_rules! zdebug {
-    ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }};
-}
-
-/// COM 物件計數。新 crate 還沒有 DLL 生命週期管理，T6 接到 `lib.rs` 的 LIVE_OBJECTS。
-fn object_created() {}
-fn object_destroyed() {}
-
-/// COM 邊界不得 unwind；與 0c `lib.rs::guarded` 行為相同。
-fn guarded<T, F: FnOnce() -> windows_core::Result<T>>(what: &str, f: F) -> windows_core::Result<T> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-        Ok(r) => r,
-        Err(_) => {
-            let _ = what;
-            Err(windows::Win32::Foundation::E_FAIL.into())
-        }
-    }
-}
+use crate::log::{guarded, object_created, object_destroyed, zdebug};
 
 /// 游標（無選取）前的 `expected.len()` 個 UTF-16 單位是否正好等於 `expected`。
 pub fn preceded_by(ctx: &ITfContext, client: u32, expected: &[u16]) -> bool {
@@ -51,7 +32,6 @@ pub fn preceded_by(ctx: &ITfContext, client: u32, expected: &[u16]) -> bool {
             false
         }
     };
-    // 只記原因代碼，不記文字。
     zdebug!("document context probe={}", probe.reason.get());
     matched
 }
@@ -77,7 +57,7 @@ impl ITfEditSession_Impl for Probe_Impl {
             let mut fetched = 0;
             self.ctx
                 .GetSelection(ec, TF_DEFAULT_SELECTION, &mut selected, &mut fetched)?;
-            let range = std::mem::ManuallyDrop::take(&mut selected[0].range);
+            let range = ManuallyDrop::take(&mut selected[0].range);
             let Some(range) = range else {
                 self.reason.set("no_selection");
                 return Ok(());
