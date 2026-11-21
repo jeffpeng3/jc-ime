@@ -25,6 +25,7 @@ use windows::Win32::System::LibraryLoader::{
     GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 };
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::Variant::{VARIANT, VT_I4};
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
@@ -336,13 +337,33 @@ impl Control {
     /// 停止 worker 與 sink；訊息視窗在 [`Drop`] 收掉。
     pub fn shutdown(&mut self) {
         // SAFETY: 這兩個 sink 都是在 Activate 時註冊的，只有這裡會反註冊。
+        // 把反註冊的 HRESULT 也記下來：下一次同 id 重新 Activate 若失敗，
+        // 就能從 log 判斷是這裡沒清乾淨，還是 msctf 自己還留著 sink。
         unsafe {
             if let Some(keystroke) = &self.keystroke {
-                let _ = keystroke.UnadviseKeyEventSink(self.client_id);
+                match keystroke.UnadviseKeyEventSink(self.client_id) {
+                    Ok(()) => logging::debug(format!(
+                        "shutdown：UnadviseKeyEventSink({}) = 0x00000000",
+                        self.client_id
+                    )),
+                    Err(error) => logging::warn(format!(
+                        "shutdown：UnadviseKeyEventSink({}) = {}",
+                        self.client_id,
+                        logging::hresult(error.code())
+                    )),
+                }
             }
             if let (Some(source), cookie) = (&self.source, self.source_cookie.get()) {
                 if cookie != 0 {
-                    let _ = source.UnadviseSink(cookie);
+                    match source.UnadviseSink(cookie) {
+                        Ok(()) => {
+                            logging::debug(format!("shutdown：UnadviseSink({cookie}) = 0x00000000"))
+                        }
+                        Err(error) => logging::warn(format!(
+                            "shutdown：UnadviseSink({cookie}) = {}",
+                            logging::hresult(error.code())
+                        )),
+                    }
                 }
             }
         }
@@ -367,6 +388,8 @@ impl Control {
         key_sink: &ITfKeyEventSink,
         thread_sink: &ITfThreadMgrEventSink,
     ) -> Result<()> {
+        // SAFETY: GetCurrentThreadId 沒有參數，也不碰呼叫端的記憶體。
+        let thread_id = unsafe { GetCurrentThreadId() };
         // SAFETY: sink 的存活期由 Control 持有，反註冊在 shutdown。
         unsafe {
             let keystroke: ITfKeystrokeMgr = match self.thread_mgr.cast() {
@@ -385,15 +408,16 @@ impl Control {
 
             if let Err(error) = keystroke.AdviseKeyEventSink(self.client_id, key_sink, true) {
                 logging::warn(format!(
-                    "advise：AdviseKeyEventSink = {}（client_id = {}）",
+                    "advise：AdviseKeyEventSink = {}（client_id = {}，thread = {}）",
                     logging::hresult(error.code()),
-                    self.client_id
+                    self.client_id,
+                    thread_id
                 ));
                 return Err(error);
             }
             logging::debug(format!(
-                "advise：AdviseKeyEventSink = 0x00000000（client_id = {}）",
-                self.client_id
+                "advise：AdviseKeyEventSink = 0x00000000（client_id = {}，thread = {}）",
+                self.client_id, thread_id
             ));
             self.keystroke = Some(keystroke);
 

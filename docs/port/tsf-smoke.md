@@ -81,7 +81,7 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼、沒有 Windows
 | 2 | `DllGetClassObject(CLSID_JC_TSF, IID_IClassFactory)` | `S_OK` 且拿到非空指標 | — |
 | 3 | `CreateInstance` 後 QI 四個介面，再比對 `ITfKeyEventSink` 與 `ITfTextInputProcessor` 的 `IUnknown` 指標 | 四個 QI 全 `S_OK`，且兩個介面是同一個 COM 物件 | 每個 QI 的 HRESULT |
 | 4 | `CoCreateInstance(CLSID_TF_ThreadMgr, CLSCTX_INPROC_SERVER)` | `S_OK` | — |
-| 5 | `ITfThreadMgr::Activate()` 取得 client id，再 `ITfTextInputProcessor::Activate(tm, id)` | 兩者都 `S_OK`（不崩潰） | `ITfKeystrokeMgr::TestKeyDown('u')` 的 consumed |
+| 5 | `ITfThreadMgr::Activate()` 取得**應用程式** client id；`ITfClientId::GetClientId(&CLSID_JC_TSF)` 取得**TIP** client id，再 `ITfTextInputProcessor::Activate(tm, tip_id)` | `S_OK`；已安裝時 msctf 已激活同一個 TIP 而回 `CONNECT_E_ADVISELIMIT` 也算通過 | 兩個 client id、`ITfKeystrokeMgr::TestKeyDown('u')` 的 consumed |
 | 6 | `jc-windows` 的 `connect_with_retry` → `Hello` → `Key(Escape)` | 連得上且兩個往返都成功 | 連不上只印 `[SKIP]`，**不算失敗** |
 | 7 | 兩個機碼檢視（`/reg:64`、`/reg:32`）各讀 `CTF\TIP\{CLSID}` 與 `HKCR\CLSID\{CLSID}\InprocServer32` | 兩邊都有同一個 CLSID，而且分別指到 `jc-tsf.dll` 與 `jc-tsf-x86.dll` | 只看得到一邊或指到錯的 DLL → `[FAIL]`；兩邊都沒有 → `[SKIP]`（尚未安裝） |
 
@@ -95,6 +95,14 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼、沒有 Windows
 
 檢查 5 成功後會立刻 `Deactivate` 並等 200 ms：`jc-tsf` 的 worker 在 `Activate`
 時會連上引擎，而引擎一次只服務一條連線，不先放掉的話檢查 6 會連不進去。
+
+檢查 5 有兩個 client id，來源不能混用。`ITfThreadMgr::Activate()` 回的是
+**應用程式**的 id；`ITfTextInputProcessor::Activate` 要的是**文字服務**的 id，
+由 `ITfClientId::GetClientId(&CLSID_JC_TSF)` 取得。之前直接把應用程式 id 傳進去，
+msctf 在 `AdviseKeyEventSink` 回 `E_INVALIDARG`。已安裝 `jc-tsf` 時，msctf 會在
+`ITfThreadMgr::Activate()` 內部先激活 TIP 並裝好 key sink；手動激活同一個 id 會回
+`CONNECT_E_ADVISELIMIT`，這代表 TIP 已經在跑，判為通過。詳細文件依據與真機指令見
+`docs/port/activate-second-call.md`。
 
 ## 預期輸出
 
@@ -111,7 +119,9 @@ jc-tsf 免管理員冒煙測試（jc 注音）
 [PASS] 2. DllGetClassObject(CLSID_JC_TSF, IClassFactory)：S_OK（0x00000000）
 [PASS] 3. CreateInstance + QI（vtable 與物件身分）：ITfTextInputProcessor=S_OK、ITfKeyEventSink=S_OK、ITfThreadMgrEventSink=S_OK、ITfCompositionSink=S_OK；ITfKeyEventSink 與 ITfTextInputProcessor 是同一個物件
 [PASS] 4. CoCreateInstance(CLSID_TF_ThreadMgr)：S_OK（0x00000000）
-[PASS] 5. Activate：ITfThreadMgr::Activate → client_id=1；ITfTextInputProcessor::Activate = S_OK（0x00000000）
+[INFO] ITfThreadMgr::Activate → 應用程式 client_id=1（不是 TIP 的 client_id）
+[INFO] ITfClientId::GetClientId(CLSID_JC_TSF) → TIP client_id=2
+[PASS] 5. Activate：ITfThreadMgr::Activate → 應用程式 client_id=1；ITfClientId::GetClientId → TIP client_id=2；ITfTextInputProcessor::Activate = S_OK（0x00000000）
 [INFO] ITfKeystrokeMgr::TestKeyDown('u') consumed=false（引擎未連線時應為 false）
 [SKIP] 6. 引擎 pipe：pipe jc-ime 連不上：讀寫失敗：…；引擎未啟動或未安裝，只警告不判定失敗
 [INFO] jc_test_key(VK_J = 0x4A) = 2（連不上引擎 pipe）；僅供參考，不影響結果
@@ -166,7 +176,8 @@ x64 裝好、x86 沒裝（例如只跑過 `regsvr32 jc-tsf.dll`）時，這一�
 | 4 | `0x800401F0`（`CO_E_NOTINITIALIZED`） | 前面 `CoInitializeEx` 失敗（`[INFO]` 那行不是 `0x00000000`） |
 | 5 | `ITfThreadMgr::Activate` 失敗 | TSF 已被同執行緒的其他程式佔用、COM apartment 不對 |
 | 5 | `ITfTextInputProcessor::Activate` 回 `0x80004005` | `Control::start` 建訊息視窗或 `AdviseKeyEventSink` 失敗（看 `OutputDebugStringW` 的 `[jc-tsf]` 記錄） |
-| 5 | `ITfTextInputProcessor::Activate` 回 `0x80070057`（`E_INVALIDARG`） | 三種可能：`CreateWindowExW` 失敗（`GetLastError` 被轉成 HRESULT，例如 87）、`AdviseKeyEventSink`、`AdviseSink`。設定 `JC_TSF_LOG=1` 重跑，`%LOCALAPPDATA%\jc-ime\tsf.log` 會指出是哪一行；見 `docs/port/activate-diagnose.md` |
+| 5 | `ITfTextInputProcessor::Activate` 回 `0x80070057`（`E_INVALIDARG`） | `AdviseKeyEventSink` 拿到的 tid 不是 TIP client id（例如誤用 `ITfThreadMgr::Activate` 的回傳值）。檢查 5 現在會分別印出兩個 id；日誌的 `advise` 行會附 thread id，見 `docs/port/activate-second-call.md` |
+| 5 | `ITfTextInputProcessor::Activate` 回 `0x80040201`（`CONNECT_E_ADVISELIMIT`） | 已安裝時 msctf 先激活了同一個 TIP；檢查 5 判為通過，不是失敗 |
 | 5 | `0x8001010E`（`RPC_E_WRONG_THREAD`） | TIP 物件被跨 apartment 呼叫；`Activate` 必須在建立它的執行緒 |
 | 6 | 連不上 | 引擎沒開、pipe 名稱不同（`HKCU\Software\jc-ime\EnginePipe`）、連線被真正的輸入法佔住 |
 | 6 | `VersionMismatch` | 引擎與 `jc-proto` 的 `PROTOCOL_VERSION` 不同 |

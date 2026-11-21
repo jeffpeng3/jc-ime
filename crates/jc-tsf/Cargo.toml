@@ -26,6 +26,8 @@ windows = { version = "0.62", features = [
   # VARIANT 被 cfg(all(Com, Ole)) 擋住；少了 Ole 會編不過。
   "Win32_System_Ole",
   "Win32_System_Registry",
+  # GetCurrentThreadId：Activate／advise 日誌用來確認在同一執行緒。
+  "Win32_System_Threading",
   # RegCreateKeyExW 與 VARIANT 都掛在 Win32_Security 之下；少了它會編不過。
   "Win32_Security",
   "Win32_System_Variant",
