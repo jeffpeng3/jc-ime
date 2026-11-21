@@ -27,15 +27,21 @@
 //! `--allow-empty-data` 跳過資料載入，只用空 session，供協定測試與除錯；
 //! 正式啟動仍要求 `--data` 或 `JC_DATA`。
 //!
-//! stdio 模式在所有平台都能跑；`--socket` 走 interprocess 的 local socket，
-//! 底層在 unix 是 unix domain socket、在 Windows 是本機 named pipe，兩端的
-//! 名稱解析共用 `jc_windows`。其他平台回報尚未實作。
+//! stdio 模式在所有平台都能跑。`--socket` 在 Windows 直接走 Win32
+//! `CreateNamedPipeW`（見 [`pipe_listener`]），在 unix 走 interprocess 的 unix
+//! domain socket；兩端的名稱解析共用 `jc_windows`。其他平台回報尚未實作。
+
+#[cfg(windows)]
+mod pipe_listener;
 
 use std::ffi::OsString;
-use std::io::{self, BufReader, BufWriter, Write};
+#[cfg(unix)]
+use std::io::Write;
+use std::io::{self, BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
+#[cfg(not(windows))]
 use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
 use jc_core::session::{Session, SessionConfig};
 use jc_core::Mode;
@@ -280,18 +286,20 @@ fn default_supervisor_log() -> PathBuf {
     std::env::temp_dir().join("jc-ime").join("supervisor.log")
 }
 
-/// 在 `path` 對應的 local socket 上監聽並序列處理連線，收到 `Shutdown` 才回傳。
+/// Windows 在 `path` 對應的 named pipe 上監聽，直接呼叫 `CreateNamedPipeW`。
 ///
-/// 平台差異全部交給 interprocess：Windows 是 named pipe，Unix 是 unix domain
-/// socket。一次只服務一條連線，維持 pipe-busy 修正後的一對一模型；連線時機由
-/// focus-pipe 統一管理。訊框仍走 `jc_proto`，這裡只負責搬位元組。
-///
-/// Windows 不指定自訂 SDDL，用 named pipe 的預設 DACL：建立者（目前使用者）、
-/// SYSTEM 與 Administrators 有完整控制權，同使用者的 TIP 能連上。`interprocess`
-/// 2.4.9 的 `SecurityDescriptor::deserialize` 在複製含 `G:` 的 SDDL 時會把 group
-/// SID 誤設成 owner（`try_clone` 呼叫 `set_owner` 而非 `set_group`），讓
-/// `CreateNamedPipeW` 回 ERROR_INVALID_OWNER (1307)，pipe 根本建立不起來。
-#[cfg(any(unix, windows))]
+/// SDDL 照 0c 逐字設定，含 AppContainer 的兩組 SID；不流經 `interprocess`，
+/// 因此避開它複製含 `G:` 的 SDDL 時回 ERROR_INVALID_OWNER (1307) 的 bug。
+/// 一次只服務一條連線；多連線 accept loop 是 T4 的範圍。
+#[cfg(windows)]
+fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
+    pipe_listener::serve(engine, path, max_frame)
+}
+
+/// 在 `path` 對應的 unix domain socket 上監聽並序列處理連線，收到 `Shutdown`
+/// 才回傳。Unix 維持 interprocess（Linux CI 要用），一次只服務一條連線。
+/// 訊框仍走 `jc_proto`，這裡只負責搬位元組。
+#[cfg(unix)]
 fn serve_socket(engine: &mut Engine, path: &Path, max_frame: usize) -> anyhow::Result<()> {
     let name = jc_windows::socket_name(path)?;
     let options = ListenerOptions::new().name(jc_windows::ns_name(&name)?);
