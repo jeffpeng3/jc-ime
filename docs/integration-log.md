@@ -2019,3 +2019,9 @@ gate：
 - 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
 - `git branch --no-merged main`：`settings-default-file`、`romaji-input`、`model-ui-status`（都還在跑，未動）。
 - worktree `w7W`（pipe-busy）與 `punct-cleanup` 的 worktree 已回收，branch 保留。
+
+### CI（push `84cd944`，run 44911494690；punct-cleanup／pipe-busy）
+
+- linux (core)：success；windows (msvc)：success；check-tag：success。
+- build-linux／build-windows／publish：skipped（main scope，標籤流程才會跑）。
+  本機全 workspace Windows clippy 卡在 `ring` 的 C 工具鏈，CI windows job 已驗證通過。
