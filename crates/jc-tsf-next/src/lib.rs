@@ -13,6 +13,13 @@
 
 pub mod session;
 
+// T1b 移植的 Win32 IPC client 與按鍵對照表。Linux host 上不編這兩塊，
+// 讓 `cargo check --workspace` 不被 Windows API 擋住。
+#[cfg(windows)]
+pub mod ipc;
+#[cfg(windows)]
+pub mod keys;
+
 pub use session::{
     response_to_reply, state_to_snapshot_value, to_jc_request, Client, Mode, Segment, Session,
     Snapshot, Transport, PROTOCOL_VERSION,
