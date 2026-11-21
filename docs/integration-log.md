@@ -2052,3 +2052,21 @@ gate（合併後）：
 - Windows 目標 `cargo check -p jc-tsf -p jc-tsf-smoke --all-targets --target x86_64-pc-windows-msvc` exit 0。
 - 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
 - **不 push**：`transport-unified` 還在跑，等它完成後一次 push 並回收所有 worktree。
+
+## 2026-11-21 09:40 transport-unified（`b217ddd` → `be46e12`）
+
+用 `interprocess::local_socket` 統一引擎與 client transport：Windows 底層 named pipe、
+Linux abstract UDS，一套程式碼。Windows ACL 用 SDDL，pipe-busy 等待用
+`ConnectWaitMode::Timeout`。刪掉 `pipe_windows.rs`、`pipe.rs`、`named-pipe.md`，
+換成 `transport.rs`、`transport.md`；與 focus-pipe 只在 `jc-tsf/src/engine.rs` 改了 3 行型別。
+
+agent 報告的兩個失敗（engine_data、socket）是在舊 base `d3caea3` 跑的；
+rebase 到 `16e05cd` 後已隨 settings-default-file 修正消失。
+
+gate：
+- `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`：**exit 0**
+  （54 targets、**1323 passed、0 failed、1 ignored**）。
+- `cargo check --workspace --all-targets` exit 0；clippy exit 0；fmt exit 0。
+- Windows 目標 `cargo check -p jc-windows -p jc-engine --target x86_64-pc-windows-msvc` exit 0。
+- 題庫：zh-golden **45/45**、ja modern-500 **92.2%**、fuzzy **44.5%**、mixed **6/6**。
+- `git branch --no-merged main`：空（本機所有 feature branch 都已合入）。
