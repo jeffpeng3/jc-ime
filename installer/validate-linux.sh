@@ -21,12 +21,17 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 wxs="$repo_root/installer/jc-ime.wxs"
 
-# 引擎 autostart 不得用 --socket 覆寫 pipe 名稱：引擎與 TIP 共用
-# jc_windows::resolve_pipe_name()，從 SID 尾段推出 jc-ime-<rid>。顯式 --socket
-# 會讓兩邊名稱不同，TIP 連不上，按鍵全部放行成英文。
+# 引擎 autostart 必須用 --supervise，且不得用 --socket 覆寫 pipe 名稱。
+# 直接伺服模式沒給 socket 參數時會走 stdio，完全不開 pipe，TIP 連不上；
+# 只有監督模式才會呼叫 default_supervisor_socket() → resolve_pipe_name()
+# 推出 jc-ime-<rid>，與 TIP 一致。顯式 --socket 會讓兩邊名稱不同。
 autostart=$(sed -n '/<Component Id="EngineAutostart"/,/<\/Component>/p' "$wxs")
 if grep -q -- '--socket' <<<"$autostart"; then
     echo "EngineAutostart 不得帶 --socket；pipe 名稱要交給 resolve_pipe_name() 解析" >&2
+    exit 1
+fi
+if ! grep -q -- '--supervise' <<<"$autostart"; then
+    echo "EngineAutostart 必須帶 --supervise；直接伺服模式沒給 socket 參數會退回 stdio，不開 pipe" >&2
     exit 1
 fi
 if ! grep -q -- '--data' <<<"$autostart" || ! grep -q -- '--settings' <<<"$autostart"; then

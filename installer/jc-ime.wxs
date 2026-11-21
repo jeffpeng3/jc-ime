@@ -457,6 +457,12 @@
     登入時各自展開，所以同一條 HKLM 值對所有使用者都成立。settings.json 放在
     使用者目錄，資料在 ProgramData。
 
+    必須用監督模式（supervise 旗標）啟動，不能直接伺服：直接伺服模式沒給
+    socket 參數時會走 stdio，完全不開 pipe，TIP 連不上，按鍵全部放行成英文。
+    監督者沒給 socket 參數時才會呼叫 default_supervisor_socket()，從 SID 尾段
+    推出 jc-ime-<rid>，與 TIP 一致；子行程參數由 child_args() 補上，結束後
+    自動重啟。
+
     不帶 socket 覆寫參數：引擎與 TIP 共用 `jc-windows::resolve_pipe_name()`，從 SID
     尾段推出 `jc-ime-<rid>`。顯式指定 socket 會跳過 SID 推導，讓引擎與 TIP
     名稱不同，pipe 連不上時按鍵全部放行成英文。
@@ -469,7 +475,7 @@
             Name="jc-ime-engine"
             Type="expandable"
             KeyPath="yes"
-            Value="&quot;[INSTALLFOLDER]jc-engine.exe&quot; --data &quot;[DATADIR]&quot; --settings &quot;%LOCALAPPDATA%\jc-ime\settings.json&quot;" />
+            Value="&quot;[INSTALLFOLDER]jc-engine.exe&quot; --supervise --data &quot;[DATADIR]&quot; --settings &quot;%LOCALAPPDATA%\jc-ime\settings.json&quot;" />
       </RegistryKey>
     </Component>
   </Fragment>
