@@ -4,6 +4,19 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.2 - 2026-11-22
+
+### 診斷
+
+- 這版是 debug 版，用來找出 TIP 連不上引擎的問題：pipe 存在、`CreateFileW`
+  可以連上，但 TIP 的 `connect_existing` 失敗。
+- 按鍵路徑維持上一版的詳細 `zlog!`（`OnTestKeyDown`、`allowed`、`wants_key`、
+  `OnKeyDown`、`learn_mode`、`handle_key`、`english_key_policy`、`field_at`）。
+- 新增 pipe 連線診斷：記錄 TIP 使用的 pipe 名稱、rid 與 `CreateFileW` 錯誤碼。
+- 兩邊都只加 log，沒有改任何判斷邏輯。
+- 版本規則改為直接拉小版本、不再用 rc 後綴。MSI ProductVersion 為 `0.1.2.0`，
+  與 0.1.1.x 不同，Windows 會換檔。
+
 ## 0.1.1-rc.2 - 2026-11-22
 
 ### 診斷
