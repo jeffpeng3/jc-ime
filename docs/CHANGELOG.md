@@ -4,6 +4,31 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.15 - 2026-11-22
+
+### 新增
+
+- 0c TSF 架構移植（T0～T11）：新增 `jc-tsf-next` 與 `jc-ui`，引擎加入 pipe listener
+  與多連線 session map。新版以平行建置方式註冊，使用新 CLSID 與
+  「jc 注音（新版）」描述，不覆蓋已發行的舊版；可依 `docs/port/rollout.md`
+  灰度切換與回退。
+- UI 候選窗：移植 0c 的候選窗、訊息協定、Windows 訊息迴圈與 CUAS 接線，
+  候選窗改走 `jc-ime-ui` pipe。
+- CUAS：完成 service 端的 CandidateWindow／UiClient／Elements 分流與位置更新。
+- 個人化全域：引擎改用單一共用 personal store，以增量合併取代各 session 各自存檔；
+  reset 立即寫回空白 `personal-next.json`。
+- Close session id：`Response::Ready` 攜帶實際 session id，Close 依 session map
+  判斷歸屬，跨連線 id 回 `Internal` 錯誤，不再靜默成功。
+
+### 修正
+
+- 修正 integrator gate 的 20 項失敗，涵蓋引擎 shutdown／replay log 與新版 session
+  的 reconnect、handoff、caps English、english autocomplete、簡繁輸出與全形預檢。
+- 修正 CI：把 COM 註冊抽成 `jc-tsf-register` 共用 rlib，移除 `jc-tsf-next` 對
+  `jc-tsf` 的依賴，消除 Windows 連結時的 LNK2005 重複 COM exports；
+  並清掉 `jc-ui` 的 Clippy 警告。
+- 修正 Windows focus host 測試的注音假引擎按鍵映射（`s` → ㄙ 改為大千 ㄋ）。
+
 ## 0.1.0-rc.14 - 2026-11-22
 
 ### 修正
