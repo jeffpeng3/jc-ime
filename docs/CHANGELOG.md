@@ -4,7 +4,7 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
-## Unreleased（下一次 rc）
+## 0.1.0-rc.16 - 2026-11-22
 
 ### 變更
 
