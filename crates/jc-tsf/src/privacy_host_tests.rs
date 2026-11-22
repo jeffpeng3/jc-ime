@@ -2,6 +2,7 @@
 //! 讀 InputScope 回 E_FAIL；焦點視窗是自訂類別、不是標準編輯框，也不是 IMM32 的暫時 context 或 UI-less。
 //! 以真的視窗（本測試執行緒的焦點）配假的 context／property／range，走一次 privacy::field。
 use super::*;
+use std::cell::RefCell;
 use std::rc::Rc;
 use windows::Win32::Foundation::{E_NOTIMPL, LRESULT, S_OK};
 use windows::Win32::Graphics::Gdi::HBRUSH;
@@ -33,13 +34,21 @@ enum Scope {
     Scopes(Vec<InputScope>),
     /// 沒有 InputScope 屬性（GetAppProperty 失敗）。
     NoProperty,
-    /// 宿主拒絕同步 edit session（例如 TF_E_SYNCHRONOUS），DoEditSession 根本不會被呼叫。
+    /// 宿主拒絕 edit session（例如 TF_E_SYNCHRONOUS），DoEditSession 根本不會被呼叫。
     Refuse(HRESULT),
+    /// 宿主選擇非同步：回 `hr`（TF_S_ASYNC），把 edit session 交給 `session`，
+    /// 測試稍後呼叫 DoEditSession；那時候讀到的 InputScope 是 `scopes`。
+    Async {
+        hr: HRESULT,
+        scopes: Vec<InputScope>,
+        session: Rc<RefCell<Option<ITfEditSession>>>,
+    },
 }
 
 struct Host {
     view: HWND,
-    scope: Scope,
+    /// 用 RefCell 讓測試在同一個 context 上改宿主行為，驗證 cache 命中與失效。
+    scope: Rc<RefCell<Scope>>,
     static_flags: u32,
     dynamic_flags: u32,
 }
@@ -55,13 +64,20 @@ impl ITfContext_Impl for Ctx_Impl {
         session: Ref<ITfEditSession>,
         _: TF_CONTEXT_EDIT_CONTEXT_FLAGS,
     ) -> R<HRESULT> {
-        if let Scope::Refuse(hr) = self.host.scope {
-            return Ok(hr);
+        let scope = self.host.scope.borrow().clone();
+        match scope {
+            Scope::Refuse(hr) => Ok(hr),
+            Scope::Async {
+                hr, session: slot, ..
+            } => {
+                *slot.borrow_mut() = Some(session.ok()?.clone());
+                Ok(hr)
+            }
+            _ => Ok(match unsafe { session.ok()?.DoEditSession(1) } {
+                Ok(()) => S_OK,
+                Err(e) => e.code(),
+            }),
         }
-        Ok(match unsafe { session.ok()?.DoEditSession(1) } {
-            Ok(()) => S_OK,
-            Err(e) => e.code(),
-        })
     }
     fn InWriteSession(&self, _: u32) -> R<BOOL> {
         no()
@@ -118,13 +134,12 @@ impl ITfContext_Impl for Ctx_Impl {
         if unsafe { *guid } != GUID_PROP_INPUTSCOPE {
             return no();
         }
-        match &self.host.scope {
-            Scope::NoProperty => no(),
-            scope => Ok(ComObject::new(Property {
-                scope: scope.clone(),
-            })
-            .into_interface()),
-        }
+        let scope = match &*self.host.scope.borrow() {
+            Scope::Async { scopes, .. } => Scope::Scopes(scopes.clone()),
+            Scope::NoProperty => return no(),
+            scope => scope.clone(),
+        };
+        Ok(ComObject::new(Property { scope }).into_interface())
     }
     fn TrackProperties(
         &self,
@@ -194,7 +209,7 @@ impl ITfReadOnlyProperty_Impl for Property_Impl {
                 let scope: IUnknown = ComObject::new(Scopes(scopes.clone())).into_interface();
                 Ok(VARIANT::from(scope))
             }
-            Scope::NoProperty | Scope::Refuse(_) => no(),
+            Scope::NoProperty | Scope::Refuse(_) | Scope::Async { .. } => no(),
         }
     }
     fn GetContext(&self) -> R<ITfContext> {
@@ -484,19 +499,34 @@ fn host(
     static_flags: u32,
     dynamic_flags: u32,
 ) -> ITfContext {
+    host_ctrl(view, focus, scope, static_flags, dynamic_flags).0
+}
+
+/// 同 [`host`]，另外回傳宿主行為的控制柄，讓測試在同一個 context 上切換 probe 結果。
+fn host_ctrl(
+    view: HWND,
+    focus: HWND,
+    scope: Scope,
+    static_flags: u32,
+    dynamic_flags: u32,
+) -> (ITfContext, Rc<RefCell<Scope>>) {
+    // 測試執行緒之間共用 module-level cache；新 context 前先清空，避免指標重用命中舊結果。
+    invalidate();
     unsafe {
         let _ = SetFocus(Some(focus));
         assert_eq!(GetFocus(), focus, "測試執行緒拿不到焦點");
     }
-    ComObject::new(Ctx {
+    let scope = Rc::new(RefCell::new(scope));
+    let ctx = ComObject::new(Ctx {
         host: Rc::new(Host {
             view,
-            scope,
+            scope: scope.clone(),
             static_flags,
             dynamic_flags,
         }),
     })
-    .into_interface()
+    .into_interface();
+    (ctx, scope)
 }
 
 /// 給其他模組的宿主測試（#217）：本執行緒焦點所在、InputScope 是一般欄位的假 context（`field` 為 Open）。
@@ -887,6 +917,140 @@ fn host_onenote_canvas_without_scope_is_an_open_field() {
         let ctx = host(view, view, Scope::Fail(E_FAIL), flags, 0);
         assert_eq!(field(Some(&ctx), 1, false), Field::Open, "{flags:#x}");
     }
+    unsafe {
+        let _ = DestroyWindow(view);
+    }
+}
+
+// rc.19：ITfContext 欄位政策 cache + 非同步 probe。
+
+#[test]
+fn cache_is_separate_for_each_context() {
+    invalidate();
+    init();
+    let view = window(w!("UnrealWindow"), 0);
+    let a = host(
+        view,
+        view,
+        Scope::Scopes(vec![IS_DEFAULT]),
+        TS_SS_NOHIDDENTEXT,
+        0,
+    );
+    let b = host(
+        view,
+        view,
+        Scope::Scopes(vec![IS_PASSWORD]),
+        TS_SS_NOHIDDENTEXT,
+        0,
+    );
+    assert_eq!(field(Some(&a), 1, false), Field::Open);
+    assert_eq!(field(Some(&b), 1, false), Field::Blocked);
+    // 再問一次：各自命中自己的 cache，帳號欄的 Open 不會污染密碼欄的 Blocked。
+    assert_eq!(field(Some(&a), 1, false), Field::Open);
+    assert_eq!(field(Some(&b), 1, false), Field::Blocked);
+    unsafe {
+        let _ = DestroyWindow(view);
+    }
+}
+
+#[test]
+fn unreadable_probe_uses_the_cached_field() {
+    invalidate();
+    init();
+    let view = window(w!("UnrealWindow"), 0);
+    let (ctx, control) = host_ctrl(
+        view,
+        view,
+        Scope::Scopes(vec![IS_PRIVATE]),
+        TS_SS_NOHIDDENTEXT,
+        0,
+    );
+    assert_eq!(field(Some(&ctx), 1, false), Field::Private);
+    // host 開始拒絕 edit session：讀不到時要用同一個 context 上次的 Private。
+    *control.borrow_mut() = Scope::Refuse(TF_E_SYNCHRONOUS);
+    assert_eq!(field(Some(&ctx), 1, false), Field::Private);
+    unsafe {
+        let _ = DestroyWindow(view);
+    }
+}
+
+#[test]
+fn async_edit_session_updates_the_cache() {
+    invalidate();
+    init();
+    let view = window(w!("UnrealWindow"), 0);
+    let slot = Rc::new(RefCell::new(None));
+    let (ctx, control) = host_ctrl(
+        view,
+        view,
+        Scope::Async {
+            hr: TF_S_ASYNC,
+            scopes: vec![IS_PASSWORD],
+            session: slot.clone(),
+        },
+        TS_SS_NOHIDDENTEXT,
+        0,
+    );
+    // RequestEditSession 回 TF_S_ASYNC：還沒有結果，cache 也沒有，先放行。
+    assert_eq!(field(Some(&ctx), 1, false), Field::Open);
+    // 模擬 host 稍後在非同步 callback 裡跑 DoEditSession，讀到密碼欄。
+    let session = slot.borrow_mut().take().expect("host 應持有 edit session");
+    unsafe { session.DoEditSession(1) }.unwrap();
+    // 改成拒絕 edit session，逼下一次按鍵只能查 cache。
+    *control.borrow_mut() = Scope::Refuse(TF_E_SYNCHRONOUS);
+    assert_eq!(field(Some(&ctx), 1, false), Field::Blocked);
+    unsafe {
+        let _ = DestroyWindow(view);
+    }
+}
+
+#[test]
+fn stale_async_result_is_discarded_after_generation_changes() {
+    invalidate();
+    init();
+    let view = window(w!("UnrealWindow"), 0);
+    let slot = Rc::new(RefCell::new(None));
+    let (ctx, control) = host_ctrl(
+        view,
+        view,
+        Scope::Async {
+            hr: TF_S_ASYNC,
+            scopes: vec![IS_PASSWORD],
+            session: slot.clone(),
+        },
+        TS_SS_NOHIDDENTEXT,
+        0,
+    );
+    assert_eq!(field(Some(&ctx), 1, false), Field::Open);
+    // 焦點已經換掉／Deactivate：generation 增加，稍後回來的結果必須丟掉。
+    invalidate();
+    let session = slot.borrow_mut().take().expect("host 應持有 edit session");
+    unsafe { session.DoEditSession(1) }.unwrap();
+    *control.borrow_mut() = Scope::Refuse(TF_E_SYNCHRONOUS);
+    assert_eq!(field(Some(&ctx), 1, false), Field::Open);
+    unsafe {
+        let _ = DestroyWindow(view);
+    }
+}
+
+#[test]
+fn cached_secret_field_still_blocks_the_hotkey() {
+    invalidate();
+    init();
+    let view = window(w!("UnrealWindow"), 0);
+    let (ctx, control) = host_ctrl(
+        view,
+        view,
+        Scope::Scopes(vec![IS_PASSWORD]),
+        TS_SS_NOHIDDENTEXT,
+        0,
+    );
+    assert_eq!(field(Some(&ctx), 1, false), Field::Blocked);
+    assert!(!hotkey_allowed(Some(&ctx), 1, false));
+    // 即使 host 之後讀不到，cache 裡的明確 Blocked 仍要讓熱鍵不切換。
+    *control.borrow_mut() = Scope::Refuse(TF_E_SYNCHRONOUS);
+    assert_eq!(field(Some(&ctx), 1, false), Field::Blocked);
+    assert!(!hotkey_allowed(Some(&ctx), 1, false));
     unsafe {
         let _ = DestroyWindow(view);
     }

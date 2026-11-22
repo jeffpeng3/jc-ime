@@ -1572,6 +1572,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                 return Ok(());
             }
             self.activated.set(false);
+            // 讓還在飛的非同步 probe 結果作廢，避免 callback 回來更新已離開的欄位。
+            privacy::invalidate();
             let ctx = self.focused_context();
             self.finish(ctx.as_ref(), "commit");
             self.forget_candidates();
@@ -1658,6 +1660,9 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                     st.right_shift = keys::ShiftTap::default();
                     st.left_shift = keys::ShiftTap::default();
                     st.selection = None;
+                }
+                if let Some(ctx) = self.focused_context() {
+                    privacy::forget_context(&ctx);
                 }
                 self.forget_candidates();
             }
@@ -1933,6 +1938,10 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
     ) -> windows_core::Result<()> {
         crate::guarded("OnSetFocus", || {
             let previous = previous.as_ref().and_then(|d| unsafe { d.GetTop().ok() });
+            // 焦點離開舊 context：清掉它的 cache，並讓它的非同步 probe 結果過期。
+            if let Some(ctx) = previous.as_ref() {
+                privacy::forget_context(ctx);
+            }
             let owner = self.composition_document();
             let can_wait = self.state.borrow().callback.is_some();
             let step = focus_step(focus.as_ref(), owner.as_ref(), previous, can_wait);
