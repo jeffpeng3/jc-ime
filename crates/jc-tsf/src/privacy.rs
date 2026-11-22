@@ -41,16 +41,39 @@ pub enum Field {
     Open,
 }
 
+/// probe 失敗時寫入診斷 log 的呼叫端上下文：哪個 callback、哪個鍵、啟用旗標。
+/// 只影響紀錄內容，不影響欄位判斷；測試用 [`Default`] 帶空值。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProbeContext {
+    pub callback: &'static str,
+    pub vk: Option<u32>,
+    pub activate_flags: u32,
+}
+
 /// `ui_less`：本執行緒以 TF_TMAE_UIELEMENTENABLEDONLY 啟用（自行繪製候選的宿主，例如遊戲，#86）。
 pub fn field(ctx: Option<&ITfContext>, client: u32, ui_less: bool) -> Field {
+    field_at(ctx, client, ui_less, &ProbeContext::default())
+}
+
+/// 同 [`field`]，另外帶入呼叫端上下文（[`ProbeContext`]），供 probe 讀不到欄位政策時寫詳細 log。
+///
+/// `None`（宿主拒絕同步 edit session、Com 錯誤、沒有焦點文件）代表「讀不到」，不是
+/// 「確認是敏感欄位」：真正敏感欄位在 [`probe`] 明確回 `Some(Field::Blocked)`。
+/// 讀不到時回 [`Field::Open`]，按鍵放行給程式，與 0c／微軟注音的行為一致。
+pub fn field_at(
+    ctx: Option<&ITfContext>,
+    client: u32,
+    ui_less: bool,
+    context: &ProbeContext,
+) -> Field {
     match ctx {
-        Some(ctx) => probe(ctx, client, ui_less).unwrap_or(Field::Blocked),
+        Some(ctx) => probe(ctx, client, ui_less, context).unwrap_or(Field::Open),
         None => {
             log::once(&format!(
                 "欄位政策：沒有焦點文件，按鍵放行給程式 exe={}",
                 log::exe_name()
             ));
-            Field::Blocked
+            Field::Open
         }
     }
 }
@@ -59,7 +82,7 @@ pub fn field(ctx: Option<&ITfContext>, client: u32, ui_less: bool) -> Field {
 /// （唯讀、停用、密碼）不切換。宿主正在處理按鍵、不給同步唯讀鎖時（Word、Outlook 收到熱鍵當下回
 /// TS_E_SYNCHRONOUS，#164）讀不到欄位政策，照常切換，同輸入指示器按鈕。
 pub fn hotkey_allowed(ctx: Option<&ITfContext>, client: u32, ui_less: bool) -> bool {
-    ctx.is_some_and(|ctx| toggle_allowed(probe(ctx, client, ui_less)))
+    ctx.is_some_and(|ctx| toggle_allowed(probe(ctx, client, ui_less, &ProbeContext::default())))
 }
 
 fn toggle_allowed(probed: Option<Field>) -> bool {
@@ -67,7 +90,7 @@ fn toggle_allowed(probed: Option<Field>) -> bool {
 }
 
 /// 欄位政策；宿主拒絕同步唯讀 edit session（讀不到）時回 None。停用或唯讀的 context 直接是 Blocked。
-fn probe(ctx: &ITfContext, client: u32, ui_less: bool) -> Option<Field> {
+fn probe(ctx: &ITfContext, client: u32, ui_less: bool, context: &ProbeContext) -> Option<Field> {
     unsafe {
         if let Some(reason) = disabled_reason(ctx) {
             // 程式自己停用了輸入法（例如 ImmAssociateContext(NULL)、唯讀文件）：同其他輸入法不組字。每個行程每種原因記一次（#257）。
@@ -87,12 +110,14 @@ fn probe(ctx: &ITfContext, client: u32, ui_less: bool) -> Option<Field> {
         let edit: ITfEditSession = probe.to_interface();
         match ctx.RequestEditSession(client, &edit, TF_ES_SYNC | TF_ES_READ) {
             Ok(hr) if hr.is_ok() => Some(probe.field.get()),
+            // 兩條 None 路徑都是「讀不到欄位政策」（host 拒絕同步鎖／Com 錯誤），
+            // 不是「確認敏感」；敏感欄位在上面與 ScopeProbe 裡明確回 Some(Blocked)。
             Ok(hr) => {
-                unreadable(hr);
+                unreadable(hr, client, ui_less, context);
                 None
             }
             Err(error) => {
-                unreadable(error.code());
+                unreadable(error.code(), client, ui_less, context);
                 None
             }
         }
@@ -100,14 +125,31 @@ fn probe(ctx: &ITfContext, client: u32, ui_less: bool) -> Option<Field> {
 }
 
 /// 讀不到欄位政策（宿主拒絕同步唯讀鎖，或讀 InputScope 時出錯）：按鍵放行、熱鍵照常切換（#164）。
-/// 預設在 tsf.log 每個行程、每種 HRESULT 記一次（#209）。
-fn unreadable(hr: windows_core::HRESULT) {
-    log::once(&format!(
-        "欄位政策：讀不到（{:?}），按鍵放行給程式、Ctrl＋Space 照常切換 exe={}",
+/// 記錄完整上下文讓使用者跑一次就能看出是哪個 callback、哪個鍵被拒：
+/// HRESULT、callback、vk、client、ui_less、activate_flags。
+/// 預設在 tsf.log 每個行程、每種組合記一次（最多 32 則）。
+fn unreadable(hr: windows_core::HRESULT, client: u32, ui_less: bool, context: &ProbeContext) {
+    let detail = format!(
+        "hr={:?} callback={} vk={} client={} ui_less={} activate_flags={:#x}",
         hr,
+        if context.callback.is_empty() {
+            "?"
+        } else {
+            context.callback
+        },
+        context
+            .vk
+            .map_or_else(|| "-".to_owned(), |vk| vk.to_string()),
+        client,
+        ui_less,
+        context.activate_flags
+    );
+    log::once(&format!(
+        "欄位政策：讀不到（{}），按鍵放行給程式、Ctrl＋Space 照常切換 exe={}",
+        detail,
         log::exe_name()
     ));
-    zdebug!("field policy unreadable={:?}", hr);
+    zdebug!("field policy unreadable {} exe={}", detail, log::exe_name());
 }
 
 fn context_disabled(ctx: &ITfContext) -> bool {
@@ -506,6 +548,9 @@ impl ITfEditSession_Impl for ScopeProbe_Impl {
                     "欄位政策：宿主沒有回報選取範圍，無法判斷，按鍵放行給程式 exe={}",
                     log::exe_name()
                 ));
+                // 原本忘了設 field，Cell 維持初始值 Blocked，與上面「放行」的 log 矛盾。
+                // 讀不到選取範圍不是確認敏感，補成 Open。
+                self.field.set(Field::Open);
                 return Ok(());
             };
             let mut value = match prop.GetValue(ec, &range) {
@@ -562,11 +607,9 @@ impl ITfEditSession_Impl for ScopeProbe_Impl {
                 let mut count = 0;
                 scope.GetInputScopes(&mut scopes, &mut count)?;
                 let field = if scopes.is_null() {
-                    if count != 0 {
-                        Field::Blocked
-                    } else {
-                        Field::Open
-                    }
+                    // 宿主回報有 scope 數量卻沒給陣列（count != 0）是 API 回 inconsistent，
+                    // 讀不到內容，不是確認敏感；與其他「讀不到」路徑一樣放行。
+                    Field::Open
                 } else {
                     scope_field(std::slice::from_raw_parts(scopes, count as usize))
                 };

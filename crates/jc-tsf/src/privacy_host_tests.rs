@@ -33,6 +33,8 @@ enum Scope {
     Scopes(Vec<InputScope>),
     /// 沒有 InputScope 屬性（GetAppProperty 失敗）。
     NoProperty,
+    /// 宿主拒絕同步 edit session（例如 TF_E_SYNCHRONOUS），DoEditSession 根本不會被呼叫。
+    Refuse(HRESULT),
 }
 
 struct Host {
@@ -53,6 +55,9 @@ impl ITfContext_Impl for Ctx_Impl {
         session: Ref<ITfEditSession>,
         _: TF_CONTEXT_EDIT_CONTEXT_FLAGS,
     ) -> R<HRESULT> {
+        if let Scope::Refuse(hr) = self.host.scope {
+            return Ok(hr);
+        }
         Ok(match unsafe { session.ok()?.DoEditSession(1) } {
             Ok(()) => S_OK,
             Err(e) => e.code(),
@@ -189,7 +194,7 @@ impl ITfReadOnlyProperty_Impl for Property_Impl {
                 let scope: IUnknown = ComObject::new(Scopes(scopes.clone())).into_interface();
                 Ok(VARIANT::from(scope))
             }
-            Scope::NoProperty => no(),
+            Scope::NoProperty | Scope::Refuse(_) => no(),
         }
     }
     fn GetContext(&self) -> R<ITfContext> {
@@ -536,6 +541,26 @@ fn init() {
     }
     register(w!("UnrealWindow"), Some(plain_proc));
     register(w!("ZcProtectedField"), Some(protected_proc));
+}
+
+#[test]
+fn refused_sync_edit_session_opens_the_field() {
+    // fix-probe-debug：host 正在處理按鍵（InputScope probe 在按鍵 callback 內），
+    // RequestEditSession 回 TF_E_SYNCHRONOUS（0x80040208）。這是「讀不到」，不是「確認敏感」。
+    init();
+    let unreal = window(w!("UnrealWindow"), 0);
+    let ctx = host(
+        unreal,
+        unreal,
+        Scope::Refuse(TF_E_SYNCHRONOUS),
+        TS_SS_NOHIDDENTEXT,
+        0,
+    );
+    assert_eq!(field(Some(&ctx), 1, false), Field::Open);
+    assert!(hotkey_allowed(Some(&ctx), 1, false));
+    unsafe {
+        let _ = DestroyWindow(unreal);
+    }
 }
 
 #[test]

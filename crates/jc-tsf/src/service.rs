@@ -1091,7 +1091,8 @@ impl TextService_Impl {
     }
 
     /// 每次按鍵重新確認欄位；阻擋路徑不記錄鍵碼、不連線／重播引擎。
-    fn allowed(&self, ctx: Option<&ITfContext>) -> bool {
+    /// `callback`／`vk` 只供 probe 失敗的診斷 log 使用。
+    fn allowed(&self, ctx: Option<&ITfContext>, callback: &'static str, vk: u32) -> bool {
         let (secure, client, ui_less, flags) = {
             let st = self.state.borrow();
             (st.secure, st.client_id, st.ui_less, st.activate_flags)
@@ -1099,7 +1100,16 @@ impl TextService_Impl {
         let field = if secure {
             privacy::Field::Blocked
         } else {
-            let field = privacy::field(ctx, client, ui_less);
+            let field = privacy::field_at(
+                ctx,
+                client,
+                ui_less,
+                &privacy::ProbeContext {
+                    callback,
+                    vk: Some(vk),
+                    activate_flags: flags,
+                },
+            );
             privacy::note_context(ctx, flags, field);
             field
         };
@@ -1678,7 +1688,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                     zdebug!("OnTestKeyDown vk={} 重排的鍵沒回來，清掉等待", pending.vk);
                 }
             }
-            if !self.allowed(pic.as_ref()) {
+            if !self.allowed(pic.as_ref(), "OnTestKeyDown", wparam.0 as u32) {
                 return Ok(false.into());
             }
             let vk = wparam.0 as u32;
@@ -1715,7 +1725,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 // 放開就是這一鍵結束了：重排的鍵沒回來也不再等。
                 st.pending_repost = None;
             }
-            if !self.allowed(pic.as_ref()) {
+            if !self.allowed(pic.as_ref(), "OnTestKeyUp", wparam.0 as u32) {
                 return Ok(false.into());
             }
             let vk = wparam.0 as u32;
@@ -1752,7 +1762,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 let mut st = self.state.borrow_mut();
                 (st.hotkey_tested.take(vk), st.key_tested.take(vk))
             };
-            if !self.allowed(pic.as_ref()) {
+            if !self.allowed(pic.as_ref(), "OnKeyDown", vk) {
                 return Ok(false.into());
             }
             self.observe_shift(vk, lparam.0);
@@ -1832,7 +1842,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 st.hotkey_tested.forget();
                 st.key_tested.forget();
             }
-            if !self.allowed(pic.as_ref()) {
+            if !self.allowed(pic.as_ref(), "OnKeyUp", wparam.0 as u32) {
                 return Ok(false.into());
             }
             if let Some(side) = keys::shift_side(wparam.0 as u32, lparam.0) {
