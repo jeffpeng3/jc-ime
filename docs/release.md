@@ -266,10 +266,12 @@ Windows 的程式有 66 處 `#[cfg(windows)]`，Linux 的 `cargo test` 完全看
 1. `msiexec /i <msi> /qn /l*v %TEMP%\install.log`，自己等 10 分鐘，超過就中止並印
    log 最後 40 行；結束碼只接受 `0` 與 `3010`（成功但需重開機）。
 2. 斷言 `C:\Program Files\jc-ime\` 有 `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe`。
-3. 執行 `C:\Program Files\jc-ime\jc-tsf-smoke.exe`，斷言結束碼 `0`。它輸出純文字，
-   逐項結果在 `%TEMP%\smoke.log`；七項檢查的意義見 `docs/port/tsf-smoke.md`。
-   目前輸出是文字，等 doctor task 合併 `--json` 後再改成解析欄位。
-4. 用 PowerShell 斷言註冊狀態：
+3. 執行 `C:\Program Files\jc-ime\jc-tsf-smoke.exe --json`，輸出寫到 `%TEMP%\smoke.json`，
+   診斷訊息寫到 `%TEMP%\smoke.err.log`。斷言 schema 是 `jc-ime-doctor/1`、`ok` 為
+   真，而且 `install.files`、`registry.tip`、`profile.machine`、`profile.user`、
+   `profile.language_list` 這五項的 status 必須是 `pass` 或 `warn`。12 項檢查的
+   意義見 `docs/port/tsf-smoke.md`。
+4. 用 PowerShell 直接斷言註冊狀態（與 doctor 的第 9 到 11 項互相備援）：
    - `HKLM:\SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\LanguageProfile\0x00000404\{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56}`
      存在，`Enable` 為 `1`。
    - 同一路徑用 `reg query /reg:32` 也查得到。CTF 機碼不是 WOW64 轉向機碼，
@@ -289,10 +291,10 @@ Windows 的程式有 66 處 `#[cfg(windows)]`，Linux 的 `cargo test` 完全看
 - 先看 job log：`msiexec` 非 0 結束碼會直接印出 `install.log`／`uninstall.log` 最後
   40 行；1603 另外標成「安裝期間發生嚴重錯誤」，通常是自訂動作或 DLL 被鎖住。
 - `if: failure()` 會上傳 artifact `install-smoke-logs-<version>`，內含
-  `install.log`、`uninstall.log`、`smoke.log`。`install.log` 的 `Return value 3`
-  往前找第一個 `CustomAction`，就是失敗的自訂動作。
-- `jc-tsf-smoke` 的 `[FAIL]` 行會指出哪一項檢查沒過，對照
-  `docs/port/tsf-smoke.md` 的七項檢查與可能原因。
+  `install.log`、`uninstall.log`、`smoke.json`、`smoke.err.log`。`install.log` 的
+  `Return value 3` 往前找第一個 `CustomAction`，就是失敗的自訂動作。
+- `smoke.json` 的 `checks` 陣列會指出哪一項 status 是 `fail`，`fix` 欄位給修復指令；
+  對照 `docs/port/tsf-smoke.md` 的 12 項檢查與可能原因。
 - `test-windows` 的失敗都在 job log：cargo test 的 crate 與測試名、clippy 的
   `-D warnings` 位置、i686 check 的型別錯誤。
 

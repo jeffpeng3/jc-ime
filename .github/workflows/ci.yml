@@ -764,9 +764,9 @@ jobs:
             Write-Host "$path 存在"
           }
 
-      # 目前 jc-tsf-smoke 輸出純文字（等 doctor task 的 --json 合併後再改），
-      # 這裡只看結束碼：0 全部通過、1 至少一項 FAIL、2 參數錯誤。
-      - name: 執行 jc-tsf-smoke
+      # jc-tsf-smoke 現在是安裝診斷工具：--json 輸出 jc-ime-doctor/1，
+      # 內含 12 項檢查。除了結束碼，還要求關鍵項目的 status 不是 fail。
+      - name: 執行 jc-tsf-smoke（doctor）
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -774,13 +774,50 @@ jobs:
           $exe = Join-Path $env:JC_INSTALL_DIR 'jc-tsf-smoke.exe'
           if (-not (Test-Path $exe)) { throw "找不到 $exe" }
 
-          $out = Join-Path $env:TEMP 'smoke.log'
-          & $exe 2>&1 | Tee-Object -FilePath $out
+          $jsonPath = Join-Path $env:TEMP 'smoke.json'
+          $errPath = Join-Path $env:TEMP 'smoke.err.log'
+          & $exe --json 1> $jsonPath 2> $errPath
           $code = $LASTEXITCODE
+          if (Test-Path $jsonPath) { Get-Content $jsonPath | Write-Host }
+          if (Test-Path $errPath) { Get-Content $errPath | Write-Host }
+
           if ($code -ne 0) {
-            throw "jc-tsf-smoke 失敗（exit $code）；輸出見 $out"
+            throw "jc-tsf-smoke 失敗（exit $code）；輸出見 $jsonPath 與 $errPath"
           }
-          Write-Host "jc-tsf-smoke 通過（exit 0）"
+          if (-not (Test-Path $jsonPath) -or (Get-Item $jsonPath).Length -eq 0) {
+            throw 'jc-tsf-smoke --json 沒有輸出 JSON。'
+          }
+
+          $report = Get-Content $jsonPath -Raw | ConvertFrom-Json
+          if ($report.schema -ne 'jc-ime-doctor/1') {
+            throw "doctor schema 不是 jc-ime-doctor/1：$($report.schema)"
+          }
+          if (-not $report.ok) {
+            $failed = @($report.checks | Where-Object { $_.status -eq 'fail' })
+            foreach ($item in $failed) {
+              Write-Host ("[FAIL] {0}：{1}" -f $item.id, $item.detail)
+              if ($item.fix) { Write-Host ("       修復：{0}" -f $item.fix) }
+            }
+            throw "doctor 回報 $($failed.Count) 項失敗。"
+          }
+
+          # 這幾項是這次幾輪 bug 的根因，必須明確是 pass 或 warn（skip 不接受）。
+          $required = @(
+            'install.files',
+            'registry.tip',
+            'profile.machine',
+            'profile.user',
+            'profile.language_list'
+          )
+          foreach ($id in $required) {
+            $item = $report.checks | Where-Object { $_.id -eq $id } | Select-Object -First 1
+            if (-not $item) { throw "doctor 缺少必要檢查：$id" }
+            if ($item.status -ne 'pass' -and $item.status -ne 'warn') {
+              throw "doctor 檢查 $id 的 status 是 $($item.status)：$($item.detail)"
+            }
+            Write-Host ("[OK] {0} = {1}" -f $id, $item.status)
+          }
+          Write-Host "jc-tsf-smoke（doctor）通過"
 
       - name: 斷言 TSF 註冊與語言清單
         shell: pwsh
@@ -915,8 +952,8 @@ jobs:
           }
           Write-Host '32 位元檢視的 profile 機碼已移除'
 
-      # 失敗時把三個 log 留下來：install.log 有自訂動作的完整輸出，
-      # smoke.log 有七項檢查的逐項結果。
+      # 失敗時把 log 留下來：install.log 有自訂動作的完整輸出，
+      # smoke.json 有 12 項 doctor 檢查的逐項結果。
       - name: 上傳失敗記錄
         if: failure()
         uses: actions/upload-artifact@v6
@@ -926,7 +963,8 @@ jobs:
           path: |
             ${{ runner.temp }}/install.log
             ${{ runner.temp }}/uninstall.log
-            ${{ runner.temp }}/smoke.log
+            ${{ runner.temp }}/smoke.json
+            ${{ runner.temp }}/smoke.err.log
 
 
   # 與 build-windows 相同：只 needs check-tag，與測試並行起步。
