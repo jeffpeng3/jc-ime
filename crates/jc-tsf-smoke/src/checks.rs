@@ -1,8 +1,9 @@
-//! 七項檢查的流程。
+//! 十二項安裝診斷的流程。
 //!
 //! 順序固定為：DLL 載入 → 類廠 → 介面 vtable／物件身分 → `ITfThreadMgr` →
-//! `Activate`（只註冊 sink，不連 pipe）→ 引擎 pipe → 註冊探測。檢查 6 自己
-//! 探測 pipe，不依賴 Activate；前一步失敗時後面改印 `[SKIP]`。
+//! `Activate` → 引擎 pipe → 註冊探測 → 安裝檔案 → machine profile 機碼 →
+//! 使用者啟用（TSF API）→ 使用者語言清單 → 引擎細節。前一步失敗時後面盡量改成
+//! `[SKIP]`，不要連鎖製造假失敗。
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -14,6 +15,7 @@ use windows::Win32::System::Com::{
     COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::System::Ole::CONNECT_E_ADVISELIMIT;
+use windows::Win32::System::Registry::{KEY_WOW64_32KEY, KEY_WOW64_64KEY};
 use windows::Win32::UI::TextServices::{
     CLSID_TF_ThreadMgr, ITfClientId, ITfCompositionSink, ITfKeyEventSink, ITfKeystrokeMgr,
     ITfTextInputProcessor, ITfThreadMgr, ITfThreadMgrEventSink,
@@ -21,26 +23,28 @@ use windows::Win32::UI::TextServices::{
 
 use crate::dll::{self, Library};
 use crate::engine;
+use crate::install;
 use crate::product;
+use crate::profile::{self, UserProfileVerdict};
 use crate::registry;
 use crate::report::{self, Report};
+use crate::tsf_profile;
 
 /// 執行全部檢查，回傳行程結束碼。
 pub fn run(args: Vec<String>) -> std::process::ExitCode {
     // 純診斷：記錄起點，供 Deactivate／probe 的卡點時間戳使用。
     let start = Instant::now();
 
-    let dll_arg = match parse_args(&args) {
-        Cli::Run(dll) => dll,
+    let options = match parse_args(&args) {
+        Cli::Run(options) => options,
         Cli::Help => return std::process::ExitCode::SUCCESS,
         Cli::Error => return std::process::ExitCode::from(2),
     };
 
-    println!("jc-tsf 免管理員冒煙測試（{}）", product::DISPLAY_NAME);
-    println!("不需要管理員；不會呼叫 ITfInputProcessorProfiles::Register。");
-    println!();
-
-    let mut report = Report::default();
+    let mut report = Report::new(options.json);
+    report.heading(format!("jc-ime 安裝診斷（{}）", product::DISPLAY_NAME));
+    report.heading("不需要管理員；只讀機碼與 TSF API，不呼叫 Register／ActivateProfile。");
+    report.heading("");
 
     // TSF 的 COM 物件是 apartment-threaded；先初始化再建立任何物件。
     // SAFETY: 這條執行緒還沒有初始化 COM。
@@ -51,12 +55,13 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
     ));
     let com_ready = com.is_ok();
 
-    let path = dll::resolve_path(dll_arg.as_deref());
+    let clsid_text = product::registry_key(&product::CLSID_JC_TSF);
+    let profile_text = product::registry_key(&product::GUID_PROFILE_JC_TSF);
+
+    let path = dll::resolve_path(options.dll.as_deref());
     report.info(format!("DLL：{}", path.display()));
     report.info(format!(
-        "CLSID {}；profile {}；LANGID {}",
-        product::registry_key(&product::CLSID_JC_TSF),
-        product::registry_key(&product::GUID_PROFILE_JC_TSF),
+        "CLSID {clsid_text}；profile {profile_text}；LANGID {}",
         report::hex(product::LANGID_ZH_TW as u32)
     ));
 
@@ -66,7 +71,8 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
         Ok(loaded) => {
             match loaded.can_unload_now() {
                 Ok(hresult) => report.pass(
-                    "1. LoadLibraryW + DllCanUnloadNow",
+                    "dll.load",
+                    "DLL 載入",
                     format!(
                         "{}；DllCanUnloadNow = {}",
                         path.display(),
@@ -74,13 +80,20 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
                     ),
                 ),
                 Err(error) => report.fail(
-                    "1. LoadLibraryW + DllCanUnloadNow",
+                    "dll.load",
+                    "DLL 載入",
                     format!("{} 已載入，但 {error}", path.display()),
+                    "確認 DLL 是完整的 release 建置（匯出 DllCanUnloadNow），或重新安裝",
                 ),
             }
             library = Some(loaded);
         }
-        Err(error) => report.fail("1. LoadLibraryW + DllCanUnloadNow", error.to_string()),
+        Err(error) => report.fail(
+            "dll.load",
+            "DLL 載入",
+            error.to_string(),
+            "確認 jc-tsf.dll 與它的依賴（VC runtime）在同一個目錄；用 --dll 指定正確路徑",
+        ),
     }
 
     // ── 2. DllGetClassObject → IClassFactory ─────────────────────────
@@ -89,20 +102,23 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
         Some(loaded) => match loaded.get_class_object(&product::CLSID_JC_TSF) {
             Ok(class_factory) => {
                 report.pass(
-                    "2. DllGetClassObject(CLSID_JC_TSF, IClassFactory)",
-                    format!("S_OK（{}）", report::hex(0)),
+                    "dll.class_factory",
+                    "類廠",
+                    format!(
+                        "DllGetClassObject(CLSID_JC_TSF, IClassFactory) = S_OK（{}）",
+                        report::hex(0)
+                    ),
                 );
                 factory = Some(class_factory);
             }
             Err(error) => report.fail(
-                "2. DllGetClassObject(CLSID_JC_TSF, IClassFactory)",
+                "dll.class_factory",
+                "類廠",
                 error.to_string(),
+                "DLL 與 jc-tsf-smoke 的 CLSID 不一致或 DLL 版本錯誤；重新建置／安裝",
             ),
         },
-        None => report.skip(
-            "2. DllGetClassObject(CLSID_JC_TSF, IClassFactory)",
-            "DLL 未載入",
-        ),
+        None => report.skip("dll.class_factory", "類廠", "DLL 未載入"),
     }
 
     // ── 3. CreateInstance 之後的 QI 與物件身分 ───────────────────────
@@ -141,30 +157,39 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
                             detail.push_str(
                                 "；ITfKeyEventSink 與 ITfTextInputProcessor 是同一個物件",
                             );
-                            report.pass("3. CreateInstance + QI（vtable 與物件身分）", detail);
+                            report.pass("dll.vtable", "vtable 與物件身分", detail);
                         }
                         Some(false) => {
                             detail.push_str(
                                 "；ITfKeyEventSink 不是 ITfTextInputProcessor 同一個物件（msctf 不接受獨立 sink）",
                             );
-                            report.fail("3. CreateInstance + QI（vtable 與物件身分）", detail);
+                            report.fail(
+                                "dll.vtable",
+                                "vtable 與物件身分",
+                                detail,
+                                "把 ITfKeyEventSink 實作在同一個物件上（jc-tsf 的 Control）",
+                            );
                         }
                         None => {
                             detail.push_str("；無法比對物件身分（QI IUnknown 失敗）");
-                            report.fail("3. CreateInstance + QI（vtable 與物件身分）", detail);
+                            report.fail(
+                                "dll.vtable",
+                                "vtable 與物件身分",
+                                detail,
+                                "檢查 DllGetClassObject 回傳的物件與 QueryInterface 實作",
+                            );
                         }
                     }
                 }
                 Err(error) => report.fail(
-                    "3. CreateInstance + QI（vtable 與物件身分）",
+                    "dll.vtable",
+                    "vtable 與物件身分",
                     format!("CreateInstance 回 {}", report::hex(error.code().0 as u32)),
+                    "檢查 IClassFactory::CreateInstance 的實作與 DLL 版本",
                 ),
             }
         }
-        None => report.skip(
-            "3. CreateInstance + QI（vtable 與物件身分）",
-            "沒有 IClassFactory",
-        ),
+        None => report.skip("dll.vtable", "vtable 與物件身分", "沒有 IClassFactory"),
     }
 
     // ── 4. msctf 的 ITfThreadMgr ─────────────────────────────────────
@@ -179,14 +204,23 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
     } {
         Ok(manager) => {
             report.pass(
-                "4. CoCreateInstance(CLSID_TF_ThreadMgr)",
-                format!("S_OK（{}）", report::hex(0)),
+                "tsf.thread_mgr",
+                "ITfThreadMgr",
+                format!(
+                    "CoCreateInstance(CLSID_TF_ThreadMgr) = S_OK（{}）",
+                    report::hex(0)
+                ),
             );
             thread_mgr = Some(manager);
         }
         Err(error) => report.fail(
-            "4. CoCreateInstance(CLSID_TF_ThreadMgr)",
-            format!("HRESULT {}", report::hex(error.code().0 as u32)),
+            "tsf.thread_mgr",
+            "ITfThreadMgr",
+            format!(
+                "CoCreateInstance(CLSID_TF_ThreadMgr) 回 HRESULT {}",
+                report::hex(error.code().0 as u32)
+            ),
+            "msctf.dll 不在或被系統精簡；這不是 jc-tsf 的問題，先修復 Windows TSF",
         ),
     }
 
@@ -221,7 +255,8 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
                             match unsafe { service.Activate(manager, tip_client_id) } {
                                 Ok(()) => {
                                     report.pass(
-                                        "5. Activate",
+                                        "tsf.activate",
+                                        "Activate",
                                         format!(
                                             "ITfThreadMgr::Activate → 應用程式 client_id={application_client_id}；\
                                              ITfClientId::GetClientId → TIP client_id={tip_client_id}；\
@@ -234,7 +269,8 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
                                 Err(error) => match classify_tip_activate(error.code().0) {
                                     TipActivate::AlreadyActivated => {
                                         report.pass(
-                                            "5. Activate",
+                                            "tsf.activate",
+                                            "Activate",
                                             format!(
                                                 "TIP client_id={tip_client_id} 已有 key sink（HRESULT {}）：\
                                                  msctf 在 ITfThreadMgr::Activate 時已激活本 TIP，不需再手動激活",
@@ -244,23 +280,27 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
                                         activated = true;
                                     }
                                     TipActivate::Failed(_) | TipActivate::Activated => report.fail(
-                                        "5. Activate",
+                                        "tsf.activate",
+                                        "Activate",
                                         format!(
                                             "ITfTextInputProcessor::Activate 回 HRESULT {}；詳細步驟見 TSF 日誌：\
                                              設定環境變數 JC_TSF_LOG=1 後重跑，會追加到 %LOCALAPPDATA%\\jc-ime\\tsf.log\
                                              （沒設定時只走 OutputDebugStringW，用 DebugView 才看得到）",
                                             report::hex(error.code().0 as u32)
                                         ),
+                                        "設定 JC_TSF_LOG=1 重跑取得 tsf.log；確認 Activate 收到的是 TIP client id（不是應用程式 id）",
                                     ),
                                 },
                             }
                         }
                         Err(error) => report.fail(
-                            "5. Activate",
+                            "tsf.activate",
+                            "Activate",
                             format!(
                                 "取得 TIP client_id 失敗：HRESULT {}",
                                 report::hex(error.code().0 as u32)
                             ),
+                            "確認 ITfThreadMgr 支援 ITfClientId；這是 msctf 版本問題，先修復 Windows TSF",
                         ),
                     }
 
@@ -298,15 +338,21 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
                     std::thread::sleep(Duration::from_millis(200));
                 }
                 Err(error) => report.fail(
-                    "5. Activate",
+                    "tsf.activate",
+                    "Activate",
                     format!(
                         "ITfThreadMgr::Activate 回 HRESULT {}",
                         report::hex(error.code().0 as u32)
                     ),
+                    "TSF 可能被同執行緒的其他程式佔用；關掉其他使用 TSF 的程式再重跑",
                 ),
             }
         }
-        _ => report.skip("5. Activate", "缺少 ITfTextInputProcessor 或 ITfThreadMgr"),
+        _ => report.skip(
+            "tsf.activate",
+            "Activate",
+            "缺少 ITfTextInputProcessor 或 ITfThreadMgr",
+        ),
     }
 
     // ── 6. 引擎 pipe ────────────────────────────────────────────────
@@ -315,11 +361,18 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
         start.elapsed().as_secs_f64()
     );
     let _ = std::io::stderr().flush();
-    match engine::probe() {
-        Ok(detail) => report.pass("6. 引擎 pipe", detail),
-        Err(reason) => report.skip(
-            "6. 引擎 pipe",
-            format!("{reason}；引擎未啟動或未安裝，只警告不判定失敗"),
+    let engine_probe = engine::probe();
+    match &engine_probe {
+        engine::Probe::Connected(_) => {
+            report.pass("engine.pipe", "引擎 pipe", engine_probe.pipe_detail())
+        }
+        engine::Probe::Unavailable { .. } => report.skip(
+            "engine.pipe",
+            "引擎 pipe",
+            format!(
+                "{}；引擎未啟動或未安裝，只警告不判定失敗",
+                engine_probe.pipe_detail()
+            ),
         ),
     }
     eprintln!(
@@ -351,11 +404,11 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
     // 對應手動驗證的 `reg query ... /reg:64` 與 `/reg:32`：兩個檢視都要看到同一個
     // CLSID，而且各指到對應架構的 DLL。只看得到一邊就代表有一個架構的程式打不出
     // 字，所以算失敗；完全沒安裝才算略過。
-    let clsid_text = product::registry_key(&product::CLSID_JC_TSF);
     match registry::probe(&clsid_text) {
         Ok(probe) => match probe.verdict(&clsid_text) {
             registry::Verdict::Installed { x64_dll, x86_dll } => report.pass(
-                "7. 註冊探測",
+                "registry.tip",
+                "註冊探測",
                 format!(
                     "兩個檢視都有 {clsid_text}：64 位元 → {x64_dll}（{} 個 TIP）、\
                      32 位元 → {x86_dll}（{} 個 TIP）",
@@ -363,18 +416,49 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
                 ),
             ),
             registry::Verdict::NotInstalled => report.skip(
-                "7. 註冊探測",
+                "registry.tip",
+                "註冊探測",
                 format!("64 位元與 32 位元檢視都沒有 {clsid_text}（尚未安裝，不判定失敗）"),
             ),
             registry::Verdict::Broken(message) => report.fail(
-                "7. 註冊探測",
-                format!(
-                    "{message}。修復：CLSID 由 MSI 寫，先修復安裝（msiexec /fa <msi>）；\
-                     再以管理員執行 jc-tip-register machine-register 補 profile 與分類"
-                ),
+                "registry.tip",
+                "註冊探測",
+                message,
+                "CLSID 由 MSI 寫，先修復安裝（msiexec /fa <msi>）；再以管理員執行 jc-tip-register machine-register 補 profile 與分類",
             ),
         },
-        Err(error) => report.skip("7. 註冊探測", format!("{error}（不判定失敗）")),
+        Err(error) => report.skip(
+            "registry.tip",
+            "註冊探測",
+            format!("{error}（不判定失敗）"),
+        ),
+    }
+
+    // ── 8. 安裝檔案 ─────────────────────────────────────────────────
+    check_install_files(&mut report, &clsid_text);
+
+    // ── 9. machine profile 機碼 ─────────────────────────────────────
+    check_machine_profile(&mut report, &clsid_text, &profile_text);
+
+    // ── 10. 使用者啟用（TSF API） ───────────────────────────────────
+    check_user_profile(&mut report, com_ready, &clsid_text);
+
+    // ── 11. 使用者語言清單 ──────────────────────────────────────────
+    check_language_list(&mut report, &clsid_text, &profile_text);
+
+    // ── 12. 引擎細節 ────────────────────────────────────────────────
+    match engine_probe.engine_detail() {
+        Ok(detail) if !engine_probe.draining() => report.pass("engine.detail", "引擎細節", detail),
+        Ok(detail) => report.warn(
+            "engine.detail",
+            "引擎細節",
+            format!("{detail}；引擎正在交接，重跑或重新啟動引擎後再確認"),
+        ),
+        Err(detail) => report.skip(
+            "engine.detail",
+            "引擎細節",
+            format!("{detail}；引擎未啟動時無法取得版本與健康狀態"),
+        ),
     }
 
     // 放掉所有 COM 參照後再看一次：S_OK 代表沒有漏掉的引用。
@@ -391,18 +475,332 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
     }
     drop(library);
 
-    println!();
-    println!("結果：{}", report.summary());
     if com_ready {
         // SAFETY: 上面的 CoInitializeEx 成功，配對呼叫一次。
         unsafe { CoUninitialize() };
     }
 
+    report.finish();
     if report.failed() == 0 {
         std::process::ExitCode::SUCCESS
     } else {
         std::process::ExitCode::FAILURE
     }
+}
+
+/// 檢查 8：從 `InprocServer32` 推出安裝目錄，確認四個必要檔案並輸出 SHA-256。
+fn check_install_files(report: &mut Report, clsid_text: &str) {
+    let inproc = match registry::read_install_inproc(clsid_text) {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            report.skip(
+                "install.files",
+                "安裝檔案",
+                "找不到 InprocServer32（尚未安裝）",
+            );
+            return;
+        }
+        Err(error) => {
+            report.skip(
+                "install.files",
+                "安裝檔案",
+                format!("{error}（不判定失敗）"),
+            );
+            return;
+        }
+    };
+
+    let Some(probe) = install::probe(&inproc) else {
+        report.skip(
+            "install.files",
+            "安裝檔案",
+            format!("InprocServer32 的路徑無法推出安裝目錄：{inproc}"),
+        );
+        return;
+    };
+
+    let mut missing = Vec::new();
+    let mut details = Vec::new();
+    let mut without_version = 0usize;
+    for file in &probe.files {
+        if !file.present {
+            missing.push(file.path.display().to_string());
+        } else {
+            if file.missing_version() {
+                without_version += 1;
+            }
+            details.push(file.detail());
+        }
+    }
+    if !probe.manifest.present {
+        missing.push(probe.manifest.path.display().to_string());
+    } else {
+        details.push(probe.manifest.sha_detail());
+    }
+
+    if !missing.is_empty() {
+        report.fail(
+            "install.files",
+            "安裝檔案",
+            format!(
+                "{} 缺少：{}；已存在：{}",
+                probe.dir.display(),
+                missing.join("、"),
+                if details.is_empty() {
+                    "（無）".to_string()
+                } else {
+                    details.join("；")
+                }
+            ),
+            "修復安裝（msiexec /fa <msi>）；資料檔遺失時確認 %ProgramData%\\jc-ime\\data 沒有被手動刪除",
+        );
+        return;
+    }
+
+    let detail = format!("安裝目錄 {}；{}", probe.dir.display(), details.join("；"));
+    if without_version > 0 {
+        report.warn(
+            "install.files",
+            "安裝檔案",
+            format!("{detail}；{without_version} 個 PE 檔沒有版本資源（不影響載入）"),
+        );
+    } else {
+        report.pass("install.files", "安裝檔案", detail);
+    }
+}
+
+/// 檢查 9：`HKLM\...\LanguageProfile\0x00000404\{PROFILE}` 的 64／32 位元檢視。
+fn check_machine_profile(report: &mut Report, clsid_text: &str, profile_text: &str) {
+    let key_path = profile::machine_profile_key(clsid_text, product::LANGID_ZH_TW, profile_text);
+    let views = [("64 位元", KEY_WOW64_64KEY), ("32 位元", KEY_WOW64_32KEY)];
+
+    let mut problems = Vec::new();
+    let mut read_errors = Vec::new();
+    let mut notes = Vec::new();
+    let mut details = Vec::new();
+    let mut present = 0usize;
+    let mut missing = 0usize;
+
+    for (label, view) in views {
+        let canonical =
+            registry::read_machine_profile(clsid_text, product::LANGID_ZH_TW, profile_text, view);
+        let (profile, legacy) = match canonical {
+            Ok(Some(profile)) => (Some(profile), false),
+            Ok(None) => match registry::read_legacy_machine_profile(
+                clsid_text,
+                product::LANGID_ZH_TW,
+                profile_text,
+                view,
+            ) {
+                Ok(Some(profile)) => (Some(profile), true),
+                Ok(None) => (None, false),
+                Err(error) => {
+                    read_errors.push(format!("{label}檢視讀取失敗：{error}"));
+                    continue;
+                }
+            },
+            Err(error) => {
+                read_errors.push(format!("{label}檢視讀取失敗：{error}"));
+                continue;
+            }
+        };
+
+        let Some(profile) = profile else {
+            missing += 1;
+            problems.push(format!("{label}檢視的 {key_path} 不存在"));
+            continue;
+        };
+
+        present += 1;
+        if legacy {
+            notes.push(format!(
+                "{label}檢視只有非標準的 0x0404 機碼；msctf 讀的是 0x00000404"
+            ));
+        }
+
+        let description = profile.description.clone().unwrap_or_default();
+        if description.is_empty() {
+            problems.push(format!("{label}檢視的 Description 是空的"));
+        }
+        match profile.enable {
+            Some(enable) => {
+                details.push(format!(
+                    "{label}：Enable={enable}、Description={description}"
+                ));
+            }
+            None => {
+                details.push(format!("{label}：Enable 不存在、Description={description}"));
+                notes.push(format!("{label}檢視沒有 Enable 值"));
+            }
+        }
+        if profile.icon_file.is_none() {
+            notes.push(format!("{label}檢視沒有 IconFile（正常，安裝器不帶圖示）"));
+        }
+    }
+
+    // 兩個檢視都讀不到、而且都是「不存在」：尚未安裝，不是失敗。
+    if present == 0 && missing == 2 && read_errors.is_empty() {
+        report.skip(
+            "profile.machine",
+            "machine profile 機碼",
+            format!("兩個檢視都沒有 {key_path}（尚未安裝）"),
+        );
+        return;
+    }
+
+    if !problems.is_empty() || !read_errors.is_empty() {
+        let note = if notes.is_empty() {
+            String::new()
+        } else {
+            format!("；{}", notes.join("；"))
+        };
+        let details = if details.is_empty() {
+            String::new()
+        } else {
+            format!("；{}", details.join("；"))
+        };
+        report.fail(
+            "profile.machine",
+            "machine profile 機碼",
+            format!(
+                "{}{}{details}{note}",
+                problems.join("；"),
+                if read_errors.is_empty() {
+                    String::new()
+                } else {
+                    format!("；{}", read_errors.join("；"))
+                }
+            ),
+            "以管理員執行 jc-tip-register machine-register；若機碼完全不存在，先修復安裝（msiexec /fa <msi>）",
+        );
+        return;
+    }
+
+    let detail = format!("{key_path}：{}", details.join("；"));
+    if notes.is_empty() {
+        report.pass("profile.machine", "machine profile 機碼", detail);
+    } else {
+        report.warn(
+            "profile.machine",
+            "machine profile 機碼",
+            format!("{detail}；{}", notes.join("；")),
+        );
+    }
+}
+
+/// 檢查 10：用 TSF API 問目前使用者是否已啟用、profile 是否被列舉。
+fn check_user_profile(report: &mut Report, com_ready: bool, clsid_text: &str) {
+    if !com_ready {
+        report.skip(
+            "profile.user",
+            "使用者啟用",
+            "COM 沒有初始化，無法呼叫 TSF API",
+        );
+        return;
+    }
+
+    let state = match tsf_profile::query() {
+        Ok(state) => state,
+        Err(error) => {
+            report.skip(
+                "profile.user",
+                "使用者啟用",
+                format!("{error}（無法查詢 TSF API）"),
+            );
+            return;
+        }
+    };
+
+    let detail = state.detail();
+    match state.verdict() {
+        Some(UserProfileVerdict::Ready) => report.pass("profile.user", "使用者啟用", detail),
+        Some(UserProfileVerdict::Disabled) => report.fail(
+            "profile.user",
+            "使用者啟用",
+            detail,
+            format!(
+                "以目前使用者執行 \"{}\" user-install",
+                register_exe(clsid_text)
+            ),
+        ),
+        Some(UserProfileVerdict::NotEnumerated) => report.fail(
+            "profile.user",
+            "使用者啟用",
+            detail,
+            "以管理員執行 jc-tip-register machine-register（profile 沒有被 EnumLanguageProfiles 列出）",
+        ),
+        None => report.skip(
+            "profile.user",
+            "使用者啟用",
+            format!("{detail}；TSF API 沒有回傳完整結果"),
+        ),
+    }
+}
+
+/// 檢查 11：`HKCU\Control Panel\International\User Profile` 的語言清單。
+fn check_language_list(report: &mut Report, clsid_text: &str, profile_text: &str) {
+    let list = match registry::read_user_language_list() {
+        Ok(list) => list,
+        Err(error) => {
+            report.skip(
+                "profile.language_list",
+                "語言清單",
+                format!("{error}（不判定失敗）"),
+            );
+            return;
+        }
+    };
+
+    let has_language = list
+        .languages
+        .iter()
+        .any(|entry| profile::language_matches(entry, profile::LANGUAGE_ZH_HANT_TW));
+    let expected_tip = profile::input_method_tip(clsid_text, profile_text, product::LANGID_ZH_TW);
+    let has_tip = list
+        .input_method_tips
+        .iter()
+        .any(|entry| profile::tip_matches(entry, clsid_text, profile_text, product::LANGID_ZH_TW));
+
+    let detail = format!(
+        "Languages {} 項（{}）；zh-Hant-TW\\InputMethodTips {} 項（{}）",
+        list.languages.len(),
+        if has_language {
+            "含 zh-Hant-TW"
+        } else {
+            "缺 zh-Hant-TW"
+        },
+        list.input_method_tips.len(),
+        if has_tip {
+            format!("含 {expected_tip}")
+        } else {
+            "缺本產品".to_string()
+        }
+    );
+
+    if has_language && has_tip {
+        report.pass("profile.language_list", "語言清單", detail);
+    } else {
+        report.fail(
+            "profile.language_list",
+            "語言清單",
+            detail,
+            format!(
+                "以目前使用者執行 \"{}\" user-install",
+                register_exe(clsid_text)
+            ),
+        );
+    }
+}
+
+/// `jc-tip-register.exe` 的完整路徑；取不到安裝目錄時用預設安裝路徑。
+fn register_exe(clsid_text: &str) -> String {
+    let dir = registry::read_install_inproc(clsid_text)
+        .ok()
+        .flatten()
+        .and_then(|path| profile::install_dir(&path))
+        .map(|dir| dir.display().to_string())
+        .unwrap_or_else(|| r"C:\Program Files\jc-ime".to_string());
+    format!(r"{dir}\jc-tip-register.exe")
 }
 
 /// `ITfTextInputProcessor::Activate` 的判定結果。
@@ -469,11 +867,20 @@ fn qi<T: Interface>(unknown: &IUnknown, name: &str, cells: &mut Vec<String>) -> 
     }
 }
 
+/// 命令列選項。
+#[derive(Debug, PartialEq, Eq)]
+struct Options {
+    /// `--dll` 或位置參數給的路徑。
+    dll: Option<String>,
+    /// stdout 只輸出 JSON。
+    json: bool,
+}
+
 /// 命令列解析結果。
 #[derive(Debug, PartialEq, Eq)]
 enum Cli {
-    /// 執行檢查；內容是 `--dll` 或位置參數給的路徑。
-    Run(Option<String>),
+    /// 執行檢查。
+    Run(Options),
     /// 印用法後以 0 結束。
     Help,
     /// 參數錯誤，以 2 結束。
@@ -483,12 +890,17 @@ enum Cli {
 /// 解析參數。
 fn parse_args(args: &[String]) -> Cli {
     let mut dll = None;
+    let mut json = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "-h" | "--help" => {
                 print_usage();
                 return Cli::Help;
+            }
+            "--json" => {
+                json = true;
+                index += 1;
             }
             "--dll" => match args.get(index + 1) {
                 Some(path) => {
@@ -511,13 +923,14 @@ fn parse_args(args: &[String]) -> Cli {
             }
         }
     }
-    Cli::Run(dll)
+    Cli::Run(Options { dll, json })
 }
 
 /// 印出用法。
 fn print_usage() {
-    println!("用法：jc-tsf-smoke.exe [--dll <path>]");
+    println!("用法：jc-tsf-smoke.exe [--json] [--dll <path>]");
     println!();
+    println!("  --json          stdout 只輸出一個 jc-ime-doctor/1 JSON 物件；診斷訊息走 stderr");
     println!("  --dll <path>   指定 jc-tsf.dll。預設依序找 JC_TSF_DLL、執行檔同目錄、");
     println!("                 LoadLibraryW 的標準搜尋路徑");
     println!("  --help         印出這份說明");
@@ -526,7 +939,7 @@ fn print_usage() {
     println!("  JC_TSF_DLL     同 --dll");
     println!("  JC_IME_PIPE    覆寫引擎 pipe 名稱（預設讀 HKCU\\Software\\jc-ime\\EnginePipe）");
     println!();
-    println!("結束碼：0 全部通過；1 有 [FAIL]；2 參數錯誤。");
+    println!("結束碼：0 全部通過或只有警告；1 有 [FAIL]；2 參數錯誤。");
 }
 
 #[cfg(test)]
@@ -538,16 +951,44 @@ mod tests {
         let flag = vec!["--dll".to_string(), r"C:\a\jc-tsf.dll".to_string()];
         assert_eq!(
             parse_args(&flag),
-            Cli::Run(Some(r"C:\a\jc-tsf.dll".to_string()))
+            Cli::Run(Options {
+                dll: Some(r"C:\a\jc-tsf.dll".to_string()),
+                json: false,
+            })
         );
 
         let positional = vec![r"C:\b\jc-tsf.dll".to_string()];
         assert_eq!(
             parse_args(&positional),
-            Cli::Run(Some(r"C:\b\jc-tsf.dll".to_string()))
+            Cli::Run(Options {
+                dll: Some(r"C:\b\jc-tsf.dll".to_string()),
+                json: false,
+            })
         );
 
-        assert_eq!(parse_args(&[]), Cli::Run(None));
+        assert_eq!(
+            parse_args(&[]),
+            Cli::Run(Options {
+                dll: None,
+                json: false,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_args_accepts_json_in_any_position() {
+        let args = vec![
+            "--json".to_string(),
+            "--dll".to_string(),
+            r"C:\a\jc-tsf.dll".to_string(),
+        ];
+        assert_eq!(
+            parse_args(&args),
+            Cli::Run(Options {
+                dll: Some(r"C:\a\jc-tsf.dll".to_string()),
+                json: true,
+            })
+        );
     }
 
     #[test]
@@ -572,5 +1013,11 @@ mod tests {
             classify_tip_activate(e_invalidarg),
             TipActivate::Failed(e_invalidarg)
         );
+    }
+
+    #[test]
+    fn register_exe_falls_back_to_default_install_dir() {
+        let text = register_exe("{00000000-0000-0000-0000-000000000000}");
+        assert!(text.ends_with("jc-tip-register.exe"), "{text}");
     }
 }

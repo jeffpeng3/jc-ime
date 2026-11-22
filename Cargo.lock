@@ -3943,6 +3943,9 @@ version = "0.1.4"
 dependencies = [
  "jc-proto",
  "jc-windows",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "windows 0.62.2",
 ]
