@@ -4,6 +4,15 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.1-rc.2 - 2026-11-22
+
+### 診斷
+
+- 這是按鍵路徑的 debug RC。在 `OnTestKeyDown`、`allowed`、`wants_key`、
+  `OnKeyDown`、`learn_mode`、`handle_key`、`english_key_policy` 與 `field_at`
+  全程加上詳細 `zlog!` 診斷紀錄，用來定位實機「打字只有英文」時按鍵在哪一步被丟。
+- 只加 log，沒有改任何判斷邏輯；MSI ProductVersion 第四段從 1 變成 2，確保 Windows 換檔。
+
 ## 0.1.1-rc.1 - 2026-11-22
 
 ### 修正
