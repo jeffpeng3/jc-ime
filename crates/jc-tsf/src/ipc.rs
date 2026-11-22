@@ -43,12 +43,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
-/// 記錄呼叫點。T1a 的 logging 尚未接入前先 no-op，保留 0c 的 zlog! 呼叫位置。
-macro_rules! zlog {
-    ($($arg:tt)*) => {{
-        let _ = format_args!($($arg)*);
-    }};
-}
+use crate::log::zlog;
 
 /// 每次 I/O 的逾時。
 pub const IO_TIMEOUT_MS: u32 = 1000;
@@ -91,6 +86,12 @@ pub fn wide(s: &str) -> Vec<u16> {
     v
 }
 
+/// 把以 NUL 結尾的 UTF-16 pipe 名稱轉回可讀字串，供除錯 log 使用。
+fn pipe_name(pipe: &[u16]) -> String {
+    let end = pipe.iter().position(|&u| u == 0).unwrap_or(pipe.len());
+    String::from_utf16_lossy(&pipe[..end])
+}
+
 /// 訊框：4-byte 小端長度 + JSON，與 `jc_proto::frame`／0c `bridge/ipc` 同格式。
 pub fn frame(v: &Value) -> Option<Vec<u8>> {
     let body = serde_json::to_vec(v).ok()?;
@@ -128,18 +129,35 @@ pub fn user_sid() -> Option<String> {
 /// 現行 pipe 名稱解析：[`PIPE_ENV`]（`JC_IME_PIPE`）覆寫 > SID 最後一段
 /// （`jc-ime-<RID>`）> `jc-ime`。引擎用同一條 pipe，資料格式是 4-byte LE + JSON。
 pub fn server_pipe() -> String {
-    let name = env::var_os(PIPE_ENV)
+    let override_value = env::var_os(PIPE_ENV)
         .map(|v| v.to_string_lossy().into_owned())
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| {
-            user_sid().and_then(|sid| {
-                let rid = sid.rsplit('-').next().unwrap_or_default();
-                (!rid.is_empty() && rid.bytes().all(|b| b.is_ascii_digit()))
-                    .then(|| crate::guids::engine_pipe(rid))
-            })
-        })
+        .filter(|v| !v.trim().is_empty());
+    let has_override = override_value.is_some();
+    let override_display = override_value
+        .clone()
+        .unwrap_or_else(|| "<none>".to_string());
+
+    let sid = user_sid();
+    let rid = sid
+        .as_deref()
+        .and_then(|s| s.rsplit('-').next())
+        .filter(|rid| !rid.is_empty() && rid.bytes().all(|b| b.is_ascii_digit()))
+        .map(str::to_owned);
+
+    let name = override_value
+        .or_else(|| rid.as_deref().map(crate::guids::engine_pipe))
         .unwrap_or_else(|| PIPE_PREFIX.to_string());
-    format!(r"\\.\pipe\{name}")
+    let full = format!(r"\\.\pipe\{name}");
+
+    zlog!(
+        "server_pipe: sid={} rid={} has_override={} override={} name={name} full={full}",
+        sid.as_deref().unwrap_or("<none>"),
+        rid.as_deref().unwrap_or("<none>"),
+        has_override,
+        override_display
+    );
+
+    full
 }
 
 /// 已移除舊版的管道名稱，只供對照與歷史文件使用。
@@ -310,10 +328,18 @@ impl Client {
 
     /// 只連已經在執行的引擎，不啟動、不等待（Activate 時查開始時的模式，#160）。
     pub fn connect_existing(&mut self) -> bool {
+        zlog!(
+            "connect_existing: pipe={} handle={} closing_writer={} restart_pending={}",
+            pipe_name(&self.pipe),
+            self.handle.is_some(),
+            self.closing_writer,
+            self.restart_pending()
+        );
         if self.handle.is_some() {
             return true;
         }
         if self.closing_writer && self.restart_pending() {
+            zlog!("connect_existing: 前置檢查回 false：closing_writer && restart_pending");
             return false;
         }
         self.connect_once().is_ok() || self.connect_legacy()
@@ -334,6 +360,7 @@ impl Client {
 
     fn connect_once(&mut self) -> Result<(), u32> {
         let pipe = self.pipe.clone();
+        zlog!("connect_once: pipe={}", pipe_name(&pipe));
         self.connect_to(&pipe)
     }
 
@@ -347,6 +374,8 @@ impl Client {
 
     /// 直接用 Win32 `CreateFileW` 開啟 overlapped 管道，完全不經過 `interprocess`。
     fn connect_to(&mut self, pipe: &[u16]) -> Result<(), u32> {
+        let name = pipe_name(pipe);
+        zlog!("connect_to: CreateFileW pipe={name}");
         unsafe {
             match CreateFileW(
                 PCWSTR::from_raw(pipe.as_ptr()),
@@ -358,11 +387,16 @@ impl Client {
                 None,
             ) {
                 Ok(h) => {
+                    zlog!("connect_to: 成功 pipe={name}");
                     self.handle = Some(h);
                     self.generation = self.generation.wrapping_add(1);
                     Ok(())
                 }
-                Err(_) => Err(GetLastError().0),
+                Err(_) => {
+                    let code = GetLastError().0;
+                    zlog!("connect_to: CreateFileW 失敗 pipe={name} GetLastError={code}");
+                    Err(code)
+                }
             }
         }
     }

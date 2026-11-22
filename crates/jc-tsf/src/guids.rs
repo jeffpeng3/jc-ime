@@ -1,6 +1,8 @@
 //! Zuin 的 COM 識別碼。改了 CLSID 等於換一個輸入法，安裝程式與註冊都要一起改。
 use windows_core::GUID;
 
+use crate::log::zlog;
+
 /// text service 的 CLSID（InprocServer32）。
 pub const CLSID_ZUIN: GUID = GUID::from_u128(0x138c35d0_7f08_4cef_ba90_c34c16301528);
 /// 唯一的語言 profile：zh-TW 底下的 Mixed。沿用注音版的 GUID，升級不必重新加入輸入法；
@@ -64,7 +66,9 @@ pub const PIPE_ENV: &str = "JC_IME_PIPE";
 
 /// 依 SID 尾段推出引擎的 pipe 名稱，不含 `\\.\pipe\`。
 pub fn engine_pipe(rid: &str) -> String {
-    format!("{PIPE_PREFIX}-{rid}")
+    let name = format!("{PIPE_PREFIX}-{rid}");
+    zlog!("engine_pipe: rid={rid} name={name}");
+    name
 }
 
 #[cfg(test)]
