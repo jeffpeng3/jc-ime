@@ -47,7 +47,7 @@ mod platform;
 fn usage() -> &'static str {
     "用法：jc-tip-register <子命令> [參數]\n\
      \n\
-     \x20 machine-register                  註冊 TSF profile 與三個分類（CLSID 由 MSI 寫）\n\
+     \x20 machine-register                  註冊 TSF profile 與五個分類（CLSID 由 MSI 寫）\n\
      \x20 machine-unregister                反向移除 profile 與分類（CLSID 機碼由 MSI 移除）\n\
      \x20 user-install                      把 jc 注音加進目前使用者的語言清單\n\
      \x20 user-cleanup-legacy               清除已移除舊版的語言清單項目\n\

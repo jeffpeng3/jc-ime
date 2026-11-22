@@ -65,7 +65,7 @@ CLSID，清單就會出現兩個「jc 注音」，而且只有架構相符的那
 
 - `one_clsid_and_profile_for_both_architectures`、`clsid_matches_tsf_crate`：兩個
   建置拿到同一組 CLSID／profile／顯示名稱，值沒有漂移。
-- `categories_are_three_distinct_guids`：三個分類都在，而且互不相同。
+- `categories_are_five_distinct_guids`：五個分類都在，而且互不相同。
 - `machine_register_takes_no_arguments`、`machine_unregister_takes_no_arguments`：
   安裝器不再接受 DLL 路徑或 `--arch`。
 
@@ -153,7 +153,7 @@ GUID 與註冊程式碼是在原處擴充。
 | n/a | `crates/jc-tsf/src/composition.rs`（`SetWindowLongPtrW` 在 32 位元的參數型別） | rewritten：i686 才編得過的修正，不涉及行為 |
 | n/a | `crates/jc-tsf/Cargo.toml`（加 `Win32_Security`，`RegCreateKeyExW` 在那個 feature 下） | rewritten |
 | n/a | `installer/jc-tip-register/src/arch.rs`（PE 架構偵測） | 已移除：CLSID 交給 MSI 的 `<Class>` 之後不需要判斷 DLL 架構 |
-| `cmd/0c-update/platform_windows.go`（`regsvr32` 呼叫） | `installer/jc-tip-register/src/platform.rs`（單一 profile、三個分類） | rewritten：CLSID 改由 MSI 的 `<Class>` 寫，安裝器不再載入 DLL |
+| `cmd/0c-update/platform_windows.go`（`regsvr32` 呼叫） | `installer/jc-tip-register/src/platform.rs`（單一 profile、五個分類） | rewritten：CLSID 改由 MSI 的 `<Class>` 寫，安裝器不再載入 DLL |
 | n/a | `installer/jc-ime.wxs`（`TsfDllX86` 元件、兩個 `<Class>`） | rewritten |
 | n/a | `installer/build.ps1`（兩個 target、payload 改名、簽章清單） | rewritten |
 | n/a | `.github/workflows/release.yml`（windows job 加 i686 target） | rewritten |

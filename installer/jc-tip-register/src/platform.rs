@@ -46,6 +46,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, ITfCategoryMgr,
     ITfInputProcessorProfileMgr, ITfInputProcessorProfiles, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+    GUID_TFCAT_TIPCAP_COMLESS, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
     GUID_TFCAT_TIPCAP_UIELEMENTENABLED, GUID_TFCAT_TIP_KEYBOARD,
 };
 
@@ -62,8 +63,8 @@ use crate::log;
 /// 有效可讀、長度 0，等於「沒有圖示」。
 static NO_ICON: [u16; 1] = [0];
 
-/// 註冊的三個分類；順序與日誌名稱一起固定在這裡。
-const CATEGORIES: [(&str, GUID); 3] = [
+/// 註冊的五個分類；順序與日誌名稱一起固定在這裡。
+const CATEGORIES: [(&str, GUID); 5] = [
     // 沒有這個分類，Windows 8 之後的輸入法設定頁不會列出「jc 注音」。
     ("GUID_TFCAT_TIP_KEYBOARD", GUID_TFCAT_TIP_KEYBOARD),
     // 沒有這個能力分類，Windows 不會接受 ITfUIElementMgr::BeginUIElement。
@@ -71,6 +72,14 @@ const CATEGORIES: [(&str, GUID); 3] = [
         "GUID_TFCAT_TIPCAP_UIELEMENTENABLED",
         GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
     ),
+    // LangBar 托盤圖示：少了這個分類，工作列不會出現語言指示器。
+    (
+        "GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT",
+        GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+    ),
+    // COM-less 宿主（GLFW／LWJGL 等）只載入宣告這個分類的輸入法；少了它，
+    // 宿主顯示「中」但按鍵直接以英文送出。
+    ("GUID_TFCAT_TIPCAP_COMLESS", GUID_TFCAT_TIPCAP_COMLESS),
     // 組字底線：這個 CLSID 同時是 ITfDisplayAttributeProvider 的實作。
     (
         "GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER",
@@ -139,7 +148,7 @@ const IDENTITY_LEGACY: Identity = Identity {
     description: PROFILE_DESCRIPTION,
 };
 
-/// 註冊文字服務的 profile 與三個分類。
+/// 註冊文字服務的 profile 與五個分類。
 ///
 /// CLSID 的 `InprocServer32` 由 MSI 寫好才呼叫這裡。`bEnabledByDefault` 傳
 /// `true`：profile 預設啟用（`LanguageProfile` 機碼的 `Enable=1`），使用者在語言
@@ -148,7 +157,7 @@ pub fn machine_register() -> Result<(), Error> {
     machine_register_impl(&IDENTITY_CURRENT)
 }
 
-/// 依指定身分註冊 profile 與三個分類。
+/// 依指定身分註冊 profile 與五個分類。
 fn machine_register_impl(identity: &Identity) -> Result<(), Error> {
     log::step("machine-register：開始");
     log::step(&format!(
@@ -282,7 +291,7 @@ fn log_hr<T>(label: &str, result: &windows::core::Result<T>) {
     }
 }
 
-/// 移除 TSF 的 profile 與三個分類。
+/// 移除 TSF 的 profile 與五個分類。
 ///
 /// 不刪 `HKCR\CLSID`：MSI 的 `RemoveRegistryValues` 會把兩個檢視的 CLSID 機碼
 /// 一起移除，這裡若先刪就會跟 MSI 搶，也會讓 `RemoveRegistryValues` 找不到目標。
@@ -293,7 +302,7 @@ pub fn machine_unregister() -> Result<(), Error> {
     machine_unregister_impl(&IDENTITY_CURRENT)
 }
 
-/// 依指定身分移除 profile 與三個分類。
+/// 依指定身分移除 profile 與五個分類。
 fn machine_unregister_impl(identity: &Identity) -> Result<(), Error> {
     log::step("machine-unregister：開始");
     log::step(&format!(
@@ -764,10 +773,10 @@ mod tests {
         assert_eq!(IDENTITY_LEGACY.profile, PROFILE_JC_TSF_LEGACY);
     }
 
-    /// 三個分類都要有，而且互不相同；少一個就少一項 Windows 功能。
+    /// 五個分類都要有，而且互不相同；少一個就少一項 Windows 功能。
     #[test]
-    fn categories_are_three_distinct_guids() {
-        assert_eq!(CATEGORIES.len(), 3);
+    fn categories_are_five_distinct_guids() {
+        assert_eq!(CATEGORIES.len(), 5);
         for (index, (label, category)) in CATEGORIES.iter().enumerate() {
             assert!(!label.is_empty());
             assert_ne!(*category, GUID::zeroed());
@@ -783,6 +792,8 @@ mod tests {
             [
                 GUID_TFCAT_TIP_KEYBOARD,
                 GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+                GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+                GUID_TFCAT_TIPCAP_COMLESS,
                 GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
             ]
         );

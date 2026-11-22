@@ -64,7 +64,7 @@ pipe；環境變數 `JC_IME_PIPE` 可取代它，但 TIP 跑在宿主行程裡�
    舊 DLL 與舊 profile 都會被清掉。`NOT UPGRADINGPRODUCTCODE` 讓
    `RemoveTipLayout` 在升級時跳過，所以 `%LOCALAPPDATA%\jc-ime` 保留。
 2. `WriteRegistryValues` 寫入現行 CLSID 的 `InprocServer32`（兩個檢視）與
-   `PipePrefix`，接著 `RegisterTip` 註冊 profile 與三個分類。
+   `PipePrefix`，接著 `RegisterTip` 註冊 profile 與五個分類。
 3. `InstallFinalize` 後以使用者身分執行 `user-cleanup-legacy`，呼叫
    `RemoveLanguageProfile` 清掉舊 CLSID 與 rc.15 舊描述項目的 HKCU 清單紀錄。
    失敗不擋安裝（`Return="ignore"`）。

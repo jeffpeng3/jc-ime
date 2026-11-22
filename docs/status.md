@@ -25,7 +25,7 @@
 | 項目 | 現況 | 來源 |
 |---|---|---|
 | 版本 | `v0.1.0-rc.7` 已 tag（rc.6 跳過），`Cargo.toml` 為 `0.1.0-rc.7` | `docs/integration-log.md` 2026-11-21 02:40、`docs/CHANGELOG.md`、`git tag` |
-| TSF 註冊 | CLSID 改由 MSI 的 `<Class>` 寫入，helper 只註冊 profile 與三個分類；反安裝不呼叫 `InstallLayoutOrTip(ILOT_UNINSTALL)` | `docs/integration-log.md` 02:40、02:50，`docs/port/tsf-installer.md` |
+| TSF 註冊 | CLSID 改由 MSI 的 `<Class>` 寫入，helper 只註冊 profile 與五個分類；反安裝不呼叫 `InstallLayoutOrTip(ILOT_UNINSTALL)` | `docs/integration-log.md` 02:40、02:50，`docs/port/tsf-installer.md` |
 | profile 啟用 | `bEnabledByDefault` 改 `true`，`Enable=1`；仍不呼叫 `ActivateProfile`，不改系統預設輸入法 | `docs/integration-log.md` 03:20，`docs/port/tsf-skeleton.md` |
 | 量測工具 | `jc-cli` 新增 `mixed-diff`、`corpus-diff`，只加工具，不改 `mixed.rs`／`mixed_latin.rs` | `docs/integration-log.md` 04:40，`docs/reports/segment-diff-2026-11-21.md`、`docs/reports/real-corpus-2026-11-21.md` |
 | workflow | `actions/checkout@v5`、`upload-artifact@v6`、`download-artifact@v7`；CI 兩個測試 job 在測試前下載與 release 相同的資料包，公開 variable 提供 URL／SHA-256 並寫入 `JC_IMEDATA`，空值直接失敗；`check-tag` 用 `fetch-tags: true` + `git fetch --tags --force origin` + `github.sha` 找 tag 並重試三次；`build-windows`／`build-linux` 只 `needs: check-tag`，與測試同時起步；`publish` 的 needs 含四個 job（`[check-tag, linux, windows, build-windows, build-linux]`）；`release.yml` 只留 `workflow_dispatch` 供手動測試 | `docs/integration-log.md` 05:10、`docs/release.md` |

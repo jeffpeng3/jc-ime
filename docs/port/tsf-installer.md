@@ -44,7 +44,7 @@ Go 參考實作沒有 MSI，Windows 安裝過程分散在 `0c-update` 與 NSIS �
 | 主題 | 決定 | 理由 |
 |---|---|---|
 | 打包 | WiX v5 MSI，`Scope="perMachine"` | CTF 機碼在 HKLM；MSIX 不提升權限 |
-| 註冊 | CLSID 由 WXS 的 `<Class>` 註冊；`machine-register` 只註冊 profile 與三個分類 | rc.7 之後的順序：`WriteRegistryValues` 先寫好兩個檢視的 `InprocServer32`，`RegisterTip` 才不會在 `RegisterCategory` 拿到不存在的類別工廠（rc.5／rc.6 的 `0xC0000005`）。參考專案 windows-chewing-tsf 也是這個分工 |
+| 註冊 | CLSID 由 WXS 的 `<Class>` 註冊；`machine-register` 只註冊 profile 與五個分類 | rc.7 之後的順序：`WriteRegistryValues` 先寫好兩個檢視的 `InprocServer32`，`RegisterTip` 才不會在 `RegisterCategory` 拿到不存在的類別工廠（rc.5／rc.6 的 `0xC0000005`）。參考專案 windows-chewing-tsf 也是這個分工 |
 | 反註冊 | `machine-unregister` 只清 profile 與分類；CLSID 機碼由 MSI 的 `RemoveRegistryValues` 移除 | 兩邊各清各的，不互相搶；DLL 被隔離時反安裝仍然乾淨 |
 | 雙架構 | 兩份 DLL 共用同一個 CLSID 與 profile，各自掛一個 `<Class>` | 使用者的語言清單只有一項，32 位元程式不必手動切換；x86 的 `<Class>` 在 `Bitness="always32"` 元件內，WiX 寫到 `Wow6432Node`；見 `docs/port/x86-tip.md` |
 | 權限拆分 | 註冊／移除 deferred＋`Impersonate="no"`；語言清單 immediate＋使用者身分 | `InstallLayoutOrTip` 寫呼叫者的 HKCU，SYSTEM 執行會加到 SYSTEM 的 hives |
@@ -525,7 +525,7 @@ RemoveTipLayout（immediate、使用者）  user-uninstall
 
 | 子命令 | rc.6 | rc.7 |
 |---|---|---|
-| `machine-register` | `<dll>...`、`--arch`；x64 交 DLL 註冊、x86 自己寫機碼 | 不吃參數；只註冊 profile 與三個分類 |
+| `machine-register` | `<dll>...`、`--arch`；x64 交 DLL 註冊、x86 自己寫機碼 | 不吃參數；只註冊 profile 與五個分類 |
 | `machine-unregister` | `[<dll>...]`；可交 DLL 或自己清 | 不吃參數；只清 profile 與分類 |
 | `user-install` | `InstallLayoutOrTip(ILOT_INSTALL)` | 不變 |
 | `user-uninstall` | `InstallLayoutOrTip(ILOT_UNINSTALL)` + 刪使用者資料 | 只刪使用者資料 |

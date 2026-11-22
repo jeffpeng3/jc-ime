@@ -26,7 +26,7 @@
 //! `HKLM\SOFTWARE\Microsoft\CTF`（profile 與分類）不是 WOW64 轉向機碼，兩個
 //! 架構讀寫的是同一份資料，所以 profile 只會有一組。
 //!
-//! 註冊五件事：
+//! 註冊七件事：
 //!
 //! 1. `HKCR\CLSID\{CLSID}\InprocServer32` 指到這個 DLL，`ThreadingModel`
 //!    為 `Apartment`。
@@ -36,7 +36,10 @@
 //!    設定頁才會把它列出來。
 //! 4. 註冊 `GUID_TFCAT_TIPCAP_UIELEMENTENABLED`，允許 TIP 使用
 //!    `ITfUIElementMgr`（候選窗就是靠它交給 Windows 畫）。
-//! 5. 註冊 `GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER`，Windows 才會用這個 CLSID
+//! 5. 註冊 `GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT`，LangBar 才能在通知區放托盤圖示。
+//! 6. 註冊 `GUID_TFCAT_TIPCAP_COMLESS`，COM-less 啟用的宿主才會載入這個 TIP，
+//!    否則工作列顯示「中」但按鍵直接以英文送出。
+//! 7. 註冊 `GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER`，Windows 才會用這個 CLSID
 //!    的 `ITfDisplayAttributeProvider` 解讀組字底線的顯示屬性 atom。
 //!
 //! **不啟用 profile**：讓使用者在系統設定裡自己選，不偷改使用者的預設輸入法。
@@ -59,8 +62,8 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, ITfCategoryMgr,
-    ITfInputProcessorProfiles, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
-    GUID_TFCAT_TIPCAP_UIELEMENTENABLED, GUID_TFCAT_TIP_KEYBOARD,
+    ITfInputProcessorProfiles, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, GUID_TFCAT_TIPCAP_COMLESS,
+    GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, GUID_TFCAT_TIPCAP_UIELEMENTENABLED, GUID_TFCAT_TIP_KEYBOARD,
 };
 
 use crate::guids::{
@@ -223,6 +226,22 @@ pub fn register_with(reg: &Registration) -> Result<()> {
             &result,
         );
         result?;
+        // LangBar 托盤圖示：少了這個分類，工作列不會出現語言指示器。
+        install_log("RegisterCategory(GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT)：開始");
+        let result =
+            categories.RegisterCategory(&reg.clsid, &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, &reg.clsid);
+        log_result(
+            "RegisterCategory(GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT)",
+            &result,
+        );
+        result?;
+        // COM-less 宿主（GLFW／LWJGL 等）只載入宣告這個分類的輸入法；少了它，
+        // 宿主顯示「中」但按鍵直接以英文送出。
+        install_log("RegisterCategory(GUID_TFCAT_TIPCAP_COMLESS)：開始");
+        let result =
+            categories.RegisterCategory(&reg.clsid, &GUID_TFCAT_TIPCAP_COMLESS, &reg.clsid);
+        log_result("RegisterCategory(GUID_TFCAT_TIPCAP_COMLESS)", &result);
+        result?;
         // 組字底線：這個 CLSID 同時是 ITfDisplayAttributeProvider 的實作。
         install_log("RegisterCategory(GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER)：開始");
         let result = categories.RegisterCategory(
@@ -273,6 +292,13 @@ pub fn unregister_with(reg: &Registration) -> Result<()> {
                 &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
                 &reg.clsid,
             );
+            let _ = categories.UnregisterCategory(
+                &reg.clsid,
+                &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+                &reg.clsid,
+            );
+            let _ =
+                categories.UnregisterCategory(&reg.clsid, &GUID_TFCAT_TIPCAP_COMLESS, &reg.clsid);
             let _ = categories.UnregisterCategory(
                 &reg.clsid,
                 &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,

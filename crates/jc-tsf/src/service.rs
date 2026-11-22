@@ -282,6 +282,65 @@ struct State {
     key_tested: keys::Tested,
 }
 
+/// 按鍵判斷的 helper 都放在 `State` 上（與 0c 相同）：呼叫端持有單一 `borrow_mut()`
+/// 就能連續問 japanese_key／styled_key／vocab_keys，不會對同一個 RefCell 重入借用。
+impl State {
+    /// 保留風格需要的 Shift＋Space 與 Caps 字母語意；預判和送鍵共用。
+    fn styled_key(&mut self, vk: u32, lparam: isize, vocab: bool, english: bool) -> Option<String> {
+        let key = keys::to_key(vk, lparam, vocab, english)?;
+        let shift = keys::shift_down();
+        let caps = keys::caps_lock_on();
+        let shift_space = key == " " && shift && self.session.style_shift_space();
+        let caps_lower = caps && self.session.style_caps_lower();
+        Some(keys::style_key(key, shift, caps, shift_space, caps_lower))
+    }
+
+    fn vocab_keys(&self) -> bool {
+        self.session.vocab_keys() && !self.session.english() && !self.session.japanese()
+    }
+
+    fn japanese_key(&mut self, vk: u32) -> Option<&'static str> {
+        let key = keys::japanese_named(vk)?;
+        (self.session.japanese() && self.session.available() && self.session.convert_keys())
+            .then_some(key)
+    }
+
+    fn ctrl_punct_key(&mut self, vk: u32, lparam: isize) -> Option<&'static str> {
+        if self.session.english() || self.session.japanese() {
+            return None;
+        }
+        let key = keys::ctrl_punct(vk, lparam)?;
+        (self.session.available() && self.session.ctrl_punctuation(key)).then_some(key)
+    }
+
+    fn simplified_hotkey(&mut self, vk: u32) -> bool {
+        keys::simplified_hotkey(vk)
+            && !self.session.japanese()
+            && self.session.available()
+            && self.session.simplified_hotkey()
+    }
+
+    fn tap(&mut self, side: keys::Side) -> &mut keys::ShiftTap {
+        match side {
+            keys::Side::Left => &mut self.left_shift,
+            keys::Side::Right => &mut self.right_shift,
+        }
+    }
+
+    fn shift_toggles(&mut self, side: keys::Side, modified: bool, now: u64) -> bool {
+        let mouse = keys::mouse_state();
+        let config = self.session.shift_config();
+        if !self.tap(side).solo(modified, mouse) {
+            return false;
+        }
+        let enabled = match side {
+            keys::Side::Left => config.left,
+            keys::Side::Right => config.right,
+        };
+        enabled && self.tap(side).tap(modified, mouse, now, config.tap_ms)
+    }
+}
+
 impl TextService {
     /// 建立文字服務物件；還沒有任何 TSF 資源。
     pub fn new() -> TextService {
@@ -1015,78 +1074,14 @@ impl TextService_Impl {
         }
     }
 
-    fn styled_key(&self, vk: u32, lparam: isize, vocab: bool, english: bool) -> Option<String> {
-        let key = keys::to_key(vk, lparam, vocab, english)?;
-        let shift = keys::shift_down();
-        let caps = keys::caps_lock_on();
-        let (shift_space, caps_lower) = {
-            let mut st = self.state.borrow_mut();
-            (
-                key == " " && shift && st.session.style_shift_space(),
-                caps && st.session.style_caps_lower(),
-            )
-        };
-        Some(keys::style_key(key, shift, caps, shift_space, caps_lower))
-    }
-
-    fn vocab_keys(&self) -> bool {
-        let st = self.state.borrow();
-        st.session.vocab_keys() && !st.session.english() && !st.session.japanese()
-    }
-
-    fn japanese_key(&self, vk: u32) -> Option<&'static str> {
-        let key = keys::japanese_named(vk)?;
-        let mut st = self.state.borrow_mut();
-        (st.session.japanese() && st.session.available() && st.session.convert_keys())
-            .then_some(key)
-    }
-
-    fn ctrl_punct_key(&self, vk: u32, lparam: isize) -> Option<&'static str> {
-        {
-            let st = self.state.borrow();
-            if st.session.english() || st.session.japanese() {
-                return None;
-            }
-        }
-        let key = keys::ctrl_punct(vk, lparam)?;
-        let mut st = self.state.borrow_mut();
-        (st.session.available() && st.session.ctrl_punctuation(key)).then_some(key)
-    }
-
-    fn simplified_hotkey(&self, vk: u32) -> bool {
-        let mut st = self.state.borrow_mut();
-        keys::simplified_hotkey(vk)
-            && !st.session.japanese()
-            && st.session.available()
-            && st.session.simplified_hotkey()
-    }
-
     fn test_simplified_hotkey(&self, vk: u32) -> bool {
-        let decision = self.simplified_hotkey(vk);
+        let decision = self.state.borrow_mut().simplified_hotkey(vk);
         self.state.borrow_mut().hotkey_tested.record(vk, decision);
         decision
     }
 
     fn key_simplified_hotkey(&self, vk: u32, tested: Option<bool>) -> bool {
-        tested.unwrap_or_else(|| self.simplified_hotkey(vk))
-    }
-
-    fn shift_toggles(&self, side: keys::Side, modified: bool, now: u64) -> bool {
-        let mouse = keys::mouse_state();
-        let config = self.state.borrow_mut().session.shift_config();
-        let st = self.state.borrow();
-        let tap = match side {
-            keys::Side::Left => &st.left_shift,
-            keys::Side::Right => &st.right_shift,
-        };
-        if !tap.solo(modified, mouse) {
-            return false;
-        }
-        let enabled = match side {
-            keys::Side::Left => config.left,
-            keys::Side::Right => config.right,
-        };
-        enabled && tap.tap(modified, mouse, now, config.tap_ms)
+        tested.unwrap_or_else(|| self.state.borrow_mut().simplified_hotkey(vk))
     }
 
     fn reset_shift(&self) {
@@ -1169,7 +1164,7 @@ impl TextService_Impl {
             self.commit_english_pending(ctx, &snap);
             return Some(EnglishKey::Eat(false));
         }
-        let key = self.styled_key(vk, lparam, false, true);
+        let key = self.state.borrow_mut().styled_key(vk, lparam, false, true);
         if key.as_deref() == Some("ShiftSpace") {
             return Some(EnglishKey::Eat(true));
         }
@@ -1222,10 +1217,10 @@ impl TextService_Impl {
         if !self.state.borrow().composing {
             return false;
         }
-        if self.japanese_key(vk).is_some() {
+        if self.state.borrow_mut().japanese_key(vk).is_some() {
             return false;
         }
-        if keys::modifier_down() && self.ctrl_punct_key(vk, lparam).is_some() {
+        if keys::modifier_down() && self.state.borrow_mut().ctrl_punct_key(vk, lparam).is_some() {
             return false;
         }
         let protocol = keys::to_key(vk, lparam, false, true);
@@ -1261,11 +1256,8 @@ impl TextService_Impl {
     fn shift_released(&self, ctx: Option<&ITfContext>, side: keys::Side) -> bool {
         let toggle = {
             let mut st = self.state.borrow_mut();
-            let toggle = self.shift_toggles(side, keys::modifier_down(), keys::now_ms());
-            *match side {
-                keys::Side::Left => &mut st.left_shift,
-                keys::Side::Right => &mut st.right_shift,
-            } = keys::ShiftTap::default();
+            let toggle = st.shift_toggles(side, keys::modifier_down(), keys::now_ms());
+            *st.tap(side) = keys::ShiftTap::default();
             toggle
         };
         if toggle {
@@ -1276,7 +1268,7 @@ impl TextService_Impl {
     }
 
     fn wants_key(&self, vk: u32, lparam: isize) -> bool {
-        if keys::modifier_down() && self.ctrl_punct_key(vk, lparam).is_some() {
+        if keys::modifier_down() && self.state.borrow_mut().ctrl_punct_key(vk, lparam).is_some() {
             return true;
         }
         if keys::modifier_down() || keys::is_modifier(vk) {
@@ -1286,12 +1278,12 @@ impl TextService_Impl {
         if !st.session.available() {
             return false;
         }
-        if self.japanese_key(vk).is_some() {
+        if st.japanese_key(vk).is_some() {
             return true;
         }
         let english = st.session.english();
         let japanese = st.session.japanese();
-        let style_key = self.styled_key(vk, lparam, false, english);
+        let style_key = st.styled_key(vk, lparam, false, english);
         if style_key.as_deref() == Some("ShiftSpace") {
             return true;
         }
@@ -1302,10 +1294,10 @@ impl TextService_Impl {
             return true;
         }
         if st.composing {
-            let vocab = self.vocab_keys();
+            let vocab = st.vocab_keys();
             return keys::composing_wants(
                 english,
-                self.styled_key(vk, lparam, vocab, english).as_deref(),
+                st.styled_key(vk, lparam, vocab, english).as_deref(),
             );
         }
         if english {
@@ -1797,18 +1789,22 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             }
             let (vocab, english) = {
                 let st = self.state.borrow();
-                (self.vocab_keys(), st.session.english())
+                (st.vocab_keys(), st.session.english())
             };
             let ctrl = if keys::modifier_down() {
-                self.ctrl_punct_key(vk, lparam.0)
+                self.state.borrow_mut().ctrl_punct_key(vk, lparam.0)
             } else {
                 None
             };
-            let japanese = self.japanese_key(vk);
+            let japanese = self.state.borrow_mut().japanese_key(vk);
             let Some(key) = japanese
                 .map(str::to_string)
                 .or_else(|| ctrl.map(str::to_string))
-                .or_else(|| self.styled_key(vk, lparam.0, vocab, english))
+                .or_else(|| {
+                    self.state
+                        .borrow_mut()
+                        .styled_key(vk, lparam.0, vocab, english)
+                })
             else {
                 return Ok(false.into());
             };
