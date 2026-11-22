@@ -1,0 +1,21 @@
+[package]
+name = "jc-tsf-register"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "TSF DLL 共用的 COM 註冊常式（只有 rlib，沒有 COM 匯出）"
+
+[lib]
+# 純 rlib：註冊邏輯不包含 DllGetClassObject 等 COM 進入點，
+# jc-tsf 與 jc-tsf-next 各自在自己的 DLL 裡定義匯出，不會撞符號。
+
+# 註冊邏輯全部是 Win32；非 Windows 平台是空殼，與 jc-tsf 一致。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Registry",
+  "Win32_UI_TextServices",
+] }

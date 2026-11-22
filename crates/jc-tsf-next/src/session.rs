@@ -2024,9 +2024,12 @@ mod tests {
         }
     }
 
+    /// 測試用回應回呼：把 request 轉成回傳值，必要時改寫 MockState。
+    type Respond = Box<dyn Fn(&Value, &mut MockState) -> Option<Value>>;
+
     struct MockTransport {
         state: Arc<Mutex<MockState>>,
-        respond: Box<dyn Fn(&Value, &mut MockState) -> Option<Value>>,
+        respond: Respond,
     }
 
     impl Transport for MockTransport {

@@ -532,7 +532,7 @@ impl Engine {
                 }
                 let enters = key.code == KeyCode::Enter;
                 lock(&self.shared).last_key = Some(Instant::now());
-                let logged = Some(Request::Key { key: key.clone() });
+                let logged = Some(Request::Key { key });
                 self.with_current(logged, |session| {
                     let snapshot = session.press(key);
                     if enters {

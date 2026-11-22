@@ -10,7 +10,10 @@
 //! 語言清單因此只有一個「jc 注音」，不必為 32 位元程式手動切換。
 //!
 //! 這裡刻意**沒有**依架構分岔的常數：兩個建置拿到完全相同的值，差別只在
-//! `register.rs` 用哪一個機碼檢視寫入。
+//! `jc-tsf-register` 用哪一個機碼檢視寫入。
+//!
+//! 註冊用的 profile／語言／描述常數已搬到 `jc-tsf-register`；下面的測試照樣
+//! 從那裡取值，確認已發行的 CLSID 與 profile 沒有被改動。
 
 use windows::core::GUID;
 
@@ -19,12 +22,6 @@ use windows::core::GUID;
 /// 64 位元檢視在 `HKCR\CLSID\{7B7D6E1A-…}`，32 位元檢視在
 /// `HKCR\Wow6432Node\CLSID\{7B7D6E1A-…}`，各自指到該架構的 DLL。
 pub const CLSID_JC_TSF: GUID = GUID::from_u128(0x7b7d6e1a_3c1f_4b2e_9a55_6c1d2f3e4a01);
-
-/// 注音 profile 的 GUID；兩個架構共用。
-///
-/// 語言固定為 `0x0404`（zh-TW）。這個 GUID 只在 TSF 的 profile 資料庫裡使用，
-/// 不會出現在註冊機碼。
-pub const GUID_PROFILE_JC_TSF: GUID = GUID::from_u128(0x8f0a9b3c_2d4e_4f50_a1b2_c3d4e5f60718);
 
 /// 候選清單 UI 元素的 GUID。
 ///
@@ -42,15 +39,6 @@ pub const GUID_CANDIDATE_UI_ELEMENT: GUID = GUID::from_u128(0x9c4e7a21_6b3d_4f08
 pub const GUID_DISPLAY_ATTRIBUTE_INPUT: GUID =
     GUID::from_u128(0xa2c9f1d4_7b3e_4c58_9e21_5d8a6f0b4c72);
 
-/// 文字服務註冊的語言。第一版只有繁體中文（台灣）。
-pub const LANGID_ZH_TW: u16 = 0x0404;
-
-/// profile 的顯示名稱。
-///
-/// 兩個架構共用一個 profile，所以只有這一個名稱；使用者的語言清單只會看到
-/// 一項「jc 注音」。
-pub const PROFILE_DESCRIPTION: &str = "jc 注音";
-
 /// 把 GUID 格式化成註冊機碼用的 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`。
 pub fn registry_key(guid: &GUID) -> String {
     let d4 = guid.data4;
@@ -63,6 +51,7 @@ pub fn registry_key(guid: &GUID) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jc_tsf_register::{GUID_PROFILE_JC_TSF, PROFILE_DESCRIPTION};
 
     #[test]
     fn clsid_key_uses_braces_and_upper_hex() {

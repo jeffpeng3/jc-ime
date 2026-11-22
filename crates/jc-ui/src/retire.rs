@@ -9,5 +9,5 @@ pub const RETIRE_POLL_MS: u32 = 500;
 
 /// 收到結束要求時可不可以現在結束。
 pub fn ready_to_exit(visible: bool, since_last_present: Option<Duration>) -> bool {
-    !visible && since_last_present.map_or(true, |d| d >= RETIRE_QUIET)
+    !visible && since_last_present.is_none_or(|d| d >= RETIRE_QUIET)
 }

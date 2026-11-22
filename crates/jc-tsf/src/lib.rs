@@ -21,9 +21,6 @@ mod engine;
 mod guids;
 mod keys;
 mod logging;
-/// 註冊常式與 [`register::Registration`]。T10a 起公開，讓新版 DLL 能把自己的
-/// CLSID／profile／描述／pipe 前綴傳進 `register_with()` 平行註冊。
-pub mod register;
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -389,7 +386,7 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn DllRegisterServer() -> HRESULT {
-    match register::register() {
+    match jc_tsf_register::register() {
         Ok(()) => {
             logging::info(format!("註冊完成（{}）", build_identity()));
             S_OK
@@ -406,7 +403,7 @@ pub extern "system" fn DllRegisterServer() -> HRESULT {
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn DllUnregisterServer() -> HRESULT {
-    match register::unregister() {
+    match jc_tsf_register::unregister() {
         Ok(()) => {
             logging::info(format!("反註冊完成（{}）", build_identity()));
             S_OK

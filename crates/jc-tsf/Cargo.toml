@@ -7,15 +7,14 @@ rust-version.workspace = true
 description = "Windows TSF 文字服務骨架（COM 註冊、按鍵、組字、提交、非同步 IPC）"
 
 [lib]
-# rlib 讓 jc-tsf-next 能直接引用 register::Registration／register_with()。
-# 兩個 crate 各自的 DllGetClassObject 等匯出不能同時進同一份 DLL，所以
-# jc-tsf 的 COM 匯出用 dll-exports feature 包住；jc-tsf-next 關掉預設功能。
+# COM 匯出只在這份 DLL 定義。註冊常式搬到 jc-tsf-register，
+# jc-tsf-next 直接依賴那套，不再 link 這份 rlib。
 crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["dll-exports"]
-# jc-tsf.dll 自己作為 cdylib 時才需要這些 COM 匯出。以 rlib 被 jc-tsf-next
-# 相依時關掉，避免兩邊的 DllGetClassObject 等符號重複。
+# 只有這份 DLL 自己需要 COM 匯出。jc-tsf-next 已移除對 jc-tsf 的相依，
+# 兩邊的 DllGetClassObject 等符號不可能進到同一份 DLL。
 dll-exports = []
 # 讓 release 建置也能帶上 `jc_test_key`（冒煙測試用）；預設關閉。
 test-export = []
@@ -49,3 +48,4 @@ windows-core = "0.62"
 jc-core = { path = "../jc-core" }
 jc-proto = { path = "../jc-proto" }
 jc-windows = { path = "../jc-windows" }
+jc-tsf-register = { path = "../jc-tsf-register" }

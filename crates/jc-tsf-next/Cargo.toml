@@ -24,9 +24,10 @@ windows-core = "0.62"
 [target.'cfg(windows)'.dependencies]
 # T12a：候選窗協定型別（UiMessage/UiCandidate）與繪製共用 jc-ui，DLL 側不重複定義。
 jc-ui = { path = "../jc-ui" }
-# T10a：借用 jc-tsf 已參數化的 register::Registration／register_with()／
-# unregister_with()。關掉預設功能，避免它的 DllGetClassObject 等匯出進到新版 DLL。
-jc-tsf = { path = "../jc-tsf", default-features = false }
+# T10a：共用 jc-tsf-register 的 Registration／register_with()／unregister_with()。
+# 不再相依 jc-tsf：它是 workspace member，會用自己的 default features 把
+# COM 匯出編進 rlib，feature unification 會讓新版 DLL 也 link 到那些符號（LNK2005）。
+jc-tsf-register = { path = "../jc-tsf-register" }
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",

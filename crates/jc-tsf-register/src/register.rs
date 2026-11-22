@@ -1,4 +1,8 @@
-//! `DllRegisterServer`／`DllUnregisterServer` 的實作。
+//! `DllRegisterServer`／`DllUnregisterServer` 共用的註冊實作。
+//!
+//! `jc-tsf` 與 `jc-tsf-next` 各自在自己的 COM 進入點呼叫
+//! [`register`]／[`register_with`] 與 [`unregister`]／[`unregister_with`]，
+//! 註冊邏輯只存在這一份 rlib。
 //!
 //! **MSI 安裝不走這條路徑。** `installer/jc-ime.wxs` 在兩個 TSF DLL 的 `File` 各
 //! 掛一個 `<Class>`，`HKCR\CLSID\{CLSID}\InprocServer32` 由 Windows Installer 的

@@ -86,8 +86,8 @@ impl IClassFactory_Impl for ClassFactory_Impl {
 }
 
 /// 新版 DLL 專用的註冊身分；值全部取自 `guids.rs` 的 T9 段。
-fn next_registration() -> jc_tsf::register::Registration {
-    jc_tsf::register::Registration {
+fn next_registration() -> jc_tsf_register::Registration {
+    jc_tsf_register::Registration {
         clsid: CLSID_JC_TSF_NEXT,
         profile: GUID_PROFILE_JC_TSF_NEXT,
         description: PROFILE_DESCRIPTION_NEXT,
@@ -139,7 +139,7 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
 pub extern "system" fn DllRegisterServer() -> HRESULT {
     log::install_panic_hook();
     match guarded("DllRegisterServer", || {
-        jc_tsf::register::register_with(&next_registration())
+        jc_tsf_register::register_with(&next_registration())
     }) {
         Ok(()) => S_OK,
         Err(error) => {
@@ -153,7 +153,7 @@ pub extern "system" fn DllRegisterServer() -> HRESULT {
 #[no_mangle]
 pub extern "system" fn DllUnregisterServer() -> HRESULT {
     match guarded("DllUnregisterServer", || {
-        jc_tsf::register::unregister_with(&next_registration())
+        jc_tsf_register::unregister_with(&next_registration())
     }) {
         Ok(()) => S_OK,
         Err(error) => {
