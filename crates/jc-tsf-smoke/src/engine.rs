@@ -1,13 +1,19 @@
-//! 引擎 pipe 的探測（檢查 6）。
+//! 引擎 pipe 的探測（檢查 6 與 12）。
 //!
 //! 用 `jc-windows` 的 client，與 `jc-tsf` 的 worker 走完全相同的路徑：連線時
-//! 先送 `Hello` 握手，再送一個 `Key`。引擎**不在**是正常情況（還沒啟動或沒安裝），
-//! 只印警告、不判定失敗。
+//! 先送 `Hello` 握手，再送一個 `Key`，最後問 `Health`。引擎**不在**是正常情況
+//! （還沒啟動或沒安裝），只印警告、不判定失敗；但連不上的原因要分清楚：
+//! pipe 不存在、`CreateFileW` 被拒、握手失敗、協定版本不符，四種的修復方式不同。
+//!
+//! 連線與握手刻意分成兩步（`LocalSocket::connect` + `Client::handshake`），才能
+//! 區分「連不上 pipe」與「連上了但握手失敗」。
 
 use std::time::Duration;
 
-use jc_proto::{Key, KeyCode, Request, Response, PROTOCOL_VERSION};
-use jc_windows::Client;
+use jc_proto::{HealthInfo, Key, KeyCode, Request, Response, PROTOCOL_VERSION};
+use jc_windows::{Client, Error, LocalSocket};
+
+use crate::engine_failure::{self, FailureKind};
 
 /// 單次往返逾時；與 `jc-tsf` 一致。
 const TIMEOUT: Duration = Duration::from_millis(500);
@@ -18,6 +24,91 @@ const BACKOFF: Duration = Duration::from_millis(200);
 
 /// 握手時送出的客戶端名稱。
 const CLIENT_NAME: &str = concat!("jc-tsf-smoke/", env!("CARGO_PKG_VERSION"));
+
+/// 連上引擎後拿到的資訊。
+#[derive(Debug, Clone, PartialEq)]
+pub struct EngineInfo {
+    /// 引擎回報的協定版本。
+    pub protocol: u32,
+    /// 引擎識別字串，例如 `jc-engine 0.1.4`。
+    pub engine: String,
+    /// 這條連線的 session id。
+    pub session: u64,
+    /// `Health` 的回報；失敗時是錯誤字串。
+    pub health: Result<HealthInfo, String>,
+    /// `Key(Escape)` 的回應摘要。
+    pub key: String,
+}
+
+/// 引擎探測結果。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Probe {
+    /// 連線、握手與 `Key` 都成功。
+    Connected(EngineInfo),
+    /// 連不上或握手失敗；`detail` 已分類並可直接輸出。
+    Unavailable {
+        /// 失敗種類。
+        kind: FailureKind,
+        /// 一行說明。
+        detail: String,
+    },
+}
+
+impl Probe {
+    /// 檢查 6 的摘要。
+    pub fn pipe_detail(&self) -> String {
+        match self {
+            Self::Connected(info) => format!(
+                "Hello → 協定 {}、引擎 {}、session {}；Key(Escape) → {}",
+                info.protocol, info.engine, info.session, info.key
+            ),
+            Self::Unavailable { detail, .. } => detail.clone(),
+        }
+    }
+
+    /// 檢查 12 的摘要；連不上時回分類後的說明。
+    pub fn engine_detail(&self) -> Result<String, String> {
+        let info = match self {
+            Self::Connected(info) => info,
+            Self::Unavailable { kind, detail } => {
+                return Err(format!("引擎連不上（{}）：{detail}", kind.code()))
+            }
+        };
+        let health = match &info.health {
+            Ok(health) => health,
+            Err(error) => return Err(format!("引擎已連上，但 Health 失敗：{error}")),
+        };
+        let state = if health.draining {
+            "交接中（draining=true）"
+        } else {
+            "正常"
+        };
+        let mut text = format!(
+            "引擎 {}；協定 {}；session {}；健康狀態 {state}；連線 {}、組字中 {}、引擎 session 數 {}",
+            info.engine,
+            info.protocol,
+            info.session,
+            health.connections,
+            health.composing,
+            health.sessions
+        );
+        if let Some(pid) = health.pid {
+            text.push_str(&format!("、pid {pid}"));
+        }
+        Ok(text)
+    }
+
+    /// 引擎是否在交接中（`Health.draining`）。
+    pub fn draining(&self) -> bool {
+        matches!(
+            self,
+            Self::Connected(EngineInfo {
+                health: Ok(HealthInfo { draining: true, .. }),
+                ..
+            })
+        )
+    }
+}
 
 /// 解析引擎 pipe 名稱；規則與 `jc-tsf`、`jc-engine` 共用 `jc-windows`。
 ///
@@ -31,45 +122,126 @@ pub fn pipe_name() -> String {
     resolved.name
 }
 
-/// 連上引擎、送 `Hello` 與一個 `Key`，回傳可以印出來的結果摘要。
-///
-/// 失敗一律當成「引擎不在」，由呼叫端印 `[SKIP]`；這裡不分辨「沒開」與「開了但
-/// 壞掉」，因為兩者對免管理員冒煙來說都只是警告。
-pub fn probe() -> Result<String, String> {
+/// 連上引擎、握手、送 `Hello`／`Key(Escape)`／`Health`。
+pub fn probe() -> Probe {
     let name = pipe_name();
-    let mut client = Client::connect_with_retry(&name, CLIENT_NAME, TIMEOUT, ATTEMPTS, BACKOFF)
-        .map_err(|error| format!("pipe {name} 連不上：{error}"))?;
 
-    // 握手在 connect 內已經做過一次；再送一次 Hello 是為了把引擎的 Ready
-    // 回應（版本與引擎名稱）印出來，引擎對重複的 Hello 只會再回一次 Ready。
-    let hello = client
-        .request(
-            &Request::Hello {
-                protocol: PROTOCOL_VERSION,
-                client: CLIENT_NAME.to_string(),
-            },
-            TIMEOUT,
-        )
-        .map_err(|error| format!("Hello 往返失敗：{error}"))?;
-    let hello = match hello {
-        Response::Ready {
-            protocol, engine, ..
-        } => format!("Hello → 協定 {protocol}、引擎 {engine}"),
-        other => format!("Hello → {}", describe(&other)),
+    let socket = match connect(&name) {
+        Ok(socket) => socket,
+        Err((kind, message)) => {
+            return Probe::Unavailable {
+                kind,
+                detail: engine_failure::describe(kind, &name, &message),
+            }
+        }
+    };
+
+    let mut client = match Client::handshake(socket, CLIENT_NAME, TIMEOUT) {
+        Ok(client) => client,
+        Err(error) => {
+            let kind = classify_handshake(&error);
+            return Probe::Unavailable {
+                kind,
+                detail: engine_failure::describe(kind, &name, &error.to_string()),
+            };
+        }
+    };
+
+    // 握手已經做過一次 Hello；再送一次是為了拿到引擎名稱與 session id。
+    let (protocol, engine, session) = match client.request(
+        &Request::Hello {
+            protocol: PROTOCOL_VERSION,
+            client: CLIENT_NAME.to_string(),
+        },
+        TIMEOUT,
+    ) {
+        Ok(Response::Ready {
+            protocol,
+            engine,
+            session,
+        }) => (protocol, engine, session),
+        Ok(other) => {
+            return Probe::Unavailable {
+                kind: FailureKind::HandshakeFailed,
+                detail: format!(
+                    "pipe {name} 已連上，但 Hello 收到非 Ready 的回應：{}",
+                    describe(&other)
+                ),
+            }
+        }
+        Err(error) => return unavailable_request(&name, "Hello", &error),
     };
 
     // 送 Escape 而不是注音鍵：引擎若正好在別人的組字中，這個鍵只會清掉狀態，
     // 不會往使用者的文件插入字元。
-    let key = client
-        .request(
-            &Request::Key {
-                key: Key::new(KeyCode::Escape, None, false),
-            },
-            TIMEOUT,
-        )
-        .map_err(|error| format!("Key 往返失敗：{error}"))?;
+    let key = match client.request(
+        &Request::Key {
+            key: Key::new(KeyCode::Escape, None, false),
+        },
+        TIMEOUT,
+    ) {
+        Ok(response) => describe(&response),
+        Err(error) => return unavailable_request(&name, "Key(Escape)", &error),
+    };
 
-    Ok(format!("{hello}；Key(Escape) → {}", describe(&key)))
+    // Health 放最後：它失敗時連線可能已不可信，不能影響前面的 Key 判定。
+    let health = match client.request(&Request::Health, TIMEOUT) {
+        Ok(Response::Health { info }) => Ok(info),
+        Ok(other) => Err(format!("Health 收到非預期回應：{}", describe(&other))),
+        Err(error) => Err(error.to_string()),
+    };
+
+    Probe::Connected(EngineInfo {
+        protocol,
+        engine,
+        session,
+        health,
+        key,
+    })
+}
+
+/// 連線（含重試），回傳 socket 或（分類, 錯誤訊息）。
+fn connect(name: &str) -> Result<LocalSocket, (FailureKind, String)> {
+    let mut last: Option<(FailureKind, String)> = None;
+    for attempt in 0..ATTEMPTS.max(1) {
+        match LocalSocket::connect(name, TIMEOUT) {
+            Ok(socket) => return Ok(socket),
+            Err(Error::Io(error)) => {
+                let kind = engine_failure::classify_connect_os_error(error.raw_os_error());
+                last = Some((kind, error.to_string()));
+            }
+            Err(error) => {
+                last = Some((FailureKind::ConnectFailed, error.to_string()));
+            }
+        }
+        if attempt + 1 < ATTEMPTS {
+            std::thread::sleep(BACKOFF);
+        }
+    }
+    Err(last.unwrap_or_else(|| (FailureKind::ConnectFailed, "重連次數必須大於 0".to_string())))
+}
+
+/// 握手失敗的分類。
+fn classify_handshake(error: &Error) -> FailureKind {
+    match error {
+        Error::VersionMismatch { .. } => FailureKind::ProtocolMismatch,
+        Error::Timeout => FailureKind::Timeout,
+        Error::Protocol(_) | Error::BadFrame(_) | Error::Io(_) => FailureKind::HandshakeFailed,
+        Error::Unsupported => FailureKind::ConnectFailed,
+    }
+}
+
+/// 連線後的請求失敗（Hello／Key）。
+fn unavailable_request(name: &str, request: &str, error: &Error) -> Probe {
+    let kind = classify_handshake(error);
+    let detail = match kind {
+        FailureKind::ProtocolMismatch => engine_failure::describe(kind, name, &error.to_string()),
+        FailureKind::Timeout => {
+            format!("pipe {name} 已連上，但 {request} 逾時（500 ms）：{error}")
+        }
+        _ => format!("pipe {name} 已連上，但 {request} 往返失敗：{error}"),
+    };
+    Probe::Unavailable { kind, detail }
 }
 
 /// 把回應壓成一行，避免把整個 `State` 的除錯輸出塞進報表。
@@ -85,6 +257,10 @@ fn describe(response: &Response) -> String {
         } => format!("State（組字 {preedit:?}、候選 {} 個）", candidates.len()),
         Response::Committed { text } => format!("Committed（{text:?}）"),
         Response::Error { code, message } => format!("Error（{code:?}：{message}）"),
+        Response::Health { info } => format!(
+            "Health（連線 {}、session {}、組字中 {}）",
+            info.connections, info.sessions, info.composing
+        ),
         // T3 擴充 op 的回報，smoke 只確認往返成功，不再往下拆欄位。
         other => format!("{other:?}"),
     }
@@ -129,5 +305,55 @@ mod tests {
             }),
             "Ready（協定 3、引擎 jc-engine 0.1.0）"
         );
+    }
+
+    #[test]
+    fn engine_detail_reports_health_and_sessions() {
+        let probe = Probe::Connected(EngineInfo {
+            protocol: PROTOCOL_VERSION,
+            engine: "jc-engine 0.1.4".to_string(),
+            session: 2,
+            health: Ok(HealthInfo {
+                connections: 1,
+                sessions: 3,
+                composing: 1,
+                pid: Some(4242),
+                ..HealthInfo::default()
+            }),
+            key: "State（組字 \"\"、候選 0 個）".to_string(),
+        });
+        let detail = probe.engine_detail().unwrap();
+        assert!(detail.contains("jc-engine 0.1.4"), "{detail}");
+        assert!(detail.contains("session 2"), "{detail}");
+        assert!(detail.contains("引擎 session 數 3"), "{detail}");
+        assert!(detail.contains("pid 4242"), "{detail}");
+        assert!(detail.contains("健康狀態 正常"), "{detail}");
+        assert!(!probe.draining());
+    }
+
+    #[test]
+    fn draining_engine_is_flagged() {
+        let probe = Probe::Connected(EngineInfo {
+            protocol: PROTOCOL_VERSION,
+            engine: "jc-engine 0.1.4".to_string(),
+            session: 1,
+            health: Ok(HealthInfo {
+                draining: true,
+                ..HealthInfo::default()
+            }),
+            key: "State".to_string(),
+        });
+        assert!(probe.draining());
+        assert!(probe.engine_detail().unwrap().contains("draining=true"));
+    }
+
+    #[test]
+    fn unavailable_engine_detail_keeps_classification() {
+        let probe = Probe::Unavailable {
+            kind: FailureKind::PipeMissing,
+            detail: "pipe jc-ime-1001 不存在".to_string(),
+        };
+        assert!(probe.engine_detail().is_err());
+        assert!(probe.pipe_detail().contains("不存在"));
     }
 }

@@ -1,28 +1,25 @@
-//! 註冊表探測（檢查 7）。
+//! 註冊表探測（檢查 7、9、11，以及檢查 8 的安裝目錄）。
 //!
 //! 產品的 TSF DLL 有 x64 與 x86 兩份，**共用同一個 CLSID**：64 位元機碼檢視的
 //! `InprocServer32` 指到 `jc-tsf.dll`，32 位元檢視（`Wow6432Node`）指到
 //! `jc-tsf-x86.dll`。所以「裝好了」的定義是**兩個檢視都看得到同一個 CLSID**，
 //! 只看到一邊代表有一個架構的程式打不出字。
 //!
-//! 這就是手動驗證的兩條指令：
-//!
-//! ```text
-//! reg query "HKLM\SOFTWARE\Classes\CLSID\{...}\InprocServer32" /reg:64
-//! reg query "HKLM\SOFTWARE\Classes\CLSID\{...}\InprocServer32" /reg:32
-//! ```
-//!
-//! 只讀機碼、不需要管理員。沒安裝不算失敗（`[SKIP]`）；只看得到一邊或指到錯的
-//! DLL 算失敗（`[FAIL]`），訊息會指出是哪一個檢視。
+//! 這裡只讀機碼、不需要管理員。沒安裝不算失敗（`[SKIP]`）；只看得到一邊或指到
+//! 錯的 DLL 算失敗（`[FAIL]`），訊息會指出是哪一個檢視。
 
 use windows::core::{PCWSTR, PWSTR};
-use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS};
+use windows::Win32::Foundation::{
+    ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
+};
 use windows::Win32::System::Registry::{
     RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CLASSES_ROOT,
-    HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_SAM_FLAGS, REG_VALUE_TYPE,
+    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_DWORD,
+    REG_SAM_FLAGS, REG_VALUE_TYPE,
 };
 
 use crate::error::SmokeError;
+use crate::profile::{self, LANGUAGE_ZH_HANT_TW, USER_PROFILE_KEY};
 use crate::report;
 
 /// TSF 的 TIP 清單機碼。
@@ -120,6 +117,26 @@ impl Probe {
     }
 }
 
+/// `LanguageProfile\0x00000404\{PROFILE}` 底下的三個值。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MachineProfile {
+    /// `Description`；沒有或空字串代表 msctf 不會顯示名稱。
+    pub description: Option<String>,
+    /// `Enable`（`REG_DWORD`）。
+    pub enable: Option<u32>,
+    /// `IconFile`；沒有圖示是正常出貨狀態。
+    pub icon_file: Option<String>,
+}
+
+/// 目前使用者的語言清單。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserLanguageList {
+    /// `Languages` 的每一項，例如 `zh-Hant-TW`。
+    pub languages: Vec<String>,
+    /// `zh-Hant-TW\InputMethodTips` 的每一項。
+    pub input_method_tips: Vec<String>,
+}
+
 /// 取路徑的檔名並比較（不分大小寫）。
 fn file_name_is(path: &str, expected: &str) -> bool {
     path.rsplit(['\\', '/'])
@@ -210,26 +227,126 @@ fn read_inproc(clsid_text: &str, view: REG_SAM_FLAGS) -> Result<Option<String>, 
     result.map(Some)
 }
 
+/// 取安裝用的 `InprocServer32`：先看 64 位元檢視，沒有才退回 32 位元。
+pub fn read_install_inproc(clsid_text: &str) -> Result<Option<String>, SmokeError> {
+    match read_inproc(clsid_text, KEY_WOW64_64KEY)? {
+        Some(path) => Ok(Some(path)),
+        None => read_inproc(clsid_text, KEY_WOW64_32KEY),
+    }
+}
+
+/// 讀某個檢視的 machine profile 機碼；不存在回 `None`。
+pub fn read_machine_profile(
+    clsid_text: &str,
+    langid: u16,
+    profile_text: &str,
+    view: REG_SAM_FLAGS,
+) -> Result<Option<MachineProfile>, SmokeError> {
+    let path = profile::machine_profile_key(clsid_text, langid, profile_text);
+    read_machine_profile_at(&path, view)
+}
+
+/// 舊安裝器寫的 `0x0404` 機碼；只用來提示名稱非標準。
+pub fn read_legacy_machine_profile(
+    clsid_text: &str,
+    langid: u16,
+    profile_text: &str,
+    view: REG_SAM_FLAGS,
+) -> Result<Option<MachineProfile>, SmokeError> {
+    let path = profile::legacy_machine_profile_key(clsid_text, langid, profile_text);
+    read_machine_profile_at(&path, view)
+}
+
+/// 讀指定路徑的 profile 機碼；不存在回 `None`。
+fn read_machine_profile_at(
+    path: &str,
+    view: REG_SAM_FLAGS,
+) -> Result<Option<MachineProfile>, SmokeError> {
+    let Some(key) = open(HKEY_LOCAL_MACHINE, path, view)? else {
+        return Ok(None);
+    };
+    let result = (|| {
+        Ok(MachineProfile {
+            description: query_string(key, "Description")?,
+            enable: query_dword(key, "Enable")?,
+            icon_file: query_string(key, "IconFile")?,
+        })
+    })();
+    // SAFETY: key 由上面的 open 取得，這裡是唯一放手的地方。
+    unsafe {
+        let _ = RegCloseKey(key);
+    }
+    result.map(Some)
+}
+
+/// 讀目前使用者的 `Languages` 與 `zh-Hant-TW\InputMethodTips`。
+///
+/// 值不存在時回空清單；機碼本身讀不到才是錯誤。
+pub fn read_user_language_list() -> Result<UserLanguageList, SmokeError> {
+    let Some(key) = open(HKEY_CURRENT_USER, USER_PROFILE_KEY, REG_SAM_FLAGS(0))? else {
+        return Ok(UserLanguageList::default());
+    };
+    let languages = query_multi_string(key, "Languages");
+    // SAFETY: key 由上面的 open 取得，這裡是唯一放手的地方。
+    unsafe {
+        let _ = RegCloseKey(key);
+    }
+    let languages = languages?.unwrap_or_default();
+
+    let tips_path = format!(r"{USER_PROFILE_KEY}\{LANGUAGE_ZH_HANT_TW}");
+    let tips = match open(HKEY_CURRENT_USER, &tips_path, REG_SAM_FLAGS(0))? {
+        None => Vec::new(),
+        Some(key) => {
+            let result = query_multi_string(key, "InputMethodTips");
+            // SAFETY: key 由上面的 open 取得，這裡是唯一放手的地方。
+            unsafe {
+                let _ = RegCloseKey(key);
+            }
+            result?.unwrap_or_default()
+        }
+    };
+
+    Ok(UserLanguageList {
+        languages,
+        input_method_tips: tips,
+    })
+}
+
 /// 讀某個機碼的預設值（`REG_SZ`）。
 fn query_default_string(key: HKEY) -> Result<String, SmokeError> {
+    query_string_raw(key, None)?
+        .ok_or_else(|| SmokeError::Registry("InprocServer32 的預設值不存在".to_string()))
+}
+
+/// 讀具名 `REG_SZ`；值不存在回 `None`。
+fn query_string(key: HKEY, name: &str) -> Result<Option<String>, SmokeError> {
+    query_string_raw(key, Some(name))
+}
+
+/// 讀字串值；`name` 為 `None` 代表預設值。
+fn query_string_raw(key: HKEY, name: Option<&str>) -> Result<Option<String>, SmokeError> {
+    let name = name.map(wide);
+    let name_ptr = name
+        .as_ref()
+        .map_or(PCWSTR::null(), |name| PCWSTR(name.as_ptr()));
+
     let mut size = 0u32;
     let mut kind = REG_VALUE_TYPE::default();
-    // SAFETY: 只查詢長度，資料指標傳 null。
-    let status = unsafe {
-        RegQueryValueExW(
-            key,
-            PCWSTR::null(),
-            None,
-            Some(&mut kind),
-            None,
-            Some(&mut size),
-        )
-    };
-    if status != ERROR_SUCCESS {
-        return Err(SmokeError::Registry(format!(
-            r"RegQueryValueExW(InprocServer32) = {}",
-            report::hex(status.0)
-        )));
+    // SAFETY: 只查詢長度，資料指標傳 null；name 在呼叫期間保持存活。
+    let status =
+        unsafe { RegQueryValueExW(key, name_ptr, None, Some(&mut kind), None, Some(&mut size)) };
+    match status {
+        ERROR_SUCCESS => {}
+        ERROR_FILE_NOT_FOUND => return Ok(None),
+        other => {
+            return Err(SmokeError::Registry(format!(
+                "RegQueryValueExW({}) = {}",
+                name.as_ref()
+                    .map(|name| String::from_utf16_lossy(&name[..name.len() - 1]))
+                    .unwrap_or_else(|| "(預設值)".to_string()),
+                report::hex(other.0)
+            )))
+        }
     }
 
     let mut buffer = vec![0u16; (size as usize).div_ceil(2).max(1)];
@@ -237,7 +354,7 @@ fn query_default_string(key: HKEY) -> Result<String, SmokeError> {
     let status = unsafe {
         RegQueryValueExW(
             key,
-            PCWSTR::null(),
+            name_ptr,
             None,
             Some(&mut kind),
             Some(buffer.as_mut_ptr().cast::<u8>()),
@@ -246,15 +363,100 @@ fn query_default_string(key: HKEY) -> Result<String, SmokeError> {
     };
     if status != ERROR_SUCCESS {
         return Err(SmokeError::Registry(format!(
-            r"RegQueryValueExW(InprocServer32, 讀值) = {}",
+            "RegQueryValueExW(讀值) = {}",
             report::hex(status.0)
         )));
     }
 
     let units = &buffer[..(size as usize / 2).min(buffer.len())];
-    Ok(String::from_utf16_lossy(units)
-        .trim_end_matches('\0')
-        .to_string())
+    Ok(Some(
+        String::from_utf16_lossy(units)
+            .trim_end_matches('\0')
+            .to_string(),
+    ))
+}
+
+/// 讀 `REG_DWORD`；值不存在回 `None`。
+fn query_dword(key: HKEY, name: &str) -> Result<Option<u32>, SmokeError> {
+    let name = wide(name);
+    let mut value = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let mut kind = REG_VALUE_TYPE::default();
+    // SAFETY: value 是 4 bytes 的可寫緩衝，size 與它一致。
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            PCWSTR(name.as_ptr()),
+            None,
+            Some(&mut kind),
+            Some((&mut value as *mut u32).cast::<u8>()),
+            Some(&mut size),
+        )
+    };
+    match status {
+        ERROR_SUCCESS if kind == REG_DWORD => Ok(Some(value)),
+        ERROR_SUCCESS => Ok(None),
+        ERROR_FILE_NOT_FOUND => Ok(None),
+        other => Err(SmokeError::Registry(format!(
+            "RegQueryValueExW({name:?}, REG_DWORD) = {}",
+            report::hex(other.0)
+        ))),
+    }
+}
+
+/// 讀 `REG_MULTI_SZ`；值不存在回 `None`。
+fn query_multi_string(key: HKEY, name: &str) -> Result<Option<Vec<String>>, SmokeError> {
+    let name_wide = wide(name);
+    let mut size = 0u32;
+    let mut kind = REG_VALUE_TYPE::default();
+    // SAFETY: 只查詢長度，資料指標傳 null。
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            PCWSTR(name_wide.as_ptr()),
+            None,
+            Some(&mut kind),
+            None,
+            Some(&mut size),
+        )
+    };
+    match status {
+        ERROR_SUCCESS => {}
+        ERROR_FILE_NOT_FOUND => return Ok(None),
+        other => {
+            return Err(SmokeError::Registry(format!(
+                "RegQueryValueExW({name}, REG_MULTI_SZ) = {}",
+                report::hex(other.0)
+            )))
+        }
+    }
+
+    let mut buffer = vec![0u16; (size as usize).div_ceil(2).max(1)];
+    // SAFETY: buffer 的大小就是 size 給的位元組數（向上取整到 u16）。
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            PCWSTR(name_wide.as_ptr()),
+            None,
+            Some(&mut kind),
+            Some(buffer.as_mut_ptr().cast::<u8>()),
+            Some(&mut size),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(SmokeError::Registry(format!(
+            "RegQueryValueExW({name}, 讀值) = {}",
+            report::hex(status.0)
+        )));
+    }
+
+    let units = &buffer[..(size as usize / 2).min(buffer.len())];
+    let entries = units
+        .split(|unit| *unit == 0)
+        .filter(|part| !part.is_empty())
+        .map(String::from_utf16_lossy)
+        .collect();
+    Ok(Some(entries))
 }
 
 /// 用指定檢視開機碼；不存在時回 `None`。
@@ -273,7 +475,7 @@ fn open(root: HKEY, path: &str, view: REG_SAM_FLAGS) -> Result<Option<HKEY>, Smo
     };
     match status {
         ERROR_SUCCESS => Ok(Some(key)),
-        ERROR_FILE_NOT_FOUND => Ok(None),
+        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => Ok(None),
         other => Err(SmokeError::Registry(format!(
             "RegOpenKeyExW({path}) = {}",
             report::hex(other.0)
@@ -403,5 +605,43 @@ mod tests {
         assert!(file_name_is(X64_PATH, "JC-TSF.DLL"));
         assert!(file_name_is("/opt/jc/jc-tsf-x86.dll", DLL_X86));
         assert!(!file_name_is(X64_PATH, DLL_X86));
+    }
+
+    /// 這台機器真的讀得到目前使用者的語言清單時，值必須是字串清單；讀不到
+    /// （極精簡的 CI 容器）就跳過，不讓測試失敗。
+    #[cfg(windows)]
+    #[test]
+    fn user_language_list_reads_on_windows() {
+        match read_user_language_list() {
+            Ok(list) => {
+                assert!(list.languages.iter().all(|entry| !entry.is_empty()));
+                assert!(list.input_method_tips.iter().all(|entry| !entry.is_empty()));
+            }
+            Err(error) => eprintln!("略過：{error}"),
+        }
+    }
+
+    /// Windows 上一定讀得到 `HKLM\SOFTWARE\Microsoft\CTF` 或得到明確錯誤；
+    /// 這裡只鎖住「不會 panic、錯誤會帶路徑」。
+    #[cfg(windows)]
+    #[test]
+    fn machine_profile_read_returns_or_reports() {
+        match read_machine_profile(
+            CLSID,
+            0x0404,
+            "{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56}",
+            KEY_WOW64_64KEY,
+        ) {
+            Ok(Some(profile)) => {
+                if let Some(description) = &profile.description {
+                    assert!(!description.is_empty(), "Description 不該是空字串");
+                }
+                if let Some(enable) = profile.enable {
+                    assert!(enable <= 1, "Enable 只該是 0 或 1，得到 {enable}");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => assert!(error.to_string().contains("註冊表")),
+        }
     }
 }
