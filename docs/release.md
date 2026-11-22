@@ -1,10 +1,11 @@
 # 發佈流程
 
-`ci.yml` 是唯一入口。push main 時 `check-tag` 與四個 job 同時起步：linux／windows
-測試，以及 build-windows／build-linux。build 只 `needs: check-tag`，不等測試；
-`publish` 等 `check-tag`、兩個測試與兩個 build 都成功才建立 GitHub Release。
-一般 push 沒有版本標籤時 build 與 publish 直接跳過。所有 job 的 ref 都是
-`refs/heads/main`。
+`ci.yml` 是唯一入口。push main 時 `check-tag` 與五個 job 同時起步：linux／windows／
+test-windows 測試，以及 build-windows／build-linux。build 只 `needs: check-tag`，
+不等測試；`publish` 等 `check-tag`、linux／windows 兩個測試與兩個 build 都成功才
+建立 GitHub Release。帶版本標籤的 push 另外會等 `build-windows` 產出 MSI 後跑
+`install-smoke`（見〈Windows CI 驗證〉）。一般 push 沒有版本標籤時 build、
+install-smoke 與 publish 直接跳過。所有 job 的 ref 都是 `refs/heads/main`。
 
 `check-tag` 明確用 `fetch-tags: true` checkout，再主動 `git fetch --tags --force
 origin`，用 `github.sha`（完整 SHA）搭配 `git tag --points-at` 找 `v*` 標籤；
@@ -217,7 +218,9 @@ signtool verify /pa /v jc-ime-<version>-x64.msi
 | `check-tag` | `fetch-tags: true` + `git fetch --tags --force origin`，用 `github.sha` 比對 `v*` 標籤（最多三次，間隔 3 秒）；輸出 `has_tag`／`version`／`msi_version` |
 | `linux`（測試） | 下載資料包 → fmt／clippy／Windows target check／test → 清理快取 |
 | `windows`（測試） | 下載資料包 → `cargo test --workspace` |
+| `test-windows`（測試） | 所有 push／PR；`cargo test --workspace --exclude jc-settings-ui` → Windows 專屬 crate 的 clippy → i686 型別檢查 → `installer/jc-tip-register` 測試 |
 | `build-windows` | `needs: check-tag`，與測試同時起步；下載資料包並驗 SHA → `verify-bundle.py` → WiX v5 → `installer/build.ps1 -MsiVersion <x.y.z>`（腳本補上 rc 序號）→ MSI、checksum、`data-manifest.json`，輸出 `signed` |
+| `install-smoke` | `needs: [check-tag, build-windows]`，條件同 `build-windows`；下載 MSI → 安裝 → 跑 `jc-tsf-smoke` → 斷言 TSF profile 機碼與語言清單 → 反安裝 → 斷言清乾淨 |
 | `build-linux` | `needs: check-tag`，與測試同時起步；GPUI 系統依賴 → `cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui` → tar.gz 與 checksum → 清理快取 |
 | `publish` | `needs: [check-tag, linux, windows, build-windows, build-linux]`；全部成功才下載兩個 artifact、建立或更新 GitHub Release，不查 CI run |
 
@@ -231,6 +234,72 @@ build job 不跑 `cargo fmt`、clippy、test；那些由 `ci.yml` 在日常 push
 
 `publish` 直接宣告 `needs: [check-tag, linux, windows, build-windows, build-linux]`：check-tag 失敗、任一測試失敗或沒有版本標籤時都不會發版。`build-windows`／`build-linux` 只 `needs: check-tag`，與測試同時起步。`release.yml` 已移除 `workflow_call`，`workflow_dispatch` 只產 artifact，供手動測試 build。
 
+## Windows CI 驗證
+
+Windows 的程式有 66 處 `#[cfg(windows)]`，Linux 的 `cargo test` 完全看不到；
+`windows` job 只跑 x64 的 `cargo test --workspace`。以下兩個 job 補上其餘驗證。
+
+### `test-windows`
+
+所有 push 與 pull_request 都跑，不只在 tag，所以一般 PR 就會擋下 Windows 迴歸。
+它**不下載資料包**：需要資料的測試由 `require_data!()` 判斷，缺資料就 skip；
+資料內容的正確性由 `linux`／`windows` 的完整測試負責。步驟：
+
+1. `cargo test --workspace --no-fail-fast --exclude jc-settings-ui`。`jc-settings-ui`
+   依賴 GPUI，與 Linux job 一樣排除；`--no-fail-fast` 讓一次 run 看到所有失敗的 crate。
+2. `cargo clippy -p jc-tsf -p jc-windows -p jc-tsf-register -p jc-tsf-smoke -p jc-cli --all-targets -- -D warnings`。
+   Linux 的 `--workspace` clippy 只編得到非 Windows 分支，這一步才檢查 Windows 專屬程式。
+3. `cargo check -p jc-tsf -p jc-tsf-register -p jc-tsf-smoke --all-targets --target i686-pc-windows-msvc`。
+   32 位元 TSF DLL 的型別檢查；不連結，實際 DLL 由 `build-windows` 建置。
+4. `cargo test --manifest-path installer/jc-tip-register/Cargo.toml --all-targets`。
+   `installer/jc-tip-register` 有自己的 `[workspace]`，不在 `--workspace` 裡。
+
+快取用 `shared-key: test-windows`，與 `ci-windows`／`release-windows` 分開：
+這支 job 會建 i686 產物，混用會讓另外兩個 job 還原到不對的 target 目錄。
+
+### `install-smoke`
+
+只在帶版本標籤的 push 跑（`needs: [check-tag, build-windows]`，條件與
+`build-windows` 相同），拿 `windows-msi-<version>` artifact 做一次真的安裝：
+
+1. `msiexec /i <msi> /qn /l*v %TEMP%\install.log`，自己等 10 分鐘，超過就中止並印
+   log 最後 40 行；結束碼只接受 `0` 與 `3010`（成功但需重開機）。
+2. 斷言 `C:\Program Files\jc-ime\` 有 `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe`。
+3. 執行 `C:\Program Files\jc-ime\jc-tsf-smoke.exe`，斷言結束碼 `0`。它輸出純文字，
+   逐項結果在 `%TEMP%\smoke.log`；七項檢查的意義見 `docs/port/tsf-smoke.md`。
+   目前輸出是文字，等 doctor task 合併 `--json` 後再改成解析欄位。
+4. 用 PowerShell 斷言註冊狀態：
+   - `HKLM:\SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\LanguageProfile\0x00000404\{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56}`
+     存在，`Enable` 為 `1`。
+   - 同一路徑用 `reg query /reg:32` 也查得到。CTF 機碼不是 WOW64 轉向機碼，
+     兩個檢視應該看得到同一份；查不到代表 32 位元程式載入不到輸入法。
+   - `Get-WinUserLanguageList` 的 `InputMethodTips` 含 `0404:` 加同一個 profile GUID。
+     `InstallTipLayout` 以使用者身分執行，這一步是同一個使用者。
+5. 反安裝前先 `Stop-Process jc-engine -Force`、`Stop-Process explorer -Force`，等 3 秒，
+   讓 TSF DLL 不再被載入；runner 上重開 explorer 不影響後續步驟。ProductCode 每次
+   build 由 WiX 重新產生，先從解除安裝登錄的 `DisplayName -like 'jc 注音*'` 取，
+   找不到再讀 MSI 的 Property 表。
+6. `msiexec /x <product code> /qn /l*v %TEMP%\uninstall.log`，同樣等 10 分鐘；
+   結束碼接受 `0` 與 `3010`。
+7. 斷言 `C:\Program Files\jc-ime` 消失，profile 機碼在 64 位元與 32 位元檢視都不存在。
+
+### 失敗時去哪裡看
+
+- 先看 job log：`msiexec` 非 0 結束碼會直接印出 `install.log`／`uninstall.log` 最後
+  40 行；1603 另外標成「安裝期間發生嚴重錯誤」，通常是自訂動作或 DLL 被鎖住。
+- `if: failure()` 會上傳 artifact `install-smoke-logs-<version>`，內含
+  `install.log`、`uninstall.log`、`smoke.log`。`install.log` 的 `Return value 3`
+  往前找第一個 `CustomAction`，就是失敗的自訂動作。
+- `jc-tsf-smoke` 的 `[FAIL]` 行會指出哪一項檢查沒過，對照
+  `docs/port/tsf-smoke.md` 的七項檢查與可能原因。
+- `test-windows` 的失敗都在 job log：cargo test 的 crate 與測試名、clippy 的
+  `-D warnings` 位置、i686 check 的型別錯誤。
+
+`install-smoke` 不在 `publish` 的 `needs` 裡（`publish` 仍等兩個測試與兩個 build），
+所以它與 `publish` 並行：Release 可能在 install-smoke 失敗前就建立。要改成「安裝
+失敗就不發版」得把 `install-smoke` 加進 `publish` 的 `needs`，這會讓發版多等一次
+Windows 安裝，尚未調整。
+
 ## 建置快取
 
 release 與 CI 都用 `Swatinem/rust-cache@v2`。
@@ -239,6 +308,7 @@ release 與 CI 都用 `Swatinem/rust-cache@v2`。
 |---|---|---|---|
 | `ci.yml` | `linux`（測試） | `ci-linux` | `true` |
 | `ci.yml` | `windows`（測試） | `ci-windows` | `true` |
+| `ci.yml` | `test-windows`（Windows 測試） | `test-windows` | `true` |
 | `ci.yml` | `build-linux` | `release-linux` | `false` |
 | `ci.yml` | `build-windows` | `release-windows` | `false` |
 | `release.yml`（手動測試） | `linux` | `release-linux` | `false` |
@@ -247,8 +317,10 @@ release 與 CI 都用 `Swatinem/rust-cache@v2`。
 CI 連 workspace crate 的產物一起快取：每個 commit 通常只改幾個 crate，還原後 cargo 只
 重編改到的。release 只快取依賴，release 產物一份太大，每個 tag 存一份會擠掉其他快取。
 
-CI 現在也會在測試前下載與 release 相同的資料包；`JC_IMEDATA` 由公開 variable
-提供，fork PR 也讀得到。資料包本身不快取，每個 job 都重新下載並驗 SHA-256。
+`linux` 與 `windows` 在測試前下載與 release 相同的資料包；`JC_IMEDATA` 由公開
+variable 提供，fork PR 也讀得到。資料包本身不快取，每個 job 都重新下載並驗 SHA-256。
+`test-windows` 不下載資料包：它驗的是 Windows 上編得過、跑得動，需要資料的測試由
+`require_data!()` 判斷後 skip。
 
 `linux（tar.gz）` 用自己的 `release-linux` 快取。`verify` 已不再編譯，既不裝工具鏈
 也不掛 rust-cache，不會再先寫一份快取給打包 job。CI 是 debug profile，

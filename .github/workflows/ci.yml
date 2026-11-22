@@ -363,6 +363,69 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # Windows 專屬的測試。上面的 windows job 只跑 x64 的 cargo test；這支 job
+  # 補上三個缺口：
+  # - 66 處 #[cfg(windows)] 的程式在 Linux 不會被編譯，這裡真的編譯並執行。
+  # - Windows 專屬 crate 的 clippy（Linux 的 clippy 只看得到非 Windows 分支）。
+  # - i686（32 位元 TSF DLL）的型別檢查，以及 installer/jc-tip-register 這個
+  #   獨立 workspace 的測試。
+  # 所有 push 與 pull_request 都跑，不只在 tag；一般 PR 就能擋下 Windows 迴歸。
+  # 測試需要的資料由 require_data!() 判斷，缺資料就 skip，這裡不下載資料包：
+  # 這支 job 驗的是「Windows 上編得過、跑得動」，資料內容由 linux／windows 的
+  # 完整測試負責。
+  test-windows:
+    name: test-windows（Windows 測試）
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      # 與 rust-toolchain.toml 同一版（action 不讀該檔案）。
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          components: rustfmt, clippy
+
+      # 32 位元的 TSF DLL。build.ps1 另外建 i686 產物，這裡先確認它能編過。
+      - name: 加入 i686 target（32 位元 TSF DLL）
+        shell: pwsh
+        run: rustup target add i686-pc-windows-msvc
+
+      # 與 ci-windows／release-windows 分開的 key：這支 job 會建 i686 產物，
+      # 混用會讓另外兩個 job 還原到不對的 target 目錄。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-windows
+          cache-targets: "true"
+          cache-all-crates: "true"
+          cache-on-failure: "true"
+
+      # jc-settings-ui 依賴 GPUI，與 Linux job 一樣排除；它的 Windows 建置由
+      # build-windows 負責。
+      - name: Test（workspace）
+        run: cargo test --workspace --no-fail-fast --exclude jc-settings-ui
+
+      # 只挑 Windows 專屬與會碰到 Windows API 的 crate：Linux job 的
+      # --workspace clippy 看不到這些分支。
+      - name: Clippy（Windows 專屬 crate）
+        run: >
+          cargo clippy
+          -p jc-tsf -p jc-windows -p jc-tsf-register -p jc-tsf-smoke -p jc-cli
+          --all-targets -- -D warnings
+
+      # 32 位元目標只做 check、不連結：i686 的 TSF DLL 由 build.ps1 建置，
+      # 這裡只確認型別與 cfg(target_pointer_width) 分支編得過。
+      - name: 32 位元型別檢查
+        run: >
+          cargo check
+          -p jc-tsf -p jc-tsf-register -p jc-tsf-smoke
+          --all-targets --target i686-pc-windows-msvc
+
+      # installer/jc-tip-register 有自己的 [workspace]，不在 --workspace 裡，
+      # 必須用 manifest path 單獨跑。
+      - name: 安裝器自訂動作測試（獨立 workspace）
+        run: cargo test --manifest-path installer/jc-tip-register/Cargo.toml --all-targets
+
   # 與測試同時起步。只 needs check-tag，不等 linux/windows 測試；
   # 一般 push（無 tag）跳過，帶 annotated tag 的 push main 才建置。
   build-windows:
@@ -624,6 +687,246 @@ jobs:
             target/installer/jc-ime-${{ needs.check-tag.outputs.version }}-x64.msi
             target/installer/jc-ime-${{ needs.check-tag.outputs.version }}-x64.msi.sha256
             target/installer/data-manifest.json
+
+  # 拿 build-windows 產出的 MSI 做一次真的安裝：裝、跑 jc-tsf-smoke、斷言 TSF
+  # 註冊與語言清單、再反安裝。MSI 的 ProductCode 每次 build 由 WiX 重新產生，
+  # 只有真的裝一次才知道自訂動作、註冊機碼與檔案清單有沒有對上。
+  #
+  # needs 除了 build-windows 還要 check-tag：artifact 名稱與版本都來自
+  # needs.check-tag.outputs.version，只寫 build-windows 會讓這裡取到空字串。
+  # 條件與 build-windows 相同（帶 tag 的 push），PR 不跑。
+  install-smoke:
+    name: install-smoke（安裝與反安裝）
+    needs: [check-tag, build-windows]
+    if: github.event_name == 'push' && needs.check-tag.outputs.has_tag == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      # 已發行的 TSF 身分；與 crates/jc-tsf/src/guids.rs 相同。
+      # 值給各步驟共用，避免四處重打字串打錯。
+      JC_TIP_CLSID: "{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}"
+      JC_TIP_PROFILE: "{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56}"
+      JC_INSTALL_DIR: C:\Program Files\jc-ime
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 下載 Windows artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: windows-msi-${{ needs.check-tag.outputs.version }}
+          path: dist/windows
+
+      # msiexec 卡住時 Start-Process -Wait 會一路等到 job 的 45 分鐘 timeout，
+      # 什麼 log 都看不到；這裡自己等 10 分鐘，超時就中止並印 install.log。
+      - name: 安裝 MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $log = Join-Path $env:TEMP 'install.log'
+          $msi = Get-ChildItem -Path 'dist\windows' -Filter '*.msi' -File |
+            Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $msi) {
+            throw 'dist\windows 底下找不到 .msi；artifact 下載失敗或檔名不符。'
+          }
+          Write-Host "安裝 $($msi.FullName)"
+
+          $proc = Start-Process -FilePath msiexec.exe `
+            -ArgumentList "/i `"$($msi.FullName)`" /qn /norestart /l*v `"$log`"" `
+            -PassThru
+          if (-not $proc.WaitForExit(600000)) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            if (Test-Path $log) { Get-Content $log -Tail 40 | Write-Host }
+            throw 'msiexec 安裝超過 10 分鐘；已強制中止，上面是 install.log 最後 40 行。'
+          }
+
+          # 3010 是「成功，但需要重開機」；runner 不會重開，視為成功。
+          $code = $proc.ExitCode
+          if ($code -ne 0 -and $code -ne 3010) {
+            if (Test-Path $log) { Get-Content $log -Tail 40 | Write-Host }
+            if ($code -eq 1603) {
+              throw 'msiexec 安裝回 1603（安裝期間發生嚴重錯誤）；上面是 install.log 最後 40 行。'
+            }
+            throw "msiexec 安裝失敗（exit $code）；install.log 最後 40 行已印在上面。"
+          }
+          Write-Host "msiexec 安裝完成（exit $code）"
+
+      - name: 斷言安裝檔案
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # x64 DLL、x86 DLL 與引擎都必須在 Program Files\jc-ime；缺任何一個，
+          # 32 位元程式或引擎啟動就會失敗。
+          foreach ($name in @('jc-tsf.dll', 'jc-tsf-x86.dll', 'jc-engine.exe')) {
+            $path = Join-Path $env:JC_INSTALL_DIR $name
+            if (-not (Test-Path $path)) { throw "安裝後找不到 $path" }
+            Write-Host "$path 存在"
+          }
+
+      # 目前 jc-tsf-smoke 輸出純文字（等 doctor task 的 --json 合併後再改），
+      # 這裡只看結束碼：0 全部通過、1 至少一項 FAIL、2 參數錯誤。
+      - name: 執行 jc-tsf-smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $exe = Join-Path $env:JC_INSTALL_DIR 'jc-tsf-smoke.exe'
+          if (-not (Test-Path $exe)) { throw "找不到 $exe" }
+
+          $out = Join-Path $env:TEMP 'smoke.log'
+          & $exe 2>&1 | Tee-Object -FilePath $out
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            throw "jc-tsf-smoke 失敗（exit $code）；輸出見 $out"
+          }
+          Write-Host "jc-tsf-smoke 通過（exit 0）"
+
+      - name: 斷言 TSF 註冊與語言清單
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $profileKey = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{0}\LanguageProfile\0x00000404\{1}' -f $env:JC_TIP_CLSID, $env:JC_TIP_PROFILE
+
+          # SYSTEM 身分註冊的 profile：Enable 由 Windows 的
+          # EnableLanguageProfile 寫成 DWORD 1，字串比對同時接受 REG_SZ。
+          if (-not (Test-Path $profileKey)) { throw "缺少 profile 機碼：$profileKey" }
+          $enable = (Get-ItemProperty -Path $profileKey -Name 'Enable' -ErrorAction SilentlyContinue).Enable
+          if ("$enable" -ne '1') { throw "$profileKey 的 Enable 不是 1（實際：$enable）" }
+          Write-Host "profile 機碼存在，Enable=1：$profileKey"
+
+          # 32 位元檢視。CTF 機碼不是 WOW64 轉向機碼，兩個檢視應該看得到同一份；
+          # 用 /reg:32 明示，才不會被 PowerShell 的預設檢視掩蓋。
+          & reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\$env:JC_TIP_CLSID\LanguageProfile\0x00000404\$env:JC_TIP_PROFILE" /reg:32 | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "32 位元檢視看不到 profile 機碼（reg query /reg:32 exit $LASTEXITCODE）"
+          }
+          Write-Host '32 位元檢視的 profile 機碼存在'
+
+          # 使用者的語言清單。InstallTipLayout 以使用者身分執行，這裡是同一個
+          # 使用者，應該看得到 0404:{profile}。
+          $tips = @(Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips })
+          Write-Host "目前語言清單：$($tips -join ', ')"
+          $matched = @($tips | Where-Object {
+            $_.StartsWith('0404:') -and $_.Contains($env:JC_TIP_PROFILE)
+          })
+          if ($matched.Count -eq 0) {
+            throw "Get-WinUserLanguageList 的 InputMethodTips 沒有 0404:$env:JC_TIP_PROFILE"
+          }
+          Write-Host "語言清單含 $($matched -join ', ')"
+
+      - name: 反安裝 MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $log = Join-Path $env:TEMP 'uninstall.log'
+
+          # TSF DLL 被載入時 msiexec 會把刪除排到重開機，或直接回 1603；
+          # 先停掉引擎與 explorer。runner 重開 explorer 不會影響後續步驟。
+          Get-Process -Name 'jc-engine' -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-Process -Name 'explorer' -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+
+          # ProductCode 每次 build 由 WiX 重新產生，先從解除安裝登錄取；
+          # 找不到再讀 MSI 的 Property 表。
+          $productCode = $null
+          foreach ($root in @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+          )) {
+            foreach ($item in @(Get-ChildItem $root -ErrorAction SilentlyContinue)) {
+              $props = Get-ItemProperty -Path $item.PSPath -ErrorAction SilentlyContinue
+              if ($props.DisplayName -like 'jc 注音*') {
+                $productCode = $item.PSChildName
+                break
+              }
+            }
+            if ($productCode) { break }
+          }
+
+          if (-not $productCode) {
+            Write-Warning '解除安裝登錄找不到 jc 注音；改讀 MSI 的 Property 表。'
+            $msi = Get-ChildItem -Path 'dist\windows' -Filter '*.msi' -File |
+              Sort-Object Name -Descending | Select-Object -First 1
+            if (-not $msi) { throw '找不到 MSI，無法取得 ProductCode。' }
+            $installer = New-Object -ComObject WindowsInstaller.Installer
+            $db = $installer.GetType().InvokeMember(
+              'OpenDatabase', 'InvokeMethod', $null, $installer, @($msi.FullName, 0))
+            $view = $db.GetType().InvokeMember(
+              'OpenView', 'InvokeMethod', $null, $db,
+              @("SELECT Value FROM Property WHERE Property='ProductCode'"))
+            $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+            $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+            if ($record) {
+              $productCode = $record.GetType().InvokeMember(
+                'StringData', 'GetProperty', $null, $record, @(1))
+            }
+          }
+
+          if (-not $productCode) { throw '找不到 jc 注音的 ProductCode，無法反安裝。' }
+          if ($productCode -notmatch '^\{.*\}$') { $productCode = "{$productCode}" }
+          Write-Host "反安裝 ProductCode：$productCode"
+
+          $proc = Start-Process -FilePath msiexec.exe `
+            -ArgumentList "/x $productCode /qn /norestart /l*v `"$log`"" -PassThru
+          if (-not $proc.WaitForExit(600000)) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            if (Test-Path $log) { Get-Content $log -Tail 40 | Write-Host }
+            throw 'msiexec 反安裝超過 10 分鐘；已強制中止，上面是 uninstall.log 最後 40 行。'
+          }
+
+          $code = $proc.ExitCode
+          if ($code -ne 0 -and $code -ne 3010) {
+            if (Test-Path $log) { Get-Content $log -Tail 40 | Write-Host }
+            if ($code -eq 1603) {
+              throw 'msiexec 反安裝回 1603；上面是 uninstall.log 最後 40 行。'
+            }
+            throw "msiexec 反安裝失敗（exit $code）；uninstall.log 最後 40 行已印在上面。"
+          }
+          Write-Host "msiexec 反安裝完成（exit $code）"
+
+          # explorer 被停掉只是為了讓 DLL 可刪；重開它，讓 runner 回到原狀。
+          Start-Process -FilePath explorer.exe -ErrorAction SilentlyContinue
+
+      - name: 斷言反安裝乾淨
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (Test-Path $env:JC_INSTALL_DIR) {
+            Get-ChildItem $env:JC_INSTALL_DIR -Recurse | Select-Object -First 20 | Write-Host
+            throw "反安裝後 $env:JC_INSTALL_DIR 仍然存在。"
+          }
+          Write-Host "$env:JC_INSTALL_DIR 已移除"
+
+          # UnregisterTip 以 SYSTEM 身分移除 HKLM 的 profile；沒清掉會讓下一個
+          # 版本升級時看到半套註冊。
+          $profileKey = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{0}\LanguageProfile\0x00000404\{1}' -f $env:JC_TIP_CLSID, $env:JC_TIP_PROFILE
+          if (Test-Path $profileKey) { throw "反安裝後 profile 機碼仍在：$profileKey" }
+          Write-Host 'profile 機碼已移除'
+
+          & reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\$env:JC_TIP_CLSID\LanguageProfile\0x00000404\$env:JC_TIP_PROFILE" /reg:32 | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            throw '反安裝後 32 位元檢視的 profile 機碼仍在。'
+          }
+          Write-Host '32 位元檢視的 profile 機碼已移除'
+
+      # 失敗時把三個 log 留下來：install.log 有自訂動作的完整輸出，
+      # smoke.log 有七項檢查的逐項結果。
+      - name: 上傳失敗記錄
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: install-smoke-logs-${{ needs.check-tag.outputs.version }}
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/install.log
+            ${{ runner.temp }}/uninstall.log
+            ${{ runner.temp }}/smoke.log
 
 
   # 與 build-windows 相同：只 needs check-tag，與測試並行起步。
