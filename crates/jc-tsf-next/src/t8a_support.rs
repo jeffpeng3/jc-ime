@@ -609,8 +609,9 @@ impl Scripted {
             return joined;
         }
         match joined.as_str() {
-            "s" => "ㄙ".into(),
-            "su" => "ㄙㄡ".into(),
+            // 大千排列：s 是 ㄋ、u 是 ㄧ；拼音的 s／ou 對應不適用於注音。
+            "s" => "ㄋ".into(),
+            "su" => "ㄋㄧ".into(),
             "su3" => "你".into(),
             "j" => "ㄨ".into(),
             "ji" => "ㄨㄛ".into(),
