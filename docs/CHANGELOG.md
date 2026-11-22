@@ -4,6 +4,17 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.1-rc.1 - 2026-11-22
+
+### 修正
+
+- Windows 打字：ITfContext 欄位政策改用 cache，probe 走 `TF_ES_ASYNCDONTCARE`
+  非同步路徑，避免同步讀取被 host 拒絕時誤判為 Blocked 而永久英文。
+- Windows 測試：更新 host 拒絕同步鎖的測試期望值為 Open，與 probe 的新行為一致。
+- 版本號：從 `0.1.0` 升到 `0.1.1`，讓 MSI ProductVersion 從 `0.1.0.N` 變成
+  `0.1.1.1`。Windows Installer 只比對前三段，若沿用 0.1.0 會被當成同一版而拒絕換檔，
+  造成「裝了新版但引擎還是舊的」。
+
 ## 0.1.0-rc.18 - 2026-11-22
 
 ### 修正
