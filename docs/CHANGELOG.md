@@ -4,6 +4,15 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.18 - 2026-11-22
+
+### 修正
+
+- Windows 打字：修正 privacy probe 讀不到欄位（callback 回 `TF_E_SYNCHRONOUS`）
+  時把結果當成 Blocked 的行為，改回 Open。rc.17 實機上這會讓 TIP 永久停留在英文。
+  敏感欄位仍明確 Blocked，不受影響。probe 失敗時另記錄 callback、vk、hr、client
+  與 flags，方便後續 debug；新增相對應的回歸測試。
+
 ## 0.1.0-rc.17 - 2026-11-22
 
 ### 修正
