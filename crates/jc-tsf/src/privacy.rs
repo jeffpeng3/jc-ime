@@ -6,6 +6,10 @@
 //! 提供過渡實作；T6 接到 TSF 生命週期時改指向真正的 `crate::*`。
 
 use std::cell::Cell;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{E_FAIL, E_NOTIMPL, HWND, LPARAM, WPARAM};
 use windows::Win32::System::Com::CoTaskMemFree;
 
@@ -50,16 +54,141 @@ pub struct ProbeContext {
     pub activate_flags: u32,
 }
 
+/// 欄位政策 cache：key 是 ITfContext 的 IUnknown 相容介面指標（`as_raw()` 轉 usize），
+/// 所以同一個 session 裡的帳號欄與密碼欄各自分開，不會互相污染。
+/// 放在 privacy module-level 而不是 `service::State`：非同步 edit session callback 可能在
+/// state 借用期間或不同堆疊回來，用全域 Mutex 避免 RefCell 重入，也不必讓 callback 持有
+/// TextService 參考。Deactivate／focus 離開時用 [`invalidate`]／[`forget_context`] 作廢。
+static FIELD_CACHE: OnceLock<Mutex<FieldCache>> = OnceLock::new();
+/// 每次 focus 離開或 Deactivate 就 +1。非同步 callback 帶著 probe 開始時的 generation 回來，
+/// 比對不上就丟掉結果，避免舊欄位的結果蓋到新欄位。
+static EPOCH: AtomicU64 = AtomicU64::new(0);
+
+const CACHE_LIMIT: usize = 32;
+const CACHE_TTL: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Copy, Debug)]
+struct CachedField {
+    field: Field,
+    generation: u64,
+    expires: Instant,
+}
+
+#[derive(Debug)]
+struct FieldCache {
+    entries: HashMap<usize, CachedField>,
+    order: VecDeque<usize>,
+}
+
+impl FieldCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+}
+
+fn field_cache() -> std::sync::MutexGuard<'static, FieldCache> {
+    FIELD_CACHE
+        .get_or_init(|| Mutex::new(FieldCache::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+fn epoch() -> u64 {
+    EPOCH.load(Ordering::Relaxed)
+}
+
+fn context_key(ctx: &ITfContext) -> usize {
+    ctx.as_raw() as usize
+}
+
+/// 命中回傳該 context 上一次 probe 的欄位；過期、generation 落後或沒有資料回 None。
+fn cached_field(key: usize) -> Option<Field> {
+    let current = epoch();
+    let mut cache = field_cache();
+    let stale = match cache.entries.get(&key) {
+        Some(entry) if entry.generation == current && entry.expires > Instant::now() => {
+            return Some(entry.field)
+        }
+        _ => true,
+    };
+    if stale {
+        cache.entries.remove(&key);
+        cache.order.retain(|k| *k != key);
+    }
+    None
+}
+
+/// probe 明確得到結果時寫入 cache；非同步 callback 回來時 generation 已變就丟掉。
+fn cache_field(key: usize, field: Field, generation: u64) {
+    if generation != epoch() {
+        return;
+    }
+    let mut cache = field_cache();
+    cache.entries.insert(
+        key,
+        CachedField {
+            field,
+            generation,
+            expires: Instant::now() + CACHE_TTL,
+        },
+    );
+    cache.order.retain(|k| *k != key);
+    cache.order.push_back(key);
+    while cache.entries.len() > CACHE_LIMIT {
+        match cache.order.pop_front() {
+            Some(old) => {
+                cache.entries.remove(&old);
+            }
+            None => break,
+        }
+    }
+}
+
+/// 某個 context 的焦點離開：作廢它的 cache 與還在飛的非同步結果。
+pub(crate) fn forget_context(ctx: &ITfContext) {
+    EPOCH.fetch_add(1, Ordering::Relaxed);
+    let key = context_key(ctx);
+    let mut cache = field_cache();
+    cache.entries.remove(&key);
+    cache.order.retain(|k| *k != key);
+}
+
+/// 全部作廢（Deactivate）：epoch +1 讓所有還在飛的非同步結果失效，並清空 cache。
+pub(crate) fn invalidate() {
+    EPOCH.fetch_add(1, Ordering::Relaxed);
+    let mut cache = field_cache();
+    cache.entries.clear();
+    cache.order.clear();
+}
+
 /// `ui_less`：本執行緒以 TF_TMAE_UIELEMENTENABLEDONLY 啟用（自行繪製候選的宿主，例如遊戲，#86）。
 pub fn field(ctx: Option<&ITfContext>, client: u32, ui_less: bool) -> Field {
     field_at(ctx, client, ui_less, &ProbeContext::default())
 }
 
+/// 停用或唯讀的 context 明確 Blocked，不受 cache 影響；順手把結果寫入 cache。
+fn disabled_field(ctx: &ITfContext, key: usize) -> Option<Field> {
+    let reason = disabled_reason(ctx)?;
+    // 程式自己停用了輸入法（例如 ImmAssociateContext(NULL)、唯讀文件）：同其他輸入法不組字。每個行程每種原因記一次（#257）。
+    log::once(&format!(
+        "欄位政策：程式停用了這個欄位的輸入法（{}），按鍵放行給程式 exe={}",
+        reason,
+        log::exe_name()
+    ));
+    cache_field(key, Field::Blocked, epoch());
+    Some(Field::Blocked)
+}
+
 /// 同 [`field`]，另外帶入呼叫端上下文（[`ProbeContext`]），供 probe 讀不到欄位政策時寫詳細 log。
 ///
-/// `None`（宿主拒絕同步 edit session、Com 錯誤、沒有焦點文件）代表「讀不到」，不是
-/// 「確認是敏感欄位」：真正敏感欄位在 [`probe`] 明確回 `Some(Field::Blocked)`。
-/// 讀不到時回 [`Field::Open`]，按鍵放行給程式，與 0c／微軟注音的行為一致。
+/// 先檢查明確停用的 context（不受 cache 影響），再查 [`FIELD_CACHE`]（key 是 ITfContext，
+/// 不同欄位分開），命中就回該 context 上一次的結果。cache miss 才 probe。probe 用
+/// `TF_ES_ASYNCDONTCARE`：宿主同步完成時 [`ScopeProbe`] 直接更新 cache；回 `TF_S_ASYNC` 時
+/// 按鍵先放行（這裡是 cache miss，回 [`Field::Open`]），稍後 callback 更新 cache。讀不到
+/// （宿主拒絕、Com 錯誤、沒有焦點文件）也回 Open，但不寫 cache，下次按鍵再試。
 pub fn field_at(
     ctx: Option<&ITfContext>,
     client: u32,
@@ -67,7 +196,13 @@ pub fn field_at(
     context: &ProbeContext,
 ) -> Field {
     match ctx {
-        Some(ctx) => probe(ctx, client, ui_less, context).unwrap_or(Field::Open),
+        Some(ctx) => {
+            let key = context_key(ctx);
+            if let Some(field) = disabled_field(ctx, key) {
+                return field;
+            }
+            cached_field(key).unwrap_or_else(|| probe(ctx, client, ui_less, context, key))
+        }
         None => {
             log::once(&format!(
                 "欄位政策：沒有焦點文件，按鍵放行給程式 exe={}",
@@ -82,43 +217,52 @@ pub fn field_at(
 /// （唯讀、停用、密碼）不切換。宿主正在處理按鍵、不給同步唯讀鎖時（Word、Outlook 收到熱鍵當下回
 /// TS_E_SYNCHRONOUS，#164）讀不到欄位政策，照常切換，同輸入指示器按鈕。
 pub fn hotkey_allowed(ctx: Option<&ITfContext>, client: u32, ui_less: bool) -> bool {
-    ctx.is_some_and(|ctx| toggle_allowed(probe(ctx, client, ui_less, &ProbeContext::default())))
+    ctx.is_some_and(|ctx| {
+        field_at(Some(ctx), client, ui_less, &ProbeContext::default()) != Field::Blocked
+    })
 }
 
+#[cfg(test)]
 fn toggle_allowed(probed: Option<Field>) -> bool {
     probed != Some(Field::Blocked)
 }
 
-/// 欄位政策；宿主拒絕同步唯讀 edit session（讀不到）時回 None。停用或唯讀的 context 直接是 Blocked。
-fn probe(ctx: &ITfContext, client: u32, ui_less: bool, context: &ProbeContext) -> Option<Field> {
+/// 用 edit session 讀 InputScope：密碼、PIN 與 IS_PRIVATE 由 [`ScopeProbe`] 判斷並更新 cache；
+/// 停用與唯讀已在 [`field_at`] 的 [`disabled_field`] 先擋下。讀不到回 Open 並用 cache 銜接。
+/// `key` 是這個 context 的 cache key，`generation` 是 probe 開始時的 epoch，交給
+/// [`ScopeProbe`] 在非同步 callback 回來時驗過期。
+fn probe(
+    ctx: &ITfContext,
+    client: u32,
+    ui_less: bool,
+    context: &ProbeContext,
+    key: usize,
+) -> Field {
     unsafe {
-        if let Some(reason) = disabled_reason(ctx) {
-            // 程式自己停用了輸入法（例如 ImmAssociateContext(NULL)、唯讀文件）：同其他輸入法不組字。每個行程每種原因記一次（#257）。
-            log::once(&format!(
-                "欄位政策：程式停用了這個欄位的輸入法（{}），按鍵放行給程式 exe={}",
-                reason,
-                log::exe_name()
-            ));
-            return Some(Field::Blocked);
-        }
         object_created();
+        let generation = epoch();
         let probe = ComObject::new(ScopeProbe {
             ctx: ctx.clone(),
             field: Cell::new(Field::Blocked),
             ui_less,
+            key,
+            generation,
         });
         let edit: ITfEditSession = probe.to_interface();
-        match ctx.RequestEditSession(client, &edit, TF_ES_SYNC | TF_ES_READ) {
-            Ok(hr) if hr.is_ok() => Some(probe.field.get()),
-            // 兩條 None 路徑都是「讀不到欄位政策」（host 拒絕同步鎖／Com 錯誤），
-            // 不是「確認敏感」；敏感欄位在上面與 ScopeProbe 裡明確回 Some(Blocked)。
+        match ctx.RequestEditSession(client, &edit, TF_ES_ASYNCDONTCARE | TF_ES_READ) {
+            // 宿主選擇非同步：DoEditSession 稍後更新 cache。現在照「讀不到」處理，
+            // 用同 context 上次 cache（field_at 已查過，這裡是 miss）或 Open 回答。
+            Ok(hr) if hr == TF_S_ASYNC => Field::Open,
+            // 同步完成：DoEditSession 已在 host 端跑過並寫入 cache，讀它的結果。
+            Ok(hr) if hr.is_ok() => probe.field.get(),
+            // 兩條讀不到路徑都是 host 拒絕鎖／Com 錯誤，不是「確認敏感」；不寫 cache，下次再試。
             Ok(hr) => {
                 unreadable(hr, client, ui_less, context);
-                None
+                Field::Open
             }
             Err(error) => {
                 unreadable(error.code(), client, ui_less, context);
-                None
+                Field::Open
             }
         }
     }
@@ -194,6 +338,8 @@ pub fn blocked_in_edit(ctx: &ITfContext, ec: u32, ui_less: bool) -> bool {
         ctx: ctx.clone(),
         field: Cell::new(Field::Blocked),
         ui_less,
+        key: context_key(ctx),
+        generation: epoch(),
     });
     let edit: ITfEditSession = probe.to_interface();
     unsafe { edit.DoEditSession(ec).is_err() || probe.field.get() == Field::Blocked }
@@ -524,6 +670,10 @@ struct ScopeProbe {
     ctx: ITfContext,
     field: Cell<Field>,
     ui_less: bool,
+    /// 這個 context 在 FIELD_CACHE 的 key；非同步 callback 回來時更新它的結果。
+    key: usize,
+    /// probe 開始時的 epoch；callback 回來時若已變（focus 換掉／Deactivate）就丟掉結果。
+    generation: u64,
 }
 impl Drop for ScopeProbe {
     fn drop(&mut self) {
@@ -532,11 +682,14 @@ impl Drop for ScopeProbe {
 }
 impl ITfEditSession_Impl for ScopeProbe_Impl {
     fn DoEditSession(&self, ec: u32) -> windows_core::Result<()> {
-        guarded("InputScope", || unsafe {
+        // DLL 正在卸載時不要把結果寫回全域 cache；一般情況 probe 已 object_created，計數不為 0。
+        if log::LIVE_OBJECTS.load(Ordering::Relaxed) == 0 {
+            return Ok(());
+        }
+        let result = guarded("InputScope", || unsafe {
             // 沒有 scope 屬性的傳統文字框可正常輸入；無法解讀的屬性則阻擋引擎處理。
             let Ok(prop) = self.ctx.GetAppProperty(&GUID_PROP_INPUTSCOPE) else {
-                self.field.set(Field::Open);
-                return Ok(());
+                return Ok(Field::Open);
             };
             let mut selected = [TF_SELECTION::default()];
             let mut fetched = 0;
@@ -548,10 +701,8 @@ impl ITfEditSession_Impl for ScopeProbe_Impl {
                     "欄位政策：宿主沒有回報選取範圍，無法判斷，按鍵放行給程式 exe={}",
                     log::exe_name()
                 ));
-                // 原本忘了設 field，Cell 維持初始值 Blocked，與上面「放行」的 log 矛盾。
-                // 讀不到選取範圍不是確認敏感，補成 Open。
-                self.field.set(Field::Open);
-                return Ok(());
+                // 讀不到選取範圍不是確認敏感，放行。
+                return Ok(Field::Open);
             };
             let mut value = match prop.GetValue(ec, &range) {
                 Ok(value) => value,
@@ -590,8 +741,7 @@ impl ITfEditSession_Impl for ScopeProbe_Impl {
                         ));
                     }
                     zdebug!("field policy missing {}", detail);
-                    self.field.set(field);
-                    return Ok(());
+                    return Ok(field);
                 }
                 Err(error) => return Err(error),
             };
@@ -623,9 +773,13 @@ impl ITfEditSession_Impl for ScopeProbe_Impl {
                 Ok(field)
             })();
             let _ = VariantClear(&mut value);
-            self.field.set(result?);
-            Ok(())
-        })
+            result
+        });
+        let field = result?;
+        // 同步或非同步都在這裡更新 cache；generation 不符代表 focus 已換或已 Deactivate，丟掉。
+        self.field.set(field);
+        cache_field(self.key, field, self.generation);
+        Ok(())
     }
 }
 
