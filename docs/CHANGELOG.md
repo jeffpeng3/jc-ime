@@ -4,6 +4,17 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.0-rc.17 - 2026-11-22
+
+### 修正
+
+- Windows 打字：修正按鍵處理的 `RefCell` 重入 panic。`styled_key`、
+  `vocab_keys`、`japanese_key`、`ctrl_punct_key`、`simplified_hotkey` 與
+  `shift_toggles` 移到 `impl State`，不再從已 borrow 的狀態內再次取用。
+  rc.16 實機上這個 panic 會讓 TIP 只剩英文可輸入。
+- Windows 安裝：註冊與反註冊補上 `SYSTRAYSUPPORT` 與 `COMLESS` 兩個 category。
+  rc.16 缺少這兩項，工作列沒有輸入法圖示。
+
 ## 0.1.0-rc.16 - 2026-11-22
 
 ### 變更
