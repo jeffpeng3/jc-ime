@@ -4,6 +4,19 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## Unreleased（下一次 rc）
+
+### 變更
+
+- 移除舊版 TSF：只出貨單一 `jc-tsf.dll`／`jc-tsf-x86.dll`，對外只有一項「jc 注音」。
+- 所有 `next` 後綴拿掉：`jc-tsf-next` 正名為 `jc-tsf`，pipe 改回 `jc-ime-<rid>`，
+  個人資料前綴改回 `personal`，子命令改回 canonical 名稱。CLSID 與 profile GUID
+  沿用 rc.15 已發行值，只把描述從「jc 注音（新版）」改成「jc 注音」。
+- 升級時以使用者身分清理舊語言清單項目（`user-cleanup-legacy`），並移除舊
+  CLSID、舊 Run 值與舊 DLL。個人化資料不搬移，全新安裝從空白開始。
+- 修正 32 位元 MSI build：`candidate.rs` 的 WindowLongPtr 呼叫改用
+  `cfg(target_pointer_width)` helper，讓 i686 也能編譯。
+
 ## 0.1.0-rc.15 - 2026-11-22
 
 ### 新增

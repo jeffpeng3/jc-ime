@@ -30,7 +30,7 @@ macro_rules! zlog {
 pub const PROTOCOL_VERSION: u32 = JC_PROTOCOL_VERSION;
 
 /// hello 的客戶端識別。
-const CLIENT_NAME: &str = "jc-tsf-next";
+const CLIENT_NAME: &str = "jc-tsf";
 
 /// 引擎重啟時等待新引擎的期限（0c `ipc::RESTART_WAIT`）。
 pub const RESTART_WAIT: Duration = Duration::from_secs(5);

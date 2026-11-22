@@ -6,10 +6,10 @@
 use windows::core::GUID;
 
 /// 文字服務物件的 CLSID。
-pub const CLSID_JC_TSF: GUID = GUID::from_u128(0x7b7d6e1a_3c1f_4b2e_9a55_6c1d2f3e4a01);
+pub const CLSID_JC_TSF: GUID = GUID::from_u128(0x2f6b41d8_9e07_4c3a_b5f1_8d2c6a9e0473);
 
 /// 注音 profile 的 GUID（只有報表會印，不參與冒煙判定）。
-pub const GUID_PROFILE_JC_TSF: GUID = GUID::from_u128(0x8f0a9b3c_2d4e_4f50_a1b2_c3d4e5f60718);
+pub const GUID_PROFILE_JC_TSF: GUID = GUID::from_u128(0xc4e8d217_5b3f_4a96_8e0c_7f1a2b3d4e56);
 
 /// 文字服務註冊的語言（zh-TW）。
 pub const LANGID_ZH_TW: u16 = 0x0404;
@@ -36,7 +36,7 @@ mod tests {
     fn clsid_text_matches_tsf_skeleton() {
         assert_eq!(
             registry_key(&CLSID_JC_TSF),
-            "{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}"
+            "{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}"
         );
     }
 
@@ -44,7 +44,7 @@ mod tests {
     fn profile_guid_is_stable() {
         assert_eq!(
             registry_key(&GUID_PROFILE_JC_TSF),
-            "{8F0A9B3C-2D4E-4F50-A1B2-C3D4E5F60718}"
+            "{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56}"
         );
         assert_eq!(LANGID_ZH_TW, 0x0404);
         assert_eq!(DISPLAY_NAME, "jc 注音");

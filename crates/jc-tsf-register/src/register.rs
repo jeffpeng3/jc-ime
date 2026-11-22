@@ -1,18 +1,16 @@
 //! `DllRegisterServer`／`DllUnregisterServer` 共用的註冊實作。
 //!
-//! `jc-tsf` 與 `jc-tsf-next` 各自在自己的 COM 進入點呼叫
-//! [`register`]／[`register_with`] 與 [`unregister`]／[`unregister_with`]，
-//! 註冊邏輯只存在這一份 rlib。
+//! `jc-tsf` 在自己的 COM 進入點呼叫 [`register`]／[`register_with`] 與
+//! [`unregister`]／[`unregister_with`]，註冊邏輯只存在這一份 rlib。
 //!
-//! **MSI 安裝不走這條路徑。** `installer/jc-ime.wxs` 在兩個 TSF DLL 的 `File` 各
+//! **MSI 安裝不走這條路徑。** `installer/jc-ime.wxs` 在兩份 TSF DLL 的 `File` 各
 //! 掛一個 `<Class>`，`HKCR\CLSID\{CLSID}\InprocServer32` 由 Windows Installer 的
 //! `WriteRegistryValues` 寫入（x64 元件寫 64 位元檢視，`Bitness="always32"` 的
 //! x86 元件寫 `Wow6432Node`），profile 與分類則由 `jc-tip-register machine-register`
 //! 負責。安裝期間沒有任何程式呼叫這裡的 `register()`。
 //!
-//! 這個檔案留給手動修復：`regsvr32 jc-tsf.dll`（或 `jc-tip-register` 以外的工具）
-//! 在沒有 MSI 的機器上重建同一組機碼。手動執行時它自己寫 `InprocServer32`，訊息
-//! 與 MSI 版本相同。
+//! 這個檔案留給手動修復：`regsvr32 jc-tsf.dll` 在沒有 MSI 的機器上重建同一組機碼。
+//! 手動執行時它自己寫 `InprocServer32`，訊息與 MSI 版本相同。
 //!
 //! 為什麼 MSI 不借用這個函式：rc.5／rc.6 由 `jc-tip-register` 載入 DLL、呼叫
 //! `DllRegisterServer`，結果 `RegisterCategory` 在 64 位元檢視的 CLSID 還不存在時
@@ -66,7 +64,7 @@ use windows::Win32::UI::TextServices::{
 };
 
 use crate::guids::{
-    registry_key, CLSID_JC_TSF, GUID_PROFILE_JC_TSF, LANGID_ZH_TW, PROFILE_DESCRIPTION,
+    registry_key, CLSID_JC_TSF, GUID_PROFILE_JC_TSF, LANGID_ZH_TW, PIPE_PREFIX, PROFILE_DESCRIPTION,
 };
 
 /// `AddLanguageProfile` 的 `pchIconFile`：指向一個真正的 NUL，長度仍是 0。
@@ -78,8 +76,7 @@ static NO_ICON: [u16; 1] = [0];
 
 /// 一組可註冊的 TSF 身分。
 ///
-/// 已發行的舊 DLL 用 [`Registration::default()`]，值與 `guids.rs` 完全一致；新版 DLL
-/// 用自己的 CLSID／profile／描述／pipe 前綴呼叫 [`register_with`]，兩組可以同時註冊。
+/// [`Registration::default()`] 就是現行 DLL 的身分，值與 `guids.rs` 完全一致。
 /// 這個結構刻意不放 DLL 路徑：`InprocServer32` 永遠指向呼叫 `DllRegisterServer` 的那份 DLL。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Registration {
@@ -96,22 +93,21 @@ pub struct Registration {
 }
 
 impl Default for Registration {
-    /// 已發行值。任何情況下都不能改這個預設，否則舊使用者的輸入法設定會失效。
+    /// 現行身分。GUID 是 rc.15 已發行值，任何情況下都不能改，否則使用者的輸入法
+    /// 設定會失效。
     fn default() -> Self {
         Self {
             clsid: CLSID_JC_TSF,
             profile: GUID_PROFILE_JC_TSF,
             description: PROFILE_DESCRIPTION,
             langid: LANGID_ZH_TW,
-            pipe_prefix: "jc-ime",
+            pipe_prefix: PIPE_PREFIX,
         }
     }
 }
 
 impl Registration {
     /// 依 SID 尾段推出這組身分對應的引擎 pipe 名稱，不含 `\\.\pipe\`。
-    ///
-    /// 舊 DLL 自己不連 pipe，這個方法留給新版 DLL 的啟動器與測試使用。
     #[allow(dead_code)]
     pub fn engine_pipe_name(&self, rid: &str) -> String {
         format!("{}-{rid}", self.pipe_prefix)
@@ -132,14 +128,14 @@ const REGISTRY_VIEW: REG_SAM_FLAGS = windows::Win32::System::Registry::KEY_WOW64
 #[cfg(target_pointer_width = "32")]
 const REGISTRY_VIEW: REG_SAM_FLAGS = windows::Win32::System::Registry::KEY_WOW64_32KEY;
 
-/// 用已發行的舊身分註冊文字服務；`DllRegisterServer` 走這條，行為與以往相同。
+/// 用現行身分註冊文字服務；`DllRegisterServer` 走這條。
 pub fn register() -> Result<()> {
     register_with(&Registration::default())
 }
 
-/// 用指定的身分註冊文字服務，供新版 DLL 平行註冊。
+/// 用指定的身分註冊文字服務。
 ///
-/// 舊 DLL 請用 [`register`]；新 DLL 傳入自己的 [`Registration`]。
+/// 一般情況用 [`register`]；需要覆寫身分時才傳入自己的 [`Registration`]。
 pub fn register_with(reg: &Registration) -> Result<()> {
     install_log(&format!(
         "jc-tsf register：開始（CLSID {}，描述 {}，pipe 前綴 {}）",
@@ -246,7 +242,7 @@ pub fn register_with(reg: &Registration) -> Result<()> {
     Ok(())
 }
 
-/// 用已發行的舊身分反註冊；`DllUnregisterServer` 走這條。
+/// 用現行身分反註冊；`DllUnregisterServer` 走這條。
 pub fn unregister() -> Result<()> {
     unregister_with(&Registration::default())
 }
@@ -476,38 +472,23 @@ fn win32_error(status: WIN32_ERROR) -> windows::core::Error {
 mod tests {
     use super::*;
 
-    /// 舊 DLL 的預設值必須與 guids.rs 的已發行值一致。
+    /// 現行 DLL 的預設值必須與 guids.rs 的已發行值一致。
     #[test]
     fn default_registration_keeps_published_values() {
         let reg = Registration::default();
+        assert_eq!(reg.clsid, CLSID_JC_TSF);
+        assert_eq!(reg.profile, GUID_PROFILE_JC_TSF);
         assert_eq!(
             registry_key(&reg.clsid),
-            "{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}"
+            "{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}"
         );
         assert_eq!(
             registry_key(&reg.profile),
-            "{8F0A9B3C-2D4E-4F50-A1B2-C3D4E5F60718}"
+            "{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56}"
         );
         assert_eq!(reg.description, "jc 注音");
         assert_eq!(reg.langid, 0x0404);
         assert_eq!(reg.pipe_prefix, "jc-ime");
-    }
-
-    /// 新舊身分可以同時註冊，pipe 名稱也跟著前綴分開。
-    #[test]
-    fn parallel_registration_uses_new_values() {
-        let old = Registration::default();
-        let next = Registration {
-            clsid: GUID::from_u128(0x2f6b41d8_9e07_4c3a_b5f1_8d2c6a9e0473),
-            profile: GUID::from_u128(0xc4e8d217_5b3f_4a96_8e0c_7f1a2b3d4e56),
-            description: "jc 注音（新版）",
-            langid: 0x0404,
-            pipe_prefix: "jc-ime-next",
-        };
-        assert_ne!(old.clsid, next.clsid);
-        assert_ne!(old.profile, next.profile);
-        assert_ne!(old.description, next.description);
-        assert_eq!(old.engine_pipe_name("1001"), "jc-ime-1001");
-        assert_eq!(next.engine_pipe_name("1001"), "jc-ime-next-1001");
+        assert_eq!(reg.engine_pipe_name("1001"), "jc-ime-1001");
     }
 }

@@ -585,8 +585,8 @@ fn print_usage() {
          \x20 --allow-empty-data  不載入資料，只用空 session（測試／除錯用）\n\
          \x20 --supervise         常駐監督子行程，結束後依退避曲線重啟\n\
          \x20 --supervisor-log <path>  監督者 log 路徑（預設 %LOCALAPPDATA%\\jc-ime\\supervisor.log）\n\
-\x20 --personal-prefix <name> 個人資料檔名前綴，預設 personal（新版用 personal-next）\n\
-\x20 --instance <name>        監督者實例名，預設 main（新版用 next，鎖與 log 各自獨立）\n\
+\x20 --personal-prefix <name> 個人資料檔名前綴，預設 personal\n\
+\x20 --instance <name>        監督者實例名，預設 main（影響鎖與 log 檔名）\n\
          \x20 --mode <mode>       輸入模式：zh、ja、mixed、en；預設由設定檔決定\n\
          \x20 --neural <on|off>   日文神經轉換；預設由設定檔的 selection 決定\n\
         {SOCKET_HELP}\
@@ -631,30 +631,30 @@ mod tests {
         assert_eq!(options.instance, DEFAULT_INSTANCE);
     }
 
-    /// T9：新版引擎的執行個體前綴不能落到舊版預設值上。
+    /// 自訂個人資料前綴與監督者實例名要照原樣解析，影響 log 與鎖名。
     #[test]
-    fn parallel_build_flags_are_parsed() {
+    fn custom_prefix_and_instance_are_parsed() {
         let Ok(Parsed::Run(options)) = parse(&[
             "--personal-prefix",
-            "personal-next",
+            "custom-personal",
             "--instance",
-            "next",
+            "custom-instance",
             "--supervise",
         ]) else {
             panic!("應該解析成功");
         };
-        assert_eq!(options.personal_prefix, "personal-next");
-        assert_eq!(options.instance, "next");
+        assert_eq!(options.personal_prefix, "custom-personal");
+        assert_eq!(options.instance, "custom-instance");
         assert!(options.supervise);
         assert_eq!(
             default_supervisor_log_for(&options.instance)
                 .file_name()
                 .unwrap(),
-            "supervisor-next.log"
+            "supervisor-custom-instance.log"
         );
         assert_eq!(
             supervisor_lock_name(&options.instance),
-            format!("{SUPERVISOR_MUTEX_NAME}-next")
+            format!("{SUPERVISOR_MUTEX_NAME}-custom-instance")
         );
     }
 

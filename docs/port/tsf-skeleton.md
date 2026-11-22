@@ -1,5 +1,9 @@
 # tsf-skeleton：TSF 文字服務骨架
 
+> 下一次 rc 已移除舊版，本文的 CLSID／profile 是移除前的歷史值，僅供對照。
+> 現行身分與指令見 [`install.md`](../install.md) 與 [`rollout.md`](rollout.md)。
+
+
 `crates/jc-tsf`，`crate-type = ["cdylib"]`。第一版只做 COM 註冊、按鍵、組字、
 提交與非同步 IPC；候選窗、設定 UI、安裝器都不是這個 crate 的事。
 

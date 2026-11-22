@@ -31,14 +31,17 @@ msiexec /i jc-ime-0.1.0-x64.msi /qn /l*v install.log
 1. 把程式放到 `%ProgramFiles%\jc-ime\`，授權文件放到 `%ProgramFiles%\jc-ime\legal\`，
    資料放到 `%ProgramData%\jc-ime\data\`。
 2. 以 SYSTEM 註冊 TSF 文字服務，一次兩個架構、共用同一個 CLSID：
-   - MSI 的 `<Class>` 寫 `HKCR\CLSID\{7B7D6E1A-...}\InprocServer32` 的兩個檢視：
+   - MSI 的 `<Class>` 寫 `HKCR\CLSID\{2F6B41D8-...}\InprocServer32` 的兩個檢視：
      64 位元檢視指到 `jc-tsf.dll`，`Wow6432Node` 指到 `jc-tsf-x86.dll`。這一步在
      自訂動作之前完成，`RegisterCategory` 才找得到類別工廠。
    - 「jc 注音」的 profile 與分類只註冊一次
      （`ITfInputProcessorProfileMgr::RegisterProfile` 加 `ITfCategoryMgr::RegisterCategory`）。
    註冊失敗會讓整個安裝回滾。32 位元程式因此看得到同一項「jc 注音」，不必切換。
 3. 註冊引擎開機啟動：`HKLM\Software\Microsoft\Windows\CurrentVersion\Run\jc-ime-engine`。
-4. 以目前使用者身分呼叫 `InstallLayoutOrTip`，把「jc 注音」加進你的語言清單。
+   Run 值用 PowerShell 從目前使用者的 SID 尾段組出 `--socket jc-ime-<rid>`，並帶
+   `--personal-prefix personal`；舊版與 `jc-ime-engine-next` 兩筆 Run 值已由
+   MajorUpgrade 移除，升級後只留一筆。
+4. 以目前使用者身分呼叫 `user-cleanup-legacy` 清掉舊語言清單項目，再呼叫 `InstallLayoutOrTip`，把單一「jc 注音」加進你的語言清單。
    不改你的預設輸入法。
 5. 建立開始功能表的「jc 注音設定」與「jc 注音授權」兩個捷徑。
 
@@ -67,9 +70,9 @@ msiexec /i jc-ime-0.1.0-x64.msi /qn /l*v install.log
 先確認 profile 是否註冊成功：
 
 ```bat
-reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}" /s
-reg query "HKLM\SOFTWARE\Classes\CLSID\{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}\InprocServer32" /reg:64
-reg query "HKLM\SOFTWARE\Classes\CLSID\{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}\InprocServer32" /reg:32
+reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}" /s
+reg query "HKLM\SOFTWARE\Classes\CLSID\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\InprocServer32" /reg:64
+reg query "HKLM\SOFTWARE\Classes\CLSID\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\InprocServer32" /reg:32
 ```
 
 第三條的預設值應該是 `jc-tsf-x86.dll`，第二條是 `jc-tsf.dll`。兩條都指到同一個
@@ -143,9 +146,10 @@ copyright，符合 MIT 的散布條件。
 
 | 機碼 | 建立者 | 內容 |
 |---|---|---|
-| `HKLM\SOFTWARE\Classes\CLSID\{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}\InprocServer32` | MSI（WXS 的 `<Class>`，兩個檢視） | 預設值為該架構的 DLL 路徑，`ThreadingModel=Apartment` |
-| `HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-...}` | `ITfInputProcessorProfileMgr::RegisterProfile` | TIP 註冊；兩個架構共用 |
-| `HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-...}\LanguageProfile\0x0404\{8F0A9B3C-...}` | `RegisterProfile` | 顯示名稱「jc 注音」 |
+| `HKLM\SOFTWARE\Classes\CLSID\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\InprocServer32` | MSI（WXS 的 `<Class>`，兩個檢視） | 預設值為該架構的 DLL 路徑，`ThreadingModel=Apartment` |
+| `HKLM\SOFTWARE\Classes\CLSID\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\PipePrefix` | MSI（WXS 的 `<RegistryValue>`） | `jc-ime`，啟動器用來推導引擎 pipe |
+| `HKLM\SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-...}` | `ITfInputProcessorProfileMgr::RegisterProfile` | TIP 註冊；兩個架構共用 |
+| `HKLM\SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-...}\LanguageProfile\0x0404\{C4E8D217-...}` | `RegisterProfile` | 顯示名稱「jc 注音」 |
 | `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\jc-ime-engine` | MSI | `REG_EXPAND_SZ`，每位使用者登入時各啟動一個引擎 |
 | `HKCU\Software\Microsoft\CTF`、`HKCU\Control Panel\International\User Profile`、`HKCU\Keyboard Layout` | `InstallLayoutOrTip` | 目前使用者的語言與輸入法清單 |
 
@@ -153,9 +157,12 @@ copyright，符合 MIT 的散布條件。
 `jc-tsf.dll`，`Wow6432Node` 指到 `jc-tsf-x86.dll`。TSF 依宿主行程的位元數挑一個，
 使用者的語言清單仍然只有一項。
 
-`HKCU` 那三處由 Windows 的 `InstallLayoutOrTip` 維護，安裝器不直接寫。反安裝時
-**不**呼叫 `ILOT_UNINSTALL`：移除語系的最後一個 layout 會讓 Windows 把系統地區改成
-英文（windows-chewing-tsf issue 553），語言清單的項目留給使用者自己移除。
+`HKCU` 那三處由 Windows 的 `InstallLayoutOrTip` 維護，安裝器不直接寫。升級前殘留的
+舊項目（舊 CLSID 與 rc.15 的「jc 注音（新版）」）由 `user-cleanup-legacy` 呼叫
+`RemoveLanguageProfile` 清除，排在 `InstallTipLayout` 之前，不會動到 HKLM 的
+profile 註冊，也不呼叫 `ILOT_UNINSTALL`。反安裝時**不**呼叫 `ILOT_UNINSTALL`：
+移除語系的最後一個 layout 會讓 Windows 把系統地區改成英文
+（windows-chewing-tsf issue 553），語言清單的項目留給使用者自己移除。
 
 ## 反安裝
 
@@ -190,22 +197,29 @@ msiexec /x jc-ime-0.1.0-x64.msi KEEPUSERSETTINGS=1
 
 反安裝由哪個帳號執行，就只清那個帳號的 `HKCU`。其他帳號的語言清單項目在 profile
 被全域移除後會變成無效項目，需要該使用者自行在語言設定移除，或再跑一次
-`jc-tip-register.exe user-uninstall 0`。
+`jc-tip-register.exe user-cleanup-legacy`。這個清理只動 HKCU 的語言清單，不會
+刪除 `%LOCALAPPDATA%\jc-ime`；要清資料請用 `user-uninstall 0`。
 
 ## 升級
 
 同一個 `UpgradeCode`（`{6A97C593-1BE9-414D-B654-650FBDC98B66}`）與遞增的
-`ProductVersion` 會觸發 `MajorUpgrade`：先移除舊版，再安裝新版。舊版反安裝時
-**不會**移除使用者的語言清單項目（條件排除 `UPGRADINGPRODUCTCODE`），新版會沿用。
-設定檔不受影響。
+`ProductVersion` 會觸發 `MajorUpgrade`：先移除舊版，再安裝新版。rc.15 的舊 CLSID
+（`{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}`）、舊 Run 值、舊 DLL 與舊 profile 都會被
+移除；`{2F6B41D8-...}` 沿用，只把描述收斂成「jc 注音」。
+
+升級時 `RemoveTipLayout` 被 `NOT UPGRADINGPRODUCTCODE` 跳過，所以
+`%LOCALAPPDATA%\jc-ime` 保留，個人化資料不會被清掉。settings.json 也不受影響。
+rc.15 加進語言清單的舊「jc 注音」與「jc 注音（新版）」不會被 Windows 自動清掉，
+由新版的 `user-cleanup-legacy` 移除，再由 `InstallTipLayout` 加回單一「jc 注音」。
 
 `AllowSameVersionUpgrades` 設為 `yes`，所以版本號相同時重裝會就地升級（舊版先移除、
-新版再安裝），不會留下兩個「jc 注音」項目。
+新版再安裝），不會留下兩個「jc 注音」項目。完成後請登出再登入，讓 explorer 與各
+行程重新載入 DLL，並確認只跑一個 `jc-engine.exe`。
 
 ## 簽章
 
-正式發佈要簽四個對象：`jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe`、MSI 本體。
-`build.ps1` 也簽其餘執行檔。指令與參數：
+正式發佈要簽兩份 TSF DLL（`jc-tsf.dll`、`jc-tsf-x86.dll`）、所有執行檔與 MSI 本體。
+`build.ps1` 會自動處理。指令與參數：
 
 ```bat
 signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 ^
@@ -235,11 +249,12 @@ signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 ^
 |---|---|
 | `Win+Space` 沒有「jc 注音」 | `HKLM\SOFTWARE\Microsoft\CTF\TIP\{...}` 是否存在；沒有就是註冊失敗，看 `install.log` 的 `RegisterTip` |
 | 看得到但打不出注音 | 引擎是否在跑：`tasklist /fi "imagename eq jc-engine.exe"`；沒有就跑上面的啟動指令 |
-| 只有 32 位元程式打不出注音 | `reg query "HKLM\SOFTWARE\Classes\CLSID\{7B7D6E1A-...}\InprocServer32" /reg:32`；預設值應該是 `jc-tsf-x86.dll`，不是就修復安裝 |
+| 升級後有兩項「jc 注音」或舊項目 | 以該使用者執行 `jc-tip-register.exe user-cleanup-legacy`，再登出登入；仍重複就到語言設定手動移除 |
+| 只有 32 位元程式打不出注音 | `reg query "HKLM\SOFTWARE\Classes\CLSID\{2F6B41D8-...}\InprocServer32" /reg:32`；預設值應該是 `jc-tsf-x86.dll`，不是就修復安裝 |
 | 安裝在「新增語言」前完成 | 先安裝 zh-TW 語言，再修復安裝：`msiexec /fa jc-ime-0.1.0-x64.msi` |
 | 想確認 DLL 與類廠 | `cd "%ProgramFiles%\jc-ime"` 後執行 `.\jc-tsf-smoke.exe` |
 | 想知道 TSF 內部發生什麼 | 設 `JC_TSF_LOG=1` 後重開應用程式，看 `%LOCALAPPDATA%\jc-ime\tsf.log` 與 DebugView |
-| 反安裝後還有機碼 | `reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\{7B7D6E1A-...}" /reg:32`（兩個檢視都查）；用 `jc-tip-register.exe machine-unregister` 補清 profile 與分類 |
+| 反安裝後還有機碼 | `reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-...}" /reg:32`（兩個檢視都查）；用 `jc-tip-register.exe machine-unregister` 補清 profile 與分類 |
 | 找不到授權文件或捷徑打不開 | 看 `%ProgramFiles%\jc-ime\legal\`；缺檔就修復安裝 `msiexec /fa jc-ime-0.1.0-x64.msi` |
 
 ## 必須在 Windows 驗證
@@ -255,7 +270,7 @@ Linux 只能驗證 WiX 專案能被編譯器解析與 payload 清單一致，下
    PowerShell）的相容性。
 5. UWP 應用程式（例如 Windows 設定或小算盤）能否載入 TIP；若不行，檢查安裝目錄上
    `ALL APPLICATION PACKAGES` 的讀取權限。
-6. 升級：舊版反安裝、新版安裝後，語言清單與設定檔是否保留。
+6. 升級：舊版反安裝、新版安裝後，語言清單只剩一項「jc 注音」、舊 CLSID 機碼與舊 DLL 檔案消失、個人資料與設定檔保留。
 7. 反安裝後機碼、檔案與 `%LOCALAPPDATA%\jc-ime` 是否清乾淨；`KEEPUSERSETTINGS=1`
    是否真的保留。
 8. 非管理員帳號只按 `Win+Space` 使用時，是否會因為 Run 項目或 ACL 出問題。
@@ -272,8 +287,9 @@ Linux 只能驗證 WiX 專案能被編譯器解析與 payload 清單一致，下
 
 ## 已知限制
 
-- 只提供 x64 的引擎、CLI 與設定程式。TSF DLL 有 x64 與 x86 兩份（共用同一個
-  CLSID），但引擎本身是獨立行程，32 位元程式一樣連得到。
+- 只提供 x64 的引擎、CLI 與設定程式。TSF DLL 只有 x64 與 x86 兩份（共用同一個
+  CLSID `{2F6B41D8-...}`，舊 CLSID 已移除），引擎本身是獨立行程，32 位元程式
+  一樣連得到。
 - 引擎啟動靠 `HKLM\...\Run`，不是服務，也沒有監督程式。多人同時登入時每個工作階段
   各有一個 `jc-engine.exe`；pipe 名稱含 SID 尾段，不同使用者各自連到自己的引擎。
   同一使用者開多個 RDP 工作階段仍共用同一個名稱，client 會連到其中一個實例。

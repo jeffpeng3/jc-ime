@@ -11,7 +11,7 @@ Go 檔案｜Rust 檔案｜狀態
 `bridge/ipc/server.go`（health() 與 do() 的 op 分派）｜`crates/jc-proto/src/lib.rs`（ErrorCode::Unsupported）｜rewritten：T3 只定義「不支援」錯誤碼，實際分派留給 T4/T6
 `core/proto/proto.go`（Request.Type 的 context/mode/caps_lock/output_simplified）｜`crates/jc-proto/src/lib.rs`（Request::Context／Mode／CapsLock／OutputSimplified）｜rewritten：改成獨立 op variant，欄位全部 serde default
 `core/engine/vocab.go`（VocabRequest／VocabResponse）｜`crates/jc-proto/src/lib.rs`（Request::Vocab、Response::Vocab、VocabInfo）｜rewritten：T3 只固定 ok/changed/error，其餘用 raw JSON 攜帶，T6 再展開
-`bridge/ipc/client.go`（ping/health/apply_settings/drain 的送出）｜T1a 的 `crates/jc-tsf-next/src/session.rs::to_jc_request()`｜n/a：T1a 已經保留原始 envelope，本輪不需要再改送出端
+`bridge/ipc/client.go`（ping/health/apply_settings/drain 的送出）｜T1a 的 `crates/jc-tsf/src/session.rs::to_jc_request()`｜n/a：T1a 已經保留原始 envelope，本輪不需要再改送出端
 
 ## 新增的 Request op
 

@@ -298,7 +298,7 @@ mod tests {
         }
     }
 
-    const CLSID: &str = "{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}";
+    const CLSID: &str = "{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}";
     const X64_PATH: &str = r"C:\Program Files\jc-ime\jc-tsf.dll";
     const X86_PATH: &str = r"C:\Program Files\jc-ime\jc-tsf-x86.dll";
 
@@ -309,8 +309,8 @@ mod tests {
 
     #[test]
     fn clsid_comparison_ignores_case() {
-        let expected = "{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}";
-        assert!(expected.eq_ignore_ascii_case("{7b7d6e1a-3c1f-4b2e-9a55-6c1d2f3e4a01}"));
+        let expected = "{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}";
+        assert!(expected.eq_ignore_ascii_case("{2f6b41d8-9e07-4c3a-b5f1-8d2c6a9e0473}"));
     }
 
     #[test]

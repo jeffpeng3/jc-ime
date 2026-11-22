@@ -260,16 +260,15 @@ impl Engine {
         }
     }
 
-    /// 設定個人資料檔名前綴；不改變資料根目錄，只讓新舊引擎各寫各的檔。
+    /// 設定個人資料檔名前綴；不改變資料根目錄，只改檔名。
     ///
-    /// 預設是 `"personal"`（`personal.json`）。新版引擎用 `--personal-prefix
-    /// personal-next` 呼叫它，存成 `personal-next.json`，回退後舊引擎讀不到也不會
-    /// 覆寫新版資料。必須在 `accept()` 或 `load_personal()` 之前呼叫。
+    /// 預設是 `"personal"`（`personal.json`），自訂前綴存成 `<prefix>.json`。
+    /// 必須在 `accept()` 或 `load_personal()` 之前呼叫。
     pub fn set_personal_prefix(&mut self, prefix: impl Into<String>) {
         self.personal_prefix = prefix.into();
     }
 
-    /// 個人資料的完整檔名；前綴決定新舊版資料，彼此不會互寫。
+    /// 個人資料的完整檔名；由前綴決定。
     fn personal_path(&self) -> Option<PathBuf> {
         self.personal_dir
             .as_ref()
@@ -278,8 +277,8 @@ impl Engine {
 
     /// 啟動時讀回共用個人資料。檔案不存在或損壞時使用空白基準，不阻礙啟動。
     ///
-    /// 讀檔只看目前前綴對應的單一檔案（`personal-next.json`），舊版的前綴
-    /// （`personal`）與舊版 per-session 檔（`personal-<id>.json`）都不碰。
+    /// 讀檔只看目前前綴對應的單一檔案（預設 `personal.json`），舊版 per-session
+    /// 檔（`personal-<id>.json`）不碰。全新安裝，檔案不存在就用空白基準。
     pub fn load_personal(&mut self) {
         let Some(path) = self.personal_path() else {
             return;
@@ -1295,14 +1294,14 @@ mod tests {
         let dir = temp_data_dir("isolate");
         make_store("舊詞").save(&dir.join("personal.json")).unwrap();
         make_store("新詞")
-            .save(&dir.join("personal-next.json"))
+            .save(&dir.join("custom-personal.json"))
             .unwrap();
 
         let mut engine = Engine::with_factory(
             Arc::new(|| Session::new(SessionConfig::default())),
             Some(dir.clone()),
         );
-        engine.set_personal_prefix("personal-next");
+        engine.set_personal_prefix("custom-personal");
         engine.load_personal();
         assert!(engine.personal_store().is_learned("新詞"));
         assert!(!engine.personal_store().is_learned("舊詞"));
@@ -1321,13 +1320,12 @@ mod tests {
     fn personal_seed_applies_to_all_connections() {
         let dir = temp_data_dir("seed");
         make_store("全域詞")
-            .save(&dir.join("personal-next.json"))
+            .save(&dir.join("personal.json"))
             .unwrap();
         let mut engine = Engine::with_factory(
             Arc::new(|| Session::new(SessionConfig::default())),
             Some(dir),
         );
-        engine.set_personal_prefix("personal-next");
         engine.load_personal();
 
         let mut first = engine.accept().into_engine();
@@ -1366,7 +1364,7 @@ mod tests {
             Arc::new(|| Session::new(SessionConfig::default())),
             Some(dir.clone()),
         );
-        engine.set_personal_prefix("personal-next");
+        engine.set_personal_prefix("custom-personal");
         engine.load_personal();
         hello(&mut engine);
         let id = engine.session_ids()[0];
@@ -1378,7 +1376,7 @@ mod tests {
         }
         engine.handle(Request::Close { session: id });
 
-        let saved = PersonalStore::load(&dir.join("personal-next.json")).unwrap();
+        let saved = PersonalStore::load(&dir.join("custom-personal.json")).unwrap();
         assert_eq!(saved.uni.get("關閉詞").copied(), Some(2.0));
     }
 
@@ -1386,13 +1384,12 @@ mod tests {
     fn health_reports_real_personal_state() {
         let dir = temp_data_dir("health");
         make_store("讀回詞")
-            .save(&dir.join("personal-next.json"))
+            .save(&dir.join("personal.json"))
             .unwrap();
         let mut engine = Engine::with_factory(
             Arc::new(|| Session::new(SessionConfig::default())),
             Some(dir),
         );
-        engine.set_personal_prefix("personal-next");
         engine.load_personal();
         let Response::Health { info } = engine.handle(Request::Health) else {
             panic!("health 應回 Health");

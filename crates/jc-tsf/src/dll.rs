@@ -21,9 +21,7 @@ use windows::Win32::Foundation::{
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
 use windows_core::{implement, ComObject, IUnknown, Interface, Ref, BOOL, GUID, HRESULT};
 
-use crate::guids::{
-    CLSID_JC_TSF_NEXT, GUID_PROFILE_JC_TSF_NEXT, LANGID, PIPE_PREFIX_NEXT, PROFILE_DESCRIPTION_NEXT,
-};
+use crate::guids::{CLSID_JC_TSF, GUID_PROFILE_JC_TSF, LANGID, PIPE_PREFIX, PROFILE_DESCRIPTION};
 use crate::log::{self, guarded, LIVE_OBJECTS};
 use crate::service::TextService;
 
@@ -85,18 +83,18 @@ impl IClassFactory_Impl for ClassFactory_Impl {
     }
 }
 
-/// 新版 DLL 專用的註冊身分；值全部取自 `guids.rs` 的 T9 段。
-fn next_registration() -> jc_tsf_register::Registration {
+/// 這份 DLL 的註冊身分；值全部取自 `guids.rs` 的現行身分段。
+fn current_registration() -> jc_tsf_register::Registration {
     jc_tsf_register::Registration {
-        clsid: CLSID_JC_TSF_NEXT,
-        profile: GUID_PROFILE_JC_TSF_NEXT,
-        description: PROFILE_DESCRIPTION_NEXT,
+        clsid: CLSID_JC_TSF,
+        profile: GUID_PROFILE_JC_TSF,
+        description: PROFILE_DESCRIPTION,
         langid: LANGID,
-        pipe_prefix: PIPE_PREFIX_NEXT,
+        pipe_prefix: PIPE_PREFIX,
     }
 }
 
-/// COM 進入點：`rclsid` 必須是新版 CLSID，其他一律回 `CLASS_E_CLASSNOTAVAILABLE`。
+/// COM 進入點：`rclsid` 必須是現行 CLSID，其他一律回 `CLASS_E_CLASSNOTAVAILABLE`。
 #[no_mangle]
 pub extern "system" fn DllGetClassObject(
     rclsid: *const GUID,
@@ -111,7 +109,7 @@ pub extern "system" fn DllGetClassObject(
         // SAFETY: 三個指標已確認非 NULL。
         unsafe {
             *ppv = std::ptr::null_mut();
-            if *rclsid != CLSID_JC_TSF_NEXT {
+            if *rclsid != CLSID_JC_TSF {
                 return Err(CLASS_E_CLASSNOTAVAILABLE.into());
             }
         }
@@ -134,12 +132,12 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     }
 }
 
-/// COM 進入點：用新版身分註冊，寫入的 `InprocServer32` 就是這份 DLL。
+/// COM 進入點：用現行身分註冊，寫入的 `InprocServer32` 就是這份 DLL。
 #[no_mangle]
 pub extern "system" fn DllRegisterServer() -> HRESULT {
     log::install_panic_hook();
     match guarded("DllRegisterServer", || {
-        jc_tsf_register::register_with(&next_registration())
+        jc_tsf_register::register_with(&current_registration())
     }) {
         Ok(()) => S_OK,
         Err(error) => {
@@ -149,11 +147,11 @@ pub extern "system" fn DllRegisterServer() -> HRESULT {
     }
 }
 
-/// COM 進入點：只反註冊新版身分，舊版已發行的 CLSID/profile 不受影響。
+/// COM 進入點：反註冊現行身分。
 #[no_mangle]
 pub extern "system" fn DllUnregisterServer() -> HRESULT {
     match guarded("DllUnregisterServer", || {
-        jc_tsf_register::unregister_with(&next_registration())
+        jc_tsf_register::unregister_with(&current_registration())
     }) {
         Ok(()) => S_OK,
         Err(error) => {

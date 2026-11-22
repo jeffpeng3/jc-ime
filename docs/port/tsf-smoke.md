@@ -1,5 +1,9 @@
 # tsf-smoke：免管理員的 TSF 冒煙測試
 
+> 下一次 rc 已移除舊版，本文的 CLSID／profile 是移除前的歷史值，僅供對照。
+> 現行身分與指令見 [`install.md`](../install.md) 與 [`rollout.md`](rollout.md)。
+
+
 `crates/jc-tsf-smoke`，產出一支 `jc-tsf-smoke.exe`。它不註冊輸入法、不寫
 `HKLM`、不需要管理員，只把 `jc-tsf.dll` 當普通 DLL 載入，逐項驗證 COM 外殼、
 `ITfThreadMgr`、`Activate`、按鍵鏈、引擎 pipe 與註冊狀態，最後用結束碼表示

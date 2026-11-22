@@ -20,7 +20,6 @@ members = [
     "crates/jc-tsf-register",
     "crates/jc-settings-ui",
     "crates/jc-tsf-smoke",
-    "crates/jc-tsf-next",
     "crates/jc-ui",
 ]
 

@@ -1,22 +1,20 @@
 //! `jc-tip-register`：MSI 自訂動作的輔助程式。
 //!
 //! MSI 的安裝精靈（`msiexec`）不能直接呼叫 COM 或 `input.dll`，所以註冊與移除
-//! 都經過這支程式。五個子命令分成兩種權限：
+//! 都經過這支程式。子命令分成兩種權限：
 //!
 //! | 子命令 | 權限 | 執行時機 |
 //! |---|---|---|
 //! | `machine-register` | 提升（deferred、`Impersonate="no"`） | `WriteRegistryValues` 之後 |
 //! | `machine-unregister` | 提升 | 移除檔案之前 |
-//! | `machine-register-next` | 提升 | 新版 CLSID 的 `WriteRegistryValues` 之後 |
-//! | `machine-unregister-next` | 提升 | 新版解除安裝、移除檔案之前 |
 //! | `user-install` | 目前使用者（immediate） | 安裝完成之後 |
-//! | `user-install-next` | 目前使用者 | 新版平行註冊完成之後 |
+//! | `user-cleanup-legacy` | 目前使用者（immediate） | 安裝完成之後，清舊語言清單項目 |
 //! | `user-uninstall <0\|1>` | 目前使用者 | 解除安裝時 |
 //! | `settings` | 目前使用者 | 相容入口；Shortcut 已直連 jc-settings-ui |
 //! | `legal` | 目前使用者 | 開始功能表的「授權」捷徑 |
 //!
 //! `machine-*` 只碰 TSF 的 profile 與分類（`HKLM\SOFTWARE\Microsoft\CTF`）。
-//! **CLSID 的 `InprocServer32` 由 MSI 自己寫**：`installer/jc-ime.wxs` 在兩個 TSF
+//! **CLSID 的 `InprocServer32` 由 MSI 自己寫**：`installer/jc-ime.wxs` 在兩份 TSF
 //! DLL 的 `File` 各掛一個 `<Class Advertise="no">`，WiX 因此產生 Registry table
 //! 的資料列，`WriteRegistryValues` 會把 64 位元檢視與 `Wow6432Node` 兩份都寫好。
 //! （`Advertise="no"` 不走 Class table，所以 `RegisterClassInfo` 不參與。）
@@ -26,10 +24,10 @@
 //! 工廠。把 CLSID 交給 MSI 之後，自訂動作排在 `WriteRegistryValues` 之後，開始跑
 //! 時兩個檢視都已經就緒。
 //!
-//! `user-*` 透過 `input.dll` 的 `InstallLayoutOrTip` 修改目前使用者的語言清單，
-//! 這一步**不能**在 SYSTEM 身分執行，否則記號會落在 SYSTEM 的 HKCU。
-//! `user-install` 只新增；`user-uninstall` 刻意不移除 layout，理由見
-//! [`platform::user_uninstall`]。
+//! `user-*` 寫目前使用者的 HKCU，必須以安裝使用者身分執行。`user-install` 只新增；
+//! `user-uninstall` 刻意不移除 layout，理由見 [`platform::user_uninstall`]。
+//! `user-cleanup-legacy` 呼叫 `RemoveLanguageProfile` 清掉升級前殘留的舊語言清單
+//! 項目，不碰 HKLM 的 profile 註冊。
 //!
 //! 結束碼：0 成功、2 用法錯誤、3 執行失敗。MSI 以 0／非 0 判定。
 
@@ -51,10 +49,8 @@ fn usage() -> &'static str {
      \n\
      \x20 machine-register                  註冊 TSF profile 與三個分類（CLSID 由 MSI 寫）\n\
      \x20 machine-unregister                反向移除 profile 與分類（CLSID 機碼由 MSI 移除）\n\
-     \x20 machine-register-next             註冊新版 CLSID 的 profile 與三個分類\n\
-     \x20 machine-unregister-next           反向移除新版 CLSID 的 profile 與分類\n\
      \x20 user-install                      把 jc 注音加進目前使用者的語言清單\n\
-     \x20 user-install-next                 把 jc 注音（新版）加進目前使用者的語言清單\n\
+     \x20 user-cleanup-legacy               清除已移除舊版的語言清單項目\n\
      \x20 user-uninstall <0|1>              刪除使用者資料；1 表示保留（語言清單不動）\n\
      \x20 settings                          以目前使用者的路徑啟動 jc-settings-ui.exe\n\
      \x20 legal                             用記事本開啟 legal\\THIRD-PARTY-NOTICES.md\n\
@@ -71,20 +67,14 @@ pub enum Command {
     ///
     /// 不吃參數：CLSID 與 DLL 路徑都由 MSI 負責，這支程式不需要知道檔案在哪。
     MachineRegister,
-    /// 以系統權限註冊新版文字服務的 profile 與分類。
-    ///
-    /// 不吃參數：新版 CLSID 的 `InprocServer32` 同樣由 MSI 負責。
-    MachineRegisterNext,
     /// 以系統權限移除文字服務的 profile 與分類。
     ///
     /// 不吃參數，也不刪 `HKCR\CLSID`：那是 MSI 的 `RemoveRegistryValues` 的工作。
     MachineUnregister,
-    /// 以系統權限移除新版文字服務的 profile 與分類。
-    MachineUnregisterNext,
     /// 把 profile 加進目前使用者的語言清單。
     UserInstall,
-    /// 把新版 profile 加進目前使用者的語言清單。
-    UserInstallNext,
+    /// 清除已移除舊版殘留的語言清單項目。
+    UserCleanupLegacy,
     /// 刪除使用者資料；語言清單刻意不動。
     UserUninstall {
         /// `true` 時保留 `%LOCALAPPDATA%\jc-ime`。
@@ -114,25 +104,13 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
                 "machine-unregister 不接受參數（收到 {extra}）；CLSID 機碼由 MSI 移除"
             )),
         },
-        "machine-register-next" => match rest {
-            [] => Ok(Command::MachineRegisterNext),
-            [extra, ..] => Err(format!(
-                "machine-register-next 不接受參數（收到 {extra}）；新版 CLSID 由 MSI 寫入"
-            )),
-        },
-        "machine-unregister-next" => match rest {
-            [] => Ok(Command::MachineUnregisterNext),
-            [extra, ..] => Err(format!(
-                "machine-unregister-next 不接受參數（收到 {extra}）；新版 CLSID 機碼由 MSI 移除"
-            )),
-        },
         "user-install" => match rest {
             [] => Ok(Command::UserInstall),
             _ => Err("user-install 不接受參數".into()),
         },
-        "user-install-next" => match rest {
-            [] => Ok(Command::UserInstallNext),
-            _ => Err("user-install-next 不接受參數".into()),
+        "user-cleanup-legacy" => match rest {
+            [] => Ok(Command::UserCleanupLegacy),
+            _ => Err("user-cleanup-legacy 不接受參數".into()),
         },
         "settings" => match rest {
             [] => Ok(Command::Settings),
@@ -165,11 +143,9 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
 fn run(args: &[String]) -> Result<(), platform::Error> {
     match parse_args(args).map_err(platform::Error::Usage)? {
         Command::MachineRegister => platform::machine_register(),
-        Command::MachineRegisterNext => platform::machine_register_next(),
         Command::MachineUnregister => platform::machine_unregister(),
-        Command::MachineUnregisterNext => platform::machine_unregister_next(),
         Command::UserInstall => platform::user_install(),
-        Command::UserInstallNext => platform::user_install_next(),
+        Command::UserCleanupLegacy => platform::user_cleanup_legacy(),
         Command::UserUninstall { keep_user_data } => platform::user_uninstall(keep_user_data),
         Command::Settings => platform::open_settings(),
         Command::Legal => platform::open_legal(),
@@ -237,24 +213,22 @@ mod tests {
         assert!(parse_args(&args(&["machine-unregister", "--arch", "x86"])).is_err());
     }
 
-    /// 新版子命令與舊版同名命令各自獨立，而且照樣不吃參數。
     #[test]
-    fn next_subcommands_are_parsed() {
+    fn user_install_takes_no_arguments() {
+        assert_eq!(parse_args(&args(&["user-install"])), Ok(Command::UserInstall));
+        assert!(parse_args(&args(&["user-install", "x"])).is_err());
+    }
+
+    #[test]
+    fn user_cleanup_legacy_is_parsed() {
         assert_eq!(
-            parse_args(&args(&["machine-register-next"])),
-            Ok(Command::MachineRegisterNext)
+            parse_args(&args(&["user-cleanup-legacy"])),
+            Ok(Command::UserCleanupLegacy)
         );
-        assert!(parse_args(&args(&["machine-register-next", "x"])).is_err());
-        assert_eq!(
-            parse_args(&args(&["machine-unregister-next"])),
-            Ok(Command::MachineUnregisterNext)
-        );
-        assert!(parse_args(&args(&["machine-unregister-next", "x"])).is_err());
-        assert_eq!(
-            parse_args(&args(&["user-install-next"])),
-            Ok(Command::UserInstallNext)
-        );
-        assert!(parse_args(&args(&["user-install-next", "x"])).is_err());
+        assert!(parse_args(&args(&["user-cleanup-legacy", "x"])).is_err());
+        // 已移除的平行建置子命令不再接受。
+        assert!(parse_args(&args(&["machine-register-next"])).is_err());
+        assert!(parse_args(&args(&["user-install-next"])).is_err());
     }
 
     #[test]

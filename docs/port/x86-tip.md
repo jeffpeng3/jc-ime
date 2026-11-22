@@ -1,5 +1,9 @@
 # x86-tip：32 位元 TSF 元件
 
+> 下一次 rc 已移除舊版，本文的 CLSID／profile 是移除前的歷史值，僅供對照。
+> 現行身分與指令見 [`install.md`](../install.md) 與 [`rollout.md`](rollout.md)。
+
+
 Worktree：`/mnt/work/jc/wt/x86-tip`（branch `x86-tip`）
 任務書：`plan/jc-ime/x86-tip.md`
 

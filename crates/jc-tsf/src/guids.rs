@@ -1,96 +1,84 @@
-//! 固定的 CLSID 與 profile GUID。
-//!
-//! 這些值一旦發佈就不能改：註冊機碼、TSF 的 profile 資料庫與使用者的輸入法
-//! 設定都以它們為鍵。`docs/port/tsf-skeleton.md` 與 `docs/port/x86-tip.md`
-//! 有相同的清單。
-//!
-//! **兩個架構共用同一個 CLSID 與 profile**。TSF 依宿主行程的位元數，到對應的
-//! COM 機碼檢視（64 位元或 `Wow6432Node`）找同一個 CLSID 的 `InprocServer32`：
-//! 64 位元檢視指到 `jc-tsf.dll`，32 位元檢視指到 `jc-tsf-x86.dll`。使用者的
-//! 語言清單因此只有一個「jc 注音」，不必為 32 位元程式手動切換。
-//!
-//! 這裡刻意**沒有**依架構分岔的常數：兩個建置拿到完全相同的值，差別只在
-//! `jc-tsf-register` 用哪一個機碼檢視寫入。
-//!
-//! 註冊用的 profile／語言／描述常數已搬到 `jc-tsf-register`；下面的測試照樣
-//! 從那裡取值，確認已發行的 CLSID 與 profile 沒有被改動。
+//! Zuin 的 COM 識別碼。改了 CLSID 等於換一個輸入法，安裝程式與註冊都要一起改。
+use windows_core::GUID;
 
-use windows::core::GUID;
+/// text service 的 CLSID（InprocServer32）。
+pub const CLSID_ZUIN: GUID = GUID::from_u128(0x138c35d0_7f08_4cef_ba90_c34c16301528);
+/// 唯一的語言 profile：zh-TW 底下的 Mixed。沿用注音版的 GUID，升級不必重新加入輸入法；
+/// profile 只是 Windows 的註冊身分，不是引擎的輸入語言（P2-40）。
+pub const GUID_PROFILE: GUID = GUID::from_u128(0xef62f743_9855_4c94_a658_1f0f98b7b840);
+/// 舊版（T28）ja-JP 的「靈犀日本語」profile GUID。不再註冊，只在註冊與解除安裝時移除。
+pub const GUID_PROFILE_JA: GUID = GUID::from_u128(0x3d6a8b21_5c47_4f9e_b0d2_71e4a9c8f653);
+/// 組字區的顯示屬性（底線）。
+pub const GUID_DISPLAY_ATTR_INPUT: GUID = GUID::from_u128(0xa6ca2572_a961_4492_975f_29a4ebb7c312);
 
-/// 文字服務物件的 CLSID；兩個架構共用。
-///
-/// 64 位元檢視在 `HKCR\CLSID\{7B7D6E1A-…}`，32 位元檢視在
-/// `HKCR\Wow6432Node\CLSID\{7B7D6E1A-…}`，各自指到該架構的 DLL。
-pub const CLSID_JC_TSF: GUID = GUID::from_u128(0x7b7d6e1a_3c1f_4b2e_9a55_6c1d2f3e4a01);
+pub const GUID_DISPLAY_ATTR_LOCKED: GUID = GUID::from_u128(0x7a4b5f38_7c42_4315_95b8_6b29f72c5b3b);
+pub const GUID_DISPLAY_ATTR_CORRECTED: GUID =
+    GUID::from_u128(0x923cdd42_5c7e_4781_8fbe_12232f607742);
+/// 加詞標示（#123）。
+pub const GUID_DISPLAY_ATTR_MARKED: GUID = GUID::from_u128(0x7f850af6_4e7a_4b41_a24f_baeca02ce683);
+/// 中英混打時按空白會組成中文的數字（#162）。
+pub const GUID_DISPLAY_ATTR_READING: GUID = GUID::from_u128(0xcbedd798_5d14_4f4d_9917_26b934dfa003);
+/// 日文変換中的一般文節（T15）。
+pub const GUID_DISPLAY_ATTR_CLAUSE: GUID = GUID::from_u128(0x08933a6a_3bfa_4550_9423_15da82013a11);
+/// 日文変換中目前的文節（T15）。
+pub const GUID_DISPLAY_ATTR_CLAUSE_ACTIVE: GUID =
+    GUID::from_u128(0x4f4e536f_ad3e_420b_9417_59e8bf791aa1);
 
-/// 候選清單 UI 元素的 GUID。
-///
-/// `ITfUIElement::GetGUID` 用它識別「這是候選窗」。同一種 UI 元素共用一個
-/// GUID，不是每個實例不同；發佈後不可改。這個 GUID 不經過 COM，UI 元素管理器
-/// 以行程內的指標比對。
-pub const GUID_CANDIDATE_UI_ELEMENT: GUID = GUID::from_u128(0x9c4e7a21_6b3d_4f08_b5a7_2e1d8c6f9034);
+/// Mixed profile 的宿主語言 ID。Windows 要求 profile 有語言；內容是混合語言，
+/// 由引擎處理，不是這個語言 ID 決定的。
+pub const LANGID: u16 = 0x0404;
+/// 舊版（T28）ja-JP profile 的語言 ID；只用來移除。
+pub const LANGID_JA: u16 = 0x0411;
+pub const DESCRIPTION: &str = "Mixed";
 
-/// 組字底線的顯示屬性 GUID。
-///
-/// 這個 GUID 同時是 `ITfDisplayAttributeInfo::GetGUID` 的回傳值，也是
-/// `ITfProperty`（`GUID_PROP_ATTRIBUTE`）值裡的 `TfGuidAtom` 所指的對象。
-/// 發佈後不可改，否則已經記住 atom 的應用程式會拿到錯的顯示屬性。
-/// `TfGuidAtom` 只在單一行程內有意義，兩個架構共用不會衝突。
-pub const GUID_DISPLAY_ATTRIBUTE_INPUT: GUID =
-    GUID::from_u128(0xa2c9f1d4_7b3e_4c58_9e21_5d8a6f0b4c72);
+// ---- 現行身分 ----
+//
+// 舊版 DLL 已在下一次 rc 移除。下面這一組是 rc.15 已發行的新值，GUID 保留不改，
+// 只把描述從「jc 注音（新版）」收斂成「jc 注音」，pipe 與個人資料前綴也去掉 next。
+// 已移除的舊值留在 *_LEGACY 常數，只供文件與測試對照，不再註冊。
 
-/// 把 GUID 格式化成註冊機碼用的 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`。
-pub fn registry_key(guid: &GUID) -> String {
-    let d4 = guid.data4;
-    format!(
-        "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
-        guid.data1, guid.data2, guid.data3, d4[0], d4[1], d4[2], d4[3], d4[4], d4[5], d4[6], d4[7]
-    )
+/// 現行文字服務的 CLSID（InprocServer32）。rc.15 已發行值，保留不改。
+pub const CLSID_JC_TSF: GUID = GUID::from_u128(0x2f6b41d8_9e07_4c3a_b5f1_8d2c6a9e0473);
+
+/// 現行注音 profile 的 GUID。rc.15 已發行值，保留不改。
+pub const GUID_PROFILE_JC_TSF: GUID = GUID::from_u128(0xc4e8d217_5b3f_4a96_8e0c_7f1a2b3d4e56);
+
+/// 已移除的舊 CLSID；只留給文件與測試對照，不再註冊。
+pub const CLSID_JC_TSF_LEGACY: GUID = GUID::from_u128(0x7b7d6e1a_3c1f_4b2e_9a55_6c1d2f3e4a01);
+
+/// 已移除的舊 profile GUID；只留給文件與測試對照，不再註冊。
+pub const GUID_PROFILE_JC_TSF_LEGACY: GUID =
+    GUID::from_u128(0x8f0a9b3c_2d4e_4f50_a1b2_c3d4e5f60718);
+
+/// 顯示名稱。rc.15 的「jc 注音（新版）」已收斂成單一「jc 注音」。
+pub const PROFILE_DESCRIPTION: &str = "jc 注音";
+
+/// 引擎 pipe 前綴，解析後是 `jc-ime-<SID 尾段>`。
+pub const PIPE_PREFIX: &str = "jc-ime";
+
+/// 個人學習檔名前綴，存成 `personal.json`。
+pub const PERSONAL_FILE_PREFIX: &str = "personal";
+
+/// TIP 讀取的 pipe 覆寫變數；引擎的 `--socket` 或這個環境變數要與它對齊。
+pub const PIPE_ENV: &str = "JC_IME_PIPE";
+
+/// 依 SID 尾段推出引擎的 pipe 名稱，不含 `\\.\pipe\`。
+pub fn engine_pipe(rid: &str) -> String {
+    format!("{PIPE_PREFIX}-{rid}")
 }
 
 #[cfg(test)]
-mod tests {
+mod identity_tests {
     use super::*;
-    use jc_tsf_register::{GUID_PROFILE_JC_TSF, PROFILE_DESCRIPTION};
 
+    /// 現行身分不能與已移除的舊值相同；舊值在這裡重複一份只是為了鎖住這件事。
     #[test]
-    fn clsid_key_uses_braces_and_upper_hex() {
-        assert_eq!(
-            registry_key(&CLSID_JC_TSF),
-            "{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}"
-        );
-    }
-
-    #[test]
-    fn profile_key_is_stable() {
-        assert_eq!(
-            registry_key(&GUID_PROFILE_JC_TSF),
-            "{8F0A9B3C-2D4E-4F50-A1B2-C3D4E5F60718}"
-        );
-    }
-
-    #[test]
-    fn display_attribute_key_is_stable() {
-        assert_eq!(
-            registry_key(&GUID_DISPLAY_ATTRIBUTE_INPUT),
-            "{A2C9F1D4-7B3E-4C58-9E21-5D8A6F0B4C72}"
-        );
-    }
-
-    /// 兩個架構共用同一個 CLSID 與 profile，所以這兩個值不能隨架構改變。
-    ///
-    /// x86 與 x64 建置編的是同一份常數（沒有 `cfg(target_pointer_width)` 分岔）；
-    /// 這個測試鎖住「共用」這件事的實際值，也順便擋下未來有人把它拆成兩組。
-    #[test]
-    fn one_clsid_and_profile_for_both_architectures() {
-        assert_eq!(
-            CLSID_JC_TSF,
-            GUID::from_u128(0x7b7d6e1a_3c1f_4b2e_9a55_6c1d2f3e4a01)
-        );
-        assert_eq!(
-            GUID_PROFILE_JC_TSF,
-            GUID::from_u128(0x8f0a9b3c_2d4e_4f50_a1b2_c3d4e5f60718)
-        );
+    fn current_identity_does_not_reuse_legacy_values() {
+        assert_ne!(CLSID_JC_TSF, CLSID_JC_TSF_LEGACY);
+        assert_ne!(GUID_PROFILE_JC_TSF, GUID_PROFILE_JC_TSF_LEGACY);
         assert_eq!(PROFILE_DESCRIPTION, "jc 注音");
+        assert_eq!(PIPE_PREFIX, "jc-ime");
+        assert_eq!(PERSONAL_FILE_PREFIX, "personal");
+        assert_eq!(engine_pipe("1001"), "jc-ime-1001");
     }
 }

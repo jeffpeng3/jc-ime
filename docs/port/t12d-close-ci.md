@@ -10,7 +10,7 @@ Go 檔案｜Rust 檔案｜狀態
 ---|---|---
 `bridge/ipc/server.go`（`OpOpen` 回 `Reply{Session: id}`；`OpClose` 依 `sessions` map 判歸屬）｜`crates/jc-proto/src/lib.rs`（`Response::Ready` 加 `session`）、`crates/jc-engine/src/lib.rs`（Hello 回實際配置的 id）｜rewritten：0c 用 map 判 id，jc 用 `Registry.current`／`meta.owner`；Ready 新增欄位，`#[serde(default = "default_ready_session")]` 補舊值 1
 `bridge/ipc/server.go`（`OpHandle`／`OpPoll` 的 `sessions[env.Session]` 檢查，322-324 行）｜`crates/jc-engine/src/lib.rs::close_session()`（沿用 T4 的 `ownership_error()`）｜ported：跨連線 id 回 `Internal` 錯誤，不是靜默成功
-`platforms/windows/tsf/src/session.rs`（`ensure_open()` 記 `reply["session"]`，reset／Drop 送 `close`）｜`crates/jc-tsf-next/src/session.rs`（`response_to_reply()`、`ensure_open()`）｜rewritten：jc 的 Ready 原本固定映射成 session 1，本輪改成原樣帶引擎 id；`ensure_open()` 缺欄位時退回 1
+`platforms/windows/tsf/src/session.rs`（`ensure_open()` 記 `reply["session"]`，reset／Drop 送 `close`）｜`crates/jc-tsf/src/session.rs`（`response_to_reply()`、`ensure_open()`）｜rewritten：jc 的 Ready 原本固定映射成 session 1，本輪改成原樣帶引擎 id；`ensure_open()` 缺欄位時退回 1
 `bridge/ipc/ipc.go`（Envelope／Reply 的 `Session` 欄位）｜`crates/jc-proto/src/lib.rs`（`Request::Close{session}`、`Response::Acknowledged{session}`）｜n/a：T3 已定義，本輪只讓值正確
 
 ## session id 流轉
@@ -47,13 +47,13 @@ Windows 覆蓋：`pipe_listener::serve()` 的 worker 進入點是 `accept()` →
 
 ## 檢查結果
 
-`cargo fmt -p jc-proto -p jc-engine -p jc-tsf-next -p jc-windows -p jc-tsf-smoke`：通過。
+`cargo fmt -p jc-proto -p jc-engine -p jc-tsf -p jc-windows -p jc-tsf-smoke`：通過。
 `cargo check --workspace --all-targets --offline`：通過，0 error、0 warning。
-`cargo check -p jc-engine -p jc-proto -p jc-tsf-next -p jc-windows -p jc-tsf-smoke --target x86_64-pc-windows-msvc --all-targets --offline`：通過，0 error、0 warning。
+`cargo check -p jc-engine -p jc-proto -p jc-tsf -p jc-windows -p jc-tsf-smoke --target x86_64-pc-windows-msvc --all-targets --offline`：通過，0 error、0 warning。
 依任務書未跑任何 test，未 commit。
 
 ## 與 T12c 的接合點
 
-T12c  PersonalStore 的存檔路徑不變：`close_session()` 仍在移除 metadata 前 clone personal store，並在鎖外呼叫 `save_personal()`。本輪只改 Ready 的欄位與 Close 帶的 id，因此 T12c 若調整每 session 的存檔策略或合併邏輯，不需要改 session id 流轉。個人資料前綴（`personal`／`personal-next`）也未動。
+T12c  PersonalStore 的存檔路徑不變：`close_session()` 仍在移除 metadata 前 clone personal store，並在鎖外呼叫 `save_personal()`。本輪只改 Ready 的欄位與 Close 帶的 id，因此 T12c 若調整每 session 的存檔策略或合併邏輯，不需要改 session id 流轉。個人資料前綴（`personal`／`personal`）也未動。
 
 詳細回報見 `/tmp/opencode/t12d-close-ci-result.md`。

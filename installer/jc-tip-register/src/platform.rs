@@ -1,6 +1,6 @@
 //! Windows 專屬實作。
 //!
-//! 所有 `unsafe` 都集中在這裡；呼叫端（`main.rs`）只看到 [`Error`] 與六個動作。
+//! 所有 `unsafe` 都集中在這裡；呼叫端（`main.rs`）只看到 [`Error`] 與各個動作。
 //!
 //! 註冊分成兩層，各自負責不同機碼：
 //!
@@ -45,13 +45,13 @@ use windows::Win32::System::Registry::{
 use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, ITfCategoryMgr,
-    ITfInputProcessorProfileMgr, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+    ITfInputProcessorProfileMgr, ITfInputProcessorProfiles, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
     GUID_TFCAT_TIPCAP_UIELEMENTENABLED, GUID_TFCAT_TIP_KEYBOARD,
 };
 
 use crate::guids::{
-    tip_string, tip_string_next, CLSID_JC_TSF, CLSID_JC_TSF_NEXT, ILOT_INSTALL, LANGID_ZH_TW,
-    PROFILE_DESCRIPTION, PROFILE_DESCRIPTION_NEXT, PROFILE_JC_TSF, PROFILE_JC_TSF_NEXT,
+    tip_string, CLSID_JC_TSF, CLSID_JC_TSF_LEGACY, ILOT_INSTALL, LANGID_ZH_TW,
+    PROFILE_DESCRIPTION, PROFILE_JC_TSF, PROFILE_JC_TSF_LEGACY,
 };
 use crate::log;
 
@@ -95,19 +95,19 @@ pub enum Error {
     Windows(#[from] windows::core::Error),
 }
 
-/// 文字服務的 CLSID；與 `guids.rs` 的字串版本相同。
-const CLSID_GUID: GUID = GUID::from_u128(0x7b7d6e1a_3c1f_4b2e_9a55_6c1d2f3e4a01);
+/// 現行 CLSID 的 GUID；與 `guids.rs` 的字串版本相同。
+const CLSID_GUID: GUID = GUID::from_u128(0x2f6b41d8_9e07_4c3a_b5f1_8d2c6a9e0473);
 
-/// 注音 profile 的 GUID；與 `guids.rs` 的字串版本相同。
-const PROFILE_GUID: GUID = GUID::from_u128(0x8f0a9b3c_2d4e_4f50_a1b2_c3d4e5f60718);
+/// 現行 profile 的 GUID；與 `guids.rs` 的字串版本相同。
+const PROFILE_GUID: GUID = GUID::from_u128(0xc4e8d217_5b3f_4a96_8e0c_7f1a2b3d4e56);
 
-/// 新版 CLSID 的 GUID；與 `guids.rs` 的字串版本相同。
-const CLSID_GUID_NEXT: GUID = GUID::from_u128(0x2f6b41d8_9e07_4c3a_b5f1_8d2c6a9e0473);
+/// 已移除舊版的 CLSID GUID；只給語言清單清理對照。
+const CLSID_GUID_LEGACY: GUID = GUID::from_u128(0x7b7d6e1a_3c1f_4b2e_9a55_6c1d2f3e4a01);
 
-/// 新版 profile 的 GUID；與 `guids.rs` 的字串版本相同。
-const PROFILE_GUID_NEXT: GUID = GUID::from_u128(0xc4e8d217_5b3f_4a96_8e0c_7f1a2b3d4e56);
+/// 已移除舊版的 profile GUID；只給語言清單清理對照。
+const PROFILE_GUID_LEGACY: GUID = GUID::from_u128(0x8f0a9b3c_2d4e_4f50_a1b2_c3d4e5f60718);
 
-/// 一組註冊身分。新舊版共用同一套註冊流程，只有 CLSID、profile 與描述不同。
+/// 一組註冊身分。註冊與清理共用同一套流程，只有 CLSID、profile 與描述不同。
 struct Identity {
     /// CLSID 的字串形式，用在 CTF 機碼路徑與日誌。
     clsid: &'static str,
@@ -121,8 +121,8 @@ struct Identity {
     description: &'static str,
 }
 
-/// 舊版已發行身分；`machine-register`／`machine-unregister` 用。
-const IDENTITY_OLD: Identity = Identity {
+/// 現行身分；`machine-register`／`machine-unregister`／`user-install` 用。
+const IDENTITY_CURRENT: Identity = Identity {
     clsid: CLSID_JC_TSF,
     clsid_guid: CLSID_GUID,
     profile: PROFILE_JC_TSF,
@@ -130,13 +130,13 @@ const IDENTITY_OLD: Identity = Identity {
     description: PROFILE_DESCRIPTION,
 };
 
-/// T9 新配的平行建置身分；`*-next` 子命令用。
-const IDENTITY_NEXT: Identity = Identity {
-    clsid: CLSID_JC_TSF_NEXT,
-    clsid_guid: CLSID_GUID_NEXT,
-    profile: PROFILE_JC_TSF_NEXT,
-    profile_guid: PROFILE_GUID_NEXT,
-    description: PROFILE_DESCRIPTION_NEXT,
+/// 已移除的舊身分；只給 `user-cleanup-legacy` 清語言清單用，不再註冊。
+const IDENTITY_LEGACY: Identity = Identity {
+    clsid: CLSID_JC_TSF_LEGACY,
+    clsid_guid: CLSID_GUID_LEGACY,
+    profile: PROFILE_JC_TSF_LEGACY,
+    profile_guid: PROFILE_GUID_LEGACY,
+    description: PROFILE_DESCRIPTION,
 };
 
 /// 註冊文字服務的 profile 與三個分類。
@@ -145,14 +145,7 @@ const IDENTITY_NEXT: Identity = Identity {
 /// `true`：profile 預設啟用（`LanguageProfile` 機碼的 `Enable=1`），使用者在語言
 /// 設定加入鍵盤後就能切換；仍然不呼叫 `ActivateProfile`，不改系統預設輸入法。
 pub fn machine_register() -> Result<(), Error> {
-    machine_register_impl(&IDENTITY_OLD)
-}
-
-/// 註冊新版平行建置的 profile 與三個分類。
-///
-/// 用 T9 新配的 CLSID 與 profile，與舊版並存；流程與舊版完全相同。
-pub fn machine_register_next() -> Result<(), Error> {
-    machine_register_impl(&IDENTITY_NEXT)
+    machine_register_impl(&IDENTITY_CURRENT)
 }
 
 /// 依指定身分註冊 profile 與三個分類。
@@ -297,14 +290,7 @@ fn log_hr<T>(label: &str, result: &windows::core::Result<T>) {
 /// 個別步驟失敗只記日誌、不中斷：反安裝不能被殘缺的 CTF 狀態卡住，MSI 這一端
 /// 也是 `Return="ignore"`。
 pub fn machine_unregister() -> Result<(), Error> {
-    machine_unregister_impl(&IDENTITY_OLD)
-}
-
-/// 移除新版平行建置的 profile 與三個分類。
-///
-/// 只清自己那組 CLSID 與 profile，舊版登錄不受影響。
-pub fn machine_unregister_next() -> Result<(), Error> {
-    machine_unregister_impl(&IDENTITY_NEXT)
+    machine_unregister_impl(&IDENTITY_CURRENT)
 }
 
 /// 依指定身分移除 profile 與三個分類。
@@ -373,14 +359,48 @@ pub fn user_install() -> Result<(), Error> {
     layout_or_tip(&tip_string(), ILOT_INSTALL)
 }
 
-/// 把新版 profile 加進目前使用者的語言清單。
+/// 清除已移除舊版與 rc.15 舊描述殘留的語言清單項目。
 ///
-/// 用 T9 新配的 profile 與 CLSID，與舊版並存；其餘行為與 `user_install` 相同。
-pub fn user_install_next() -> Result<(), Error> {
-    if let Some(dir) = user_dir() {
-        std::fs::create_dir_all(&dir)?;
+/// 呼叫 `ITfInputProcessorProfiles::RemoveLanguageProfile` 移除目前使用者 HKCU 的
+/// 舊項目，不使用 `ILOT_UNINSTALL`（移除語系最後一個 layout 時會把系統地區改成
+/// 英文）。升級時 Windows 不會自動清掉這些孤兒項目，所以要排在新的 `user-install`
+/// 之前：先清掉舊描述，再由 `user-install` 加回單一「jc 注音」。
+///
+/// 個別步驟失敗只記日誌、不回錯誤：這一步是清理，不能擋住安裝（WXS 端也是
+/// `Return="ignore"`）。
+pub fn user_cleanup_legacy() -> Result<(), Error> {
+    log::step("user-cleanup-legacy：開始");
+    // SAFETY: CoInitializeEx 對已初始化的執行緒是無害的。
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        log::step(&format!("CoInitializeEx = 0x{:08X}", hr.0 as u32));
+
+        match create::<ITfInputProcessorProfiles>(
+            "CLSID_TF_InputProcessorProfiles",
+            &CLSID_TF_InputProcessorProfiles,
+        ) {
+            Ok(profiles) => {
+                for (label, identity) in [
+                    ("已移除的舊版 jc 注音", &IDENTITY_LEGACY),
+                    ("rc.15 的 jc 注音（新版）", &IDENTITY_CURRENT),
+                ] {
+                    log::step(&format!(
+                        "RemoveLanguageProfile({label}, {})：開始",
+                        identity.clsid
+                    ));
+                    let result = profiles.RemoveLanguageProfile(
+                        &identity.clsid_guid,
+                        LANGID_ZH_TW,
+                        &identity.profile_guid,
+                    );
+                    log_hr(&format!("RemoveLanguageProfile({label})"), &result);
+                }
+            }
+            Err(error) => log::step(&format!("略過語言清單清理：{error}")),
+        }
     }
-    layout_or_tip(&tip_string_next(), ILOT_INSTALL)
+    log::step("user-cleanup-legacy：成功");
+    Ok(())
 }
 
 /// 刪除使用者資料；**不**移除語言清單裡的「jc 注音」。
@@ -554,8 +574,8 @@ fn debug_warning(text: &str) {
 ///
 /// 使用者的語言清單是 (LangID, profile GUID, CLSID) 三元組；兩個架構共用同一個
 /// CLSID 與 profile，所以只有一組。只用在安裝，移除刻意不做，理由見
-/// [`user_uninstall`]。`text` 由呼叫端從 `guids.rs` 的 `tip_string*` 組好，
-/// 舊版與新版因此各傳各的身分。
+/// [`user_uninstall`]。`text` 由呼叫端從 `guids.rs` 的 `tip_string()` 組好，
+/// 帶現行身分。
 fn layout_or_tip(text: &str, flags: u32) -> Result<(), Error> {
     let module = wide("input.dll");
     // SAFETY: 模組名稱以 NUL 結尾。
@@ -728,21 +748,20 @@ mod tests {
     }
 
     #[test]
-    fn next_guid_constants_match_strings() {
-        assert_eq!(guid_text(&CLSID_GUID_NEXT), CLSID_JC_TSF_NEXT);
-        assert_eq!(guid_text(&PROFILE_GUID_NEXT), PROFILE_JC_TSF_NEXT);
-        assert_ne!(CLSID_GUID_NEXT, CLSID_GUID);
-        assert_ne!(PROFILE_GUID_NEXT, PROFILE_GUID);
+    fn legacy_guid_constants_match_strings() {
+        assert_eq!(guid_text(&CLSID_GUID_LEGACY), CLSID_JC_TSF_LEGACY);
+        assert_eq!(guid_text(&PROFILE_GUID_LEGACY), PROFILE_JC_TSF_LEGACY);
+        assert_ne!(CLSID_GUID, CLSID_GUID_LEGACY);
+        assert_ne!(PROFILE_GUID, PROFILE_GUID_LEGACY);
     }
 
     #[test]
     fn identities_carry_their_own_values() {
-        assert_eq!(IDENTITY_OLD.clsid, CLSID_JC_TSF);
-        assert_eq!(IDENTITY_OLD.profile, PROFILE_JC_TSF);
-        assert_eq!(IDENTITY_OLD.description, PROFILE_DESCRIPTION);
-        assert_eq!(IDENTITY_NEXT.clsid, CLSID_JC_TSF_NEXT);
-        assert_eq!(IDENTITY_NEXT.profile, PROFILE_JC_TSF_NEXT);
-        assert_eq!(IDENTITY_NEXT.description, PROFILE_DESCRIPTION_NEXT);
+        assert_eq!(IDENTITY_CURRENT.clsid, CLSID_JC_TSF);
+        assert_eq!(IDENTITY_CURRENT.profile, PROFILE_JC_TSF);
+        assert_eq!(IDENTITY_CURRENT.description, PROFILE_DESCRIPTION);
+        assert_eq!(IDENTITY_LEGACY.clsid, CLSID_JC_TSF_LEGACY);
+        assert_eq!(IDENTITY_LEGACY.profile, PROFILE_JC_TSF_LEGACY);
     }
 
     /// 三個分類都要有，而且互不相同；少一個就少一項 Windows 功能。

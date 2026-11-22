@@ -31,6 +31,32 @@ const SETTLE_FOCUS_TIMER: usize = 0x0c18;
 /// WM_TIMER 只在訊息佇列沒有其他訊息時才產生：宿主一連串的焦點變化都處理完才輪到它。
 const SETTLE_FOCUS_MS: u32 = 50;
 
+/// windows-rs 0.62 在 32-bit target 把 `SetWindowLongPtrW` alias 成 `SetWindowLongW`
+/// （收 `i32`），64-bit 才是真函式（收 `isize`）。這兩個 helper 把差異封在這裡，
+/// 呼叫端不用自己猜指標寬度。
+#[cfg(target_pointer_width = "64")]
+unsafe fn set_window_userdata(hwnd: HWND, service: *const TextService_Impl) {
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, service as isize);
+}
+
+/// 32-bit 版本的 [`set_window_userdata`]：`SetWindowLongPtrW` 在 32-bit 收 `i32`。
+#[cfg(target_pointer_width = "32")]
+unsafe fn set_window_userdata(hwnd: HWND, service: *const TextService_Impl) {
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, service as i32);
+}
+
+/// 讀回 `GWLP_USERDATA`；64-bit 的 `GetWindowLongPtrW` 回 `isize`。
+#[cfg(target_pointer_width = "64")]
+unsafe fn window_userdata(hwnd: HWND) -> isize {
+    GetWindowLongPtrW(hwnd, GWLP_USERDATA)
+}
+
+/// 讀回 `GWLP_USERDATA`；32-bit 的 `GetWindowLongPtrW` 回 `i32`。
+#[cfg(target_pointer_width = "32")]
+unsafe fn window_userdata(hwnd: HWND) -> i32 {
+    GetWindowLongPtrW(hwnd, GWLP_USERDATA)
+}
+
 /// 回呼視窗。持有 service 的 COM 參考，確保視窗還在時 service 不會被卸載。
 pub struct CandidateWindow {
     hwnd: HWND,
@@ -62,7 +88,7 @@ impl CandidateWindow {
                 Some(instance),
                 None,
             )?;
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, service as *const _ as isize);
+            set_window_userdata(hwnd, service);
             log::object_created();
             Ok(CandidateWindow {
                 hwnd,
@@ -95,7 +121,7 @@ impl CandidateWindow {
 impl Drop for CandidateWindow {
     fn drop(&mut self) {
         unsafe {
-            SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0);
+            set_window_userdata(self.hwnd, std::ptr::null());
             let _ = DestroyWindow(self.hwnd);
             // 同一行程還有多個 service 時會失敗，留給最後一個離開才移除。
             let _ = UnregisterClassW(CLASS, Some(self.instance));
@@ -129,7 +155,7 @@ unsafe extern "system" fn callback(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
 
 /// 視窗的 USERDATA 是建立時的 `&TextService_Impl`，只在同一個 UI 執行緒上讀。
 unsafe fn service_at(hwnd: HWND) -> Option<&'static TextService_Impl> {
-    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const TextService_Impl;
+    let ptr = window_userdata(hwnd) as *const TextService_Impl;
     ptr.as_ref()
 }
 

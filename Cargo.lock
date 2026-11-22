@@ -3921,18 +3921,6 @@ version = "0.1.0-rc.15"
 name = "jc-tsf"
 version = "0.1.0-rc.15"
 dependencies = [
- "jc-core",
- "jc-proto",
- "jc-tsf-register",
- "jc-windows",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "jc-tsf-next"
-version = "0.1.0-rc.15"
-dependencies = [
  "jc-proto",
  "jc-tsf-register",
  "jc-ui",
