@@ -118,12 +118,13 @@ function Format-CargoCommand {
     return 'cargo ' + ($Arguments -join ' ')
 }
 
-# 找檔失敗時列出目錄裡真正存在的 DLL，命名不符時不必再翻 CI 的整份 log。
-function Get-DllNames {
+# 找檔失敗時列出目錄裡真正存在的 DLL／EXE，命名不符時不必再翻 CI 的整份 log。
+function Get-ArtifactNames {
     param([Parameter(Mandatory)][string]$Directory)
-    $names = @(Get-ChildItem -Path $Directory -Filter '*.dll' -File -ErrorAction SilentlyContinue |
+    $names = @(Get-ChildItem -Path $Directory -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in '.dll', '.exe' } |
         Select-Object -ExpandProperty Name | Sort-Object)
-    if ($names.Count -eq 0) { return '（沒有 .dll）' }
+    if ($names.Count -eq 0) { return '（沒有 .dll 或 .exe）' }
     return ($names -join ', ')
 }
 
@@ -131,6 +132,10 @@ function Get-DllNames {
 # target，build.ps1 不再設定 RUSTFLAGS。CI 的 cargo run／cargo build 與這裡
 # 共用同一組指紋，避免因環境變數不同而全量重編。
 # 出貨條件見 docs/history.md：TSF DLL 不能依賴 vcruntime140.dll。
+
+# 記錄本次建置起點（UTC），稍後 Copy-FreshArtifact 會驗證打包的 DLL／EXE 的
+# mtime 晚於這個時間，拒絕 rust-cache 還原、但本次 cargo build 沒重編到的舊檔。
+$buildStartedAt = (Get-Date).ToUniversalTime()
 
 # 先建置，再解析輸出目錄。Resolve-ReleaseDir 只驗證既有產物；若在建置前呼叫，
 # 乾淨的 runner 上必定找不到 target\<triple>\<profile>（RC1 在 build.ps1:107 失敗）。
@@ -148,32 +153,51 @@ Invoke-Checked '建置 jc-tip-register' {
     & cargo @cargoHelperArgs
 }
 
-# 預期輸出在 target/<triple>/<profile>；找不到時退回 target/<profile>，並明確說出
-# 實際使用哪一個路徑，避免 CI 因 cargo build 沒帶 --target 而默默拿錯檔案。
-# 只讓 x64 退回：target/<profile> 的產物是 x64，拿來當 x86 DLL 會裝錯架構。
-# 錯誤訊息帶上剛才實際執行的 cargo 指令與 rustup target add，讓 CI log 能直接行動。
+# 預期輸出只在 target/<triple>/<profile>。絕不退回 target/<profile>：該目錄是
+# rust-cache 可能還原的舊產物，曾讓 MSI 打包到上一版的 jc_tsf.dll（0.1.2 的
+# pipe debug log 因此沒進 MSI，見 fix-msi-stale-dll）。找不到就直接失敗，並
+# 帶上剛才實際執行的 cargo 指令與 rustup target add，讓 CI log 能直接行動。
 function Resolve-ReleaseDir {
     param(
         [Parameter(Mandatory)][string]$Triple,
-        [Parameter(Mandatory)][string]$CargoCommand,
-        [switch]$AllowFallback
+        [Parameter(Mandatory)][string]$CargoCommand
     )
     $targeted = Join-Path $TargetRoot (Join-Path $Triple $Configuration)
     if (Test-Path $targeted) { return $targeted }
-    if ($AllowFallback) {
-        $fallback = Join-Path $TargetRoot $Configuration
-        if (Test-Path $fallback) {
-            Write-Warning "找不到 $targeted，退回 $fallback。"
-            return $fallback
-        }
-    }
     throw "找不到建置輸出 $targeted。實際執行：$CargoCommand。請先 rustup target add $Triple，並確認指令有 --target $Triple。"
 }
 
-$ReleaseDir = Resolve-ReleaseDir $Target (Format-CargoCommand $cargoX64Args) -AllowFallback
+$ReleaseDir = Resolve-ReleaseDir $Target (Format-CargoCommand $cargoX64Args)
 $ReleaseDirX86 = Resolve-ReleaseDir $TargetX86 (Format-CargoCommand $cargoX86Args)
 Write-Host "==> 使用 x64 建置輸出 $ReleaseDir"
 Write-Host "==> 使用 x86 建置輸出 $ReleaseDirX86"
+
+# 從建置輸出複製檔案到 payload，並確認它是本次 cargo build 產生的：
+# 1) mtime 必須晚於 $buildStartedAt（容忍 2 秒時鐘誤差），擋掉 rust-cache 還原但
+#    本次沒重編到的舊檔；2) 複製後比對 SHA-256，確保 payload 內就是剛驗證過的那份。
+function Copy-FreshArtifact {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination,
+        [Parameter(Mandatory)][datetime]$BuiltAfter,
+        [Parameter(Mandatory)][string]$Label
+    )
+    if (-not (Test-Path $Source)) {
+        $directory = Split-Path -Parent $Source
+        throw "$Label 不存在：$Source。目錄中實際存在的檔案：$(Get-ArtifactNames $directory)"
+    }
+    $item = Get-Item $Source
+    if ($item.LastWriteTimeUtc -lt $BuiltAfter.AddSeconds(-2)) {
+        throw "$Label 的 mtime（$($item.LastWriteTimeUtc.ToString('o'))）早於本次建置起點（$($BuiltAfter.ToString('o'))），可能是 rust-cache 還原的舊檔，拒絕打包。"
+    }
+    $hash = (Get-FileHash -Algorithm SHA256 $Source).Hash
+    Copy-Item $Source $Destination
+    $copiedHash = (Get-FileHash -Algorithm SHA256 $Destination).Hash
+    if ($hash -ne $copiedHash) {
+        throw "$Label 複製到 payload 後 SHA-256 不符（來源 $hash，payload $copiedHash）。"
+    }
+    Write-Host "    驗證 $Label：mtime $($item.LastWriteTimeUtc.ToString('o'))，SHA-256 $hash"
+}
 
 if (-not $DataRoot) {
     throw '沒有資料根目錄：設定 JC_DATA_ROOT 或傳 -DataRoot。'
@@ -226,25 +250,24 @@ $programs = @(
     'jc-engine.exe', 'jc-cli.exe', 'jc-settings-ui.exe', 'jc-tsf-smoke.exe'
 )
 foreach ($name in $programs) {
-    $source = Join-Path $ReleaseDir $name
-    if (-not (Test-Path $source)) { throw "建置輸出缺少 $name（$source）" }
-    Copy-Item $source $Payload
+    Copy-FreshArtifact -Source (Join-Path $ReleaseDir $name) `
+        -Destination (Join-Path $Payload $name) `
+        -BuiltAfter $buildStartedAt -Label $name
 }
 
-$x64Dll = Join-Path $ReleaseDir $tsfLibName
-if (-not (Test-Path $x64Dll)) {
-    throw "建置輸出缺少預期的 $tsfLibName（$x64Dll）。目錄中實際存在的 .dll：$(Get-DllNames $ReleaseDir)"
-}
-Copy-Item $x64Dll (Join-Path $Payload 'jc-tsf.dll')
+Copy-FreshArtifact -Source (Join-Path $ReleaseDir $tsfLibName) `
+    -Destination (Join-Path $Payload 'jc-tsf.dll') `
+    -BuiltAfter $buildStartedAt -Label "x64 $tsfLibName"
 
 # x86 的 DLL 也改名進 payload；兩份放在同一個目錄，檔名必須分得出架構。
-$x86Dll = Join-Path $ReleaseDirX86 $tsfLibName
-if (-not (Test-Path $x86Dll)) {
-    throw "建置輸出缺少預期的 $tsfLibName（$x86Dll）。目錄中實際存在的 .dll：$(Get-DllNames $ReleaseDirX86)；請先 rustup target add $TargetX86"
-}
-Copy-Item $x86Dll (Join-Path $Payload 'jc-tsf-x86.dll')
+Copy-FreshArtifact -Source (Join-Path $ReleaseDirX86 $tsfLibName) `
+    -Destination (Join-Path $Payload 'jc-tsf-x86.dll') `
+    -BuiltAfter $buildStartedAt -Label "x86 $tsfLibName"
 
-Copy-Item (Join-Path $HelperRelease 'jc-tip-register.exe') $Payload
+# jc-tip-register 用獨立 target-dir，同樣驗證是本次建置的產物。
+Copy-FreshArtifact -Source (Join-Path $HelperRelease 'jc-tip-register.exe') `
+    -Destination (Join-Path $Payload 'jc-tip-register.exe') `
+    -BuiltAfter $buildStartedAt -Label 'jc-tip-register.exe'
 
 $dataStage = Join-Path $Payload 'data'
 New-Item -ItemType Directory -Path $dataStage | Out-Null

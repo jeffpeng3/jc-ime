@@ -410,6 +410,28 @@ jobs:
           cache-all-crates: "false"
           cache-on-failure: "true"
 
+      # rust-cache 的 key 不含版本，每次發版都會命中上一版的 target 目錄；
+      # 若 cargo 判定指紋未變就不重編，build.ps1 會把還原的舊 jc_tsf.dll 裝進
+      # MSI（0.1.2 的 pipe debug log 因此消失，見 fix-msi-stale-dll）。
+      # 選清目錄而非換 cache key：發版 job 本來就該每次全量重建，清目錄見效
+      # 最直接、不影響其他 job 的快取；build.ps1 另有 mtime／SHA-256 驗證把關。
+      - name: 清除快取的 release 產物
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($dir in @(
+            'target\x86_64-pc-windows-msvc\release',
+            'target\i686-pc-windows-msvc\release',
+            'target\tip-register\x86_64-pc-windows-msvc\release'
+          )) {
+            if (Test-Path $dir) {
+              Write-Host "清除 $dir（rust-cache 還原的舊產物）"
+              Remove-Item $dir -Recurse -Force
+            } else {
+              Write-Host "略過 $dir（不存在）"
+            }
+          }
+
       # build.ps1 需要資料根目錄。資料不進 git，因此由此 job 下載
       # 預先打包的資料包；URL 由公開 repo variable 提供。
       - name: 下載並展開資料包
