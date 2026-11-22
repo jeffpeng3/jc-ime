@@ -80,8 +80,14 @@ mod tests {
     /// 現行身分不能與已移除的舊值相同；舊值在這裡重複一份只是為了鎖住這件事。
     #[test]
     fn current_identity_keeps_legacy_values_for_cleanup() {
-        assert_eq!(CLSID_JC_TSF_LEGACY, "{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}");
-        assert_eq!(PROFILE_JC_TSF_LEGACY, "{8F0A9B3C-2D4E-4F50-A1B2-C3D4E5F60718}");
+        assert_eq!(
+            CLSID_JC_TSF_LEGACY,
+            "{7B7D6E1A-3C1F-4B2E-9A55-6C1D2F3E4A01}"
+        );
+        assert_eq!(
+            PROFILE_JC_TSF_LEGACY,
+            "{8F0A9B3C-2D4E-4F50-A1B2-C3D4E5F60718}"
+        );
         assert_ne!(CLSID_JC_TSF, CLSID_JC_TSF_LEGACY);
         assert_ne!(PROFILE_JC_TSF, PROFILE_JC_TSF_LEGACY);
     }

@@ -123,9 +123,8 @@
       <Custom Action="UnregisterTip" Before="RemoveRegistryValues" Condition='REMOVE~="ALL"' />
 
       <!-- 使用者語言清單：必須在 SYSTEM 的註冊完成之後、且以使用者身分執行。
-           先清升級前殘留的舊項目（舊 CLSID 與 rc.15 的舊描述），再把現行
-           「jc 注音」加回來，結果只留一項。RemoveTipLayout 只清使用者資料，
-           不從語言清單移除 layout。 -->
+           先只清已移除的舊 CLSID（不清現行身分），再把現行「jc 注音」加回來。
+           RemoveTipLayout 只清使用者資料，不從語言清單移除 layout。 -->
       <Custom Action="UserCleanupLegacy" After="InstallFinalize" Condition="NOT REMOVE" />
       <Custom Action="InstallTipLayout" After="UserCleanupLegacy" Condition="NOT REMOVE" />
       <Custom Action="RemoveTipLayout" After="InstallFinalize"
@@ -571,8 +570,9 @@
     MSI 的 <Class> 負責。
 
     machine-* 一定要 Impersonate="no"：CTF 機碼在 HKLM，需要 SYSTEM 權限。
-    user-* 一定要 Impersonate="yes"：InstallLayoutOrTip 與 RemoveLanguageProfile
-    寫的是呼叫者的 HKCU。
+    user-* 一定要 Impersonate="yes"：InstallLayoutOrTip 與 EnableLanguageProfile
+    寫的是呼叫者的 HKCU；RemoveLanguageProfile 也會移除 HKLM 的 LanguageProfile
+    子機碼，所以只對已移除的舊 CLSID 呼叫，不清現行身分。
 
     RegisterTip 排在 WriteRegistryValues 之後：<Class Advertise="no"> 的機碼由
     WriteRegistryValues 寫入，所以此時兩個檢視的 CLSID 都在，RegisterCategory
@@ -609,7 +609,8 @@
                   Impersonate="no"
                   Return="ignore" />
 
-    <!-- 清掉升級前殘留的舊語言清單項目；排在 InstallTipLayout 之前，
+    <!-- 只清已移除的舊 CLSID，不清現行身分（RemoveLanguageProfile 會動到
+         HKLM 的 LanguageProfile 子機碼）。排在 InstallTipLayout 之前，
          讓新的「jc 注音」最後才加回來。失敗不擋安裝。 -->
     <CustomAction Id="UserCleanupLegacy"
                   FileRef="FileTipRegister"

@@ -51,8 +51,8 @@ use windows::Win32::UI::TextServices::{
 };
 
 use crate::guids::{
-    tip_string, CLSID_JC_TSF, CLSID_JC_TSF_LEGACY, ILOT_INSTALL, LANGID_ZH_TW,
-    PROFILE_DESCRIPTION, PROFILE_JC_TSF, PROFILE_JC_TSF_LEGACY,
+    tip_string, CLSID_JC_TSF, CLSID_JC_TSF_LEGACY, ILOT_INSTALL, LANGID_ZH_TW, PROFILE_DESCRIPTION,
+    PROFILE_JC_TSF, PROFILE_JC_TSF_LEGACY,
 };
 use crate::log;
 
@@ -151,8 +151,9 @@ const IDENTITY_LEGACY: Identity = Identity {
 /// 註冊文字服務的 profile 與五個分類。
 ///
 /// CLSID 的 `InprocServer32` 由 MSI 寫好才呼叫這裡。`bEnabledByDefault` 傳
-/// `true`：profile 預設啟用（`LanguageProfile` 機碼的 `Enable=1`），使用者在語言
-/// 設定加入鍵盤後就能切換；仍然不呼叫 `ActivateProfile`，不改系統預設輸入法。
+/// `false`：不要讓 msctf 進入 quasi-installed（Loaded 但未 Installed for current
+/// user）。目前使用者的 `Enable` 改由 `user-install` 的 `EnableLanguageProfile` 寫入；
+/// 仍然不呼叫 `ActivateProfile`，不改系統預設輸入法。
 pub fn machine_register() -> Result<(), Error> {
     machine_register_impl(&IDENTITY_CURRENT)
 }
@@ -188,8 +189,9 @@ fn machine_register_impl(identity: &Identity) -> Result<(), Error> {
             0,
             HKL::default(),
             0,
-            // bEnabledByDefault：寫入 LanguageProfile 的 Enable=1，加入鍵盤即可切換。
-            true,
+            // 不讓 msctf 進入 quasi-installed：Loaded 但未 Installed for current user。
+            // 啟用改由使用者身分的 EnableLanguageProfile 負責。
+            false,
             0,
         );
         log_hr(
@@ -358,22 +360,53 @@ fn machine_unregister_impl(identity: &Identity) -> Result<(), Error> {
     Ok(())
 }
 
-/// 把 profile 加進目前使用者的語言清單。
+/// 把 profile 加進目前使用者的語言清單並啟用它。
 ///
 /// 不改預設輸入法：`InstallLayoutOrTip` 的旗標是 0，不帶 `ILOT_DEFPROFILE`。
+/// `EnableLanguageProfile` 補上 `InstallLayoutOrTip` 沒寫的 HKCU `Enable=1`。
 pub fn user_install() -> Result<(), Error> {
     if let Some(dir) = user_dir() {
         std::fs::create_dir_all(&dir)?;
     }
-    layout_or_tip(&tip_string(), ILOT_INSTALL)
+    layout_or_tip(&tip_string(), ILOT_INSTALL)?;
+    enable_current_profile()
 }
 
-/// 清除已移除舊版與 rc.15 舊描述殘留的語言清單項目。
+/// 以目前使用者身分啟用現行 profile，寫入 HKCU 的 `Enable=1`。
 ///
-/// 呼叫 `ITfInputProcessorProfiles::RemoveLanguageProfile` 移除目前使用者 HKCU 的
-/// 舊項目，不使用 `ILOT_UNINSTALL`（移除語系最後一個 layout 時會把系統地區改成
-/// 英文）。升級時 Windows 不會自動清掉這些孤兒項目，所以要排在新的 `user-install`
-/// 之前：先清掉舊描述，再由 `user-install` 加回單一「jc 注音」。
+/// 沒有這一步，語言清單看得到「jc 注音」但選了也切不過去。`bEnabledByDefault=false`
+/// 避免 msctf 進入 quasi-installed，兩者搭配才等於「已為目前使用者安裝並啟用」。
+fn enable_current_profile() -> Result<(), Error> {
+    log::step("EnableLanguageProfile：開始");
+    // SAFETY: CoInitializeEx 對已初始化的執行緒是無害的。
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        log::step(&format!("CoInitializeEx = 0x{:08X}", hr.0 as u32));
+
+        let profiles: ITfInputProcessorProfiles = create(
+            "CLSID_TF_InputProcessorProfiles",
+            &CLSID_TF_InputProcessorProfiles,
+        )?;
+        let result = profiles.EnableLanguageProfile(
+            &IDENTITY_CURRENT.clsid_guid,
+            LANGID_ZH_TW,
+            &IDENTITY_CURRENT.profile_guid,
+            true,
+        );
+        log_hr("EnableLanguageProfile(jc 注音)", &result);
+        result?;
+    }
+    log::step("EnableLanguageProfile：成功");
+    Ok(())
+}
+
+/// 清除已移除舊版的語言清單項目。
+///
+/// 只對 `IDENTITY_LEGACY` 呼叫 `ITfInputProcessorProfiles::RemoveLanguageProfile`。
+/// 這個 API 會移除 TSF store 的 `LanguageProfile` 子機碼（含 HKLM），所以不可對
+/// `machine-register` 剛寫入的 `IDENTITY_CURRENT` 呼叫，否則等於註冊完立刻反註冊。
+/// 不使用 `ILOT_UNINSTALL`（移除語系最後一個 layout 時會把系統地區改成英文）。
+/// 升級時 Windows 不會自動清掉舊版孤兒項目，所以要排在新的 `user-install` 之前。
 ///
 /// 個別步驟失敗只記日誌、不回錯誤：這一步是清理，不能擋住安裝（WXS 端也是
 /// `Return="ignore"`）。
@@ -389,10 +422,7 @@ pub fn user_cleanup_legacy() -> Result<(), Error> {
             &CLSID_TF_InputProcessorProfiles,
         ) {
             Ok(profiles) => {
-                for (label, identity) in [
-                    ("已移除的舊版 jc 注音", &IDENTITY_LEGACY),
-                    ("rc.15 的 jc 注音（新版）", &IDENTITY_CURRENT),
-                ] {
+                for (label, identity) in [("已移除的舊版 jc 注音", &IDENTITY_LEGACY)] {
                     log::step(&format!(
                         "RemoveLanguageProfile({label}, {})：開始",
                         identity.clsid
@@ -515,7 +545,11 @@ fn user_dir() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(base).join("jc-ime"))
 }
 
-/// 確認 profile 已寫進 TSF 的 store，而且 32 位元檢視也讀得到。
+/// 確認完整的 profile 子機碼已寫進 TSF 的 store，而且 32 位元檢視也讀得到。
+///
+/// 只檢查 `CTF\TIP\{CLSID}` 不夠：`RegisterCategory` 與 MSI 的 `<Class>` 也會建立
+/// 那個機碼，即使 `LanguageProfile` 完全不存在仍會通過。所以要一路查到
+/// `LanguageProfile\{langid}\{profile}`。
 ///
 /// `HKLM\SOFTWARE\Microsoft\CTF` 不是 WOW64 轉向機碼，兩個架構讀的是同一份
 /// 資料；這裡仍分別用 `KEY_WOW64_64KEY` 與 `KEY_WOW64_32KEY` 各讀一次，把
@@ -523,7 +557,8 @@ fn user_dir() -> Option<std::path::PathBuf> {
 /// 就是註冊失敗；32 位元檢視讀不到只警告，因為 profile 是共用的一份，真正的
 /// 載入問題會在實機上以 `reg query /reg:32` 驗。
 fn ensure_tip_key(identity: &Identity) -> Result<(), Error> {
-    let path = wide(&format!(r"SOFTWARE\Microsoft\CTF\TIP\{}", identity.clsid));
+    let profile_path = profile_reg_path(identity);
+    let path = wide(&profile_path);
     for (view, label) in [(KEY_WOW64_64KEY, "64 位元"), (KEY_WOW64_32KEY, "32 位元")] {
         let mut key = HKEY::default();
         // SAFETY: path 以 NUL 結尾；key 成功時由 RegOpenKeyExW 寫入。
@@ -537,10 +572,7 @@ fn ensure_tip_key(identity: &Identity) -> Result<(), Error> {
             )
         };
         if status == ERROR_SUCCESS {
-            log::step(&format!(
-                "CTF\\TIP\\{}（{label}檢視）：存在",
-                identity.clsid
-            ));
+            log::step(&format!("HKLM\\{profile_path}（{label}檢視）：存在"));
             // SAFETY: key 由成功的 RegOpenKeyExW 取得。
             unsafe {
                 let _ = RegCloseKey(key);
@@ -548,28 +580,33 @@ fn ensure_tip_key(identity: &Identity) -> Result<(), Error> {
             continue;
         }
         log::step(&format!(
-            "CTF\\TIP\\{}（{label}檢視）：讀不到（{}）",
-            identity.clsid,
+            "HKLM\\{profile_path}（{label}檢視）：讀不到（{}）",
             hex(status.0)
         ));
         if view == KEY_WOW64_64KEY {
             return Err(Error::Failure(format!(
-                "註冊後仍找不到 HKLM\\SOFTWARE\\Microsoft\\CTF\\TIP\\{}\
-                 \\LanguageProfile\\{LANGID_ZH_TW:#06X}\\{}（{}）。\
+                "註冊後仍找不到 HKLM\\{profile_path}（{}）。\
                  這通常表示 RegisterProfile 失敗；請確認已安裝繁體中文（台灣）語言。",
-                identity.clsid,
-                identity.profile,
                 hex(status.0)
             )));
         }
         debug_warning(&format!(
-            "CTF\\TIP\\{} 在{label}檢視讀不到（{}）；\
+            "HKLM\\{profile_path} 在{label}檢視讀不到（{}）；\
              若 reg query /reg:32 也看不到，代表這台機器把 CTF 當成轉向機碼。",
-            identity.clsid,
             hex(status.0)
         ));
     }
     Ok(())
+}
+
+/// 指定身分在 HKLM 下的完整 profile 機碼路徑（相對於 `HKEY_LOCAL_MACHINE`）。
+///
+/// `{:#06X}` 才會產生 Windows 機碼名用的 `0x0404`；用 `{}` 會得到十進位。
+fn profile_reg_path(identity: &Identity) -> String {
+    format!(
+        r"SOFTWARE\Microsoft\CTF\TIP\{}\LanguageProfile\{:#06X}\{}",
+        identity.clsid, LANGID_ZH_TW, identity.profile
+    )
 }
 
 /// 送到 debugger（DebugView／VS 輸出視窗）；MSI 的 deferred 動作看不到 stderr。
@@ -771,6 +808,16 @@ mod tests {
         assert_eq!(IDENTITY_CURRENT.description, PROFILE_DESCRIPTION);
         assert_eq!(IDENTITY_LEGACY.clsid, CLSID_JC_TSF_LEGACY);
         assert_eq!(IDENTITY_LEGACY.profile, PROFILE_JC_TSF_LEGACY);
+    }
+
+    /// ensure_tip_key 必須查到 profile 子機碼；langid 用十六進位才能對上機碼名。
+    #[test]
+    fn profile_reg_path_uses_hex_langid_and_full_identity() {
+        assert_eq!(
+            profile_reg_path(&IDENTITY_CURRENT),
+            r"SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\LanguageProfile\0x0404\{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56}"
+        );
+        assert!(profile_reg_path(&IDENTITY_LEGACY).contains(r"\0x0404\{8F0A9B3C-"));
     }
 
     /// 五個分類都要有，而且互不相同；少一個就少一項 Windows 功能。

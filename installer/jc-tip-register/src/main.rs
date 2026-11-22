@@ -24,10 +24,10 @@
 //! 工廠。把 CLSID 交給 MSI 之後，自訂動作排在 `WriteRegistryValues` 之後，開始跑
 //! 時兩個檢視都已經就緒。
 //!
-//! `user-*` 寫目前使用者的 HKCU，必須以安裝使用者身分執行。`user-install` 只新增；
-//! `user-uninstall` 刻意不移除 layout，理由見 [`platform::user_uninstall`]。
-//! `user-cleanup-legacy` 呼叫 `RemoveLanguageProfile` 清掉升級前殘留的舊語言清單
-//! 項目，不碰 HKLM 的 profile 註冊。
+//! `user-*` 寫目前使用者的 HKCU，必須以安裝使用者身分執行。`user-install` 新增並
+//! 啟用目前使用者的 profile；`user-uninstall` 刻意不移除 layout，理由見
+//! [`platform::user_uninstall`]。`user-cleanup-legacy` 只對已移除的舊 CLSID 呼叫
+//! `RemoveLanguageProfile`，不清現行身分，也不碰 HKLM 的現行 profile 註冊。
 //!
 //! 結束碼：0 成功、2 用法錯誤、3 執行失敗。MSI 以 0／非 0 判定。
 
@@ -215,7 +215,10 @@ mod tests {
 
     #[test]
     fn user_install_takes_no_arguments() {
-        assert_eq!(parse_args(&args(&["user-install"])), Ok(Command::UserInstall));
+        assert_eq!(
+            parse_args(&args(&["user-install"])),
+            Ok(Command::UserInstall)
+        );
         assert!(parse_args(&args(&["user-install", "x"])).is_err());
     }
 

@@ -65,9 +65,9 @@ pipe；環境變數 `JC_IME_PIPE` 可取代它，但 TIP 跑在宿主行程裡�
    `RemoveTipLayout` 在升級時跳過，所以 `%LOCALAPPDATA%\jc-ime` 保留。
 2. `WriteRegistryValues` 寫入現行 CLSID 的 `InprocServer32`（兩個檢視）與
    `PipePrefix`，接著 `RegisterTip` 註冊 profile 與五個分類。
-3. `InstallFinalize` 後以使用者身分執行 `user-cleanup-legacy`，呼叫
-   `RemoveLanguageProfile` 清掉舊 CLSID 與 rc.15 舊描述項目的 HKCU 清單紀錄。
-   失敗不擋安裝（`Return="ignore"`）。
+3. `InstallFinalize` 後以使用者身分執行 `user-cleanup-legacy`，只對已移除的舊
+   CLSID 呼叫 `RemoveLanguageProfile`，不清現行身分（該 API 會動到 HKLM 的
+   `LanguageProfile` 子機碼）。失敗不擋安裝（`Return="ignore"`）。
 4. `InstallTipLayout` 用現行身分把單一「jc 注音」加回語言清單。
 5. 登出再登入。登出讓所有行程釋放舊 DLL，登入讓新的 Run 值生效；確認只跑一個
    `jc-engine.exe`，`supervisor.log` 沒有 `AlreadyRunning`。
@@ -101,7 +101,8 @@ pipe；環境變數 `JC_IME_PIPE` 可取代它，但 TIP 跑在宿主行程裡�
 
 ## Windows 實機還要驗證
 
-- `RemoveLanguageProfile` 跨 CLSID 是否真的移除 HKCU 項目，且不動系統地區。
+- 升級後確認 `RemoveLanguageProfile` 只清掉舊 CLSID，HKLM 的現行
+  `LanguageProfile` 子機碼還在，且系統地區沒被改動。
 - 描述改成「jc 注音」後，HKCU 顯示名稱是否更新；若沒有，需要用
   `ITfInputProcessorProfilesEx::SetLanguageProfileDisplayName` 補。
 - 舊 DLL 被 explorer 鎖住時 MSI 是否排重開機；文件要引導登出再登入。
