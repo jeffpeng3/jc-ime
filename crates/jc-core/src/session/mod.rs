@@ -1594,8 +1594,19 @@ mod tests {
         let mut s = mixed_zhuyin_session();
         type_keys(&mut s, "sug");
         s.press(Key::new(KeyCode::Down, None, false));
-        let expected = s.candidates()[2].surface.clone();
-        type_keys(&mut s, "3");
+        // 補全候選來自英文詞表；詞表是不是完整取決於資料包，CI 上可能只有
+        // 內建原型詞。這裡不假設固定索引，挑第一個比 `sug` 長的英文補全。
+        let candidates = s.candidates();
+        let (index, expected) = candidates
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| {
+                candidate.surface.starts_with("sug") && candidate.surface.chars().count() > 3
+            })
+            .map(|(index, candidate)| (index, candidate.surface.clone()))
+            .expect("sug 應該有英文補全候選");
+        assert!(index < 9, "測試只按 1 到 9 選候選，實際索引 {index}");
+        type_keys(&mut s, &(index + 1).to_string());
         assert_eq!(s.snapshot().preedit, expected);
         assert_ne!(s.snapshot().preedit, "sug3");
         s.press(Key::new(KeyCode::Enter, None, false));
