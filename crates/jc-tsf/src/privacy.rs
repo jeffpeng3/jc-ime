@@ -33,7 +33,7 @@ use windows_core::{implement, ComObject, Interface};
 
 // T6：log／物件計數／guarded 改接真正的 crate 層（與 service、langbar、edit 共用）；
 // 插入點探測改接 crate::caret。
-use crate::log::{self, guarded, object_created, object_destroyed, zdebug};
+use crate::log::{self, guarded, object_created, object_destroyed, zdebug, zlog};
 
 /// 欄位政策。密碼、PIN、唯讀或無法判斷的欄位不送引擎；只標 IS_PRIVATE 的欄位
 /// （Chrome 無痕／訪客、Firefox 私密視窗的所有欄位都是）照常組字，但整段組字以
@@ -195,22 +195,66 @@ pub fn field_at(
     ui_less: bool,
     context: &ProbeContext,
 ) -> Field {
-    match ctx {
+    // debug log 用：vk 十進位加可讀字元；非可列印或沒有 vk 時顯示 `-`。
+    let vk_label = || {
+        context.vk.map_or_else(
+            || "-".to_owned(),
+            |vk| {
+                if (0x20..=0x7e).contains(&vk) {
+                    format!("{}({})", vk, vk as u8 as char)
+                } else {
+                    vk.to_string()
+                }
+            },
+        )
+    };
+    let field = match ctx {
         Some(ctx) => {
             let key = context_key(ctx);
             if let Some(field) = disabled_field(ctx, key) {
-                return field;
+                zlog!(
+                    "field_at callback={} vk={} source=disabled field={:?} ctx={:#x}",
+                    context.callback,
+                    vk_label(),
+                    field,
+                    key
+                );
+                field
+            } else if let Some(field) = cached_field(key) {
+                zlog!(
+                    "field_at callback={} vk={} source=cache field={:?} ctx={:#x}",
+                    context.callback,
+                    vk_label(),
+                    field,
+                    key
+                );
+                field
+            } else {
+                let field = probe(ctx, client, ui_less, context, key);
+                zlog!(
+                    "field_at callback={} vk={} source=probe field={:?} ctx={:#x}",
+                    context.callback,
+                    vk_label(),
+                    field,
+                    key
+                );
+                field
             }
-            cached_field(key).unwrap_or_else(|| probe(ctx, client, ui_less, context, key))
         }
         None => {
             log::once(&format!(
                 "欄位政策：沒有焦點文件，按鍵放行給程式 exe={}",
                 log::exe_name()
             ));
+            zlog!(
+                "field_at callback={} vk={} source=no_context field=Open",
+                context.callback,
+                vk_label()
+            );
             Field::Open
         }
-    }
+    };
+    field
 }
 
 /// 系統的輸入法開關熱鍵（Ctrl＋Space，#117）能不能切換中英：切換不送按鍵、不讀文件，只在確定擋下的欄位
@@ -779,6 +823,14 @@ impl ITfEditSession_Impl for ScopeProbe_Impl {
         // 同步或非同步都在這裡更新 cache；generation 不符代表 focus 已換或已 Deactivate，丟掉。
         self.field.set(field);
         cache_field(self.key, field, self.generation);
+        zlog!(
+            "field probe 更新 cache field={:?} ctx={:#x} generation={} current={} applied={}",
+            field,
+            self.key,
+            self.generation,
+            epoch(),
+            self.generation == epoch()
+        );
         Ok(())
     }
 }

@@ -54,6 +54,15 @@ use crate::privacy;
 use crate::session::{Session, Snapshot};
 use crate::ui::{self, UiCandidate, UiMessage};
 
+/// 按鍵路徑 debug log 用：vk 轉可讀字元（可列印 ASCII 才轉，其餘顯示 `-`）。
+fn vk_label(vk: u32) -> String {
+    if (0x20..=0x7e).contains(&vk) {
+        ((vk as u8) as char).to_string()
+    } else {
+        "-".to_owned()
+    }
+}
+
 /// 同一個畫面版本最多因 OnLayoutChange 重查幾次。
 const MAX_REQUERIES: u32 = 8;
 /// 換欄位時，這段時間內已從引擎得知「輸出簡體字」就不再問（一次點擊常連著多次焦點變化）。
@@ -484,12 +493,41 @@ impl TextService_Impl {
     /// 第一個按鍵前確定這個程式的中英模式（只問已在執行的引擎）。
     fn learn_mode(&self, vk: u32) {
         if keys::is_modifier(vk) {
+            zlog!("learn_mode vk={}({}) 略過：修飾鍵", vk, vk_label(vk));
             return;
         }
-        let changed = {
+        let (available, mode_known_before) = {
             let mut st = self.state.borrow_mut();
-            st.session.available() && st.session.learn_mode(true)
+            (st.session.available(), st.session.mode_known())
         };
+        zlog!(
+            "learn_mode 前 vk={}({}) available={} mode_known={}",
+            vk,
+            vk_label(vk),
+            available,
+            mode_known_before
+        );
+        let changed = available && {
+            let mut st = self.state.borrow_mut();
+            st.session.learn_mode(true)
+        };
+        let after = {
+            let st = self.state.borrow();
+            (
+                st.session.mode_known(),
+                st.session.english(),
+                st.session.japanese(),
+            )
+        };
+        zlog!(
+            "learn_mode 後 vk={}({}) mode_known={} changed={} english={} japanese={}",
+            vk,
+            vk_label(vk),
+            after.0,
+            changed,
+            after.1,
+            after.2
+        );
         if changed {
             self.sync_langbar();
         }
@@ -939,7 +977,17 @@ impl TextService_Impl {
     /// candidates > 0」時插入 `KeyCode::Down`，讓注音前綴的數字變成選字鍵；核心 su
     /// 修復後 `su` + `3` 應是聲調鍵，補 Down 會讓它又被 suggestion 取代。
     fn handle_key(&self, ctx: Option<&ITfContext>, key: &str) -> bool {
+        zlog!("handle_key 送引擎 key={}", key);
         let snapshot = self.state.borrow_mut().session.key(key);
+        zlog!(
+            "handle_key 引擎回 key={} ok={} handled={} composing={} commit_len={} preedit={}",
+            key,
+            snapshot.ok,
+            snapshot.handled,
+            snapshot.composing(),
+            snapshot.commit.chars().count(),
+            snapshot.text()
+        );
         zdebug!(
             "snapshot ok={} handled={} composing={} commit_len={}",
             snapshot.ok,
@@ -1113,6 +1161,16 @@ impl TextService_Impl {
             privacy::note_context(ctx, flags, field);
             field
         };
+        zlog!(
+            "allowed vk={}({}) callback={} secure={} field={:?} ctx={} -> {}",
+            vk,
+            vk_label(vk),
+            callback,
+            secure,
+            field,
+            ctx.is_some(),
+            field != privacy::Field::Blocked
+        );
         if field != privacy::Field::Blocked {
             self.state
                 .borrow_mut()
@@ -1149,68 +1207,124 @@ impl TextService_Impl {
         vk: u32,
         lparam: isize,
     ) -> Option<EnglishKey> {
-        if keys::is_modifier(vk) && !keys::modifier_down() {
-            return None;
-        }
-        let snap = {
-            let mut st = self.state.borrow_mut();
-            if !st.session.english() || !st.session.available() {
+        let result = (|| -> Option<EnglishKey> {
+            if keys::is_modifier(vk) && !keys::modifier_down() {
+                zlog!(
+                    "english_key_policy vk={}({}) 提前回 None：修飾鍵",
+                    vk,
+                    vk_label(vk)
+                );
                 return None;
             }
-            if !st.composing {
-                st.session.handle(json!({"type": "display", "columns": 0}))
-            } else {
-                st.session.english_state.clone()
+            let snap = {
+                let mut st = self.state.borrow_mut();
+                // 保持原本的短路順序：english 為 false 時不呼叫 available（避免更動狀態）。
+                if !st.session.english() {
+                    zlog!(
+                        "english_key_policy vk={}({}) 提前回 None：english=false",
+                        vk,
+                        vk_label(vk)
+                    );
+                    return None;
+                }
+                if !st.session.available() {
+                    zlog!(
+                        "english_key_policy vk={}({}) 提前回 None：available=false",
+                        vk,
+                        vk_label(vk)
+                    );
+                    return None;
+                }
+                if !st.composing {
+                    st.session.handle(json!({"type": "display", "columns": 0}))
+                } else {
+                    st.session.english_state.clone()
+                }
+            };
+            let caps_lower = snap.caps_lock && self.state.borrow_mut().session.style_caps_lower();
+            zlog!(
+                "english_key_policy vk={}({}) snap ok={} english_autocomplete={} full_width={} caps_lower={} english_pending={} composing={}",
+                vk,
+                vk_label(vk),
+                snap.ok,
+                snap.english_autocomplete,
+                snap.full_width,
+                caps_lower,
+                snap.english_pending,
+                snap.composing()
+            );
+            if !snap.ok
+                || (!snap.english_autocomplete && !snap.full_width && !caps_lower)
+                || snap.composing() && !snap.english_pending
+            {
+                return None;
             }
-        };
-        let caps_lower = snap.caps_lock && self.state.borrow_mut().session.style_caps_lower();
-        if !snap.ok
-            || (!snap.english_autocomplete && !snap.full_width && !caps_lower)
-            || snap.composing() && !snap.english_pending
-        {
-            return None;
-        }
-        if keys::modifier_down() {
-            self.commit_english_pending(ctx, &snap);
-            return Some(EnglishKey::Eat(false));
-        }
-        let key = self.state.borrow_mut().styled_key(vk, lparam, false, true);
-        if key.as_deref() == Some("ShiftSpace") {
-            return Some(EnglishKey::Eat(true));
-        }
-        let flags = self.state.borrow().activate_flags;
-        if !snap.english_pending && ctx.is_some_and(|c| privacy::english_passthrough(c, flags)) {
-            if let Some(text) = keys::caps_lower_literal(caps_lower, key.as_deref()) {
-                return Some(EnglishKey::Literal(text));
+            if keys::modifier_down() {
+                self.commit_english_pending(ctx, &snap);
+                return Some(EnglishKey::Eat(false));
             }
-            log::once("英文模式：IMM32 程式的焦點沒有插入點，不開始英文補字，按鍵直接交給程式");
-            return Some(EnglishKey::Eat(false));
-        }
-        if key.as_ref().is_some_and(|k| {
-            snap.english_wants_key(k)
-                || caps_lower && k.len() == 1 && k.as_bytes()[0].is_ascii_alphabetic()
-        }) {
-            return Some(EnglishKey::Eat(true));
-        }
-        if snap.english_pending && ctx.is_some_and(|c| privacy::imm32_context(c, flags)) {
-            if let Some(key) = key.as_deref() {
-                if let Some(typed) = keys::imm32_word_end(key) {
-                    return Some(EnglishKey::WordEnd {
-                        key: key.to_string(),
-                        typed,
-                    });
+            let key = self.state.borrow_mut().styled_key(vk, lparam, false, true);
+            if key.as_deref() == Some("ShiftSpace") {
+                return Some(EnglishKey::Eat(true));
+            }
+            let flags = self.state.borrow().activate_flags;
+            if !snap.english_pending && ctx.is_some_and(|c| privacy::english_passthrough(c, flags))
+            {
+                if let Some(text) = keys::caps_lower_literal(caps_lower, key.as_deref()) {
+                    return Some(EnglishKey::Literal(text));
+                }
+                log::once("英文模式：IMM32 程式的焦點沒有插入點，不開始英文補字，按鍵直接交給程式");
+                return Some(EnglishKey::Eat(false));
+            }
+            if key.as_ref().is_some_and(|k| {
+                snap.english_wants_key(k)
+                    || caps_lower && k.len() == 1 && k.as_bytes()[0].is_ascii_alphabetic()
+            }) {
+                return Some(EnglishKey::Eat(true));
+            }
+            if snap.english_pending && ctx.is_some_and(|c| privacy::imm32_context(c, flags)) {
+                if let Some(key) = key.as_deref() {
+                    if let Some(typed) = keys::imm32_word_end(key) {
+                        return Some(EnglishKey::WordEnd {
+                            key: key.to_string(),
+                            typed,
+                        });
+                    }
                 }
             }
-        }
-        if let Some(key) = key {
-            let next = self.state.borrow_mut().session.key(&key);
-            if next.ok && (!next.commit.is_empty() || snap.english_pending) {
-                self.present(ctx, &next);
+            if let Some(key) = key {
+                zlog!(
+                    "english_key_policy vk={}({}) 送引擎 key={}",
+                    vk,
+                    vk_label(vk),
+                    key
+                );
+                let next = self.state.borrow_mut().session.key(&key);
+                zlog!(
+                    "english_key_policy vk={}({}) 引擎回 key={} ok={} handled={} preedit={}",
+                    vk,
+                    vk_label(vk),
+                    key,
+                    next.ok,
+                    next.handled,
+                    next.text()
+                );
+                if next.ok && (!next.commit.is_empty() || snap.english_pending) {
+                    self.present(ctx, &next);
+                }
+                return Some(EnglishKey::Eat(next.handled));
             }
-            return Some(EnglishKey::Eat(next.handled));
-        }
-        self.commit_english_pending(ctx, &snap);
-        Some(EnglishKey::Eat(false))
+            self.commit_english_pending(ctx, &snap);
+            Some(EnglishKey::Eat(false))
+        })();
+        zlog!(
+            "english_key_policy vk={}({}) result={:?} eats={}",
+            vk,
+            vk_label(vk),
+            result,
+            result.as_ref().is_some_and(|r| r.eats())
+        );
+        result
     }
 
     /// 組字中交給宿主的按鍵先送出組字（#106）。
@@ -1278,58 +1392,94 @@ impl TextService_Impl {
     }
 
     fn wants_key(&self, vk: u32, lparam: isize) -> bool {
-        if keys::modifier_down() && self.state.borrow_mut().ctrl_punct_key(vk, lparam).is_some() {
-            return true;
-        }
-        if keys::modifier_down() || keys::is_modifier(vk) {
-            return false;
-        }
-        let mut st = self.state.borrow_mut();
-        if !st.session.available() {
-            return false;
-        }
-        if st.japanese_key(vk).is_some() {
-            return true;
-        }
-        let english = st.session.english();
-        let japanese = st.session.japanese();
-        let style_key = st.styled_key(vk, lparam, false, english);
-        if style_key.as_deref() == Some("ShiftSpace") {
-            return true;
-        }
-        if style_key
-            .as_ref()
-            .is_some_and(|k| st.session.english_state.full_width_extra_key(k))
-        {
-            return true;
-        }
-        if st.composing {
-            let vocab = st.vocab_keys();
-            return keys::composing_wants(
-                english,
-                st.styled_key(vk, lparam, vocab, english).as_deref(),
-            );
-        }
-        if english {
-            return false;
-        }
-        if japanese {
-            if keys::is_keypad(vk) || keys::named(vk).is_some() {
+        let available_seen: Cell<Option<bool>> = Cell::new(None);
+        let wants = (|| -> bool {
+            if keys::modifier_down() && self.state.borrow_mut().ctrl_punct_key(vk, lparam).is_some()
+            {
+                return true;
+            }
+            if keys::modifier_down() || keys::is_modifier(vk) {
                 return false;
             }
-            return keys::printable(vk, lparam, false).is_some();
-        }
-        if keys::is_keypad(vk) {
-            return style_key
-                .as_deref()
-                .is_some_and(|k| st.session.english_state.full_width_keypad(k));
-        }
-        if keys::named(vk).is_some() {
-            return false;
-        }
-        keys::printable(vk, lparam, false)
-            .map(|key| st.session.idle_key(&key))
-            .unwrap_or(false)
+            let mut st = self.state.borrow_mut();
+            let available = st.session.available();
+            available_seen.set(Some(available));
+            zlog!(
+                "wants_key vk={}({}) available={} english={} japanese={} composing={}",
+                vk,
+                vk_label(vk),
+                available,
+                st.session.english(),
+                st.session.japanese(),
+                st.composing
+            );
+            if !available {
+                return false;
+            }
+            if st.japanese_key(vk).is_some() {
+                return true;
+            }
+            let english = st.session.english();
+            let japanese = st.session.japanese();
+            let style_key = st.styled_key(vk, lparam, false, english);
+            zlog!(
+                "wants_key vk={}({}) style_key={:?}",
+                vk,
+                vk_label(vk),
+                style_key
+            );
+            if style_key.as_deref() == Some("ShiftSpace") {
+                return true;
+            }
+            if style_key
+                .as_ref()
+                .is_some_and(|k| st.session.english_state.full_width_extra_key(k))
+            {
+                return true;
+            }
+            if st.composing {
+                let vocab = st.vocab_keys();
+                return keys::composing_wants(
+                    english,
+                    st.styled_key(vk, lparam, vocab, english).as_deref(),
+                );
+            }
+            if english {
+                return false;
+            }
+            if japanese {
+                if keys::is_keypad(vk) || keys::named(vk).is_some() {
+                    return false;
+                }
+                return keys::printable(vk, lparam, false).is_some();
+            }
+            if keys::is_keypad(vk) {
+                return style_key
+                    .as_deref()
+                    .is_some_and(|k| st.session.english_state.full_width_keypad(k));
+            }
+            if keys::named(vk).is_some() {
+                return false;
+            }
+            keys::printable(vk, lparam, false)
+                .map(|key| st.session.idle_key(&key))
+                .unwrap_or(false)
+        })();
+        let (english, japanese, composing) = {
+            let st = self.state.borrow();
+            (st.session.english(), st.session.japanese(), st.composing)
+        };
+        zlog!(
+            "wants_key 最終 vk={}({}) available={:?} english={} japanese={} composing={} -> wants={}",
+            vk,
+            vk_label(vk),
+            available_seen.get(),
+            english,
+            japanese,
+            composing,
+            wants
+        );
+        wants
     }
 
     fn composition_document(&self) -> Option<ITfDocumentMgr> {
@@ -1677,6 +1827,13 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         lparam: LPARAM,
     ) -> windows_core::Result<BOOL> {
         crate::guarded("OnTestKeyDown", || {
+            let vk = wparam.0 as u32;
+            zlog!(
+                "OnTestKeyDown 進入 vk={}({}) lparam={:#x}",
+                vk,
+                vk_label(vk),
+                lparam.0
+            );
             {
                 let mut st = self.state.borrow_mut();
                 st.hotkey_tested.forget();
@@ -1686,22 +1843,43 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             {
                 let mut st = self.state.borrow_mut();
                 if let Some(pending) = st.pending_repost.take() {
-                    if pending.vk == wparam.0 as u32 && pending.lparam == lparam.0 {
+                    if pending.vk == vk && pending.lparam == lparam.0 {
+                        zlog!("OnTestKeyDown vk={}({}) 重排回來 -> 不吃", vk, vk_label(vk));
                         zdebug!("OnTestKeyDown vk={} 重排回來 -> 不吃", wparam.0);
                         return Ok(false.into());
                     }
+                    zlog!(
+                        "OnTestKeyDown vk={}({}) 重排的鍵沒回來，清掉等待 pending_vk={}",
+                        vk,
+                        vk_label(vk),
+                        pending.vk
+                    );
                     zdebug!("OnTestKeyDown vk={} 重排的鍵沒回來，清掉等待", pending.vk);
                 }
             }
-            if !self.allowed(pic.as_ref(), "OnTestKeyDown", wparam.0 as u32) {
+            if !self.allowed(pic.as_ref(), "OnTestKeyDown", vk) {
+                zlog!(
+                    "OnTestKeyDown vk={}({}) 結束 allowed=false -> 不吃",
+                    vk,
+                    vk_label(vk)
+                );
                 return Ok(false.into());
             }
-            let vk = wparam.0 as u32;
             self.observe_shift(vk, lparam.0);
             if self.test_simplified_hotkey(vk) {
+                zlog!(
+                    "OnTestKeyDown vk={}({}) 結束：簡體熱鍵 -> 吃",
+                    vk,
+                    vk_label(vk)
+                );
                 return Ok(true.into());
             }
             if self.commit_before_host_key(pic.as_ref(), vk, lparam.0, true) {
+                zlog!(
+                    "OnTestKeyDown vk={}({}) 結束：攔下重排 -> 吃",
+                    vk,
+                    vk_label(vk)
+                );
                 zdebug!("OnTestKeyDown vk={} -> 攔下重排", vk);
                 return Ok(true.into());
             }
@@ -1712,6 +1890,13 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 None => self.wants_key(vk, lparam.0),
             };
             self.state.borrow_mut().key_tested.record(vk, wants);
+            zlog!(
+                "OnTestKeyDown 結束 vk={}({}) wants={} -> {}",
+                vk,
+                vk_label(vk),
+                wants,
+                if wants { "吃" } else { "不吃" }
+            );
             Ok(wants.into())
         })
     }
@@ -1753,12 +1938,23 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     ) -> windows_core::Result<BOOL> {
         crate::guarded("OnKeyDown", || {
             let vk = wparam.0 as u32;
+            zlog!(
+                "OnKeyDown 進入 vk={}({}) lparam={:#x}",
+                vk,
+                vk_label(vk),
+                lparam.0
+            );
             // TestKeyDown 已經送出組字並重排：這一次的 OnKeyDown 只吃下，不再判斷。
             {
                 let mut st = self.state.borrow_mut();
                 if let Some(pending) = st.pending_repost.as_mut() {
                     if pending.vk == vk && !pending.key_down_seen {
                         pending.key_down_seen = true;
+                        zlog!(
+                            "OnKeyDown vk={}({}) 結束：重排的 OnKeyDown 只吃下",
+                            vk,
+                            vk_label(vk)
+                        );
                         return Ok(true.into());
                     }
                 }
@@ -1767,13 +1963,32 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 let mut st = self.state.borrow_mut();
                 (st.hotkey_tested.take(vk), st.key_tested.take(vk))
             };
+            zlog!(
+                "OnKeyDown vk={}({}) tested={:?} key_tested={:?}",
+                vk,
+                vk_label(vk),
+                tested,
+                key_tested
+            );
             if !self.allowed(pic.as_ref(), "OnKeyDown", vk) {
+                zlog!(
+                    "OnKeyDown vk={}({}) 結束 allowed=false -> 不吃",
+                    vk,
+                    vk_label(vk)
+                );
                 return Ok(false.into());
             }
             self.observe_shift(vk, lparam.0);
             if self.key_simplified_hotkey(vk, tested) {
                 let on = !self.state.borrow().session.simplified().unwrap_or(false);
                 let switched = self.set_output_simplified(on);
+                zlog!(
+                    "OnKeyDown vk={}({}) 結束：切換簡體字 on={} ok={}",
+                    vk,
+                    vk_label(vk),
+                    on,
+                    switched
+                );
                 zdebug!("OnKeyDown vk={} 切換簡體字 on={} ok={}", vk, on, switched);
                 self.state.borrow_mut().eaten.insert(vk);
                 return Ok(true.into());
@@ -1787,19 +2002,51 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             };
             let wants = match self.english_key_policy(pic.as_ref(), vk, lparam.0) {
                 Some(EnglishKey::Literal(text)) => {
-                    return Ok(self.type_text(pic.as_ref(), vk, text).into())
+                    zlog!(
+                        "OnKeyDown vk={}({}) 結束：英文 Literal={:?}",
+                        vk,
+                        vk_label(vk),
+                        text
+                    );
+                    return Ok(self.type_text(pic.as_ref(), vk, text).into());
                 }
                 Some(EnglishKey::WordEnd { key, typed }) => {
+                    zlog!(
+                        "OnKeyDown vk={}({}) 結束：英文 WordEnd key={} typed={}",
+                        vk,
+                        vk_label(vk),
+                        key,
+                        typed
+                    );
                     self.confirm_document_context(pic.as_ref());
                     return Ok(self.end_word_with(pic.as_ref(), vk, &key, typed).into());
                 }
                 Some(policy) => policy.eats(),
                 None => self.wants_key(vk, lparam.0),
             };
+            let composing = self.state.borrow().composing;
+            zlog!(
+                "OnKeyDown vk={}({}) wants={} composing={} literal_fallback={}",
+                vk,
+                vk_label(vk),
+                wants,
+                composing,
+                literal_fallback
+            );
             if !wants {
                 if literal_fallback {
+                    zlog!(
+                        "OnKeyDown vk={}({}) 結束：literal fallback 送出",
+                        vk,
+                        vk_label(vk)
+                    );
                     return Ok(self.type_literal(pic.as_ref(), vk, lparam.0).into());
                 }
+                zlog!(
+                    "OnKeyDown vk={}({}) 結束 wants=false -> 不吃",
+                    vk,
+                    vk_label(vk)
+                );
                 return Ok(false.into());
             }
             let (vocab, english) = {
@@ -1821,9 +2068,15 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                         .styled_key(vk, lparam.0, vocab, english)
                 })
             else {
+                zlog!(
+                    "OnKeyDown vk={}({}) 結束：key=None -> 不吃",
+                    vk,
+                    vk_label(vk)
+                );
                 return Ok(false.into());
             };
             self.confirm_document_context(pic.as_ref());
+            zlog!("OnKeyDown vk={}({}) 送引擎 key={}", vk, vk_label(vk), key);
             let mut eaten = self.handle_key(pic.as_ref(), &key);
             if !eaten && literal_fallback && !self.state.borrow().composing {
                 eaten = self.type_literal(pic.as_ref(), vk, lparam.0);
@@ -1831,6 +2084,13 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             if eaten {
                 self.state.borrow_mut().eaten.insert(vk);
             }
+            zlog!(
+                "OnKeyDown 結束 vk={}({}) key={} eaten={}",
+                vk,
+                vk_label(vk),
+                key,
+                eaten
+            );
             Ok(eaten.into())
         })
     }

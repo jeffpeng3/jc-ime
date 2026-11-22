@@ -21,10 +21,8 @@ use std::time::{Duration, Instant};
 use jc_proto::{Response, PROTOCOL_VERSION as JC_PROTOCOL_VERSION};
 use serde_json::{json, Value};
 
-/// 0c 的 `zlog` 寫檔案；adapter spike 不帶檔案 I/O，保留呼叫點但不產生輸出。
-macro_rules! zlog {
-    ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }};
-}
+/// debug-keypath：0c 的 `zlog` 改接 crate 層，讓按鍵路徑的 log 寫進 tsf.log。
+use crate::log::zlog;
 
 /// jc 協定版本（0c 的 open 原本帶 0，這裡改帶 hello 的 3）。
 pub const PROTOCOL_VERSION: u32 = JC_PROTOCOL_VERSION;
@@ -965,19 +963,32 @@ impl Session {
 
     /// 不知道中英模式時，向引擎查新 session 開始時的模式。
     pub fn learn_mode(&mut self, spawn: bool) -> bool {
+        zlog!(
+            "learn_mode 進入 spawn={} mode_known={}",
+            spawn,
+            self.mode_known
+        );
         if self.mode_known {
             return false;
         }
         let probe = !spawn && !self.client.connected();
         if probe && !self.client.connect_existing() {
+            zlog!("learn_mode 放棄：connect_existing 失敗");
             return false;
         }
         let reply = self.client.call(&json!({"op": "health"}));
+        zlog!(
+            "health op 回應 ok={} connected={} probe={}",
+            reply.as_ref().is_some_and(|r| r["ok"] == true),
+            self.client.connected(),
+            probe
+        );
         let generation = self.client.generation();
         if probe && self.id == 0 {
             self.client.release();
         }
         let Some(reply) = reply.filter(|r| r["ok"] == true) else {
+            zlog!("learn_mode 放棄：health 沒有 ok");
             return false;
         };
         self.mode_known = true;
@@ -991,7 +1002,15 @@ impl Session {
             self.japanese = mode == Mode::Japanese;
             self.caps_english = false;
         }
-        before != (self.english, self.japanese) || simplified
+        let changed = before != (self.english, self.japanese) || simplified;
+        zlog!(
+            "learn_mode 結束 changed={} mode_known={} english={} japanese={}",
+            changed,
+            self.mode_known,
+            self.english,
+            self.japanese
+        );
+        changed
     }
 
     /// 測試：設定日文模式與能力（不經引擎）。
@@ -1198,6 +1217,12 @@ impl Session {
             .is_some_and(|info| idle_key_from(info, key, full_width))
     }
 
+    /// 是否已從引擎學到中英模式（debug log 用，只有 Windows 的 service 會讀）。
+    #[cfg(windows)]
+    pub(crate) fn mode_known(&self) -> bool {
+        self.mode_known
+    }
+
     /// server 是否可用。
     pub fn available(&mut self) -> bool {
         if self.down && self.client.connect() {
@@ -1345,12 +1370,25 @@ impl Session {
             if !self.vocab_keys {
                 downgrade_vocab_key(&mut request);
             }
+            zlog!(
+                "handle 送引擎 op={} session={} req={}",
+                kind,
+                self.id,
+                request
+            );
             let reply = self
                 .client
                 .call(&json!({"op": "handle", "session": self.id, "req": request}));
-            let Some(reply) = reply else { continue };
+            let Some(reply) = reply else {
+                zlog!("handle op={} 引擎沒有回應 attempt={}", kind, attempts);
+                continue;
+            };
             if !reply["ok"].as_bool().unwrap_or(false) {
-                zlog!("handle: {}", reply["error"].as_str().unwrap_or("?"));
+                zlog!(
+                    "handle op={} 引擎回 ok=false error={}",
+                    kind,
+                    reply["error"].as_str().unwrap_or("?")
+                );
                 self.id = 0;
                 continue;
             }
@@ -1407,9 +1445,18 @@ impl Session {
                 }
                 self.log.push(request);
             }
+            zlog!(
+                "handle 引擎回 op={} ok={} handled={} composing={} preedit={} commit={}",
+                kind,
+                s.ok,
+                s.handled,
+                s.composing(),
+                s.text(),
+                s.commit
+            );
             return s;
         }
-        zlog!("handle: server 不可用，放行按鍵");
+        zlog!("handle op={} 結束：server 不可用，放行按鍵", kind);
         self.client.abandon_restart();
         self.down = true;
         Snapshot::default()
