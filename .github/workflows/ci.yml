@@ -1019,14 +1019,15 @@ jobs:
         run: bash scripts/cache-prune.sh --skip-recent-hours 6
 
 
-  # 等 check-tag、兩個測試與兩個 build job 都完成才發版；
-  # 任一測試失敗就不發版。
+  # 等 check-tag、三個測試、兩個 build 與安裝 smoke 都完成才發版；
+  # 任一測試或安裝驗證失敗就不發版。
   publish:
     name: publish（GitHub Release）
-    # 只有帶 annotated tag 的 push main 會執行。needs 包含兩個測試與兩個
-    # build job；任一失敗就不發版，不必再查 CI run。
+    # 只有帶 annotated tag 的 push main 會執行。needs 包含三個測試、兩個
+    # build job 與 install-smoke；任一失敗就不發版，不必再查 CI run。
+    # 安裝 smoke 會實際安裝與反安裝 MSI，壞掉的安裝包不該發出去。
     if: github.event_name == 'push' && needs.check-tag.outputs.has_tag == 'true'
-    needs: [check-tag, linux, windows, build-windows, build-linux]
+    needs: [check-tag, linux, windows, test-windows, build-windows, build-linux, install-smoke]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

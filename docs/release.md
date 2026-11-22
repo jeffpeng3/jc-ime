@@ -2,10 +2,11 @@
 
 `ci.yml` 是唯一入口。push main 時 `check-tag` 與五個 job 同時起步：linux／windows／
 test-windows 測試，以及 build-windows／build-linux。build 只 `needs: check-tag`，
-不等測試；`publish` 等 `check-tag`、linux／windows 兩個測試與兩個 build 都成功才
-建立 GitHub Release。帶版本標籤的 push 另外會等 `build-windows` 產出 MSI 後跑
-`install-smoke`（見〈Windows CI 驗證〉）。一般 push 沒有版本標籤時 build、
-install-smoke 與 publish 直接跳過。所有 job 的 ref 都是 `refs/heads/main`。
+不等測試；`publish` 等 `check-tag`、三個測試、兩個 build 與 `install-smoke` 都成功
+才建立 GitHub Release。帶版本標籤的 push 會在 `build-windows` 產出 MSI 後跑
+`install-smoke`（見〈Windows CI 驗證〉），安裝或反安裝失敗就不發版。一般 push
+沒有版本標籤時 build、install-smoke 與 publish 直接跳過。所有 job 的 ref 都是
+`refs/heads/main`。
 
 `check-tag` 明確用 `fetch-tags: true` checkout，再主動 `git fetch --tags --force
 origin`，用 `github.sha`（完整 SHA）搭配 `git tag --points-at` 找 `v*` 標籤；
@@ -18,7 +19,7 @@ tag 到達 runner 有 race，只靠 `git tag --points-at HEAD` 會漏掉（run 4
 
 | 觸發 | 行為 | 建立 GitHub Release |
 |---|---|---|
-| push main（帶 annotated `v<version>` 標籤） | `check-tag` + 測試 + build 同時起步 → `publish` | 是 |
+| push main（帶 annotated `v<version>` 標籤） | `check-tag` + 測試 + build 同時起步 → `install-smoke` → `publish` | 是 |
 | push main（無版本標籤）／pull request | 只跑 `check-tag` + 測試 | 否 |
 | Actions → Release → Run workflow | `verify` → `windows` → `linux`（只產 artifact） | 否 |
 
@@ -222,7 +223,7 @@ signtool verify /pa /v jc-ime-<version>-x64.msi
 | `build-windows` | `needs: check-tag`，與測試同時起步；下載資料包並驗 SHA → `verify-bundle.py` → WiX v5 → `installer/build.ps1 -MsiVersion <x.y.z>`（腳本補上 rc 序號）→ MSI、checksum、`data-manifest.json`，輸出 `signed` |
 | `install-smoke` | `needs: [check-tag, build-windows]`，條件同 `build-windows`；下載 MSI → 安裝 → 跑 `jc-tsf-smoke` → 斷言 TSF profile 機碼與語言清單 → 反安裝 → 斷言清乾淨 |
 | `build-linux` | `needs: check-tag`，與測試同時起步；GPUI 系統依賴 → `cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui` → tar.gz 與 checksum → 清理快取 |
-| `publish` | `needs: [check-tag, linux, windows, build-windows, build-linux]`；全部成功才下載兩個 artifact、建立或更新 GitHub Release，不查 CI run |
+| `publish` | `needs: [check-tag, linux, windows, test-windows, build-windows, build-linux, install-smoke]`；全部成功才下載兩個 artifact、建立或更新 GitHub Release，不查 CI run |
 
 Windows 建置必須指定 target（`--target x86_64-pc-windows-msvc`），否則 `build.ps1` 的 payload 路徑會不符；x64 找不到 `target/<triple>/release` 時會退回 `target/release`，並印出警告與實際路徑。
 
@@ -232,7 +233,7 @@ Windows 的 Python 輸出必須是 UTF-8。Windows job 設 `PYTHONUTF8=1`，`bui
 
 build job 不跑 `cargo fmt`、clippy、test；那些由 `ci.yml` 在日常 push／PR 負責。`verify` 當初的 `cargo test --workspace --release` 已移除：CI 在 push main 時跑過同一批測試，release profile 重跑只是多花 8～9 分鐘。
 
-`publish` 直接宣告 `needs: [check-tag, linux, windows, build-windows, build-linux]`：check-tag 失敗、任一測試失敗或沒有版本標籤時都不會發版。`build-windows`／`build-linux` 只 `needs: check-tag`，與測試同時起步。`release.yml` 已移除 `workflow_call`，`workflow_dispatch` 只產 artifact，供手動測試 build。
+`publish` 直接宣告 `needs: [check-tag, linux, windows, test-windows, build-windows, build-linux, install-smoke]`：check-tag 失敗、任一測試失敗、MSI 安裝或反安裝失敗，或沒有版本標籤時都不會發版。`build-windows`／`build-linux` 只 `needs: check-tag`，與測試同時起步；`install-smoke` 等 MSI 產出後才跑。`release.yml` 已移除 `workflow_call`，`workflow_dispatch` 只產 artifact，供手動測試 build。
 
 ## Windows CI 驗證
 
@@ -295,10 +296,9 @@ Windows 的程式有 66 處 `#[cfg(windows)]`，Linux 的 `cargo test` 完全看
 - `test-windows` 的失敗都在 job log：cargo test 的 crate 與測試名、clippy 的
   `-D warnings` 位置、i686 check 的型別錯誤。
 
-`install-smoke` 不在 `publish` 的 `needs` 裡（`publish` 仍等兩個測試與兩個 build），
-所以它與 `publish` 並行：Release 可能在 install-smoke 失敗前就建立。要改成「安裝
-失敗就不發版」得把 `install-smoke` 加進 `publish` 的 `needs`，這會讓發版多等一次
-Windows 安裝，尚未調整。
+`install-smoke` 在 `publish` 的 `needs` 裡：MSI 安裝、`jc-tsf-smoke`、profile 與語言
+清單斷言、反安裝只要有一項失敗，就不會建立 Release。代價是發版多等一次 Windows
+安裝與反安裝（約 5 到 10 分鐘）。
 
 ## 建置快取
 
@@ -406,8 +406,9 @@ release 改由 `ci.yml` 在 `push main` 時呼叫後，ref 固定是 `refs/heads
    `--follow-tags` 只推 annotated tag，所以必須用 `-a`；lightweight tag 不會被推上去，
    `check-tag` 也看不到它。tag 比 commit 晚到 runner 時，`check-tag` 會主動 fetch
    並重試三次。
-3. `ci.yml` 的 `check-tag` 抓到 tag 後，`build-windows`／`build-linux` 與兩個測試
-   同時起步；`publish` 等四個 job 都成功。build 與 publish 都跑在 main scope。
+3. `ci.yml` 的 `check-tag` 抓到 tag 後，`build-windows`／`build-linux` 與三個測試
+   同時起步；`build-windows` 完成後跑 `install-smoke`；`publish` 等三個測試、
+   兩個 build 與安裝 smoke 都成功。build 與 publish 都跑在 main scope。
 4. 檢查 `publish` 建立或更新的 Release assets、說明與 checksum。
 
 `workflow_dispatch` 不會建立 GitHub Release；`release.yml` 已移除 `publish` job 與
@@ -489,10 +490,11 @@ Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets�
    `--follow-tags` 只推 annotated tag，所以必須用 `-a`。RC 版本帶 pre-release
    後綴，例如 `v0.1.0-rc.1`；MSI `ProductVersion` 是 `0.1.0.1`。
 
-5. 到 Actions → CI 看 `check-tag`、兩個測試、`build-windows`／`build-linux` 與
-   `publish`。build 與測試同時起步，publish 等兩邊。
-6. 檢查 Release assets、說明與 checksum；Windows 找一臺乾淨機器跑一次安裝、
-   升級與反安裝。
+5. 到 Actions → CI 看 `check-tag`、三個測試、`build-windows`／`build-linux`、
+   `install-smoke` 與 `publish`。build 與測試同時起步，`install-smoke` 等 MSI，
+   `publish` 等全部成功。
+6. 檢查 Release assets、說明與 checksum。`install-smoke` 已在乾淨 runner 跑過
+   安裝與反安裝；Windows 實機仍建議再跑一次升級與反安裝。
 
 手動試跑：Actions → Release → Run workflow。版本取自 `Cargo.toml`，只產
 artifact，不會建立 Release。
