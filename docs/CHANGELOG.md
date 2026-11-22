@@ -4,6 +4,19 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.4 - 2026-11-23
+
+### 修正
+
+- Windows 安裝：修正 `user-cleanup-legacy` 連現行 profile 一起砍掉的問題。
+  現在只清理 `IDENTITY_LEGACY` 舊 CLSID 相關機碼，不再移除新版的 HKLM profile。
+  0.1.3 註冊成功後，後續清理把 profile 刪掉，系統看不到輸入法，打字只剩英文。
+- Windows 安裝：`ensure_tip_key` 改查完整 profile 路徑，不再只看部分機碼，
+  避免誤判 profile 已存在而略過註冊。
+- Windows 安裝：`bEnabledByDefault` 改成 `false`，代表由安裝程序明確控制啟用；
+  `user_install` 補上 `EnableLanguageProfile`，在使用者安裝時正確啟用語言設定。
+- MSI ProductVersion 為 `0.1.4.0`，與 0.1.3 不同，Windows 會換檔。
+
 ## 0.1.3 - 2026-11-23
 
 ### 修正
