@@ -208,8 +208,11 @@ pub struct Locate {
     composition: Option<ITfComposition>,
     cursor: usize,
     /// FnOnce 只能呼叫一次：host 可能同步或非同步執行 edit session，用 Option 取出。
-    done: RefCell<Option<Box<dyn FnOnce(Located)>>>,
+    done: RefCell<Option<LocateDone>>,
 }
+
+/// edit session 完成後回報游標矩形的回呼。
+type LocateDone = Box<dyn FnOnce(Located)>;
 
 impl Drop for Locate {
     fn drop(&mut self) {
@@ -257,6 +260,9 @@ pub(crate) fn request_locate(
 /// 同步不被允許時（例如失焦、停用時不在按鍵回呼內）：有提交文字就改排非同步 edit session，
 /// 由它結束組字並寫入文字，回傳 composition=None；只是更新組字則保留原本的組字物件，讓外殼狀態一致。
 /// 提交文字一旦寫過就不再改排：同一個 Apply 從頭重跑會在新的組字裡再插入一次（0c #88）。
+// 參數對應 TSF edit session 的輸入（ctx／client／組字／sink／快照／屬性 atom／cookie／結束旗標／游標需求），
+// 集中成結構會讓每個呼叫端都要先解構，維持原簽章並單點放行。
+#[allow(clippy::too_many_arguments)]
 pub fn apply(
     ctx: &ITfContext,
     client_id: u32,

@@ -222,14 +222,17 @@ fn document() -> (ITfDocumentMgr, ITfContext, Rc<Cell<u32>>) {
     (doc.to_interface(), ctx, edits)
 }
 
-/// 在 A 組字（打了ㄋ），回傳服務、A、B 與兩邊的編輯要求次數。沒有測試引擎時回傳 None。
-fn composing_in_a() -> Option<(
+/// `composing_in_a` 的回傳值：服務、A、B 與兩邊的編輯要求次數。
+type ComposingInA = (
     ComObject<TextService>,
     ITfDocumentMgr,
     Rc<Cell<u32>>,
     ITfDocumentMgr,
     Rc<Cell<u32>>,
-)> {
+);
+
+/// 在 A 組字（打了ㄋ），回傳服務、A、B 與兩邊的編輯要求次數。沒有測試引擎時回傳 None。
+fn composing_in_a() -> Option<ComposingInA> {
     let service = ComObject::new(TextService::new());
     let (doc_a, ctx_a, edits_a) = document();
     let (doc_b, _ctx_b, edits_b) = document();

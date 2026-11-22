@@ -388,7 +388,7 @@ mod tests {
             assert_eq!(element.GetCurrentPage().unwrap(), 0);
             let base: ITfUIElement = windows_core::Interface::cast(&element).unwrap();
             assert!(base.IsShown().unwrap().as_bool());
-            base.Show(false.into()).unwrap();
+            base.Show(false).unwrap();
             assert!(!base.IsShown().unwrap().as_bool());
             assert_eq!(base.GetGUID().unwrap(), ELEMENT_GUID);
         }

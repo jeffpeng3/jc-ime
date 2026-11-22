@@ -352,6 +352,8 @@ impl State {
 
 impl TextService {
     /// 建立文字服務物件；還沒有任何 TSF 資源。
+    // 文字服務是 COM 物件，由 ClassFactory 建立；Default 會讓「建立物件」看起來像隨手可得。
+    #[allow(clippy::new_without_default)]
     pub fn new() -> TextService {
         log::object_created();
         TextService {
@@ -709,19 +711,16 @@ impl TextService_Impl {
                 st.anchor = None;
                 st.left_from = None;
             }
-            st.shown = match ctx.filter(|_| show) {
-                Some(ctx) => Some(Shown {
-                    ctx: ctx.clone(),
-                    cursor: snapshot.cursor_utf16,
-                    owner,
-                    document,
-                    exact: placed.is_some_and(|(_, source)| source == caret::Source::Exact),
-                    requeries: 0,
-                    since: Instant::now(),
-                    message,
-                }),
-                None => None,
-            };
+            st.shown = ctx.filter(|_| show).map(|ctx| Shown {
+                ctx: ctx.clone(),
+                cursor: snapshot.cursor_utf16,
+                owner,
+                document,
+                exact: placed.is_some_and(|(_, source)| source == caret::Source::Exact),
+                requeries: 0,
+                since: Instant::now(),
+                message,
+            });
         }
         self.watch_layout(if show { ctx } else { None });
         let exact = placed.is_some_and(|(_, source)| source == caret::Source::Exact);
@@ -747,7 +746,7 @@ impl TextService_Impl {
             (st.anchor, recent)
         };
         let placed = caret::choose(
-            located.clone(),
+            *located,
             || None, // 本 crate 不查系統插入點：拿不到精確位置就退到上一次組字位置。
             previous,
             || caret::around_field(recent),
@@ -2239,6 +2238,8 @@ impl ITfTextLayoutSink_Impl for TextService_Impl {
 }
 
 impl ITfCompartmentEventSink_Impl for TextService_Impl {
+    // TSF 契約保證 `guid` 指向有效的 GUID，簽章由 COM 介面決定，不能改成 unsafe fn。
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn OnChange(&self, guid: *const GUID) -> windows_core::Result<()> {
         crate::guarded("OnCompartmentChange", || {
             if !guid.is_null() && unsafe { *guid } == GUID_COMPARTMENT_KEYBOARD_OPENCLOSE {
@@ -2257,6 +2258,8 @@ impl ITfDisplayAttributeProvider_Impl for TextService_Impl {
             Ok(ComObject::new(AttributeEnum::new()).into_interface())
         })
     }
+    // TSF 契約保證 `guid` 指向有效的 GUID，簽章由 COM 介面決定，不能改成 unsafe fn。
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn GetDisplayAttributeInfo(
         &self,
         guid: *const GUID,

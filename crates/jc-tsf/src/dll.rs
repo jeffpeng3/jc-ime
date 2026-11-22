@@ -95,6 +95,8 @@ fn current_registration() -> jc_tsf_register::Registration {
 }
 
 /// COM 進入點：`rclsid` 必須是現行 CLSID，其他一律回 `CLASS_E_CLASSNOTAVAILABLE`。
+// COM 匯出契約保證三個指標由呼叫端提供有效位址，簽章不能改成 unsafe fn。
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "system" fn DllGetClassObject(
     rclsid: *const GUID,

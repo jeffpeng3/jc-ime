@@ -410,7 +410,6 @@ impl LangBarButton_Impl {
                 let on = !self.simplified.get().unwrap_or(false);
                 if (self.simplify)(on) {
                     *lock(&self.status) = Some(on);
-                    return;
                 }
             }
             ID_RECHECK => (self.recheck)(),
@@ -483,6 +482,8 @@ impl LangBarButton_Impl {
 }
 
 impl ITfLangBarItem_Impl for LangBarButton_Impl {
+    // TSF 契約保證 `pinfo` 指向可寫的 TF_LANGBARITEMINFO，簽章由 COM 介面決定，不能改成 unsafe fn。
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn GetInfo(&self, pinfo: *mut TF_LANGBARITEMINFO) -> windows_core::Result<()> {
         guarded("LangBar.GetInfo", || {
             if pinfo.is_null() {
@@ -592,6 +593,8 @@ impl ITfLangBarItemButton_Impl for LangBarButton_Impl {
 }
 
 impl ITfSource_Impl for LangBarButton_Impl {
+    // TSF 契約保證 `riid` 指向有效的 GUID，簽章由 COM 介面決定，不能改成 unsafe fn。
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn AdviseSink(
         &self,
         riid: *const GUID,

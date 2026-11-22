@@ -151,7 +151,7 @@ pub fn printable_with(
     unsafe {
         let mut buf = [0u16; 8];
         // 0x4：不改變鍵盤的 dead-key 狀態（Windows 10 1607+）
-        let n = ToUnicode(vk, scan, Some(&state), &mut buf, 0x4);
+        let n = ToUnicode(vk, scan, Some(state), &mut buf, 0x4);
         if n != 1 {
             return None;
         }

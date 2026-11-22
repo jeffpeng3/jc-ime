@@ -222,6 +222,8 @@ pub fn valid_engine_directory(dir: &str) -> bool {
 
 impl Client {
     /// 用 jc 引擎的管道建立連線；必要時可啟動引擎。
+    // 引擎管道名取自行程環境，Default 沒有額外語意，且 COM／服務端一律走 `new()`。
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Client {
         Client::with_pipe(&server_pipe()).with_may_start(true)
     }

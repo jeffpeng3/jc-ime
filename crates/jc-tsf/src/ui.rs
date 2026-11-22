@@ -47,6 +47,8 @@ impl Drop for UiClient {
 }
 
 impl UiClient {
+    // 管道名取自行程環境，Default 沒有額外語意；候選窗一律由文字服務建立。
+    #[allow(clippy::new_without_default)]
     pub fn new() -> UiClient {
         UiClient {
             pipe: jc_ui::message::wide(&ui_pipe()),
@@ -116,9 +118,10 @@ impl UiClient {
         _owner: Option<HWND>,
         document: Option<ITfDocumentMgr>,
     ) {
-        let draw = self.elements.as_mut().map_or(true, |elements| {
-            elements.present(&Candidates::from(message), document)
-        });
+        let draw = self
+            .elements
+            .as_mut()
+            .is_none_or(|elements| elements.present(&Candidates::from(message), document));
         if !draw {
             self.hide_windows();
             return;

@@ -103,7 +103,6 @@ impl Kind {
                 lsStyle: TF_LS_DOT,
                 fBoldLine: true.into(),
                 bAttr: TF_ATTR_TARGET_CONVERTED,
-                ..Default::default()
             };
         }
         if self == Self::Clause || self == Self::ClauseActive {
@@ -193,6 +192,8 @@ impl ITfDisplayAttributeInfo_Impl for InputAttribute_Impl {
     fn GetDescription(&self) -> windows_core::Result<BSTR> {
         crate::guarded("GetDescription", || Ok(BSTR::from(self.kind.description())))
     }
+    // TSF 契約保證 `pda` 指向可寫的 TF_DISPLAYATTRIBUTE，簽章由 COM 介面決定，不能改成 unsafe fn。
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn GetAttributeInfo(&self, pda: *mut TF_DISPLAYATTRIBUTE) -> windows_core::Result<()> {
         crate::guarded("GetAttributeInfo", || {
             if pda.is_null() {
@@ -217,6 +218,8 @@ pub struct AttributeEnum {
 }
 
 impl AttributeEnum {
+    // 列舉器是 COM 物件，由 EnumDisplayAttributeInfo 建立；Default 對它沒有語意。
+    #[allow(clippy::new_without_default)]
     pub fn new() -> AttributeEnum {
         AttributeEnum::at(0)
     }
@@ -241,6 +244,8 @@ impl IEnumTfDisplayAttributeInfo_Impl for AttributeEnum_Impl {
             Ok(ComObject::new(AttributeEnum::at(self.index.get())).into_interface())
         })
     }
+    // TSF 契約保證 `rginfo`／`fetched` 指向呼叫端配置的緩衝區，簽章由 COM 介面決定，不能改成 unsafe fn。
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn Next(
         &self,
         count: u32,
