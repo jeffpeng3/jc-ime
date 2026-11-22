@@ -4,6 +4,17 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.3 - 2026-11-23
+
+### 修正
+
+- Windows 安裝：修正 MSI 打包到舊 DLL 的問題。CI 建置前清掉快取的 target，
+  移除舊目錄 fallback，並對本次建置的 DLL 做 mtime 與 SHA-256 驗證。
+  0.1.2 因為 rust-cache 還原到 0.1.1-rc.2 的 DLL，pipe 診斷 log 沒有進到 MSI。
+- 這版包含前一版的診斷 log：按鍵路徑全程 `zlog!`，以及 pipe 名稱、rid 與
+  `CreateFileW` 錯誤碼，用來找出 TIP `connect_existing` 失敗的原因。
+- MSI ProductVersion 為 `0.1.3.0`，與 0.1.2 不同，Windows 會換檔。
+
 ## 0.1.2 - 2026-11-22
 
 ### 診斷
