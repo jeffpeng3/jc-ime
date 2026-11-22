@@ -1465,10 +1465,11 @@ pub(crate) mod tests {
     #[test]
     fn ctrl_space_toggles_when_the_host_refuses_a_sync_read_lock() {
         // #164：Word、Outlook 收到系統的 Ctrl＋Space 熱鍵當下拒絕同步唯讀鎖（TS_E_SYNCHRONOUS）。
-        // 按鍵仍當成讀不到欄位而不送引擎，但熱鍵切換不讀文件、照常切換。
+        // 讀不到欄位政策不再視為敏感欄位：field() 回 Open（按鍵送引擎、可打字），
+        // 熱鍵切換不讀文件、照常切換。敏感欄位的阻擋由明確的 scope／唯讀路徑保證。
         use crate::privacy::{field, hotkey_allowed, Field};
         let (_, refusing) = host(Sync::Refuse);
-        assert_eq!(field(Some(&refusing), 1, false), Field::Blocked);
+        assert_eq!(field(Some(&refusing), 1, false), Field::Open);
         assert!(hotkey_allowed(Some(&refusing), 1, false));
         // 給鎖的宿主：沒有 InputScope 屬性的一般欄位，按鍵與熱鍵都照常。
         let (_, open) = host(Sync::Run);
