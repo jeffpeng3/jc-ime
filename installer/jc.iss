@@ -104,7 +104,7 @@ Name: "enableime"; Description: "{cm:EnableIme}"
 
 [Files]
 ; 程式。32 位元 DLL 與 x64 DLL 放在同一層，檔名分架構；CLSID 的機碼檢視由
-; 下面 [Registry] 的 32bit 旗標決定。ignoreversion：版本升級由 AppId／
+; 下面 [Registry] 的 HKLM64／HKLM32 決定。ignoreversion：版本升級由 AppId／
 ; VersionInfoVersion 與 PrepareToInstall 讓路處理，不靠檔案版本比對。
 Source: "{#PayloadDir}\jc-tsf.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\jc-tsf-x86.dll"; DestDir: "{app}"; Flags: ignoreversion
@@ -158,16 +158,21 @@ Name: "{group}\jc 注音設定"; Filename: "{app}\jc-settings-ui.exe"; WorkingDi
 Name: "{group}\jc 注音授權"; Filename: "{app}\jc-tip-register.exe"; Parameters: "legal"; WorkingDir: "{app}"
 
 [Registry]
-; CLSID 的兩個機碼檢視。TSF 依宿主位元數挑選：64 位元讀 HKCR\CLSID，
-; 32 位元讀 Wow6432Node。兩份共用同一個 CLSID，使用者的語言清單只有一項。
+; CLSID 的兩個機碼檢視。TSF 依宿主位元數挑選：64 位元行程讀 64 位元檢視，
+; 32 位元行程讀 32 位元檢視（實體位置是 Wow6432Node）。兩份共用同一個 CLSID，
+; 使用者的語言清單只有一項。
+;
+; 檢視用 Root 的 HKLM64／HKLM32 指定，不要用 Flags。Inno Setup 6.7 的
+; [Registry] 沒有 32bit／64bit 旗標（那是 [Files] 的），寫上去會編譯失敗。
+; HKLM\Software\Classes 就是 HKCR 的機器層級來源，效果與寫 HKCR 相同。
 ; PipePrefix 是 jc 自己的值，啟動器靠它知道要連 jc-ime-<rid> 的 pipe。
-Root: HKCR; Subkey: "CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\jc-tsf.dll"; Flags: uninsdeletekey
-Root: HKCR; Subkey: "CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
-Root: HKCR; Subkey: "CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}"; ValueType: string; ValueName: "PipePrefix"; ValueData: "jc-ime"; Flags: uninsdeletekey
+Root: HKLM64; Subkey: "Software\Classes\CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\jc-tsf.dll"; Flags: uninsdeletekey
+Root: HKLM64; Subkey: "Software\Classes\CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
+Root: HKLM64; Subkey: "Software\Classes\CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}"; ValueType: string; ValueName: "PipePrefix"; ValueData: "jc-ime"; Flags: uninsdeletekey
 
-Root: HKCR; Subkey: "CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\jc-tsf-x86.dll"; Flags: 32bit uninsdeletekey
-Root: HKCR; Subkey: "CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"; Flags: 32bit
-Root: HKCR; Subkey: "CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}"; ValueType: string; ValueName: "PipePrefix"; ValueData: "jc-ime"; Flags: 32bit uninsdeletekey
+Root: HKLM32; Subkey: "Software\Classes\CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\jc-tsf-x86.dll"; Flags: uninsdeletekey
+Root: HKLM32; Subkey: "Software\Classes\CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
+Root: HKLM32; Subkey: "Software\Classes\CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}"; ValueType: string; ValueName: "PipePrefix"; ValueData: "jc-ime"; Flags: uninsdeletekey
 
 ; 引擎登入自動啟動。REG_EXPAND_SZ 讓 %LOCALAPPDATA% 在每位使用者登入時各自
 ; 展開。必須用 --supervise；直接伺服模式沒給 socket 會退回 stdio，TIP 連不上。
