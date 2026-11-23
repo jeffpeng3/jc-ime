@@ -13,9 +13,9 @@ use windows::Win32::Foundation::{
     ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
 };
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CLASSES_ROOT,
-    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_DWORD,
-    REG_SAM_FLAGS, REG_VALUE_TYPE,
+    RegCloseKey, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW, RegQueryValueExW, HKEY,
+    HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY,
+    KEY_WOW64_64KEY, REG_DWORD, REG_SAM_FLAGS, REG_VALUE_TYPE,
 };
 
 use crate::error::SmokeError;
@@ -279,6 +279,62 @@ fn read_machine_profile_at(
     result.map(Some)
 }
 
+/// 列出語言機碼下「每個輸入法一個值」的項目。
+///
+/// Windows 11／Server 2022 之後，使用者語言清單不再只靠 `InputMethodTips`
+/// REG_MULTI_SZ，而是每個輸入法一個值：
+///
+/// ```text
+/// [HKCU\Control Panel\International\User Profile\zh-Hant-TW]
+/// 0404:{CLSID}{PROFILE} = REG_DWORD 1
+/// ```
+///
+/// 只取名字長得像 `<LangID>:<GUID><GUID>`、型別是 REG_DWORD 且非零的值，
+/// 避免把 `ShowAutoCorrection` 這類設定當成輸入法。
+fn query_tip_value_names(key: HKEY) -> Result<Vec<String>, SmokeError> {
+    let mut names = Vec::new();
+    let mut index = 0u32;
+    loop {
+        let mut name = vec![0u16; 512];
+        let mut name_len = name.len() as u32;
+        let mut kind = REG_VALUE_TYPE::default();
+        let mut data = 0u32;
+        let mut data_len = std::mem::size_of::<u32>() as u32;
+        // SAFETY: name 與 data 都是本地的可寫緩衝，長度一起傳進去。
+        let status = unsafe {
+            RegEnumValueW(
+                key,
+                index,
+                Some(PWSTR(name.as_mut_ptr())),
+                &mut name_len,
+                None,
+                Some(std::ptr::from_mut(&mut kind).cast::<u32>()),
+                Some(std::ptr::from_mut(&mut data).cast::<u8>()),
+                Some(&mut data_len),
+            )
+        };
+        match status {
+            ERROR_SUCCESS => {}
+            ERROR_NO_MORE_ITEMS => break,
+            other => {
+                return Err(SmokeError::Registry(format!(
+                    "RegEnumValueW = {}",
+                    report::hex(other.0)
+                )))
+            }
+        }
+        index += 1;
+        if kind != REG_DWORD || data == 0 {
+            continue;
+        }
+        let name = String::from_utf16_lossy(&name[..name_len as usize]);
+        if profile::looks_like_input_method_tip(&name) {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
 /// 讀目前使用者的 `Languages` 與 `zh-Hant-TW\InputMethodTips`。
 ///
 /// 值不存在時回空清單；機碼本身讀不到才是錯誤。
@@ -297,12 +353,19 @@ pub fn read_user_language_list() -> Result<UserLanguageList, SmokeError> {
     let tips = match open(HKEY_CURRENT_USER, &tips_path, REG_SAM_FLAGS(0))? {
         None => Vec::new(),
         Some(key) => {
-            let result = query_multi_string(key, "InputMethodTips");
+            let multi = query_multi_string(key, "InputMethodTips");
+            let per_value = query_tip_value_names(key);
             // SAFETY: key 由上面的 open 取得，這裡是唯一放手的地方。
             unsafe {
                 let _ = RegCloseKey(key);
             }
-            result?.unwrap_or_default()
+            // 舊版 Windows 寫 `InputMethodTips` REG_MULTI_SZ，Windows 11 之後
+            // 改成每個輸入法一個值；兩個都讀，避免只認一種格式就誤報。
+            let mut tips = multi?.unwrap_or_default();
+            if tips.is_empty() {
+                tips = per_value?;
+            }
+            tips
         }
     };
 

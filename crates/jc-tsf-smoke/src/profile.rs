@@ -66,6 +66,25 @@ pub fn language_matches(entry: &str, language: &str) -> bool {
     entry.trim().eq_ignore_ascii_case(language)
 }
 
+/// 值名稱是否長得像 `<LangID>:{CLSID}{PROFILE}`。
+///
+/// Windows 11／Server 2022 把使用者語言清單的每個輸入法存成一個值，名稱就是
+/// 這串字。用它把 `ShowAutoCorrection` 這類設定值濾掉。
+pub fn looks_like_input_method_tip(entry: &str) -> bool {
+    let Some((language, rest)) = entry.trim().split_once(':') else {
+        return false;
+    };
+    let language = language
+        .trim()
+        .trim_start_matches("0x")
+        .trim_start_matches("0X");
+    if language.len() != 4 || !language.chars().all(|c| c.is_ascii_hexdigit()) {
+        return false;
+    }
+    let rest = rest.trim();
+    rest.starts_with('{') && rest.ends_with('}') && rest.contains("}{")
+}
+
 /// 目前使用者 profile 的判定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserProfileVerdict {
@@ -134,6 +153,24 @@ mod tests {
 
     const CLSID: &str = "{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}";
     const PROFILE: &str = "{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56}";
+
+    /// Windows 11 的值名稱格式：`0404:{CLSID}{PROFILE}`，REG_DWORD 1。
+    #[test]
+    fn per_value_tip_names_are_recognised() {
+        assert!(looks_like_input_method_tip(
+            "0404:{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56}"
+        ));
+        assert!(looks_like_input_method_tip(
+            "0x0404:{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56}"
+        ));
+        // 語言機碼下的其他設定值不是輸入法。
+        assert!(!looks_like_input_method_tip("ShowAutoCorrection"));
+        assert!(!looks_like_input_method_tip("InputMethodTips"));
+        assert!(!looks_like_input_method_tip("0404:agreement"));
+        assert!(!looks_like_input_method_tip(
+            "0404:{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}"
+        ));
+    }
 
     #[test]
     fn machine_profile_key_uses_eight_hex_digits() {

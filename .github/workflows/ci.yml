@@ -745,7 +745,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $log = Join-Path $env:TEMP 'install.log'
+          $log = Join-Path $env:RUNNER_TEMP 'install.log'
           $setup = Get-ChildItem -Path 'dist\windows' -Filter '*-setup.exe' -File |
             Sort-Object Name -Descending | Select-Object -First 1
           if (-not $setup) {
@@ -802,8 +802,8 @@ jobs:
           $exe = Join-Path $env:JC_INSTALL_DIR 'jc-tsf-smoke.exe'
           if (-not (Test-Path $exe)) { throw "找不到 $exe" }
 
-          $jsonPath = Join-Path $env:TEMP 'smoke.json'
-          $errPath = Join-Path $env:TEMP 'smoke.err.log'
+          $jsonPath = Join-Path $env:RUNNER_TEMP 'smoke.json'
+          $errPath = Join-Path $env:RUNNER_TEMP 'smoke.err.log'
           & $exe --json 1> $jsonPath 2> $errPath
           $code = $LASTEXITCODE
           if (Test-Path $jsonPath) { Get-Content $jsonPath | Write-Host }
@@ -860,6 +860,14 @@ jobs:
           Write-Host "exit=$LASTEXITCODE"
           Write-Host '== HKCU User Profile =='
           reg query 'HKCU\Control Panel\International\User Profile' /s
+          Write-Host '== TSF log =='
+          $tsfLog = Join-Path $env:LOCALAPPDATA 'jc-ime\tsf.log'
+          if (Test-Path $tsfLog) {
+            Copy-Item $tsfLog (Join-Path $env:RUNNER_TEMP 'tsf.log') -Force
+            Get-Content $tsfLog -Tail 120 | Write-Host
+          } else {
+            Write-Host "找不到 $tsfLog（JC_TSF_LOG 沒生效或目錄不同）"
+          }
 
       - name: 斷言 TSF 註冊與語言清單
         shell: pwsh
@@ -900,7 +908,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $log = Join-Path $env:TEMP 'uninstall.log'
+          $log = Join-Path $env:RUNNER_TEMP 'uninstall.log'
           $uninstaller = Join-Path $env:JC_INSTALL_DIR 'unins000.exe'
           if (-not (Test-Path $uninstaller)) { throw "找不到反安裝程式：$uninstaller" }
 
@@ -990,7 +998,7 @@ jobs:
             ${{ runner.temp }}/uninstall.log
             ${{ runner.temp }}/smoke.json
             ${{ runner.temp }}/smoke.err.log
-            ${{ env.LOCALAPPDATA }}/jc-ime/tsf.log
+            ${{ runner.temp }}/tsf.log
 
 
   # 與 build-windows 相同：只 needs check-tag，與測試並行起步。
