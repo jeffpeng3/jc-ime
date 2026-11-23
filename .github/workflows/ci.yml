@@ -164,7 +164,7 @@ jobs:
       # 資料沒換就沿用同一份，換了 key 自然失效，不必手動清。
       - name: 還原資料包快取
         id: data-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/jc-ime-data
           key: jc-ime-data-${{ runner.os }}-${{ vars.JC_DATA_BUNDLE_SHA256 }}
@@ -257,7 +257,7 @@ jobs:
         if: >-
           steps.data-cache.outputs.cache-hit != 'true' &&
           github.event_name != 'pull_request'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/jc-ime-data
           key: jc-ime-data-${{ runner.os }}-${{ vars.JC_DATA_BUNDLE_SHA256 }}
@@ -323,7 +323,7 @@ jobs:
       # 資料沒換就沿用同一份，換了 key 自然失效，不必手動清。
       - name: 還原資料包快取
         id: data-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/jc-ime-data
           key: jc-ime-data-${{ runner.os }}-${{ vars.JC_DATA_BUNDLE_SHA256 }}
@@ -596,7 +596,7 @@ jobs:
       # 資料沒換就沿用同一份，換了 key 自然失效。
       - name: 還原資料包快取
         id: data-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/jc-ime-data
           key: jc-ime-data-${{ runner.os }}-${{ vars.JC_DATA_BUNDLE_SHA256 }}
@@ -720,7 +720,7 @@ jobs:
         if: >-
           steps.data-cache.outputs.cache-hit != 'true' &&
           github.event_name != 'pull_request'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/jc-ime-data
           key: jc-ime-data-${{ runner.os }}-${{ vars.JC_DATA_BUNDLE_SHA256 }}
