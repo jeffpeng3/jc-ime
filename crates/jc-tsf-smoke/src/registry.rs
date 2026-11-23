@@ -10,7 +10,7 @@
 
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
+    ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
 };
 use windows::Win32::System::Registry::{
     RegCloseKey, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW, RegQueryValueExW, HKEY,
@@ -316,6 +316,13 @@ fn query_tip_value_names(key: HKEY) -> Result<Vec<String>, SmokeError> {
         match status {
             ERROR_SUCCESS => {}
             ERROR_NO_MORE_ITEMS => break,
+            // 值的資料比 4 bytes 長（例如同一個機碼裡有 REG_MULTI_SZ 的
+            // `InputMethodTips`，或 REG_SZ）。我們只要 REG_DWORD，跳過這一項
+            // 就好；把它當錯誤會讓整個檢查變成 SKIP（實機 run 就是回 0xEA）。
+            ERROR_MORE_DATA => {
+                index += 1;
+                continue;
+            }
             other => {
                 return Err(SmokeError::Registry(format!(
                     "RegEnumValueW = {}",
@@ -333,6 +340,21 @@ fn query_tip_value_names(key: HKEY) -> Result<Vec<String>, SmokeError> {
         }
     }
     Ok(names)
+}
+
+/// `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` 的 `jc-ime-engine`。
+///
+/// 這是「登入後引擎會不會自己起來」唯一的機器可驗證證據。值不存在只代表
+/// 不會自動啟動，不影響其他檢查，所以回 `Option` 而不是錯誤。
+pub fn read_engine_autostart() -> Option<String> {
+    const RUN_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    let key = open(HKEY_LOCAL_MACHINE, RUN_KEY, KEY_WOW64_64KEY).ok()??;
+    let value = query_string_raw(key, Some("jc-ime-engine"));
+    // SAFETY: key 由上面的 open 取得，這裡是唯一放手的地方。
+    unsafe {
+        let _ = RegCloseKey(key);
+    }
+    value.ok().flatten()
 }
 
 /// 讀目前使用者的 `Languages` 與 `zh-Hant-TW\InputMethodTips`。

@@ -17,7 +17,9 @@ pub use guids::{
     registry_key, CLSID_JC_TSF, CLSID_JC_TSF_LEGACY, GUID_PROFILE_JC_TSF,
     GUID_PROFILE_JC_TSF_LEGACY, LANGID_ZH_TW, PIPE_PREFIX, PROFILE_DESCRIPTION,
 };
-pub use register::{register, register_with, unregister, unregister_with, Registration};
+pub use register::{
+    module_path, register, register_with, unregister, unregister_with, Registration,
+};
 
 /// 把字串轉成以 NUL 結尾的 UTF-16，供 Win32 的 `PCWSTR` 使用。
 fn wide(text: &str) -> Vec<u16> {

@@ -4,6 +4,31 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.6 - 2026-11-23
+
+### 修正
+
+- Windows：輸入法真的接上引擎了。`Session` 從頭到尾都用 `NullTransport`，每個
+  請求都失敗、`available=false`，所有按鍵原樣放行——這就是「切到 jc 注音打不出
+  字、只打出英文」的真正原因。現在正式路徑接 `jc-tsf` 的 named pipe client。
+- Windows：引擎沒在跑時由 TIP 自己啟動，不必等下次登入。啟動後不在按鍵回呼裡
+  等它載入（那會卡住宿主程式），後續按鍵會自己連上。
+- Windows：個人學習資料改存 `%LOCALAPPDATA%\jc-ime`。原本寫在
+  `C:\ProgramData\jc-ime\data`，一般使用者沒有寫入權，引擎每次載入都回
+  「存取被拒 (os error 5)」，連帶讓請求失敗、連線被關掉。
+- Windows：安裝完直接啟動引擎，不用重新登入。Run 機碼改成直接呼叫
+  `jc-engine.exe`，不再靠 PowerShell 算 RID；pipe 名兩邊都走
+  `resolve_pipe_name()`，autostart 不再帶 `--socket`。
+- doctor：引擎沒起來時會說明自動啟動機碼在不在；語言清單列舉容忍
+  `ERROR_MORE_DATA`（同一個機碼裡有舊版 `InputMethodTips` 時整項會變 SKIP）。
+- CI：install-smoke 安裝後等引擎啟動，並要求 `engine.pipe` 檢查通過，不再只看
+  「設定寫進去了」。
+
+### 效能
+
+- 注音詞典改成 `Arc` 共用：每個 session 原本深拷貝兩份（即使沒有個人詞），
+  而 session 是每個用戶端一個。`jc-cli convert` 的 RSS 從 227MB 降到 145MB。
+
 ## 0.1.5 - 2026-11-23
 
 ### 新增

@@ -176,10 +176,13 @@ Root: HKLM32; Subkey: "Software\Classes\CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E
 Root: HKLM32; Subkey: "Software\Classes\CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
 Root: HKLM32; Subkey: "Software\Classes\CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}"; ValueType: string; ValueName: "PipePrefix"; ValueData: "jc-ime"; Flags: uninsdeletekey
 
-; 引擎登入自動啟動。REG_EXPAND_SZ 讓 %LOCALAPPDATA% 在每位使用者登入時各自
-; 展開。必須用 --supervise；直接伺服模式沒給 socket 會退回 stdio，TIP 連不上。
-; socket 的 RID 由 whoami 算，與 TIP 端的 jc-ime-<rid> 一致。
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: expandsz; ValueName: "jc-ime-engine"; ValueData: "powershell.exe -NoProfile -WindowStyle Hidden -Command ""$rid=(whoami /user /fo csv /nh) -replace '.*-','' -replace '\D',''; & '{app}\jc-engine.exe' --supervise --data '{commonappdata}\jc-ime\data' --settings '%LOCALAPPDATA%\jc-ime\settings.json' --socket jc-ime-$rid --personal-prefix personal"""; Flags: uninsdeletevalue
+; 引擎登入自動啟動。REG_EXPAND_SZ 讓 %LOCALAPPDATA% 在每位使用者登入時各自展開。
+; 必須用 --supervise；直接伺服模式沒給 socket 會退回 stdio，TIP 連不上。
+; 直接呼叫 jc-engine.exe：不用 powershell 算 rid。
+; pipe 名由 jc_windows::resolve_pipe_name() 決定，TIP 與引擎都呼叫同一函式，
+; 所以 autostart 絕對不能帶 --socket（帶了反而和 TIP 腳踏）。
+; --personal-dir 必須指向使用者目錄：資料根目錄是 ProgramData，寫入會失敗。
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: expandsz; ValueName: "jc-ime-engine"; ValueData: """{app}\jc-engine.exe"" --supervise --data ""{commonappdata}\jc-ime\data"" --settings ""%LOCALAPPDATA%\jc-ime\settings.json"" --personal-dir ""%LOCALAPPDATA%\jc-ime"" --personal-prefix personal"; Flags: uninsdeletevalue
 
 [Run]
 ; 機器層級註冊（HKLM\SOFTWARE\Microsoft\CTF）。安裝程式已提權，直接跑。
@@ -197,6 +200,9 @@ Filename: "{app}\jc-tip-register.exe"; Parameters: "user-install"; Tasks: enable
 ; 清掉已移除舊 CLSID 的語言清單殘留。
 Filename: "{app}\jc-tip-register.exe"; Parameters: "user-cleanup-legacy"; StatusMsg: "{cm:MsgCleanup}"; Flags: runhidden waituntilterminated runasoriginaluser
 
+; 裝完就喚起引擎，不等下次登入。
+; 已經在跑的監督者會回 AlreadyRunning 並直接結束，不是錯誤。
+Filename: "{app}\jc-engine.exe"; Parameters: "--supervise --data ""{commonappdata}\jc-ime\data"" --settings ""{%LOCALAPPDATA}\jc-ime\settings.json"" --personal-dir ""{%LOCALAPPDATA}\jc-ime"" --personal-prefix personal"; Tasks: enableime; Flags: runhidden nowait runasoriginaluser
 Filename: "{app}\jc-settings-ui.exe"; Description: "{cm:OpenSettings}"; Flags: postinstall nowait skipifsilent unchecked
 
 [UninstallRun]

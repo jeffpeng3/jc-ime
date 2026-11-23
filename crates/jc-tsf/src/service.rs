@@ -114,6 +114,23 @@ impl Drop for Completing<'_> {
     }
 }
 
+/// 建立 TIP 的 session。
+///
+/// Windows 上接真正的 named pipe transport；連不上時它會自己啟動引擎。
+/// 其他平台（Linux 的 `cargo test`）只有 `NullTransport`，沒有引擎可連。
+fn new_session() -> Session {
+    #[cfg(windows)]
+    {
+        Session::with_client(crate::session::Client::with_transport(Box::new(
+            crate::ipc_transport::PipeTransport::engine(),
+        )))
+    }
+    #[cfg(not(windows))]
+    {
+        Session::new()
+    }
+}
+
 /// `State.completing`：守衛記下的組字，與相容層是否終止了它。
 struct CompletingState {
     composition: Option<ITfComposition>,
@@ -365,7 +382,7 @@ impl TextService {
                 thread_mgr_cookie: TF_INVALID_COOKIE,
                 composition: None,
                 ending_composition: Rc::new(Cell::new(false)),
-                session: Session::new(),
+                session: new_session(),
                 cuas: Rc::new(Win32Cuas),
                 completing: None,
                 pending_repost: None,

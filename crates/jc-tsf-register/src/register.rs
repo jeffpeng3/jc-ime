@@ -415,7 +415,7 @@ fn set_string(path: &str, name: Option<&str>, value: &str) -> Result<()> {
 /// exe**。`DllRegisterServer` 由 `regsvr32.exe`（或其他載入器）呼叫時，
 /// 寫進 `InprocServer32` 的就會是那支 exe，TSF 之後載不到輸入法。這裡用本模組內
 /// 的函式位址當錨點，取得真正裝著這段程式碼的 DLL。
-fn module_path() -> Result<String> {
+pub fn module_path() -> Result<String> {
     let mut module = HMODULE::default();
     // SAFETY: anchor 是本模組內的函式位址；UNCHANGED_REFCOUNT 不增加參考計數，
     // 所以不需要（也不能）對 module 呼叫 FreeLibrary。

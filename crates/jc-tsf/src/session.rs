@@ -584,6 +584,13 @@ pub trait Transport {
     fn connected(&self) -> bool;
     /// 建立連線；成功後 [`Client`] 會遞增 generation。
     fn connect(&mut self) -> bool;
+    /// 只連已在執行的對端，**不啟動、不等待**（Activate 的探測用）。
+    ///
+    /// 預設等於 [`Transport::connect`]；正式管道會覆寫成不啟動引擎的版本，
+    /// 否则每個載入 TIP 的程式（連 explorer 也是）都會在 Activate 時叫起引擎。
+    fn connect_existing(&mut self) -> bool {
+        self.connect()
+    }
     /// 關閉連線。
     fn close(&mut self);
     /// 不送請求，只看對端是否還活著。
@@ -708,12 +715,12 @@ impl Client {
         true
     }
 
-    /// 只連已經在執行的引擎（spike 沒有 spawn）。
+    /// 只連已經在執行的引擎，不啟動、不等待。
     pub fn connect_existing(&mut self) -> bool {
         if self.closing_writer && self.restart_pending() {
             return false;
         }
-        self.connect()
+        self.transport.connect_existing()
     }
 
     /// 確保已連上。

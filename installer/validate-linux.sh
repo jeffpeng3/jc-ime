@@ -62,16 +62,21 @@ require_line 'MOVEFILE_DELAY_UNTIL_REBOOT'
 require_line 'WindowsInstaller'
 require_line 'msiexec.exe'
 
-# 引擎 autostart 必須用 --supervise，資料與設定路徑不能少；socket 名稱要與
-# TIP 的 jc-ime-<rid> 一致。
+# 引擎 autostart 必須用 --supervise，資料、設定與個人資料路徑都不能少。
+# --socket **不能**出現：pipe 名由 jc_windows::resolve_pipe_name() 決定，TIP 與
+# 引擎呼叫同一個函式；autostart 自己算 rid 只會多一個出錯點。
 if ! grep -Fq -- '--supervise' "$iss"; then
     error 'jc.iss 的引擎 autostart 缺少 --supervise'
 fi
 if ! grep -Fq -- '--data' "$iss" || ! grep -Fq -- '--settings' "$iss"; then
     error 'jc.iss 的引擎 autostart 缺少 --data 或 --settings'
 fi
-if ! grep -Fq -- '--socket jc-ime-' "$iss"; then
-    error 'jc.iss 的引擎 autostart 缺少 --socket jc-ime-<rid>'
+if ! grep -Fq -- '--personal-dir' "$iss"; then
+    error 'jc.iss 的引擎 autostart 缺少 --personal-dir（個人資料不能寫進 ProgramData）'
+fi
+# 只看 Run 機碼那一行，註解裡提到 --socket 不算。
+if sed -n 's/.*ValueName: "jc-ime-engine".*/&/p' "$iss" | grep -Fq -- '--socket'; then
+    error 'jc.iss 的引擎 autostart 不該帶 --socket：pipe 名要由 resolve_pipe_name() 決定'
 fi
 
 # [Files] 的 Source 清單。Source 一律寫成 {#PayloadDir}\relative。

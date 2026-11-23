@@ -88,6 +88,9 @@ struct Options {
     supervisor_log: Option<PathBuf>,
     /// `--personal-prefix`：個人學習檔名前綴；平行建置讓新版用不同值。
     personal_prefix: String,
+    /// `--personal-dir`：個人學習資料目錄。未指定時用 `--settings` 的目錄，
+    /// 再退回使用者資料目錄；**不能**放在資料根目錄，那裡是共用的唯讀資料。
+    personal_dir: Option<PathBuf>,
     /// `--instance`：監督者實例名；平行建置讓新版有獨立的鎖與 log。
     instance: String,
 }
@@ -174,12 +177,20 @@ fn run(options: Options) -> anyhow::Result<()> {
     );
     // T4：每條連線在 worker thread 裡用自己的 factory 建 Session，避免在
     // thread 間移動非 Send 的 Session／SessionConfig。
+    // 個人學習資料要寫在使用者自己的目錄。以前這裡直接用資料根目錄
+    // （安裝後是 `C:\ProgramData\jc-ime\data`），一般使用者沒有寫入權，
+    // 引擎每次載入都回「存取被拒 (os error 5)」，連帶讓請求失敗、連線被關掉。
     let personal_dir = if options.allow_empty_data {
+        None
+    } else {
+        resolve_personal_dir(&options)
+    };
+    let data_root = if options.allow_empty_data {
         None
     } else {
         Some(data_dir.clone().ok_or_else(missing_data_dir)?)
     };
-    let factory: SessionFactory = if let Some(dir) = &personal_dir {
+    let factory: SessionFactory = if let Some(dir) = &data_root {
         log::debug!("資料根目錄：{}", dir.display());
         let data = Arc::new(
             load_engine_data(dir).with_context(|| format!("載入資料失敗：{}", dir.display()))?,
@@ -254,6 +265,33 @@ fn run_supervisor(options: &Options) -> anyhow::Result<()> {
     }
 }
 
+/// 個人學習資料目錄：`--personal-dir` > `--settings` 的目錄 > 平台預設。
+///
+/// 平台預設是 `%LOCALAPPDATA%\jc-ime`（Windows）或 `$XDG_STATE_HOME/jc-ime`
+/// （其他）。回 `None` 代表取不到可用目錄，個人化功能關閉而不是寫到共用資料夾。
+fn resolve_personal_dir(options: &Options) -> Option<PathBuf> {
+    if let Some(dir) = &options.personal_dir {
+        return Some(dir.clone());
+    }
+    if let Some(parent) = options.settings.as_ref().and_then(|path| path.parent()) {
+        if !parent.as_os_str().is_empty() {
+            return Some(parent.to_path_buf());
+        }
+    }
+    default_personal_dir()
+}
+
+/// 平台預設的使用者資料目錄。
+fn default_personal_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+        return Some(PathBuf::from(dir).join("jc-ime"));
+    }
+    if let Some(dir) = std::env::var_os("XDG_STATE_HOME") {
+        return Some(PathBuf::from(dir).join("jc-ime"));
+    }
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state/jc-ime"))
+}
+
 /// 把目前的參數原封不動轉給子行程，並強制使用 socket 模式。
 fn child_args(options: &Options, socket: &Path) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
@@ -275,6 +313,10 @@ fn child_args(options: &Options, socket: &Path) -> Vec<OsString> {
     }
     if options.allow_empty_data {
         args.push("--allow-empty-data".into());
+    }
+    if let Some(dir) = &options.personal_dir {
+        args.push("--personal-dir".into());
+        args.push(dir.as_os_str().to_os_string());
     }
     // 舊版命令列保持不變；只有新版非預設前綴才多帶一個參數給子行程。
     if options.personal_prefix != DEFAULT_PERSONAL_PREFIX {
@@ -433,6 +475,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut supervise = false;
     let mut supervisor_log: Option<PathBuf> = None;
     let mut personal_prefix = DEFAULT_PERSONAL_PREFIX.to_string();
+    let mut personal_dir: Option<PathBuf> = None;
     let mut instance = DEFAULT_INSTANCE.to_string();
     let mut index = 0;
 
@@ -459,6 +502,10 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--supervisor-log" => {
                 let value = value_of(args, &mut index, "--supervisor-log")?;
                 supervisor_log = Some(PathBuf::from(value));
+            }
+            "--personal-dir" => {
+                let value = value_of(args, &mut index, "--personal-dir")?;
+                personal_dir = Some(PathBuf::from(value));
             }
             "--personal-prefix" => {
                 let value = value_of(args, &mut index, "--personal-prefix")?;
@@ -518,6 +565,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         supervise,
         supervisor_log,
         personal_prefix,
+        personal_dir,
         instance,
     }))
 }
@@ -581,6 +629,7 @@ fn print_usage() {
          選項：\n\
          \x20 --data <dir>        資料根目錄；未指定時讀 JC_DATA\n\
          \x20 --settings <path>   設定檔；未指定時讀資料根目錄的 settings.json\n\
+         \x20 --personal-dir <dir> 個人學習資料目錄；預設同 --settings 的目錄\n\
          \x20 --print-settings    印出生效後的設定（JSON）後結束\n\
          \x20 --allow-empty-data  不載入資料，只用空 session（測試／除錯用）\n\
          \x20 --supervise         常駐監督子行程，結束後依退避曲線重啟\n\
@@ -600,7 +649,7 @@ fn print_usage() {
 
 fn print_usage_to_stderr() {
     eprintln!(
-        "用法：jc-engine --data <dir> [--settings <path>] [--mode <zh|ja|mixed|en>] [--neural <on|off>] [--socket <path>] [--max-frame <bytes>] [--personal-prefix <name>]\n\
+        "用法：jc-engine --data <dir> [--settings <path>] [--personal-dir <dir>] [--mode <zh|ja|mixed|en>] [--neural <on|off>] [--socket <path>] [--max-frame <bytes>] [--personal-prefix <name>]\n\
          \x20     jc-engine --supervise [--socket <name>] [--supervisor-log <path>] [--instance <name>]"
     );
 }
@@ -629,6 +678,65 @@ mod tests {
         assert!(!options.allow_empty_data, "預設不可跳過資料載入");
         assert_eq!(options.personal_prefix, DEFAULT_PERSONAL_PREFIX);
         assert_eq!(options.instance, DEFAULT_INSTANCE);
+    }
+
+    /// 個人資料目錄不能落在資料根目錄：安裝後那是 `C:\ProgramData`，一般
+    /// 使用者沒有寫入權，引擎每次載入都回「存取被拒 (os error 5)」。
+    #[test]
+    fn personal_dir_follows_settings_and_override() {
+        // 用 `/` 分隔：測試在 Linux 與 Windows 都要跑得過。
+        let Ok(Parsed::Run(options)) = parse(&[
+            "--data",
+            "/srv/jc-ime/data",
+            "--settings",
+            "/home/jeff/.local/state/jc-ime/settings.json",
+        ]) else {
+            panic!("應該解析成功");
+        };
+        assert_eq!(
+            resolve_personal_dir(&options),
+            Some(PathBuf::from("/home/jeff/.local/state/jc-ime")),
+            "沒有 --personal-dir 時要跟 --settings 同一個目錄"
+        );
+
+        let Ok(Parsed::Run(options)) = parse(&[
+            "--data",
+            "/srv/jc-ime/data",
+            "--settings",
+            "/home/jeff/.local/state/jc-ime/settings.json",
+            "--personal-dir",
+            "/var/tmp/jc-personal",
+        ]) else {
+            panic!("應該解析成功");
+        };
+        assert_eq!(
+            resolve_personal_dir(&options),
+            Some(PathBuf::from("/var/tmp/jc-personal")),
+            "--personal-dir 優先"
+        );
+    }
+
+    /// 監督者要把 `--personal-dir` 轉給子行程，否則子行程會退回資料根目錄。
+    #[test]
+    fn supervisor_forwards_personal_dir() {
+        let Ok(Parsed::Run(options)) = parse(&[
+            "--data",
+            r"C:\ProgramData\jc-ime\data",
+            "--personal-dir",
+            r"D:\jc-personal",
+            "--supervise",
+        ]) else {
+            panic!("應該解析成功");
+        };
+        let args: Vec<String> = child_args(&options, std::path::Path::new("jc-ime-1001"))
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--personal-dir" && pair[1] == r"D:\jc-personal"),
+            "子行程參數要含 --personal-dir：{args:?}"
+        );
     }
 
     /// 自訂個人資料前綴與監督者實例名要照原樣解析，影響 log 與鎖名。

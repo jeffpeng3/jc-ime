@@ -35,6 +35,8 @@ pub mod guids;
 #[cfg(windows)]
 pub mod ipc;
 #[cfg(windows)]
+pub mod ipc_transport;
+#[cfg(windows)]
 pub mod keys;
 #[cfg(windows)]
 pub mod langbar;

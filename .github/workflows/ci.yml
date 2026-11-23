@@ -872,6 +872,32 @@ jobs:
           name: windows-setup-${{ needs.check-tag.outputs.version }}
           path: dist/windows
 
+      # 安裝器最後一步會用原使用者身分啟動引擎（[Run] 的 jc-engine.exe）。
+      # 引擎要載入注音詞典與日文資料，實機約 4～6 秒；這裡等到 pipe 出現再跑
+      # doctor，才驗得到「裝完就能打字」而不是「登入後才開始能用」。
+      - name: 等引擎自動啟動
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline) {
+            $pipe = @(Get-ChildItem \\.\pipe\ -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -like 'jc-ime-*' })
+            if ($pipe.Count -gt 0) {
+              Write-Host "引擎 pipe 已出現：$($pipe[0].Name)"
+              $global:LASTEXITCODE = 0
+              exit 0
+            }
+            Start-Sleep -Milliseconds 500
+          }
+          Write-Host '== jc-engine 行程 =='
+          Get-Process jc-engine -ErrorAction SilentlyContinue |
+            Format-Table Id,StartTime,WorkingSet64 -AutoSize | Out-String | Write-Host
+          Write-Host '== supervisor.log =='
+          Get-Content "$env:LOCALAPPDATA\jc-ime\supervisor.log" -Tail 40 -ErrorAction SilentlyContinue |
+            Write-Host
+          throw '安裝後 60 秒內引擎沒有建立 pipe；[Run] 的 jc-engine.exe 沒跑起來。'
+
       # setup.exe 卡住時 Start-Process -Wait 會一路等到 job 的 45 分鐘 timeout，
       # 什麼 log 都看不到；這裡自己等 10 分鐘，超時就中止並印 install.log。
       - name: 安裝 setup.exe
@@ -969,7 +995,8 @@ jobs:
             'registry.tip',
             'profile.machine',
             'profile.user',
-            'profile.language_list'
+            'profile.language_list',
+            'engine.pipe'
           )
           foreach ($id in $required) {
             $item = $report.checks | Where-Object { $_.id -eq $id } | Select-Object -First 1

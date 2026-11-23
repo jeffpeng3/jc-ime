@@ -400,8 +400,9 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
             "engine.pipe",
             "引擎 pipe",
             format!(
-                "{}；引擎未啟動或未安裝，只警告不判定失敗",
-                engine_probe.pipe_detail()
+                "{}；{}；引擎未啟動或未安裝，只警告不判定失敗",
+                engine_probe.pipe_detail(),
+                autostart_hint()
             ),
         ),
     }
@@ -715,6 +716,18 @@ fn check_machine_profile(report: &mut Report, clsid_text: &str, profile_text: &s
             "machine profile 機碼",
             format!("{detail}；{}", notes.join("；")),
         );
+    }
+}
+
+/// 引擎沒在跑時，補一句「登入後會不會自己起來」。
+///
+/// 少了這句，doctor 全綠但打不出字時沒人知道是 Run 機碼沒寫或沒生效。
+fn autostart_hint() -> String {
+    match registry::read_engine_autostart() {
+        Some(command) => format!("自動啟動機碼存在：{command}"),
+        None => {
+            "自動啟動機碼不存在（HKLM\\..\\Run\\jc-ime-engine）；登入後不會自己起來".to_string()
+        }
     }
 }
 

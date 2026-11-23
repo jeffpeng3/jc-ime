@@ -485,15 +485,16 @@ impl Client {
                     if !self.spawn_server() {
                         return false; // 沒有啟動就不等：server 不在時每鍵立刻放行
                     }
-                    // 等 server 建好管道；沒等到則之後的呼叫在同一個期限內繼續等，不再多等一輪。
+                    // 不在這裡等 server 建好管道：這個呼叫來自按鍵回呼，卡住就是
+                    // 卡住宿主程式的 UI。改成記下重啟期限，之後的按鍵在同一個
+                    // 窗口內各試一次，引擎載入完成就先連上，連上前的按鍵照常放行。
                     let deadline = Instant::now() + Duration::from_millis(SPAWN_WAIT_MS as u64);
                     self.restart_until = Some(deadline);
-                    while Instant::now() < deadline {
-                        if self.connect_once().is_ok() {
-                            return true;
-                        }
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
+                    zlog!(
+                        "connect: 已啟動引擎，等它在 {} ms 內建好管道",
+                        SPAWN_WAIT_MS
+                    );
+                    return false;
                 }
                 Err(code) => {
                     zlog!("connect: 失敗 code={code}");
