@@ -485,11 +485,14 @@ jobs:
           cache-all-crates: "false"
           cache-on-failure: "true"
 
-      # rust-cache 的 key 不含版本，每次發版都會命中上一版的 target 目錄；
+      # rust-cache 的 key 不含版本，會把上一版的 target 目錄還原回來；
       # 若 cargo 判定指紋未變就不重編，build.ps1 會把還原的舊 jc_tsf.dll 裝進
       # 安裝包（0.1.2 的 pipe debug log 因此消失，見 fix-msi-stale-dll）。
-      # 選清目錄而非換 cache key：發版 job 本來就該每次全量重建，清目錄見效
-      # 最直接、不影響其他 job 的快取；build.ps1 另有 mtime／SHA-256 驗證把關。
+      #
+      # 只清自家 crate 的產物，不動第三方依賴的 rlib 與 fingerprint。全量刪
+      # release 目錄會讓每個 job 連 400 多個依賴一起重編，發版要 20 分鐘以上；
+      # 自家 crate 只有十幾個，重編不到兩分鐘。build.ps1 另有 mtime／SHA-256
+      # 驗證把關，真的拿到舊檔會直接失敗而不是靜靜打包。
       - name: 清除快取的 release 產物
         shell: pwsh
         run: |
@@ -499,12 +502,18 @@ jobs:
             'target\i686-pc-windows-msvc\release',
             'target\tip-register\x86_64-pc-windows-msvc\release'
           )) {
-            if (Test-Path $dir) {
-              Write-Host "清除 $dir（rust-cache 還原的舊產物）"
-              Remove-Item $dir -Recurse -Force
-            } else {
+            if (-not (Test-Path $dir)) {
               Write-Host "略過 $dir（不存在）"
+              continue
             }
+            $removed = 0
+            foreach ($sub in @($dir, "$dir\deps", "$dir\.fingerprint", "$dir\build")) {
+              if (-not (Test-Path $sub)) { continue }
+              Get-ChildItem -Path $sub -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like 'jc_*' -or $_.Name -like 'jc-*' } |
+                ForEach-Object { Remove-Item $_.FullName -Recurse -Force; $removed++ }
+            }
+            Write-Host "清除 $dir 的自家 crate 產物：$removed 項"
           }
 
       # build.ps1 需要資料根目錄。資料不進 git，因此由此 job 下載
