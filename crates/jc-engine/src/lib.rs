@@ -96,6 +96,8 @@ pub struct Registry {
     /// `info[name] == "true"`，少了這些它會退回保守預設：左 Shift 不切換、
     /// 輸出簡體字按了沒反應。放在 Registry 才讓每條連線的 health 都看得到。
     extra_caps: BTreeMap<String, bool>,
+    /// 新 session 的簡體輸出預設值；來自 `settings.json` 與轉換器是否可用。
+    default_output_simplified: bool,
     /// 正在處理的請求數；drain 要等它與 composing 都歸零。
     active: usize,
     last_key: Option<Instant>,
@@ -121,6 +123,7 @@ impl Registry {
             personal_store: Arc::new(Mutex::new(PersonalStore::new())),
             personal_loaded: false,
             extra_caps: BTreeMap::new(),
+            default_output_simplified: false,
             active: 0,
             last_key: None,
         }
@@ -454,6 +457,10 @@ impl Engine {
                         text: session.commit(),
                     },
                     Request::Snapshot => state(session.snapshot()),
+                    Request::OutputSimplified { on } => {
+                        session.set_output_simplified(on);
+                        state(session.snapshot())
+                    }
                     other => {
                         log::debug!("replay 略過非組字請求：{other:?}");
                         Response::Acknowledged { session: 0 }
@@ -570,6 +577,15 @@ impl Engine {
                     text: session.commit(),
                 })
             }
+            Request::OutputSimplified { on } => {
+                if !self.hello {
+                    return not_handshaked();
+                }
+                self.with_current(Some(Request::OutputSimplified { on }), |session| {
+                    session.set_output_simplified(on);
+                    state(session.snapshot())
+                })
+            }
             Request::Close { session } => self.close_session(session),
             Request::Ping => Response::Acknowledged { session: 0 },
             Request::Health => Response::Health {
@@ -639,6 +655,7 @@ impl Engine {
             .clone();
         let mut session = (registry.factory)();
         session.set_personal_store(seed.clone());
+        session.set_output_simplified(registry.default_output_simplified);
         self.local.personal_baseline.insert(id, seed);
         self.local.sessions.insert(id, session);
         registry.owned.entry(self.conn).or_default().insert(id);
@@ -777,6 +794,11 @@ impl Engine {
         lock(&self.shared).extra_caps = caps;
     }
 
+    /// 設定新 session 的簡體輸出預設值；`main` 依生效設定與轉換器可用性呼叫一次。
+    pub fn set_default_output_simplified(&mut self, on: bool) {
+        lock(&self.shared).default_output_simplified = on;
+    }
+
     /// 實際健康數值，對應 0c `Reply.Info`。
     fn health(&self) -> HealthInfo {
         let registry = lock(&self.shared);
@@ -787,6 +809,13 @@ impl Engine {
         capabilities.insert("personal_persist".to_string(), self.personal_dir.is_some());
         capabilities.insert("personal_loaded".to_string(), registry.personal_loaded);
         capabilities.extend(registry.extra_caps.clone());
+        let output_simplified = registry
+            .current
+            .get(&self.conn)
+            .and_then(|id| self.local.sessions.get(id))
+            .map_or(registry.default_output_simplified, |session| {
+                session.output_simplified()
+            });
         HealthInfo {
             draining: registry.draining || registry.closing,
             // conn 0 是 stdio／測試用，不計入實際 socket 連線。
@@ -795,11 +824,11 @@ impl Engine {
             sessions,
             composing,
             pid: Some(std::process::id()),
+            output_simplified,
             // 0c 把 personal_reset 當成「支援清除學習紀錄」的能力旗標；
             // 這份引擎有 reset 指令且會把空白寫回檔案，所以回 true。
             personal_reset: true,
             capabilities,
-            ..HealthInfo::default()
         }
     }
 
@@ -986,6 +1015,19 @@ mod tests {
         assert!(matches!(response, Response::Ready { .. }));
     }
 
+    /// 用標準鍵盤把一個注音讀音送進引擎。
+    fn type_syllable(engine: &mut Engine, reading: &str) {
+        let keyboard = jc_core::zh::keyboard::Keyboard::standard();
+        for syllable in jc_core::zh::syllable::parse_reading(reading) {
+            let keys = keyboard.keys(&syllable).expect("音節應該有對應按鍵");
+            for ch in keys.chars() {
+                engine.handle(Request::Key {
+                    key: Key::char(ch, false),
+                });
+            }
+        }
+    }
+
     fn state_of(preedit: &str) -> Response {
         Response::state(Snapshot::from_preedit(preedit))
     }
@@ -1094,6 +1136,70 @@ mod tests {
         assert_eq!(
             engine.handle(Request::Commit),
             Response::Committed { text: "我".into() }
+        );
+    }
+
+    #[test]
+    fn output_simplified_switches_commit_and_health() {
+        use jc_core::lattice::{InMemoryLexicon, LexEntry};
+
+        let path = jc_testdata::require_data!("opencc");
+        let converter = jc_core::zhconv::tw2s_from_dir(&path).expect("讀取 OpenCC 字典");
+        let mut lexicon = InMemoryLexicon::new();
+        lexicon.push(LexEntry::new("台", "ㄊㄞˊ", 0, 0));
+        lexicon.push(LexEntry::new("灣", "ㄨㄢ", 0, 0));
+        let config = SessionConfig {
+            zh_lexicon: Some(std::sync::Arc::new(lexicon)),
+            simplified: Some(std::sync::Arc::new(converter)),
+            ..Default::default()
+        };
+        let mut engine = Engine::with_session(Session::new(config));
+        hello(&mut engine);
+
+        // 預設關閉：health 不帶 output_simplified。
+        let Response::Health { info } = engine.handle(Request::Health) else {
+            panic!("health 應回 Health");
+        };
+        assert!(!info.as_info().contains_key("output_simplified"));
+
+        let response = engine.handle(Request::OutputSimplified { on: true });
+        assert!(matches!(response, Response::State { .. }));
+        let Response::Health { info } = engine.handle(Request::Health) else {
+            panic!("health 應回 Health");
+        };
+        assert_eq!(
+            info.as_info().get("output_simplified").map(String::as_str),
+            Some("true")
+        );
+
+        for reading in ["ㄊㄞˊ", "ㄨㄢ"] {
+            type_syllable(&mut engine, reading);
+        }
+        assert_eq!(
+            engine.handle(Request::Commit),
+            Response::Committed {
+                text: "台湾".into()
+            }
+        );
+
+        engine.handle(Request::OutputSimplified { on: false });
+        for reading in ["ㄊㄞˊ", "ㄨㄢ"] {
+            type_syllable(&mut engine, reading);
+        }
+        assert_eq!(
+            engine.handle(Request::Commit),
+            Response::Committed {
+                text: "台灣".into()
+            }
+        );
+    }
+
+    #[test]
+    fn output_simplified_before_hello_is_rejected() {
+        let mut engine = Engine::new();
+        assert_eq!(
+            engine.handle(Request::OutputSimplified { on: true }),
+            Response::error(ErrorCode::Internal, "尚未完成握手")
         );
     }
 

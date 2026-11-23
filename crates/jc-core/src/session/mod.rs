@@ -48,7 +48,7 @@ use crate::key::{Key, KeyCode};
 use crate::lang::Mode;
 use crate::lattice::{InMemoryLexicon, Lattice};
 use crate::mixed::{space_text, Spacing};
-use crate::output::{rune_offset, utf16_offset, HansConverter, Snapshot};
+use crate::output::{rune_offset, utf16_offset, Snapshot};
 use crate::personal::PersonalStore;
 use crate::punct::{self, Edit};
 use crate::reading::Unit;
@@ -361,6 +361,11 @@ pub struct Session {
     pub(super) full_width: bool,
     /// 微軟風格的反引號前導是否等待下一個字元。
     pub(super) symbol_prefix: bool,
+    /// 執行期是否把送出的文字轉成簡體。
+    ///
+    /// 與 [`SessionConfig::simplified`] 分開：轉換器是資料依賴，這個旗標才是
+    /// 使用者的即時開關。沒有轉換器時一律保持 `false`。
+    pub(super) output_simplified: bool,
 }
 
 impl Default for Session {
@@ -457,6 +462,7 @@ impl Session {
             style,
             full_width: false,
             symbol_prefix: false,
+            output_simplified: false,
         };
         session.install_tone_gate();
         session
@@ -465,6 +471,19 @@ impl Session {
     /// 目前模式。
     pub fn mode(&self) -> Mode {
         self.config.mode
+    }
+
+    /// 目前是否把送出的文字轉成簡體。
+    pub fn output_simplified(&self) -> bool {
+        self.output_simplified
+    }
+
+    /// 設定是否把送出的文字轉成簡體。
+    ///
+    /// 沒有載入轉換器時保持關閉；這個狀態只影響 [`Session::commit`]，組字中的
+    /// 預覽仍是繁體。
+    pub fn set_output_simplified(&mut self, on: bool) {
+        self.output_simplified = on && self.config.simplified.is_some();
     }
 
     /// 目前的個人化學習資料；宿主用它存檔。
@@ -705,6 +724,7 @@ impl Session {
         let private = self.private;
         self.private = false;
         if let Some(text) = self.pending_commit.take() {
+            let text = self.output_text(text);
             self.clear_composition();
             self.remember_committed(&text);
             return text;
@@ -715,7 +735,7 @@ impl Session {
         if self.config.mode == Mode::Mixed {
             self.ascii.flush();
         }
-        let text = self.finalize(self.current_text());
+        let text = self.output_text(self.finalize(self.current_text()));
         self.clear_composition();
         self.remember_committed(&text);
         text
@@ -1727,18 +1747,49 @@ mod tests {
         let path = jc_testdata::require_data!("opencc");
         let converter = crate::zhconv::tw2s_from_dir(&path).expect("讀取 OpenCC 字典");
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
+        let mut lex = lexicon();
+        lex.push(LexEntry::new("台", "ㄊㄞˊ", 0, 0));
+        lex.push(LexEntry::new("灣", "ㄨㄢ", 0, 0));
+        lex.push(LexEntry::new("設", "ㄕㄜˋ", 0, 0));
+        lex.push(LexEntry::new("定", "ㄉㄧㄥˋ", 0, 0));
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.simplified = Some(Arc::new(converter));
         let mut s = Session::new(config);
-        type_syllable(&mut s, "ㄌㄨㄥˊ");
-        assert_eq!(s.snapshot().preedit, "龍");
-        s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(s.commit(), "龙");
+        assert!(!s.output_simplified(), "預設不轉簡體");
 
-        let mut s = session();
-        type_syllable(&mut s, "ㄈㄥ");
+        // 關閉時原樣送出，組字預覽也保持繁體。
+        type_syllable(&mut s, "ㄊㄞˊ");
+        type_syllable(&mut s, "ㄨㄢ");
+        assert_eq!(s.snapshot().preedit, "台灣");
+        assert_eq!(s.commit(), "台灣");
+
+        // 開啟後，一般 commit 路徑轉成簡體；預覽仍是繁體。
+        s.set_output_simplified(true);
+        assert!(s.output_simplified());
+        type_syllable(&mut s, "ㄕㄜˋ");
+        type_syllable(&mut s, "ㄉㄧㄥˋ");
+        assert_eq!(s.snapshot().preedit, "設定");
+        assert_eq!(s.commit(), "设定");
+
+        // Enter 先放進 pending_commit 的路徑也要轉換。
+        type_syllable(&mut s, "ㄊㄞˊ");
+        type_syllable(&mut s, "ㄨㄢ");
         s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(s.commit(), "風");
+        assert_eq!(s.commit(), "台湾");
+
+        // 再關閉就回到繁體。
+        s.set_output_simplified(false);
+        type_syllable(&mut s, "ㄊㄞˊ");
+        type_syllable(&mut s, "ㄨㄢ");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "台灣");
+    }
+
+    #[test]
+    fn test_output_simplified_without_converter_stays_off() {
+        let mut s = session();
+        s.set_output_simplified(true);
+        assert!(!s.output_simplified(), "沒有轉換器時不得宣告開啟");
     }
 
     #[test]

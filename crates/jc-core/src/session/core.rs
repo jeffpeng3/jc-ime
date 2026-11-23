@@ -897,17 +897,26 @@ impl Session {
         self.clear_composition();
     }
 
-    /// 送出前套用簡體轉換與中英自動空格。
+    /// 送出前套用中英自動空格；簡體轉換留到 [`Session::commit`]。
     pub(super) fn finalize(&self, text: String) -> String {
         let text = self.puncted(text);
-        let text = match &self.config.simplified {
-            Some(converter) => converter.to_simplified(&text),
-            None => text,
-        };
         if self.config.cjk_latin_space {
             space_text(&text, Spacing::Always)
         } else {
             text
+        }
+    }
+
+    /// 依執行期開關把送出文字轉成簡體。
+    ///
+    /// 只在 [`Session::commit`] 呼叫，組字中的預覽與候選保持繁體。
+    pub(super) fn output_text(&self, text: String) -> String {
+        if !self.output_simplified {
+            return text;
+        }
+        match &self.config.simplified {
+            Some(converter) => converter.convert(&text),
+            None => text,
         }
     }
 

@@ -145,6 +145,29 @@ fn main() {
     }
 }
 
+/// 外殼需要的能力旗標。
+///
+/// `output_simplified_live` 只在真的載入 OpenCC tw2s 轉換器時出現；缺席時
+/// 不寫入 `false`，讓 jc-tsf 維持預設，不顯示一顆按了沒反應的開關。
+fn build_shell_caps(
+    toggle_key: &str,
+    has_zhconv: bool,
+) -> std::collections::BTreeMap<String, bool> {
+    let mut caps = std::collections::BTreeMap::new();
+    caps.insert(
+        "left_shift".to_string(),
+        toggle_key == "both" || toggle_key == "left",
+    );
+    caps.insert(
+        "right_shift".to_string(),
+        toggle_key == "both" || toggle_key == "right",
+    );
+    if has_zhconv {
+        caps.insert("output_simplified_live".to_string(), true);
+    }
+    caps
+}
+
 fn run(options: Options) -> anyhow::Result<()> {
     log::debug!("啟動 {}（協定 {}）", engine_label(), PROTOCOL_VERSION);
     if options.supervise {
@@ -194,25 +217,18 @@ fn run(options: Options) -> anyhow::Result<()> {
     // 保守預設：左 Shift 不切換（預設 left_shift=false）、狀態列的「輸出簡體字」
     // 按了沒反應（simplified_live=false）。`effective` 之後會被 factory 的
     // closure 移走，所以先在這裡算好。
-    let shell_caps = {
-        let mut caps = std::collections::BTreeMap::new();
-        caps.insert(
-            "left_shift".to_string(),
-            effective.toggle_key == "both" || effective.toggle_key == "left",
-        );
-        caps.insert(
-            "right_shift".to_string(),
-            effective.toggle_key == "both" || effective.toggle_key == "right",
-        );
-        // 還不要宣告 output_simplified_live：引擎目前沒有實作 output_simplified，
-        // 宣告了只會讓狀態列出現一顆按了沒反應的「輸出簡體字」。
-        caps
-    };
+    let mut shell_caps = build_shell_caps(&effective.toggle_key, false);
+    let mut default_simplified = false;
     let factory: SessionFactory = if let Some(dir) = &data_root {
         log::debug!("資料根目錄：{}", dir.display());
         let data = Arc::new(
             load_engine_data(dir).with_context(|| format!("載入資料失敗：{}", dir.display()))?,
         );
+        // 只有真的載入 tw2s 轉換器才宣告能力；否則狀態列會出現一顆假開關。
+        shell_caps = build_shell_caps(&effective.toggle_key, data.zhconv.is_some());
+        if data.zhconv.is_some() {
+            default_simplified = effective.output_simplified;
+        }
         log::info!(
             "載入 {} 個注音詞條{}，日文解碼器就緒",
             data.zh.lexicon.len(),
@@ -234,6 +250,7 @@ fn run(options: Options) -> anyhow::Result<()> {
     };
     let mut engine = Engine::with_factory(factory, personal_dir);
     engine.set_extra_caps(shell_caps);
+    engine.set_default_output_simplified(default_simplified);
     if options.personal_prefix != DEFAULT_PERSONAL_PREFIX {
         log::info!("個人資料檔名前綴：{}", options.personal_prefix);
     }
@@ -680,6 +697,23 @@ mod tests {
     fn parse(words: &[&str]) -> Result<Parsed, String> {
         let args: Vec<String> = words.iter().map(|word| word.to_string()).collect();
         parse_args(&args)
+    }
+
+    /// 只有載入 OpenCC 轉換器時才宣告 `output_simplified_live`。
+    #[test]
+    fn shell_caps_only_advertise_simplified_with_converter() {
+        let without = build_shell_caps("both", false);
+        assert_eq!(without.get("left_shift"), Some(&true));
+        assert_eq!(without.get("right_shift"), Some(&true));
+        assert!(
+            !without.contains_key("output_simplified_live"),
+            "沒有轉換器時不得宣告能力旗標"
+        );
+
+        let with = build_shell_caps("left", true);
+        assert_eq!(with.get("left_shift"), Some(&true));
+        assert_eq!(with.get("right_shift"), Some(&false));
+        assert_eq!(with.get("output_simplified_live"), Some(&true));
     }
 
     #[test]

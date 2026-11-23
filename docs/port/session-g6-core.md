@@ -26,7 +26,7 @@ hook 接進同一條按鍵流程，並補上快照欄位。沒有改任何群組
 | `key()` 的 `PageUp`／`PageDown` | `core::page_step` | ported：頁碼頭尾相接 |
 | `key()` 的 `Home`／`End` | `core::candidate_edge` | rewritten：只在選取模式換第一／最後一項；只是顯示時上游移動組字游標，本埠沒有游標 |
 | `key()` 的左右鍵 | `core::navigate` | rewritten：本埠沒有組字游標，左右鍵沿用既有「開窗／換項」簡化 |
-| `commit()` | `Session::commit`、`core::finish_composition`、`finalize`、`model_punctuated` | ported（學習、簡體與中英空格沿用既有路徑） |
+| `commit()` | `Session::commit`、`core::finish_composition`、`finalize`、`output_text`、`model_punctuated` | ported（學習、簡體與中英空格沿用既有路徑；簡體只在 commit 轉換） |
 | `reset()` | `core::clear_composition` | ported：新增 `navigating` 一併清除 |
 | `snapshot()` 的候選清單與反白 | `Session::snapshot`、`core::rebuild` | ported（欄位子集） |
 | `snapshot()` 的 `Suggestion` | `core::snapshot_suggestion` | partial：注音補全尾綴與混打英文補全已填；`SuggestionEdit` 不在本埠協定 |
@@ -49,7 +49,7 @@ hook 接進同一條按鍵流程，並補上快照欄位。沒有改任何群組
 | `openCandidatesNow` 的詞長／游標選窗 | `core::rebuild_zh` | deferred：固定整段組字，沒有詞長切換 |
 | `stepCandidate`／`unitStart`／`unitEnd` | 無 | n/a：`j`／`k` 換字需要組字游標與分詞範圍 |
 | `nextCandidateLength`／`candidateAnchor` | 無 | deferred：候選清單沒有多詞長 |
-| `readingPins`／`output` | `core::finalize`、`zhconv::Converter` | rewritten：簡體轉換沿用既有整串轉換，沒有讀音 pin |
+| `readingPins`／`output` | `Session::output_text`、`zhconv::Converter` | rewritten：簡體轉換在 commit 走整串轉換，沒有讀音 pin |
 | `punctuate`／`punctuateWith` | `core::puncted`、`model_punctuated`、`config.punct` | ported（G5 前的既有路徑） |
 | `ForgetLearning` | `Session::undo_learning`、`forget_word` | partial：沒有「整份清除後這段組字不學」旗標 |
 | `Learned` | `personal::PersonalStore` 查詢 | rewritten |

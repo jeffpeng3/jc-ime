@@ -153,6 +153,8 @@ pub struct EffectiveSettings {
     pub ctrl_punctuation: bool,
     /// 漢字與英文字母相連處補半形空格。
     pub cjk_latin_space: bool,
+    /// 啟動時是否輸出簡體字；沿用既有 `output_simplified` 欄位。
+    pub output_simplified: bool,
     /// 啟用的模糊音配對。
     pub fuzzy_pairs: Vec<(char, char)>,
     /// 日文逐字変換（ライブ変換）。
@@ -214,6 +216,7 @@ pub fn effective(settings: &Settings, overrides: &Overrides, goos: &str) -> Effe
         zhuyin_error_hint: settings.zhuyin_error_hint,
         ctrl_punctuation: settings.effective_ctrl_punctuation(),
         cjk_latin_space: settings.cjk_latin_space,
+        output_simplified: settings.output_simplified(),
         fuzzy_pairs: fuzzy_pairs(settings),
         ja_live: settings.ja_live_enabled(),
         learning: settings.ja_learning,
@@ -375,6 +378,7 @@ mod tests {
         assert!(effective.shift_symbol_halfwidth);
         assert!(effective.ja_live);
         assert!(!effective.learning);
+        assert!(!effective.output_simplified, "預設輸出正體");
 
         let config = session_config(SessionConfig::default(), &effective);
         assert_eq!(config.mode, Mode::Mixed);
@@ -398,6 +402,24 @@ mod tests {
         assert_eq!(effective.ja_neural_mode, "off", "statistical 遷移成 off");
         assert!(!effective.ja_rerank, "rerank 預設關閉");
         assert!(!config.ja_rerank);
+    }
+
+    /// 舊 `output_simplified` 欄位沿用為啟動時的簡體輸出預設。
+    #[test]
+    fn output_simplified_setting_is_the_startup_default() {
+        for body in [
+            r#"{"output_simplified": true}"#,
+            r#"{"output_variant": "simplified"}"#,
+        ] {
+            let effective = effective(&parsed(body), &Overrides::default(), "linux");
+            assert!(effective.output_simplified, "{body}");
+        }
+        let effective = effective(
+            &parsed(r#"{"output_simplified": false}"#),
+            &Overrides::default(),
+            "linux",
+        );
+        assert!(!effective.output_simplified);
     }
 
     /// 三個日文神經模式各自對應到門檻；rerank 獨立映射。

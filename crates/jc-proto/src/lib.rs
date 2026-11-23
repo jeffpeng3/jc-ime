@@ -281,7 +281,8 @@ pub enum Request {
     },
     /// 0c `handle` 的 `output_simplified` 請求：開關輸出簡體字。
     ///
-    /// T6 才會真的切換；目前可先由 [`HealthInfo::output_simplified`] 讀設定。
+    /// 引擎把它設成目前 session 的執行期旗標；轉換發生在 commit，組字中的
+    /// 預覽仍是繁體。轉換器缺席時這個請求不會開啟功能。
     OutputSimplified {
         /// `true` 為輸出簡體。
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]

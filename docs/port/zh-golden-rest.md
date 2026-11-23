@@ -35,6 +35,13 @@
 與 golden 的 preedit／commit 分工一致。讀音 pin 表已移植並有測試，session
 目前沒有逐字讀音的來源，因此 commit 只走整串轉換。
 
+引擎啟動時用 `loader::load_zhconv(root)` 讀資料根目錄的 `opencc/`，載不到就
+維持 `None` 並只警告一次，此時 session 的 `output_simplified` 保持 `false`，
+health 也不宣告 `output_simplified_live`。轉換發生在 `Session::commit`：
+一般送出與 `pending_commit` 走同一段 `zhconv::Converter::convert`，組字中的
+預覽仍是繁體。`settings.json` 的 `output_simplified` 只在啟動時當預設值，
+`OutputSimplified { on }` 請求可即時切換，不必重啟。
+
 ## mixed ASCII 推斷
 
 `core/session/mixed.go` 的完整狀態機與候選、學習、日文接手交錯，這次只移植

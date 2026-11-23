@@ -682,6 +682,8 @@ pub struct EngineData {
     pub ja: Arc<JaDecoder>,
     /// Jinen 推論 worker；模型缺席或 `JC_JINEN=off` 時為 `None`。
     pub ja_neural: Option<Arc<NeuralRuntime>>,
+    /// OpenCC `tw2s` 轉換器；`opencc/` 缺席或壞掉時為 `None`。
+    pub zhconv: Option<Arc<jc_core::zhconv::Converter>>,
 }
 
 impl std::fmt::Debug for EngineData {
@@ -694,6 +696,7 @@ impl std::fmt::Debug for EngineData {
                 &self.zh.lm.as_ref().is_some_and(|lm| lm.bigrams() > 0),
             )
             .field("ja_neural", &self.ja_neural.is_some())
+            .field("output_simplified", &self.zhconv.is_some())
             .finish()
     }
 }
@@ -707,6 +710,7 @@ impl EngineData {
         let mut config = zh_session_config(mode, &self.zh);
         config.ja = Some(Arc::clone(&self.ja));
         config.ja_neural.runtime = self.ja_neural.clone();
+        config.simplified = self.zhconv.clone();
         config
     }
 }
@@ -876,11 +880,23 @@ pub fn load_engine_data(root: &Path) -> Result<EngineData, EngineDataError> {
             }
         }
     };
+    // 簡體輸出用 OpenCC 的 tw2s 字典；缺檔只停用這個開關，不擋啟動。
+    let zhconv = match load_zhconv(root) {
+        Ok(converter) => {
+            log::info!("已載入 OpenCC tw2s：{}", root.join("opencc").display());
+            Some(Arc::new(converter))
+        }
+        Err(err) => {
+            log::warn!("OpenCC tw2s 不可用，輸出簡體停用：{err}");
+            None
+        }
+    };
     Ok(EngineData {
         root: root.to_path_buf(),
         zh,
         ja: Arc::new(decoder),
         ja_neural,
+        zhconv,
     })
 }
 
@@ -978,6 +994,8 @@ mod tests {
             data.zh.lm.as_ref().is_some_and(|lm| lm.bigrams() > 0),
             "有 build-zh-bigram/lm.bin 時應接上 bigram"
         );
+        assert!(data.zhconv.is_some(), "資料根目錄的 opencc/ 應載入 tw2s");
+        assert!(data.session_config(Mode::Zh).simplified.is_some());
         let results = data.ja.nbest(
             "わたしはほんをよむ。",
             &jc_core::ja::decode::JaContext::default(),

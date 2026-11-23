@@ -83,7 +83,8 @@ CLI 對照：`jc-cli eval ja --no-live` 走 `sentence`，其餘日文評測預�
 | `candidate_layout` | 候選排列；外殼 UI | 本版忽略（外殼） |
 | `emoji_equals_first` | `=` 是否排在 Emoji 選單第一項；外殼 UI | 本版忽略（外殼） |
 | `keyboard_layout` | 本版固定標準大千鍵盤（`ZhInput::standard`） | 本版忽略 |
-| `output_variant`／`simplified_hotkey` | 引擎不載入 OpenCC；簡體輸出只在 `jc-cli` 評測路徑 | 本版忽略 |
+| `output_variant`／`output_simplified` | 舊 `output_simplified` 遷移成 `output_variant`；`effective.output_simplified` 在引擎啟動時設 session 初始旗標。轉換器載入成功才生效，之後由 `output_simplified` op 即時切換 | 生效（需 `opencc/`） |
+| `simplified_hotkey` | 簡體輸出的外殼快捷鍵 | 本版忽略（外殼） |
 | `all_symbols_halfwidth` | 不直接寫 `SessionConfig`；只經由 `effective_ctrl_punctuation`／`effective_toneless` 影響 | 間接生效 |
 | `caps_lock_english` | Caps Lock 直接打英文；外殼決定按鍵怎麼送 | 本版忽略（外殼） |
 | `ja_input_method` | 日文只有羅馬字（`RomajiInput`），沒有直接かな | 本版忽略 |
