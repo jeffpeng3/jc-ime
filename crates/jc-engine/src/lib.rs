@@ -92,6 +92,10 @@ pub struct Registry {
     personal_store: Arc<Mutex<PersonalStore>>,
     /// 啟動時是否成功從前綴對應的檔案讀回資料。Health 據此回報真實情形。
     personal_loaded: bool,
+    /// 外殼需要的額外能力旗標（中英切換鍵、簡繁即時切換…）。外殼只認
+    /// `info[name] == "true"`，少了這些它會退回保守預設：左 Shift 不切換、
+    /// 輸出簡體字按了沒反應。放在 Registry 才讓每條連線的 health 都看得到。
+    extra_caps: BTreeMap<String, bool>,
     /// 正在處理的請求數；drain 要等它與 composing 都歸零。
     active: usize,
     last_key: Option<Instant>,
@@ -116,6 +120,7 @@ impl Registry {
             personal_epoch: 0,
             personal_store: Arc::new(Mutex::new(PersonalStore::new())),
             personal_loaded: false,
+            extra_caps: BTreeMap::new(),
             active: 0,
             last_key: None,
         }
@@ -765,6 +770,13 @@ impl Engine {
         self.save_global();
     }
 
+    /// 補上外殼需要的能力旗標；`main` 依生效設定呼叫一次。
+    ///
+    /// 寫進共用的 Registry，所有連線的 Health 都看得到。
+    pub fn set_extra_caps(&mut self, caps: BTreeMap<String, bool>) {
+        lock(&self.shared).extra_caps = caps;
+    }
+
     /// 實際健康數值，對應 0c `Reply.Info`。
     fn health(&self) -> HealthInfo {
         let registry = lock(&self.shared);
@@ -774,6 +786,7 @@ impl Engine {
         capabilities.insert("personal_shared".to_string(), true);
         capabilities.insert("personal_persist".to_string(), self.personal_dir.is_some());
         capabilities.insert("personal_loaded".to_string(), registry.personal_loaded);
+        capabilities.extend(registry.extra_caps.clone());
         HealthInfo {
             draining: registry.draining || registry.closing,
             // conn 0 是 stdio／測試用，不計入實際 socket 連線。
@@ -1162,6 +1175,31 @@ mod tests {
             panic!("health 應回 Health");
         };
         assert_eq!(info.sessions, 1);
+    }
+
+    /// health 要把外殼需要的能力旗標帶出去。
+    ///
+    /// 少了 `left_shift`，jc-tsf 的 `ShiftConfig::from_info` 會退回
+    /// `left_shift=false`，左 Shift 就完全不切中英。
+    #[test]
+    fn health_reports_shell_capabilities() {
+        let mut engine = Engine::new();
+        engine.set_extra_caps(
+            [
+                ("left_shift".to_string(), true),
+                ("right_shift".to_string(), true),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let mut conn = engine.accept().into_engine();
+        hello(&mut conn);
+        let Response::Health { info } = conn.handle(Request::Health) else {
+            panic!("health 應回 Health");
+        };
+        let map = info.as_info();
+        assert_eq!(map.get("left_shift").map(String::as_str), Some("true"));
+        assert_eq!(map.get("right_shift").map(String::as_str), Some("true"));
     }
 
     #[test]

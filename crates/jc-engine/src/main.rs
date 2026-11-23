@@ -190,6 +190,24 @@ fn run(options: Options) -> anyhow::Result<()> {
     } else {
         Some(data_dir.clone().ok_or_else(missing_data_dir)?)
     };
+    // 外殼（jc-tsf）只認 health 的 `info[name] == "true"`。少了這些旗標它會退回
+    // 保守預設：左 Shift 不切換（預設 left_shift=false）、狀態列的「輸出簡體字」
+    // 按了沒反應（simplified_live=false）。`effective` 之後會被 factory 的
+    // closure 移走，所以先在這裡算好。
+    let shell_caps = {
+        let mut caps = std::collections::BTreeMap::new();
+        caps.insert(
+            "left_shift".to_string(),
+            effective.toggle_key == "both" || effective.toggle_key == "left",
+        );
+        caps.insert(
+            "right_shift".to_string(),
+            effective.toggle_key == "both" || effective.toggle_key == "right",
+        );
+        // 還不要宣告 output_simplified_live：引擎目前沒有實作 output_simplified，
+        // 宣告了只會讓狀態列出現一顆按了沒反應的「輸出簡體字」。
+        caps
+    };
     let factory: SessionFactory = if let Some(dir) = &data_root {
         log::debug!("資料根目錄：{}", dir.display());
         let data = Arc::new(
@@ -215,6 +233,7 @@ fn run(options: Options) -> anyhow::Result<()> {
         Arc::new(move || Session::new(config::session_config(SessionConfig::default(), &effective)))
     };
     let mut engine = Engine::with_factory(factory, personal_dir);
+    engine.set_extra_caps(shell_caps);
     if options.personal_prefix != DEFAULT_PERSONAL_PREFIX {
         log::info!("個人資料檔名前綴：{}", options.personal_prefix);
     }

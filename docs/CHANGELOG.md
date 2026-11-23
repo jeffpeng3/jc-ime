@@ -4,6 +4,20 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.9 - 2026-11-23
+
+### 修正
+
+- Windows：左 Shift 不會切中英。引擎的 health 從來沒回報 `left_shift`／
+  `right_shift`，jc-tsf 的 `ShiftConfig::from_info` 因此退回
+  `left_shift=false`——只剩右 Shift 能用。現在依生效設定的 `toggle_key`
+  回報兩個旗標（Windows 預設 `both`，左右都能切）。
+
+### 已知
+
+- 狀態列的「輸出簡體字」按了沒反應：引擎還沒有 `output_simplified` 實作，
+  所以也不再宣告 `output_simplified_live`，避免出現一顆假開關。
+
 ## 0.1.8 - 2026-11-23
 
 ### 修正
