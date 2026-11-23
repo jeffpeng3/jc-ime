@@ -5,11 +5,6 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-    inputs:
-      run_install_smoke:
-        description: "建置 setup.exe 並在 Windows runner 跑安裝與反安裝 smoke"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -434,16 +429,16 @@ jobs:
       - name: 安裝器自訂動作測試（獨立 workspace）
         run: cargo test --manifest-path installer/jc-tip-register/Cargo.toml --all-targets
 
-  # 與測試同時起步。只 needs check-tag，不等 linux/windows 測試；
-  # 一般 push（無 tag）跳過，帶 annotated tag 的 push main 才建置。
-  # workflow_dispatch 勾 run_install_smoke 時也建置，供真實 Windows runner 驗證
-  # 安裝器；手動 run 沒有 tag，版本由 check-tag 從 Cargo.toml 補上。
+  # 與測試同時起步。只 needs check-tag，不等 linux/windows 測試。
+  #
+  # 每次 push main 都建置並安裝一次：安裝器自己就是最常壞的地方，等發版才發現
+  # 的代價遠高於每次多花六分鐘 Windows runner。有 tag 時同一個建置物直接進
+  # publish；沒有 tag 時版本由 check-tag 從 Cargo.toml 補上，只做驗證。
   build-windows:
     name: build-windows（setup.exe）
     needs: check-tag
     if: >-
-      (github.event_name == 'push' && needs.check-tag.outputs.has_tag == 'true') ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_install_smoke)
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
     timeout-minutes: 90
     outputs:
@@ -707,6 +702,8 @@ jobs:
         with:
           name: windows-setup-${{ needs.check-tag.outputs.version }}
           if-no-files-found: error
+          # 每次 push 都建一份，留七天就夠回看，不必占滿 artifact 額度。
+          retention-days: 7
           path: |
             target/installer/jc-ime-${{ needs.check-tag.outputs.version }}-x64-setup.exe
             target/installer/jc-ime-${{ needs.check-tag.outputs.version }}-x64-setup.exe.sha256
@@ -718,13 +715,12 @@ jobs:
   #
   # needs 除了 build-windows 還要 check-tag：artifact 名稱與版本都來自
   # needs.check-tag.outputs.version，只寫 build-windows 會讓這裡取到空字串。
-  # 條件與 build-windows 相同（帶 tag 的 push，或手動 dispatch 勾選）；PR 不跑。
+  # 條件與 build-windows 相同；PR 不跑（PR 的 event 是 pull_request）。
   install-smoke:
     name: install-smoke（安裝與反安裝）
     needs: [check-tag, build-windows]
     if: >-
-      (github.event_name == 'push' && needs.check-tag.outputs.has_tag == 'true') ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_install_smoke)
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
     timeout-minutes: 45
     env:
@@ -850,6 +846,20 @@ jobs:
             Write-Host ("[OK] {0} = {1}" -f $id, $item.status)
           }
           Write-Host "jc-tsf-smoke（doctor）通過"
+
+      # 失敗時手動再跑一次 user-install，並把使用者語言清單整個倒出來。
+      # InstallLayoutOrTip 的字串格式不對時會回 TRUE 但什麼都不寫，只有實際
+      # 跑一次加完整 dump 才分得出是「沒呼叫到」還是「呼叫了沒效果」。
+      - name: 診斷：手動跑 user-install 並倒出語言清單
+        if: failure()
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:JC_INSTALL_DIR 'jc-tip-register.exe'
+          Write-Host '== 直接執行 user-install =='
+          & $exe user-install 2>&1 | Out-String | Write-Host
+          Write-Host "exit=$LASTEXITCODE"
+          Write-Host '== HKCU User Profile =='
+          reg query 'HKCU\Control Panel\International\User Profile' /s
 
       - name: 斷言 TSF 註冊與語言清單
         shell: pwsh

@@ -4,9 +4,10 @@
 test-windows 測試，以及 build-windows／build-linux。build 只 `needs: check-tag`，
 不等測試；`publish` 等 `check-tag`、三個測試、兩個 build 與 `install-smoke` 都成功
 才建立 GitHub Release。帶版本標籤的 push 會在 `build-windows` 產出 setup.exe 後跑
-`install-smoke`（見〈Windows CI 驗證〉），安裝或反安裝失敗就不發版。一般 push
-沒有版本標籤時 build、install-smoke 與 publish 直接跳過；`workflow_dispatch` 可以
-勾 `run_install_smoke` 手動跑 build-windows 與 install-smoke，但不會發版。
+`install-smoke`（見〈Windows CI 驗證〉），安裝或反安裝失敗就不發版。
+沒有版本標籤的 push 也會建 setup.exe 並跑 install-smoke，只是不發版：安裝器
+自己就是最常壞的地方，等發版才發現的代價遠高於每次多花六分鐘 runner。
+`workflow_dispatch` 沒有額外 input，行為與 push main 相同但不發版。
 所有發版 job 的 ref 都是 `refs/heads/main`。
 
 `check-tag` 明確用 `fetch-tags: true` checkout，再主動 `git fetch --tags --force
@@ -21,15 +22,15 @@ tag 到達 runner 有 race，只靠 `git tag --points-at HEAD` 會漏掉（run 4
 | 觸發 | 行為 | 建立 GitHub Release |
 |---|---|---|
 | push main（帶 annotated `v<version>` 標籤） | `check-tag` + 測試 + build 同時起步 → `install-smoke` → `publish` | 是 |
-| push main（無版本標籤）／pull request | 只跑 `check-tag` + 測試 | 否 |
-| Actions → CI → Run workflow（勾 `run_install_smoke`） | `check-tag` + 測試 + `build-windows` → `install-smoke` | 否 |
+| push main（無版本標籤） | `check-tag` + 測試 + `build-windows` → `install-smoke` | 否 |
+| pull request | `check-tag` + 測試（PR 分支的快取是冷的，建置留給 push） | 否 |
+| Actions → CI → Run workflow | `check-tag` + 測試 + `build-windows` → `install-smoke` | 否 |
 | Actions → Release → Run workflow | `verify` → `windows` → `linux`（只產 artifact） | 否 |
 
 `git push --follow-tags origin main` 把 commit 連同 annotated tag 一起推上 main，
 所以 release 跑在 main scope，`release-*` 快取不再掛在 tag ref。
-`ci.yml` 的 `workflow_dispatch` 沒有額外 input；`run_install_smoke` 預設 false，
-只有勾選時才建 setup.exe 並跑安裝 smoke。手動觸發的版本號取自 `Cargo.toml`，
-不會發 Release。`release.yml` 的手動觸發可以填 `data_bundle_url`、
+`ci.yml` 的 `workflow_dispatch` 沒有額外 input，手動觸發一定建 setup.exe 並跑
+安裝 smoke。版本號取自 `Cargo.toml`，不會發 Release。`release.yml` 的手動觸發可以填 `data_bundle_url`、
 `data_bundle_sha256` 覆寫公開 repo variable，適合換資料包來源。
 
 ## 版本號規則
@@ -173,7 +174,7 @@ HF 會把 `resolve` 轉到 CDN，`Invoke-WebRequest` 會跟隨 redirect。`<comm
 4. 更新公開 repo variable `JC_DATA_BUNDLE_URL` 為
    `https://huggingface.co/datasets/jeffpeng3/jc-ime-data/resolve/<commit>/jc-ime-data-<data-version>.tar.zst`。
 5. 更新公開 repo variable `JC_DATA_BUNDLE_SHA256` 為腳本印出的 SHA-256。
-6. 手動觸發 CI（勾 `run_install_smoke`）或 Release workflow 驗一次，確認 log
+6. 手動觸發 CI 或 Release workflow 驗一次，確認 log
    沒有「跳過資料包雜湊檢查」的警告，且安裝包內的 `data/manifest.json` 版本正確。
 7. 如果資料版本會影響使用者，更新 `docs/CHANGELOG.md` 與相關資料文件。
 
@@ -220,7 +221,7 @@ signtool verify /pa /v jc-ime-<version>-x64-setup.exe
 | `linux`（測試） | 下載資料包 → fmt／clippy／Windows target check／test → 清理快取 |
 | `windows`（測試） | 下載資料包 → `cargo test --workspace` |
 | `test-windows`（測試） | 所有 push／PR；`cargo test --workspace --exclude jc-settings-ui` → Windows 專屬 crate 的 clippy → i686 型別檢查 → `installer/jc-tip-register` 測試 |
-| `build-windows` | `needs: check-tag`，與測試同時起步；下載資料包並驗 SHA → `verify-bundle.py` → Inno Setup 6 → `installer/build.ps1 -IsoVersion <x.y.z>`（腳本補上 rc 序號）→ setup.exe、checksum、`data-manifest.json`，輸出 `signed`；`workflow_dispatch` 勾 `run_install_smoke` 時也跑 |
+| `build-windows` | `needs: check-tag`，與測試同時起步；下載資料包並驗 SHA → `verify-bundle.py` → Inno Setup 6 → `installer/build.ps1 -IsoVersion <x.y.z>`（腳本補上 rc 序號）→ setup.exe、checksum、`data-manifest.json`，輸出 `signed`；每次 push main 與 `workflow_dispatch` 都跑 |
 | `install-smoke` | `needs: [check-tag, build-windows]`，條件同 `build-windows`；下載 setup.exe → 靜默安裝 → 跑 `jc-tsf-smoke` → 斷言 TSF profile 機碼與語言清單 → `unins000.exe` 反安裝 → 斷言清乾淨 |
 | `build-linux` | `needs: check-tag`，與測試同時起步；GPUI 系統依賴 → `cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui` → tar.gz 與 checksum → 清理快取 |
 | `publish` | `needs: [check-tag, linux, windows, test-windows, build-windows, build-linux, install-smoke]`；全部成功才下載兩個 artifact、建立或更新 GitHub Release，不查 CI run |
@@ -260,7 +261,7 @@ Windows 的程式有 66 處 `#[cfg(windows)]`，Linux 的 `cargo test` 完全看
 
 ### `install-smoke`
 
-在帶版本標籤的 push，或 `workflow_dispatch` 勾 `run_install_smoke` 時跑
+在每次 push main 與 `workflow_dispatch` 時跑
 （`needs: [check-tag, build-windows]`，條件與 `build-windows` 相同），拿
 `windows-setup-<version>` artifact 做一次真的安裝：
 
@@ -499,9 +500,9 @@ Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets�
 6. 檢查 Release assets、說明與 checksum。`install-smoke` 已在乾淨 runner 跑過
    安裝與反安裝；Windows 實機仍建議再跑一次升級與反安裝。
 
-手動試跑：Actions → CI → Run workflow，勾 `run_install_smoke`。版本取自
-`Cargo.toml`，只產 artifact 並跑安裝 smoke，不會建立 Release。另一個入口是
-Actions → Release → Run workflow，只產 artifact。
+手動試跑：Actions → CI → Run workflow。版本取自 `Cargo.toml`，只產 artifact
+並跑安裝 smoke，不會建立 Release。另一個入口是 Actions → Release → Run
+workflow，只產 artifact。
 
 ## 第一次發版要人工確認
 
