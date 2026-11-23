@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::pack::{
-    hex, is_hiragana, sha256, Entry, Pack, Split, ENTRY_SIZE, ENTRY_SIZE_V2, FORMAT_VERSION,
-    FORMAT_VERSION_V2, HEADER_SIZE, HEADER_SIZE_V2, MAGIC, TRAILER_SIZE,
+    hex, is_hiragana, sha256, Entry, EntryRef, Pack, Split, ENTRY_SIZE, ENTRY_SIZE_V2,
+    FORMAT_VERSION, FORMAT_VERSION_V2, HEADER_SIZE, HEADER_SIZE_V2, MAGIC, TRAILER_SIZE,
 };
 use super::{compare_entries, sort_surface_entries, Manifest, PackError};
 use jc_testdata::require_data;
@@ -503,8 +503,8 @@ fn test_parse_sample_pack() {
     let got = pack.lookup("明日");
     assert!(pack.has("明日"));
     assert_eq!(got.len(), 2);
-    assert_eq!(got[0].reading.as_ref(), "あした");
-    assert_eq!(got[1].reading.as_ref(), "あす");
+    assert_eq!(got[0].reading, "あした");
+    assert_eq!(got[1].reading, "あす");
     assert_eq!(pack.pos_str(got[0].pos_id), Some("名詞,普通名詞,一般,*"));
     assert_eq!(pack.conj_type(got[0].conj_type), Some("*"));
     assert_eq!(pack.conj_form(got[0].conj_form), Some("*"));
@@ -516,7 +516,7 @@ fn test_parse_sample_pack() {
     assert!(pack.lookup("なし").is_empty());
     assert!(!pack.has("なし"));
 
-    let prefixed: Vec<&Entry> = pack.prefix("明").collect();
+    let prefixed: Vec<EntryRef> = pack.prefix("明").collect();
     assert_eq!(prefixed.len(), 2);
     assert!(prefixed.iter().all(|e| e.surface.starts_with("明")));
 
@@ -1136,7 +1136,7 @@ fn test_parse_accepts_prolonged_sound_mark() {
         &[],
     );
     let pack = open_bytes("prolonged", &data).expect("長音符應被接受");
-    assert_eq!(pack.lookup("アート")[0].reading.as_ref(), "あーと");
+    assert_eq!(pack.lookup("アート")[0].reading, "あーと");
 }
 
 // ---------------------------------------------------------------------------
@@ -1529,7 +1529,7 @@ fn test_reference_pack() {
 
     let entries = pack.lookup("明日");
     assert!(!entries.is_empty(), "參考 pack 應包含 明日");
-    for entry in entries {
+    for entry in &entries {
         for ch in entry.reading.chars() {
             assert!(
                 ch == 'ー' || is_hiragana(ch),
@@ -1540,7 +1540,7 @@ fn test_reference_pack() {
         }
     }
 
-    let prefixed: Vec<&Entry> = pack.prefix("明").collect();
+    let prefixed: Vec<EntryRef> = pack.prefix("明").collect();
     assert!(!prefixed.is_empty());
     assert!(prefixed.len() >= entries.len());
     assert!(prefixed.iter().all(|e| e.surface.starts_with("明")));

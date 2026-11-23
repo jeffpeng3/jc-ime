@@ -51,7 +51,10 @@ const EXTRA_INPUTS: [(&str, &str); 14] = [
     ("decode-sunawachi", "すなわち"),
     ("decode-iwaba", "いわば"),
     ("decode-hashi", "はし"),
-    ("decode-32kana", "あじをしめるみせにあじをしめるみせにあじをしめるみせにねこねこね"),
+    (
+        "decode-32kana",
+        "あじをしめるみせにあじをしめるみせにあじをしめるみせにねこねこね",
+    ),
 ];
 
 fn fixture_path() -> PathBuf {
@@ -63,9 +66,13 @@ fn fixture_path() -> PathBuf {
 
 /// 讀題庫的 `items[].reading`，id 用 `<前綴>-<原始 id>`。
 fn corpus_items(path: &Path, prefix: &str) -> Vec<(String, String)> {
-    let raw = std::fs::read_to_string(path).unwrap_or_else(|err| panic!("讀 {} 失敗：{err}", path.display()));
-    let value: Value = serde_json::from_str(&raw).unwrap_or_else(|err| panic!("解析 {} 失敗：{err}", path.display()));
-    let items = value["items"].as_array().unwrap_or_else(|| panic!("{} 沒有 items", path.display()));
+    let raw = std::fs::read_to_string(path)
+        .unwrap_or_else(|err| panic!("讀 {} 失敗：{err}", path.display()));
+    let value: Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|err| panic!("解析 {} 失敗：{err}", path.display()));
+    let items = value["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{} 沒有 items", path.display()));
     items
         .iter()
         .enumerate()
@@ -142,7 +149,11 @@ fn test_ja_conversion_matches_golden() {
         let mut json = serde_json::to_string_pretty(&actual).expect("序列化 golden");
         json.push('\n');
         std::fs::write(&path, json).expect("寫入 golden");
-        eprintln!("已更新 golden：{}（{} 筆）", path.display(), actual.items.len());
+        eprintln!(
+            "已更新 golden：{}（{} 筆）",
+            path.display(),
+            actual.items.len()
+        );
         return;
     }
 

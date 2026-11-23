@@ -298,6 +298,7 @@ pub struct JaCandidate {
 ///
 /// 正式實作是 [`JaDictionary`]；測試或小型情境可以直接提供自己的實作。
 /// `matches` 必須走訪 `reading[start..]` 的所有前綴，讓可変長讀音被展開。
+/// 回傳的詞條借用來源，正式實作直接指向 pack 映射。
 pub trait JaWordSource: Send + Sync {
     /// 最長詞條的讀音單位數。
     fn longest_reading_units(&self) -> usize;
@@ -306,10 +307,10 @@ pub trait JaWordSource: Send + Sync {
     fn matches<'a>(&'a self, reading: &[char], start: usize, out: &mut dyn FnMut(JaWordMatch<'a>));
 
     /// 回傳讀音完全相等的詞條。
-    fn exact(&self, reading: &[char]) -> Vec<&JaEntry>;
+    fn exact<'a>(&'a self, reading: &[char]) -> Vec<JaEntry<'a>>;
 
     /// 回傳讀音以 `reading` 開頭的詞條，含完全相等者。
-    fn prefixed(&self, reading: &[char]) -> Vec<&JaEntry>;
+    fn prefixed<'a>(&'a self, reading: &[char]) -> Vec<JaEntry<'a>>;
 
     /// 詞性字串對應的 POS id；沒有 POS 表的來源回傳 `None`。
     fn pos_id(&self, _pos: &str) -> Option<u32> {
@@ -328,12 +329,12 @@ pub trait JaWordSource: Send + Sync {
 }
 
 /// 一次前綴查詢的結果。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct JaWordMatch<'a> {
     /// 讀音結束位置（不含）。
     pub end: usize,
     /// 詞條。
-    pub entry: &'a JaEntry,
+    pub entry: JaEntry<'a>,
     /// 來源的 left context ID；沒有就是 `None`。
     pub left_id: Option<u16>,
     /// 來源的 right context ID；沒有就是 `None`。
@@ -342,12 +343,15 @@ pub struct JaWordMatch<'a> {
 
 /// 以 [`JaLexicon`] 為底、依讀音索引的詞典。
 ///
-/// pack 只提供依詞面排序的索引；かな lattice 需要依讀音查詢，因此在這裡
-/// 建一份讀音到詞條編號的對照表。建表只做一次，查詢是雜湊表查找。
+/// pack 只提供依詞面排序的索引；かな lattice 需要依讀音查詢，因此這裡建
+/// 一份依讀音排序的詞條編號陣列。陣列本體是 4 bytes × 詞條數，查詢用二分
+/// 搜尋並向兩側展開相同讀音的區間，讀音本身仍從 pack 借用。
 pub struct JaDictionary {
     lex: Arc<JaLexicon>,
-    index: HashMap<Box<str>, Vec<u32>>,
-    context_ids: Vec<(Option<u16>, Option<u16>)>,
+    /// 依讀音排序的詞條編號；同一讀音內保持 pack 的原始順序。
+    by_reading: Vec<u32>,
+    /// 不同讀音的種類數。
+    reading_count: usize,
     pos_ids: HashMap<Box<str>, u32>,
     pos_table: PosTable,
     longest: usize,
@@ -357,7 +361,7 @@ impl std::fmt::Debug for JaDictionary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JaDictionary")
             .field("entries", &self.lex.len())
-            .field("readings", &self.index.len())
+            .field("readings", &self.reading_count)
             .field("longest", &self.longest)
             .finish()
     }
@@ -371,18 +375,29 @@ impl JaDictionary {
 
     /// 用已開啟的詞典建立讀音索引。
     pub fn new(lex: Arc<JaLexicon>) -> Self {
-        let mut index: HashMap<Box<str>, Vec<u32>> = HashMap::with_capacity(lex.len() / 2);
-        let pack_entries = lex.pack().entries();
-        let mut context_ids = Vec::with_capacity(lex.len());
-        for (i, entry) in lex.entries().iter().enumerate() {
-            match index.get_mut(entry.reading.as_ref()) {
-                Some(ids) => ids.push(i as u32),
-                None => {
-                    index.insert(entry.reading.clone(), vec![i as u32]);
-                }
+        let pack = lex.pack();
+        let mut by_reading: Vec<u32> = (0..lex.len() as u32).collect();
+        // 以詞條編號當同讀音的次序鍵：等於穩定排序保留 pack 的原始順序，
+        // 與舊版逐筆 push 的 HashMap 值順序一致，又能用不穩定排序。
+        by_reading.sort_unstable_by(|&a, &b| {
+            let left = pack
+                .entry_reading(a as usize)
+                .expect("詞條編號來自 pack 長度");
+            let right = pack
+                .entry_reading(b as usize)
+                .expect("詞條編號來自 pack 長度");
+            left.cmp(right).then_with(|| a.cmp(&b))
+        });
+        let mut reading_count = 0usize;
+        let mut previous: Option<&str> = None;
+        for &id in &by_reading {
+            let reading = pack
+                .entry_reading(id as usize)
+                .expect("詞條編號來自 pack 長度");
+            if previous != Some(reading) {
+                reading_count += 1;
+                previous = Some(reading);
             }
-            let raw = &pack_entries[i];
-            context_ids.push((raw.left_id(), raw.right_id()));
         }
         let pos_ids: HashMap<Box<str>, u32> = lex
             .pack()
@@ -395,8 +410,8 @@ impl JaDictionary {
         Self {
             longest: lex.longest_reading_units(),
             lex,
-            index,
-            context_ids,
+            by_reading,
+            reading_count,
             pos_ids,
             pos_table,
         }
@@ -409,7 +424,55 @@ impl JaDictionary {
 
     /// 讀音種類數。
     pub fn reading_count(&self) -> usize {
-        self.index.len()
+        self.reading_count
+    }
+
+    /// 指定詞條編號的讀音。
+    fn reading_of(&self, id: u32) -> &str {
+        self.lex
+            .pack()
+            .entry_reading(id as usize)
+            .expect("詞條編號來自 pack 長度")
+    }
+
+    /// 讀音完全相等的第一個位置。
+    fn lower_bound(&self, reading: &[char]) -> usize {
+        self.by_reading.partition_point(|&id| {
+            self.reading_of(id)
+                .chars()
+                .cmp(reading.iter().copied())
+                .is_lt()
+        })
+    }
+
+    /// 讀音完全相等的區間。
+    fn reading_range(&self, reading: &[char]) -> std::ops::Range<usize> {
+        let start = self.lower_bound(reading);
+        let mut end = start;
+        while end < self.by_reading.len()
+            && self
+                .reading_of(self.by_reading[end])
+                .chars()
+                .eq(reading.iter().copied())
+        {
+            end += 1;
+        }
+        start..end
+    }
+
+    /// 以 `reading` 為前綴的第一個位置。
+    ///
+    /// 只比較前 `reading.len()` 個字元；比前綴短的讀音排在同一個位置之前，
+    /// 因此二分搜尋仍然單調。
+    fn prefix_lower_bound(&self, reading: &[char]) -> usize {
+        let len = reading.len();
+        self.by_reading.partition_point(|&id| {
+            self.reading_of(id)
+                .chars()
+                .take(len)
+                .cmp(reading.iter().copied())
+                .is_lt()
+        })
     }
 }
 
@@ -422,48 +485,51 @@ impl JaWordSource for JaDictionary {
         if start >= reading.len() {
             return;
         }
-        let mut key = String::with_capacity(16);
         let last = start.saturating_add(self.longest).min(reading.len());
         for end in start + 1..=last {
-            key.push(reading[end - 1]);
-            let Some(ids) = self.index.get(key.as_str()) else {
-                continue;
-            };
-            for &id in ids {
-                let (left_id, right_id) = self.context_ids[id as usize];
+            let range = self.reading_range(&reading[start..end]);
+            for &id in &self.by_reading[range] {
+                let raw = self
+                    .lex
+                    .pack()
+                    .entry(id as usize)
+                    .expect("詞條編號來自 pack 長度");
                 out(JaWordMatch {
                     end,
-                    entry: &self.lex.entries()[id as usize],
-                    left_id,
-                    right_id,
+                    entry: self.lex.build_entry(raw),
+                    left_id: raw.left_id(),
+                    right_id: raw.right_id(),
                 });
             }
         }
     }
 
-    fn exact(&self, reading: &[char]) -> Vec<&JaEntry> {
-        let key: String = reading.iter().collect();
-        match self.index.get(key.as_str()) {
-            Some(ids) => ids
-                .iter()
-                .map(|&id| &self.lex.entries()[id as usize])
-                .collect(),
-            None => Vec::new(),
-        }
+    fn exact<'a>(&'a self, reading: &[char]) -> Vec<JaEntry<'a>> {
+        let range = self.reading_range(reading);
+        self.by_reading[range]
+            .iter()
+            .filter_map(|&id| self.lex.entry(id as usize))
+            .collect()
     }
 
-    fn prefixed(&self, reading: &[char]) -> Vec<&JaEntry> {
+    fn prefixed<'a>(&'a self, reading: &[char]) -> Vec<JaEntry<'a>> {
         if reading.is_empty() {
             return Vec::new();
         }
-        let prefix: String = reading.iter().collect();
-        let mut out: Vec<&JaEntry> = Vec::new();
-        for (key, ids) in &self.index {
-            if !key.starts_with(&prefix) {
-                continue;
+        let len = reading.len();
+        let start = self.prefix_lower_bound(reading);
+        let mut out: Vec<JaEntry<'a>> = Vec::new();
+        for &id in &self.by_reading[start..] {
+            if !self
+                .reading_of(id)
+                .chars()
+                .take(len)
+                .eq(reading.iter().copied())
+            {
+                break;
             }
-            for &id in ids {
-                out.push(&self.lex.entries()[id as usize]);
+            if let Some(entry) = self.lex.entry(id as usize) {
+                out.push(entry);
             }
         }
         out.sort_by(|a, b| {
@@ -490,13 +556,13 @@ impl JaWordSource for JaDictionary {
 
 /// lattice 上的一條弧：從 `start` 走到 `end` 的一個詞。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JaNode {
+pub struct JaNode<'a> {
     /// 起點，以かな單位計。
     pub start: usize,
     /// 終點（不含），以かな單位計。
     pub end: usize,
     /// 詞條。
-    pub entry: JaEntry,
+    pub entry: JaEntry<'a>,
     /// 是否為未知詞 fallback。
     pub unknown: bool,
     /// left context ID；未知詞固定 `None`。
@@ -507,9 +573,9 @@ pub struct JaNode {
     pub pos_id: Option<u32>,
 }
 
-impl JaNode {
+impl<'a> JaNode<'a> {
     /// 建立詞弧。
-    pub fn new(start: usize, end: usize, entry: JaEntry) -> Self {
+    pub fn new(start: usize, end: usize, entry: JaEntry<'a>) -> Self {
         Self {
             start,
             end,
@@ -529,13 +595,13 @@ impl JaNode {
 
 /// 依起點分組的詞弧。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Lattice {
-    starts: Vec<Vec<JaNode>>,
+pub struct Lattice<'a> {
+    starts: Vec<Vec<JaNode<'a>>>,
 }
 
-impl Lattice {
+impl<'a> Lattice<'a> {
     /// 回傳從 `pos` 開始的所有詞弧；超出範圍回傳空切片。
-    pub fn nodes(&self, pos: usize) -> &[JaNode] {
+    pub fn nodes(&self, pos: usize) -> &[JaNode<'a>] {
         self.starts.get(pos).map(Vec::as_slice).unwrap_or(&[])
     }
 
@@ -555,7 +621,7 @@ impl Lattice {
 /// 回傳指定詞條在該位置的額外成本；0 表示不調整，負值可以提高優先度。
 pub trait JaLearning: Send + Sync {
     /// 額外成本。
-    fn cost(&self, reading: &[char], start: usize, entry: &JaEntry, ctx: &JaContext) -> i32;
+    fn cost(&self, reading: &[char], start: usize, entry: &JaEntry<'_>, ctx: &JaContext) -> i32;
 }
 
 /// 沒有學習資料時的空實作。
@@ -563,7 +629,7 @@ pub trait JaLearning: Send + Sync {
 pub struct NoLearning;
 
 impl JaLearning for NoLearning {
-    fn cost(&self, _: &[char], _: usize, _: &JaEntry, _: &JaContext) -> i32 {
+    fn cost(&self, _: &[char], _: usize, _: &JaEntry<'_>, _: &JaContext) -> i32 {
         0
     }
 }
@@ -641,7 +707,7 @@ pub struct JaBuilder<'a> {
 
 impl<'a> JaBuilder<'a> {
     /// 建立 lattice。
-    pub fn build(&self, reading: &[char]) -> Lattice {
+    pub fn build(&self, reading: &[char]) -> Lattice<'a> {
         if reading.is_empty() {
             return Lattice::default();
         }
@@ -663,13 +729,13 @@ impl<'a> JaBuilder<'a> {
             .filter_map(|(pos, &unit)| particle_reading_alternative(unit).map(|alt| (pos, alt)))
             .collect();
         for start in 0..reading.len() {
-            let mut nodes: Vec<JaNode> = Vec::new();
+            let mut nodes: Vec<JaNode<'a>> = Vec::new();
             if let Some(source) = self.source {
-                let mut push = |reading: &[char], start: usize, m: JaWordMatch<'_>| {
+                let mut push = |reading: &[char], start: usize, m: JaWordMatch<'a>| {
                     if m.end.saturating_sub(start) > max_units {
                         return;
                     }
-                    let mut entry = m.entry.clone();
+                    let mut entry = m.entry;
                     if let Some(learning) = self.learning {
                         let delta = learning.cost(reading, start, &entry, &self.context);
                         entry.cost = entry.cost.saturating_add(delta);
@@ -703,7 +769,7 @@ impl<'a> JaBuilder<'a> {
                             if m.entry.reading.chars().nth(offset) != Some(alt) {
                                 return;
                             }
-                            if !particle_alternation_allowed(original, m.entry) {
+                            if !particle_alternation_allowed(original, &m.entry) {
                                 return;
                             }
                             push(&swapped, start, m);
@@ -738,7 +804,7 @@ impl<'a> JaBuilder<'a> {
 /// 「わ→は」除了助詞，還要允許 `こんにちは`、`あるいは` 這種整詞讀音本來就
 /// 以「は」表記的詞條，否則使用者把整詞打成同音かな時無法還原。「え→へ」與
 /// 「お→を」只接受助詞，避免把 `えき` 讀成 `へき`（壁）這類同音詞。
-fn particle_alternation_allowed(original: char, entry: &JaEntry) -> bool {
+fn particle_alternation_allowed(original: char, entry: &JaEntry<'_>) -> bool {
     if entry.pos_class() == JaPosClass::Particle {
         return true;
     }
@@ -762,7 +828,12 @@ impl JaSegmenter {
     }
 
     /// `cur` 是否要開始一個新文節。
-    pub fn should_break(&self, prev: &JaEntry, cur: &JaEntry, conn: &dyn ConnectionCost) -> bool {
+    pub fn should_break(
+        &self,
+        prev: &JaEntry<'_>,
+        cur: &JaEntry<'_>,
+        conn: &dyn ConnectionCost,
+    ) -> bool {
         let prev_pos = prev.pos_class();
         if prev.surface.is_empty() || prev_pos == JaPosClass::Bos {
             return false;
@@ -793,13 +864,13 @@ impl JaSegmenter {
 /// 把詞序列合併成文節。
 ///
 /// `nodes` 必須依序列順序排列且覆蓋完整讀音。
-pub fn clauses(nodes: &[JaNode], conn: &dyn ConnectionCost, seg: JaSegmenter) -> Vec<JaClause> {
-    let refs: Vec<&JaNode> = nodes.iter().collect();
+pub fn clauses(nodes: &[JaNode<'_>], conn: &dyn ConnectionCost, seg: JaSegmenter) -> Vec<JaClause> {
+    let refs: Vec<&JaNode<'_>> = nodes.iter().collect();
     clauses_from_refs(&refs, conn, seg)
 }
 
 fn clauses_from_refs(
-    nodes: &[&JaNode],
+    nodes: &[&JaNode<'_>],
     conn: &dyn ConnectionCost,
     seg: JaSegmenter,
 ) -> Vec<JaClause> {
@@ -807,7 +878,7 @@ fn clauses_from_refs(
         return Vec::new();
     }
     let mut out: Vec<JaClause> = Vec::new();
-    let mut group: Vec<&JaNode> = Vec::new();
+    let mut group: Vec<&JaNode<'_>> = Vec::new();
     for node in nodes {
         if let Some(last) = group.last() {
             if seg.should_break(&last.entry, &node.entry, conn) {
@@ -823,7 +894,7 @@ fn clauses_from_refs(
     out
 }
 
-fn clause(nodes: &[&JaNode], conn: &dyn ConnectionCost) -> JaClause {
+fn clause(nodes: &[&JaNode<'_>], conn: &dyn ConnectionCost) -> JaClause {
     let mut surface = String::new();
     let mut reading = String::new();
     let mut segments = Vec::with_capacity(nodes.len());
@@ -844,7 +915,7 @@ fn clause(nodes: &[&JaNode], conn: &dyn ConnectionCost) -> JaClause {
     }
 }
 
-fn clause_cost(nodes: &[&JaNode], conn: &dyn ConnectionCost) -> i32 {
+fn clause_cost(nodes: &[&JaNode<'_>], conn: &dyn ConnectionCost) -> i32 {
     let mut cost = 0i32;
     let mut prev = JaPosClass::Bos;
     for node in nodes {
@@ -1175,7 +1246,7 @@ impl JaDecoder {
         &self,
         hyps: &[Hypothesis],
         finals: &[SearchResult],
-        lat: &Lattice,
+        lat: &Lattice<'_>,
         reading: &[char],
         ctx: &JaContext,
     ) -> Vec<JaResult> {
@@ -1229,7 +1300,7 @@ impl JaDecoder {
             if !seen.insert(entry.surface.to_string()) {
                 continue;
             }
-            let cost = self.candidate_cost(entry);
+            let cost = self.candidate_cost(&entry);
             cands.push(JaCandidate {
                 surface: entry.surface.to_string(),
                 reading: sub_reading.clone(),
@@ -1288,7 +1359,7 @@ impl JaDecoder {
         }
     }
 
-    fn candidate_cost(&self, entry: &JaEntry) -> f64 {
+    fn candidate_cost(&self, entry: &JaEntry<'_>) -> f64 {
         let pos = entry.pos_class();
         let base = go_cost(entry.cost)
             + go_cost(self.conn.cost(JaPosClass::Bos, pos))
@@ -1316,7 +1387,7 @@ impl JaDecoder {
         }
     }
 
-    fn connection_cost(&self, left: &StateKey, right: &JaNode) -> i32 {
+    fn connection_cost(&self, left: &StateKey, right: &JaNode<'_>) -> i32 {
         if let Some(context) = &self.context {
             if let (Some(rid), Some(lid)) = (left.right_id, right.left_id) {
                 return context.cost(rid, lid);
@@ -1346,7 +1417,7 @@ impl JaDecoder {
         reading: &[char],
         ctx: &JaContext,
         k: usize,
-    ) -> (Vec<Hypothesis>, Vec<SearchResult>, Lattice) {
+    ) -> (Vec<Hypothesis>, Vec<SearchResult>, Lattice<'_>) {
         let k = k.max(1);
         let lat = self.builder(ctx).build(reading);
         let (base_hyps, base_finals) = self.viterbi(&lat, k, None);
@@ -1379,7 +1450,7 @@ impl JaDecoder {
     /// 純統計 Viterbi；`deltas` 是詞層級重排加上的成本增量。
     fn viterbi(
         &self,
-        lat: &Lattice,
+        lat: &Lattice<'_>,
         k: usize,
         deltas: Option<&HashMap<(usize, usize), f64>>,
     ) -> (Vec<Hypothesis>, Vec<SearchResult>) {
@@ -1408,7 +1479,7 @@ impl JaDecoder {
                 };
                 if let Some(lm) = &self.lm {
                     if self.lm_weight != 0.0 && lm.has_left(&node.entry.surface) {
-                        next.ctx = Some(node.entry.surface.clone());
+                        next.ctx = Some(node.entry.surface.to_string().into_boxed_str());
                     }
                 }
                 let entry_key = entry_key(&node.entry);
@@ -1468,12 +1539,12 @@ impl JaDecoder {
     fn path_states(
         &self,
         hyps: &[Hypothesis],
-        lat: &Lattice,
+        lat: &Lattice<'_>,
         best: usize,
         len: usize,
     ) -> Vec<StateKey> {
         let mut out: Vec<Option<StateKey>> = vec![None; len + 1];
-        let mut nodes: Vec<&JaNode> = Vec::new();
+        let mut nodes: Vec<&JaNode<'_>> = Vec::new();
         let mut cursor = Some(best);
         while let Some(id) = cursor {
             if let Some((pos, index)) = hyps[id].node {
@@ -1512,7 +1583,7 @@ impl JaDecoder {
     fn word_deltas(
         &self,
         ctx: &JaContext,
-        lat: &Lattice,
+        lat: &Lattice<'_>,
         prefixes: &[String],
         suffixes: &[String],
         states: &[StateKey],
@@ -1595,7 +1666,7 @@ impl JaDecoder {
     /// 左側狀態計算，所以不確定度反映的是這句裡實際的競爭關係。
     fn word_groups<'a>(
         &self,
-        lat: &'a Lattice,
+        lat: &'a Lattice<'a>,
         start: usize,
         left: &StateKey,
     ) -> Vec<WordGroup<'a>> {
@@ -1655,8 +1726,8 @@ impl JaDecoder {
             .collect()
     }
 
-    fn result(&self, hyps: &[Hypothesis], sr: &SearchResult, lat: &Lattice) -> JaResult {
-        let mut nodes: Vec<&JaNode> = Vec::new();
+    fn result(&self, hyps: &[Hypothesis], sr: &SearchResult, lat: &Lattice<'_>) -> JaResult {
+        let mut nodes: Vec<&JaNode<'_>> = Vec::new();
         let mut cursor = Some(sr.hyp);
         while let Some(id) = cursor {
             let hyp = &hyps[id];
@@ -1740,7 +1811,7 @@ fn hypothesis_less(a: &Hypothesis, b: &Hypothesis) -> bool {
     a.key < b.key
 }
 
-fn entry_key(entry: &JaEntry) -> String {
+fn entry_key(entry: &JaEntry<'_>) -> String {
     format!("{}|{}|{}", entry.surface, entry.reading, entry.pos)
 }
 
@@ -1770,7 +1841,7 @@ struct WordGroup<'a> {
 /// 訓練資料的候選是 2 到 4 字、全漢字、讀音至少 2 個單位、成本落在
 /// [`WORD_RERANK_COST_WINDOW`] 內的詞面；不在這個範圍的詞弧統計已經決定，
 /// 送進模型只會被分佈外的輸入帶偏。
-fn scorable_surface(node: &JaNode) -> bool {
+fn scorable_surface(node: &JaNode<'_>) -> bool {
     if node.unknown || node.units() < WORD_RERANK_MIN_READING_UNITS {
         return false;
     }
@@ -1842,7 +1913,7 @@ fn order_by_scores(scores: &[f64]) -> Vec<usize> {
 }
 
 /// 統計第一名的已解碼後文：`suffixes[pos]` 是 `pos` 之後所有詞面的串接。
-fn path_suffixes(hyps: &[Hypothesis], lat: &Lattice, best: usize, len: usize) -> Vec<String> {
+fn path_suffixes(hyps: &[Hypothesis], lat: &Lattice<'_>, best: usize, len: usize) -> Vec<String> {
     let mut nodes: Vec<&JaNode> = Vec::new();
     let mut cursor = Some(best);
     while let Some(id) = cursor {
@@ -1867,7 +1938,7 @@ fn path_suffixes(hyps: &[Hypothesis], lat: &Lattice, best: usize, len: usize) ->
 }
 
 /// 統計第一名的已解碼前文：`prefixes[pos]` 是 `pos` 之前所有詞面的串接。
-fn path_prefixes(hyps: &[Hypothesis], lat: &Lattice, best: usize, len: usize) -> Vec<String> {
+fn path_prefixes(hyps: &[Hypothesis], lat: &Lattice<'_>, best: usize, len: usize) -> Vec<String> {
     let mut nodes: Vec<&JaNode> = Vec::new();
     let mut cursor = Some(best);
     while let Some(id) = cursor {
@@ -1931,7 +2002,7 @@ fn is_independent(pos: JaPosClass) -> bool {
 /// 平假名讀音代表一般日文輸入：同讀音若已有平假名付属語，片假名與拉丁
 /// 詞面視為雜訊；片假名自立語沒有明顯成本優勢時也排除。真正的外來語成本
 /// 優勢通常大於容忍度，仍會保留。
-fn apply_script_policy(nodes: &mut Vec<JaNode>, reading: &[char], start: usize) {
+fn apply_script_policy(nodes: &mut Vec<JaNode<'_>>, reading: &[char], start: usize) {
     if nodes.is_empty() {
         return;
     }
@@ -2027,7 +2098,7 @@ mod tests {
 
     /// 測試用詞條，可附加 context ID。
     struct TestWord {
-        entry: JaEntry,
+        entry: JaEntry<'static>,
         left_id: Option<u16>,
         right_id: Option<u16>,
     }
@@ -2048,7 +2119,7 @@ mod tests {
             Self { words, longest }
         }
 
-        fn plain(entries: Vec<JaEntry>) -> Self {
+        fn plain(entries: Vec<JaEntry<'static>>) -> Self {
             Self::new(
                 entries
                     .into_iter()
@@ -2081,30 +2152,30 @@ mod tests {
                 }
                 out(JaWordMatch {
                     end,
-                    entry: &word.entry,
+                    entry: word.entry.clone(),
                     left_id: word.left_id,
                     right_id: word.right_id,
                 });
             }
         }
 
-        fn exact(&self, reading: &[char]) -> Vec<&JaEntry> {
+        fn exact<'a>(&'a self, reading: &[char]) -> Vec<JaEntry<'a>> {
             self.words
                 .iter()
                 .filter(|w| w.entry.reading.chars().eq(reading.iter().copied()))
-                .map(|w| &w.entry)
+                .map(|w| w.entry.clone())
                 .collect()
         }
 
-        fn prefixed(&self, reading: &[char]) -> Vec<&JaEntry> {
-            let mut out: Vec<&JaEntry> = self
+        fn prefixed<'a>(&'a self, reading: &[char]) -> Vec<JaEntry<'a>> {
+            let mut out: Vec<JaEntry<'a>> = self
                 .words
                 .iter()
                 .filter(|w| {
                     let units: Vec<char> = w.entry.reading.chars().collect();
                     units.len() >= reading.len() && &units[..reading.len()] == reading
                 })
-                .map(|w| &w.entry)
+                .map(|w| w.entry.clone())
                 .collect();
             out.sort_by(|a, b| {
                 a.cost
@@ -2116,19 +2187,24 @@ mod tests {
         }
     }
 
-    fn entry(surface: &str, reading: &str, cost: i32, pos: &str) -> JaEntry {
+    fn entry(
+        surface: &'static str,
+        reading: &'static str,
+        cost: i32,
+        pos: &'static str,
+    ) -> JaEntry<'static> {
         JaEntry {
             surface: surface.into(),
             reading: reading.into(),
-            pos: Arc::from(pos),
-            conj_type: Arc::from("*"),
-            conj_form: Arc::from("*"),
+            pos: pos.into(),
+            conj_type: "*".into(),
+            conj_form: "*".into(),
             cost,
             split: crate::ja::lexicon::Split::C,
         }
     }
 
-    fn with_context(entry: JaEntry, left: u16, right: u16) -> TestWord {
+    fn with_context(entry: JaEntry<'static>, left: u16, right: u16) -> TestWord {
         TestWord {
             entry,
             left_id: Some(left),
@@ -2145,7 +2221,7 @@ mod tests {
     }
 
     /// Go `testdata/lexicon.tsv` 的內容；成本 1.0 對應 1000。
-    fn corpus_entries() -> Vec<JaEntry> {
+    fn corpus_entries() -> Vec<JaEntry<'static>> {
         vec![
             entry("明日", "あした", 1_000, "noun"),
             entry("届く", "とどく", 1_000, "verb"),

@@ -13,11 +13,12 @@
 //! pack，直接查 v2 的矩陣。pack v1 沒有矩陣，查詢一律回傳 `None`，呼叫端
 //! 退回 [`ConnectionCost`] 的詞性表。
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use jc_data::ja::{Pack, PackError};
+use jc_data::ja::{Entries, Pack, PackError};
 use thiserror::Error;
 
 use crate::candidate::PosTable;
@@ -215,27 +216,28 @@ impl JaPosClass {
 
 /// 一筆日文詞條。
 ///
-/// `pos`、`conj_type`、`conj_form` 是 pack 查表後的字串；相同的值共用一個
-/// [`Arc`]，所以大量詞條不會各自複製一份詞性字串。
+/// 詞面、讀音、詞性與活用欄位都是 [`Cow`]：從 pack 查到的詞條借用映射，
+/// 不複製字串；未知詞與 curated 來源才用擁有的字串。`pos`、`conj_type`、
+/// `conj_form` 的相同值由 pack 的共用字串表提供，不會每筆各複製一份。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JaEntry {
+pub struct JaEntry<'a> {
     /// 詞面。
-    pub surface: Box<str>,
+    pub surface: Cow<'a, str>,
     /// 讀音（平假名，一個字元一個單位）。
-    pub reading: Box<str>,
+    pub reading: Cow<'a, str>,
     /// pack 的原始 POS 字串，例如 `名詞,普通名詞,一般,*`。
-    pub pos: Arc<str>,
+    pub pos: Cow<'a, str>,
     /// 活用型，例如 `五段-マ行`；無活用時是 `*`。
-    pub conj_type: Arc<str>,
+    pub conj_type: Cow<'a, str>,
     /// 活用形，例如 `終止形-一般`；無活用時是 `*`。
-    pub conj_form: Arc<str>,
+    pub conj_form: Cow<'a, str>,
     /// 詞成本，越小越優先；範圍 [`MIN_WORD_COST`]～[`MAX_WORD_COST`]。
     pub cost: i32,
     /// 來源的 split 類別（C／A／B）。
     pub split: Split,
 }
 
-impl JaEntry {
+impl JaEntry<'_> {
     /// 這筆詞條的粗詞性，供連接成本查表。
     pub fn pos_class(&self) -> JaPosClass {
         JaPosClass::classify(&self.pos)
@@ -249,19 +251,19 @@ impl JaEntry {
 
 /// 依詞面查詢的日文詞典。
 ///
-/// 內部保留 pack 以取得原始資料與驗證結果，另外整理一份 [`JaEntry`]，
-/// 讓 `lookup` 可以回傳連續切片。pack 以 [`Arc`] 共用，讓連接矩陣與
+/// 只持有 pack 的映射與最長讀音長度；詞條本身留在 pack 的連續版面，
+/// `lookup`／`prefix` 直接對 surface 索引二分搜尋，回傳借用映射的
+/// [`JaEntry`]，不建立任何逐筆字串。pack 以 [`Arc`] 共用，讓連接矩陣與
 /// 詞條查詢不必各自解碼一次。
 pub struct JaLexicon {
     pack: Arc<Pack>,
-    entries: Vec<JaEntry>,
     longest_reading_units: usize,
 }
 
 impl std::fmt::Debug for JaLexicon {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JaLexicon")
-            .field("entries", &self.entries.len())
+            .field("entries", &self.pack.entry_count())
             .field("longest_reading_units", &self.longest_reading_units)
             .finish()
     }
@@ -274,55 +276,17 @@ impl JaLexicon {
     }
 
     /// 用已開啟的 pack 建立查詢層，pack 由詞典與連接矩陣共用。
+    ///
+    /// pack 開啟時已驗證 POS／活用 id 與讀音內容，這裡只取解析時算好的
+    /// 最長讀音長度，不再逐筆掃描。
     pub fn from_pack(pack: Arc<Pack>) -> Result<Self, JaError> {
-        let mut entries = Vec::with_capacity(pack.entry_count());
-
-        let pos: Vec<Arc<str>> = pack
-            .pos_list()
-            .iter()
-            .map(|s| Arc::from(s.as_str()))
-            .collect();
-        let conj_types: Vec<Arc<str>> = pack
-            .conj_types()
-            .iter()
-            .map(|s| Arc::from(s.as_str()))
-            .collect();
-        let conj_forms: Vec<Arc<str>> = pack
-            .conj_forms()
-            .iter()
-            .map(|s| Arc::from(s.as_str()))
-            .collect();
-
-        let mut longest_reading_units = 0usize;
-        for entry in pack.entries() {
-            let pos_str = pos.get(entry.pos_id as usize).ok_or_else(|| {
-                JaError::BrokenPack(format!("POS id {} 超出 table", entry.pos_id))
-            })?;
-            let conj_type = conj_types.get(entry.conj_type as usize).ok_or_else(|| {
-                JaError::BrokenPack(format!("活用型 id {} 超出 table", entry.conj_type))
-            })?;
-            let conj_form = conj_forms.get(entry.conj_form as usize).ok_or_else(|| {
-                JaError::BrokenPack(format!("活用形 id {} 超出 table", entry.conj_form))
-            })?;
-            let units = entry.reading.chars().count();
-            longest_reading_units = longest_reading_units.max(units);
-            entries.push(JaEntry {
-                surface: entry.surface.to_string().into_boxed_str(),
-                reading: entry.reading.to_string().into_boxed_str(),
-                pos: Arc::clone(pos_str),
-                conj_type: Arc::clone(conj_type),
-                conj_form: Arc::clone(conj_form),
-                cost: i32::from(entry.cost),
-                split: entry.split,
-            });
-        }
-
+        let longest_reading_units = pack.stats().max_reading_unit;
         Ok(Self {
             pack,
-            entries,
             longest_reading_units,
         })
     }
+
     /// 底層 pack。
     pub fn pack(&self) -> &Pack {
         &self.pack
@@ -351,47 +315,71 @@ impl JaLexicon {
 
     /// 詞條總數。
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.pack.entry_count()
     }
 
     /// 是否沒有任何詞條。
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.pack.entry_count() == 0
     }
 
-    /// 全部詞條，依 pack 的 surface 排序。
-    pub fn entries(&self) -> &[JaEntry] {
-        &self.entries
+    /// 全部詞條的 pack 範圍；`Item` 不帶 POS／活用字串。
+    pub fn entries(&self) -> Entries<'_> {
+        self.pack.entries()
+    }
+
+    /// 指定編號的詞條；越界回傳 `None`。
+    pub fn entry(&self, index: usize) -> Option<JaEntry<'_>> {
+        let raw = self.pack.entry(index)?;
+        Some(self.build_entry(raw))
+    }
+
+    /// 把 pack 的借用詞條換成帶 POS／活用字串的 [`JaEntry`]。
+    pub(crate) fn build_entry<'a>(&'a self, raw: jc_data::ja::EntryRef<'a>) -> JaEntry<'a> {
+        JaEntry {
+            surface: Cow::Borrowed(raw.surface),
+            reading: Cow::Borrowed(raw.reading),
+            pos: Cow::Borrowed(
+                self.pack
+                    .pos_str(raw.pos_id)
+                    .expect("pack 開啟時已驗證 POS id"),
+            ),
+            conj_type: Cow::Borrowed(
+                self.pack
+                    .conj_type(raw.conj_type)
+                    .expect("pack 開啟時已驗證活用型 id"),
+            ),
+            conj_form: Cow::Borrowed(
+                self.pack
+                    .conj_form(raw.conj_form)
+                    .expect("pack 開啟時已驗證活用形 id"),
+            ),
+            cost: i32::from(raw.cost),
+            split: raw.split,
+        }
     }
 
     /// 回傳詞面完全相等的所有詞條，順序與 pack 相同。
-    pub fn lookup(&self, surface: &str) -> &[JaEntry] {
-        let start = self
-            .entries
-            .partition_point(|e| e.surface.as_ref() < surface);
-        let rest = &self.entries[start..];
-        let count = rest
-            .iter()
-            .take_while(|e| e.surface.as_ref() == surface)
-            .count();
-        &rest[..count]
+    pub fn lookup(&self, surface: &str) -> Vec<JaEntry<'_>> {
+        self.pack
+            .lookup(surface)
+            .into_iter()
+            .map(|raw| self.build_entry(raw))
+            .collect()
     }
 
     /// 詞面是否存在。
     pub fn has(&self, surface: &str) -> bool {
-        !self.lookup(surface).is_empty()
+        self.pack.has(surface)
     }
 
     /// 回傳詞面以 `prefix` 開頭的所有詞條，依 surface 排序。
     ///
     /// 空字串回傳全部詞條，與 pack 的前綴語意一致。
-    pub fn prefix(&self, prefix: &str) -> Vec<&JaEntry> {
-        let start = self
-            .entries
-            .partition_point(|e| e.surface.as_ref() < prefix);
-        self.entries[start..]
-            .iter()
-            .take_while(|e| e.surface.starts_with(prefix))
+    pub fn prefix(&self, prefix: &str) -> Vec<JaEntry<'_>> {
+        self.pack
+            .prefix(prefix)
+            .map(|raw| self.build_entry(raw))
             .collect()
     }
 
@@ -583,13 +571,13 @@ pub fn unknown_word_cost(units: usize) -> i32 {
 /// 建立一筆未知詞，詞面與讀音都是同一個かな單位。
 ///
 /// 詞性固定是 [`JaPosClass::Other`]、split 固定是 [`UNKNOWN_SPLIT`]。
-pub fn unknown_entry(unit: &str) -> JaEntry {
+pub fn unknown_entry<'a>(unit: &str) -> JaEntry<'a> {
     JaEntry {
-        surface: unit.into(),
-        reading: unit.into(),
-        pos: Arc::from(JaPosClass::Other.name()),
-        conj_type: Arc::from("*"),
-        conj_form: Arc::from("*"),
+        surface: Cow::Owned(unit.to_owned()),
+        reading: Cow::Owned(unit.to_owned()),
+        pos: Cow::Borrowed(JaPosClass::Other.name()),
+        conj_type: Cow::Borrowed("*"),
+        conj_form: Cow::Borrowed("*"),
         cost: UNKNOWN_WORD_COST,
         split: UNKNOWN_SPLIT,
     }
@@ -944,18 +932,12 @@ mod tests {
     fn test_prefix_follows_pack_surface_order() {
         let lex = test_lexicon();
 
-        let surfaces: Vec<&str> = lex
-            .prefix("あ")
-            .iter()
-            .map(|e| e.surface.as_ref())
-            .collect();
+        let prefixed = lex.prefix("あ");
+        let surfaces: Vec<&str> = prefixed.iter().map(|e| e.surface.as_ref()).collect();
         assert_eq!(surfaces, ["あ", "あい"]);
 
-        let surfaces: Vec<&str> = lex
-            .prefix("明")
-            .iter()
-            .map(|e| e.surface.as_ref())
-            .collect();
+        let prefixed = lex.prefix("明");
+        let surfaces: Vec<&str> = prefixed.iter().map(|e| e.surface.as_ref()).collect();
         assert_eq!(surfaces, ["明日", "明日"]);
 
         assert!(lex.prefix("い").is_empty());
@@ -1038,10 +1020,12 @@ mod tests {
         let lex = JaLexicon::open(&path).unwrap();
         assert_eq!(lex.pack().context_count(), 3);
         let entries = lex.pack().entries();
-        assert_eq!(entries[0].left_id(), Some(1));
-        assert_eq!(entries[0].right_id(), Some(1));
-        assert_eq!(entries[1].left_id(), Some(2));
-        assert_eq!(entries[1].right_id(), Some(2));
+        let first = entries.get(0).unwrap();
+        let second = entries.get(1).unwrap();
+        assert_eq!(first.left_id(), Some(1));
+        assert_eq!(first.right_id(), Some(1));
+        assert_eq!(second.left_id(), Some(2));
+        assert_eq!(second.right_id(), Some(2));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1055,8 +1039,9 @@ mod tests {
         assert_eq!(conn.cost(0, 0), None);
 
         let lex = JaLexicon::open(&path).unwrap();
-        assert_eq!(lex.pack().entries()[0].left_id(), None);
-        assert_eq!(lex.pack().entries()[0].right_id(), None);
+        let first = lex.pack().entries().get(0).unwrap();
+        assert_eq!(first.left_id(), None);
+        assert_eq!(first.right_id(), None);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

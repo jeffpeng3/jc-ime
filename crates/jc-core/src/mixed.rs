@@ -3764,7 +3764,7 @@ mod tests {
 
     /// 測試用的日文詞條來源。
     struct MemorySource {
-        entries: Vec<JaEntry>,
+        entries: Vec<JaEntry<'static>>,
     }
 
     impl MemorySource {
@@ -3773,11 +3773,11 @@ mod tests {
                 entries: rows
                     .iter()
                     .map(|&(surface, reading, cost, pos)| JaEntry {
-                        surface: surface.into(),
-                        reading: reading.into(),
-                        pos: Arc::from(pos),
-                        conj_type: Arc::from("*"),
-                        conj_form: Arc::from("*"),
+                        surface: surface.to_string().into(),
+                        reading: reading.to_string().into(),
+                        pos: pos.to_string().into(),
+                        conj_type: "*".into(),
+                        conj_form: "*".into(),
                         cost,
                         split: Split::B,
                     })
@@ -3802,7 +3802,7 @@ mod tests {
                 if reading[start..].starts_with(&units) {
                     out(crate::ja::decode::JaWordMatch {
                         end: start + units.len(),
-                        entry,
+                        entry: entry.clone(),
                         left_id: None,
                         right_id: None,
                     });
@@ -3810,19 +3810,21 @@ mod tests {
             }
         }
 
-        fn exact(&self, reading: &[char]) -> Vec<&JaEntry> {
+        fn exact<'a>(&'a self, reading: &[char]) -> Vec<JaEntry<'a>> {
             let key: String = reading.iter().collect();
             self.entries
                 .iter()
                 .filter(|e| e.reading.as_ref() == key)
+                .cloned()
                 .collect()
         }
 
-        fn prefixed(&self, reading: &[char]) -> Vec<&JaEntry> {
+        fn prefixed<'a>(&'a self, reading: &[char]) -> Vec<JaEntry<'a>> {
             let key: String = reading.iter().collect();
             self.entries
                 .iter()
                 .filter(|e| e.reading.starts_with(&key))
+                .cloned()
                 .collect()
         }
     }

@@ -14,9 +14,9 @@ pub use manifest::{
 };
 pub use order::{compare_entries, sort_surface_entries};
 pub use pack::{
-    Capabilities, Entry, Header, Pack, PrefixIter, Split, Stats, ENTRY_SIZE, ENTRY_SIZE_V2,
-    FORMAT_VERSION, FORMAT_VERSION_V2, HEADER_SIZE, HEADER_SIZE_V2, INDEX_ENTRY_SIZE, MAGIC,
-    MIN_COST, TRAILER_SIZE,
+    Capabilities, Entries, Entry, EntryIter, EntryRef, Header, Pack, PrefixIter, Split, Stats,
+    ENTRY_SIZE, ENTRY_SIZE_V2, FORMAT_VERSION, FORMAT_VERSION_V2, HEADER_SIZE, HEADER_SIZE_V2,
+    INDEX_ENTRY_SIZE, MAGIC, MIN_COST, TRAILER_SIZE,
 };
 
 #[cfg(test)]

@@ -231,7 +231,7 @@ pub fn probability_cost(probability: f64) -> i32 {
 /// 記憶體日文詞典：由 curated `words.tsv` 建立。
 #[derive(Debug)]
 pub struct TsvWordSource {
-    entries: Vec<JaEntry>,
+    entries: Vec<JaEntry<'static>>,
     index: HashMap<String, Vec<u32>>,
     longest: usize,
 }
@@ -263,11 +263,11 @@ impl TsvWordSource {
                 ))
             })?;
             entries.push(JaEntry {
-                surface: fields[0].into(),
-                reading: fields[1].into(),
-                pos: Arc::from(fields[3]),
-                conj_type: Arc::from(fields.get(5).copied().unwrap_or("-")),
-                conj_form: Arc::from("-"),
+                surface: fields[0].to_string().into(),
+                reading: fields[1].to_string().into(),
+                pos: fields[3].to_string().into(),
+                conj_type: fields.get(5).copied().unwrap_or("-").to_string().into(),
+                conj_form: "-".to_string().into(),
                 cost: (cost * 1000.0).round() as i32,
                 split: jc_core::ja::lexicon::Split::C,
             });
@@ -309,7 +309,7 @@ impl JaWordSource for TsvWordSource {
                 for &id in ids {
                     out(JaWordMatch {
                         end,
-                        entry: &self.entries[id as usize],
+                        entry: self.entries[id as usize].clone(),
                         left_id: None,
                         right_id: None,
                     });
@@ -318,23 +318,27 @@ impl JaWordSource for TsvWordSource {
         }
     }
 
-    fn exact(&self, reading: &[char]) -> Vec<&JaEntry> {
+    fn exact<'a>(&'a self, reading: &[char]) -> Vec<JaEntry<'a>> {
         let key: String = reading.iter().collect();
         self.index
             .get(&key)
-            .map(|ids| ids.iter().map(|&id| &self.entries[id as usize]).collect())
+            .map(|ids| {
+                ids.iter()
+                    .map(|&id| self.entries[id as usize].clone())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
-    fn prefixed(&self, reading: &[char]) -> Vec<&JaEntry> {
+    fn prefixed<'a>(&'a self, reading: &[char]) -> Vec<JaEntry<'a>> {
         if reading.is_empty() {
-            return self.entries.iter().collect();
+            return self.entries.clone();
         }
         let prefix: String = reading.iter().collect();
         self.index
             .iter()
             .filter(|(key, _)| key.starts_with(&prefix))
-            .flat_map(|(_, ids)| ids.iter().map(|&id| &self.entries[id as usize]))
+            .flat_map(|(_, ids)| ids.iter().map(|&id| self.entries[id as usize].clone()))
             .collect()
     }
 }

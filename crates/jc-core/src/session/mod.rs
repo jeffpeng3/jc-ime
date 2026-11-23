@@ -2036,7 +2036,7 @@ mod tests {
     }
 
     /// 最小日文詞條來源，讓日文 session 不必載入 pack 也能轉換。
-    struct LiveTestSource(Vec<crate::ja::lexicon::JaEntry>);
+    struct LiveTestSource(Vec<crate::ja::lexicon::JaEntry<'static>>);
 
     impl crate::ja::decode::JaWordSource for LiveTestSource {
         fn longest_reading_units(&self) -> usize {
@@ -2057,27 +2057,29 @@ mod tests {
                 }
                 out(crate::ja::decode::JaWordMatch {
                     end,
-                    entry,
+                    entry: entry.clone(),
                     left_id: None,
                     right_id: None,
                 });
             }
         }
 
-        fn exact(&self, reading: &[char]) -> Vec<&crate::ja::lexicon::JaEntry> {
+        fn exact<'a>(&'a self, reading: &[char]) -> Vec<crate::ja::lexicon::JaEntry<'a>> {
             self.0
                 .iter()
                 .filter(|entry| entry.reading.chars().eq(reading.iter().copied()))
+                .cloned()
                 .collect()
         }
 
-        fn prefixed(&self, reading: &[char]) -> Vec<&crate::ja::lexicon::JaEntry> {
+        fn prefixed<'a>(&'a self, reading: &[char]) -> Vec<crate::ja::lexicon::JaEntry<'a>> {
             self.0
                 .iter()
                 .filter(|entry| {
                     let units: Vec<char> = entry.reading.chars().collect();
                     units.len() >= reading.len() && units[..reading.len()] == *reading
                 })
+                .cloned()
                 .collect()
         }
     }
@@ -2086,9 +2088,9 @@ mod tests {
         let entry = crate::ja::lexicon::JaEntry {
             surface: "今日".into(),
             reading: "きょう".into(),
-            pos: Arc::from("名詞,普通名詞,一般,*"),
-            conj_type: Arc::from("*"),
-            conj_form: Arc::from("*"),
+            pos: "名詞,普通名詞,一般,*".into(),
+            conj_type: "*".into(),
+            conj_form: "*".into(),
             cost: 0,
             split: crate::ja::lexicon::Split::C,
         };
@@ -2105,13 +2107,17 @@ mod tests {
         }
     }
 
-    fn ja_entry(surface: &str, reading: &str, cost: i32) -> crate::ja::lexicon::JaEntry {
+    fn ja_entry(
+        surface: &'static str,
+        reading: &'static str,
+        cost: i32,
+    ) -> crate::ja::lexicon::JaEntry<'static> {
         crate::ja::lexicon::JaEntry {
             surface: surface.into(),
             reading: reading.into(),
-            pos: Arc::from("名詞,普通名詞,一般,*"),
-            conj_type: Arc::from("*"),
-            conj_form: Arc::from("*"),
+            pos: "名詞,普通名詞,一般,*".into(),
+            conj_type: "*".into(),
+            conj_form: "*".into(),
             cost,
             split: crate::ja::lexicon::Split::C,
         }
