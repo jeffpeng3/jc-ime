@@ -57,6 +57,11 @@ pub struct Key {
     /// Ctrl 是否按著；`false` 時不寫進 JSON，維持舊協定形狀。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ctrl: bool,
+    /// 這個鍵是否來自私密欄位；`false` 時不寫進 JSON，維持舊協定形狀。
+    ///
+    /// 外殼依欄位判定後隨每個按鍵明確帶值，引擎據此決定要不要學習。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
 }
 
 impl Key {
@@ -67,6 +72,7 @@ impl Key {
             text,
             shift,
             ctrl: false,
+            private: false,
         }
     }
 
@@ -78,6 +84,12 @@ impl Key {
     /// 加上 Ctrl 修飾鍵。
     pub fn with_ctrl(mut self) -> Self {
         self.ctrl = true;
+        self
+    }
+
+    /// 標記這個按鍵來自私密欄位。
+    pub fn with_private(mut self, private: bool) -> Self {
+        self.private = private;
         self
     }
 }
@@ -126,5 +138,32 @@ mod tests {
         let shift_tab = Key::new(KeyCode::ShiftTab, None, true);
         assert_ne!(tab.code, shift_tab.code);
         assert_ne!(tab, shift_tab);
+    }
+
+    #[test]
+    fn key_private_flag_round_trips_and_stays_out_of_json_when_false() {
+        let plain = Key::char('a', false);
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(
+            !json.contains("private"),
+            "private=false 不應寫進 JSON：{json}"
+        );
+        let parsed: Key = serde_json::from_str(&json).unwrap();
+        assert!(!parsed.private);
+        assert_eq!(parsed, plain);
+
+        let private = Key::char('a', false).with_private(true);
+        let json = serde_json::to_string(&private).unwrap();
+        assert!(json.contains(r#""private":true"#), "{json}");
+        let parsed: Key = serde_json::from_str(&json).unwrap();
+        assert!(parsed.private);
+        assert_eq!(parsed, private);
+    }
+
+    #[test]
+    fn key_private_defaults_to_false_for_old_payloads() {
+        let parsed: Key =
+            serde_json::from_str(r#"{"code":{"kind":"enter"},"text":null,"shift":false}"#).unwrap();
+        assert!(!parsed.private);
     }
 }

@@ -519,7 +519,7 @@ impl Session {
     /// 只在送出時呼叫，關閉學習時不寫入。注音片段的讀音短於
     /// [`SessionConfig::min_trigger_len`] 時只記詞面證據。
     pub(super) fn learn_mixed_languages(&mut self) {
-        if !self.config.learning {
+        if !self.config.learning || self.private {
             return;
         }
         let at = super::core::now_seconds();
@@ -530,6 +530,10 @@ impl Session {
                 AsciiPiece::Zh(syllable) => {
                     let surface = self.decode_syllable(&syllable);
                     if surface.is_empty() {
+                        continue;
+                    }
+                    if crate::learn_guard::is_sensitive(&surface) {
+                        log::debug!("學習守門：混打注音片段像敏感資料，跳過寫入");
                         continue;
                     }
                     let reading = syllable.as_str();
@@ -552,7 +556,9 @@ impl Session {
                 }
                 AsciiPiece::Literal(text) => {
                     for token in text.split_whitespace() {
-                        if !crate::personal::english_token(token) {
+                        if !crate::personal::english_token(token)
+                            || crate::learn_guard::is_sensitive(token)
+                        {
                             continue;
                         }
                         self.personal.note_language(
