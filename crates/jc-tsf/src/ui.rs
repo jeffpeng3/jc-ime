@@ -33,6 +33,8 @@ pub struct UiClient {
     window: Option<Box<LocalWindow>>,
     /// 這個 Activate 期間初始化失敗：不再重試，Launcher／下一次 Activate 才有機會。
     failed: bool,
+    /// 目前是否顯示中；只用來把「顯示／收起」的日誌收成一次。
+    shown: bool,
 }
 
 /// `uielement::Elements` 的別名，讓本檔不需要重複寫它的生命週期註解。
@@ -46,6 +48,7 @@ impl UiClient {
             elements: None,
             window: None,
             failed: false,
+            shown: false,
         }
     }
 
@@ -70,6 +73,19 @@ impl UiClient {
         if !draw || !message.show || message.candidates.is_empty() {
             self.hide_window();
             return;
+        }
+        // 只在「顯示／收起」的轉換寫一行，避免每個按鍵都洗版。實機排查時
+        // 這一行的有無就分得出「沒被呼叫」與「畫不出來」。
+        if !self.shown {
+            zlog!(
+                "ui: 顯示候選窗 n={} at=({}, {}) {}x{}",
+                message.candidates.len(),
+                message.x,
+                message.y,
+                message.w,
+                message.h
+            );
+            self.shown = true;
         }
         self.show_window(message);
     }
@@ -100,6 +116,10 @@ impl UiClient {
     }
 
     fn hide_window(&mut self) {
+        if self.shown {
+            zlog!("ui: 收起候選窗");
+            self.shown = false;
+        }
         if let Some(window) = self.window.as_mut() {
             window.hide();
         }

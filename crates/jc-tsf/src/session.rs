@@ -295,6 +295,10 @@ pub struct Snapshot {
     pub pages: i64,
     /// jc `State::highlighted`。
     pub highlight: i64,
+    /// jc `State::navigating`：使用者已用方向鍵／翻頁鍵進入選取。
+    ///
+    /// 候選窗只在這個狀態顯示（新注音的習慣：打字時看組字，按方向鍵才開清單）。
+    pub navigating: bool,
     /// jc wire 沒有整體 mode；由 `segments[].mode` 推導，沒有時 false。
     pub english: bool,
     /// jc 尚無對應；false。
@@ -439,6 +443,7 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
         highlighted,
         cursor_rune,
         suggestion,
+        navigating,
         ..
     } = response
     else {
@@ -499,6 +504,7 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
             "highlight": highlighted,
             "items": items,
         },
+        "navigating": navigating,
         "mode": if japanese { "japanese" } else if all_english { "english" } else { "zhuyin" },
         "english_autocomplete": pending,
         "english_pending": pending,

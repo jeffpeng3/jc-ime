@@ -691,7 +691,10 @@ impl TextService_Impl {
         } else {
             snapshot.reading_hint.clone()
         };
+        // 候選窗只在使用者開始挑選時出現：打字時看組字（preedit），按方向鍵／
+        // 翻頁鍵進入 `navigating` 才開清單。每次按鍵都彈一個框會蓋住上下文。
         let show = snapshot.composing()
+            && snapshot.navigating
             && (!snapshot.candidates.is_empty()
                 || !snapshot.suggestion.is_empty()
                 || !reading.is_empty())
