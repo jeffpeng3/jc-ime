@@ -1,7 +1,7 @@
 //! 固定的 CLSID、profile GUID 與 `InstallLayoutOrTip` 的參數。
 //!
-//! 這些值必須與 `crates/jc-tsf/src/guids.rs` 與 `installer/jc-ime.wxs` 的
-//! `<Class Id="...">` 一致：機碼、TSF profile 資料庫與使用者語言清單都以它們為鍵。
+//! 這些值必須與 `crates/jc-tsf/src/guids.rs` 與 `installer/jc.iss` 的 `[Registry]`
+//! 一致：機碼、TSF profile 資料庫與使用者語言清單都以它們為鍵。
 //! 安裝器不 import `jc-tsf`（DLL 沒有 lib 可用），所以這裡放一份常數，並用測試把
 //! 格式固定住。
 //!
@@ -35,8 +35,8 @@ pub const PROFILE_DESCRIPTION: &str = "jc 注音";
 /// `platform::user_uninstall`。
 pub const ILOT_INSTALL: u32 = 0x0000_0000;
 
-/// 引擎 pipe 前綴；MSI 的 `<Class>` 把它寫進 CLSID 機碼的 `PipePrefix`。
-/// 這支程式只讀 CLSID 與 profile，保留常數是為了與 WXS 對照及測試鎖值。
+/// 引擎 pipe 前綴；安裝器的 `[Registry]` 把它寫進 CLSID 機碼的 `PipePrefix`。
+/// 這支程式只讀 CLSID 與 profile，保留常數是為了與 `jc.iss` 對照及測試鎖值。
 #[allow(dead_code)]
 pub const PIPE_PREFIX: &str = "jc-ime";
 

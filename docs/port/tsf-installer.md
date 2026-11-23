@@ -1,5 +1,9 @@
 # tsf-installer：MSI 安裝器
 
+> **歷史文件。** 0.1.4 之後安裝器已從 WiX MSI 換成 Inno Setup
+> （`installer/jc.iss`）。本文的 MSI 元件、自訂動作與 `msiexec` 流程只供對照；
+> 現行建置與安裝方式見 [`installer/README.md`](../../installer/README.md)。
+>
 > 下一次 rc 已移除舊版，本文的 CLSID／profile 是移除前的歷史值，僅供對照。
 > 現行身分與指令見 [`install.md`](../install.md) 與 [`rollout.md`](rollout.md)。
 
