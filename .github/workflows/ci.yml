@@ -1026,16 +1026,30 @@ jobs:
           Write-Host '32 位元檢視的 profile 機碼存在'
 
           # 使用者的語言清單。user-install 以 runasoriginaluser 執行，這裡是同一個
-          # 使用者，應該看得到 0404:{profile}。
-          $tips = @(Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips })
-          Write-Host "目前語言清單：$($tips -join ', ')"
-          $matched = @($tips | Where-Object {
-            $_.StartsWith('0404:') -and $_.Contains($env:JC_TIP_PROFILE)
-          })
-          if ($matched.Count -eq 0) {
-            throw "Get-WinUserLanguageList 的 InputMethodTips 沒有 0404:$env:JC_TIP_PROFILE"
+          # 使用者，應該看得到 0404:{CLSID}{PROFILE}。
+          #
+          # 直接讀機碼，不用 Get-WinUserLanguageList：那個 cmdlet 在 pwsh 7 會拋
+          # 「Cannot marshal 'parameter #2': Invalid managed/unmanaged type
+          # combination」，與安裝結果無關（run 45145104315 就是死在這裡）。
+          $tipName = '0404:{0}{1}' -f $env:JC_TIP_CLSID, $env:JC_TIP_PROFILE
+          $userProfile = 'HKCU:\Control Panel\International\User Profile'
+          if (-not (Test-Path $userProfile)) { throw "缺少使用者語言清單機碼：$userProfile" }
+
+          $languages = @((Get-ItemProperty -Path $userProfile -Name 'Languages' -ErrorAction Stop).Languages)
+          Write-Host "Languages：$($languages -join ', ')"
+          if (-not ($languages -contains 'zh-Hant-TW')) {
+            throw "Languages 沒有 zh-Hant-TW（實際：$($languages -join ', ')）"
           }
-          Write-Host "語言清單含 $($matched -join ', ')"
+
+          # Windows 11／Server 2022 之後每個輸入法一個值；舊版是
+          # InputMethodTips 這個 REG_MULTI_SZ。兩種都接受。
+          $languageKey = Join-Path $userProfile 'zh-Hant-TW'
+          $perValue = (Get-ItemProperty -Path $languageKey -Name $tipName -ErrorAction SilentlyContinue).$tipName
+          $multi = @((Get-ItemProperty -Path $languageKey -Name 'InputMethodTips' -ErrorAction SilentlyContinue).InputMethodTips)
+          if ("$perValue" -ne '1' -and -not ($multi -contains $tipName)) {
+            throw "$languageKey 沒有 $tipName（每值：$perValue；InputMethodTips：$($multi -join ', ')）"
+          }
+          Write-Host "語言清單含 $tipName"
 
       - name: 反安裝 setup.exe
         shell: pwsh
