@@ -1092,11 +1092,20 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
+          # Inno 的反安裝程式會把自己複製到 %TEMP% 再執行；原本的
+          # unins000.exe 由那份副本在最後刪掉。上一步的 Start-Process -Wait 只
+          # 等到原本那支結束，所以會看到「只剩 unins000.exe」的瞬間
+          # （run 45146998405）。這裡等目錄真的消失，最多 60 秒。
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Test-Path $env:JC_INSTALL_DIR) -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+          }
+
           if (Test-Path $env:JC_INSTALL_DIR) {
             Get-ChildItem $env:JC_INSTALL_DIR -Recurse | Select-Object -First 20 | Write-Host
             $left = @(Get-ChildItem $env:JC_INSTALL_DIR -Recurse -File -ErrorAction SilentlyContinue)
             if ($left.Count -gt 0) {
-              throw "反安裝後 $env:JC_INSTALL_DIR 還有 $($left.Count) 個檔案。"
+              throw "反安裝後 $env:JC_INSTALL_DIR 還有 $($left.Count) 個檔案：$($left.Name -join ', ')"
             }
             throw "反安裝後 $env:JC_INSTALL_DIR 仍然存在（空目錄）。"
           }
