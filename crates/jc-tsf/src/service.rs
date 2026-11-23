@@ -529,15 +529,26 @@ impl TextService_Impl {
     /// 選單的「輸出簡體字」：請引擎即時切換，組字不動。
     pub(crate) fn set_output_simplified(&self, on: bool) -> bool {
         let ctx = self.focused_context();
-        let snapshot = {
+        let (snapshot, live, available) = {
             let Ok(mut st) = self.state.try_borrow_mut() else {
+                zlog!("langbar: 輸出簡體 → {on} 失敗：state 被借用");
                 return false;
             };
-            if !st.session.available() {
-                return false;
-            }
-            st.session.output_simplified(on)
+            let available = st.session.available();
+            let live = st.session.simplified().is_some();
+            let snapshot = if available {
+                st.session.output_simplified(on)
+            } else {
+                Snapshot::default()
+            };
+            (snapshot, live, available)
         };
+        zlog!(
+            "langbar: 輸出簡體 → {on} available={available} simplified_live={live} \
+             ok={} handled={}",
+            snapshot.ok,
+            snapshot.handled
+        );
         if !snapshot.ok || !snapshot.handled {
             return false;
         }

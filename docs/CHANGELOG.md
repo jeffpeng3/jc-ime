@@ -4,6 +4,18 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.14 - 2026-11-24
+
+### 修正
+
+- 宿主終止組字時送出的 `cancel` 被原樣送到引擎，引擎不認識就回 `UnknownOp`；
+  外殼把它當失敗、重試三次，每次重試都重播按鍵紀錄——實機症狀是切換視窗回來
+  再打一個鍵，組字區變成 `w96w96w96w`。改成翻成 Escape 鍵，並在成功後清掉
+  重播紀錄。
+- 狀態列的「輸出簡體字」加上診斷日誌：點選時會寫一行
+  `langbar: 輸出簡體 → true available=… simplified_live=… ok=… handled=…`，
+  用來分辨「選單沒接到」、「能力沒開」與「引擎拒絕」。
+
 ## 0.1.13 - 2026-11-23
 
 ### 修正
