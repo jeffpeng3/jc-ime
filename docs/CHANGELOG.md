@@ -4,6 +4,16 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.7 - 2026-11-23
+
+### 修正
+
+- Windows：按鍵真的會進組字了。`to_jc_request` 只在 `private` 時才把字串鍵名
+  轉成 jc 的結構化 `Key`，其餘一律送 `{"op":"key","key":"l"}`；引擎的 `Key`
+  是 struct，反序列化失敗就把連線關掉，外殼之後每次寫入都失敗
+  （`tsf.log` 的 `call: 寫入失敗，斷線`）。症狀是「打得很快、只出英文、沒有
+  候選窗」——按鍵全被放行。
+
 ## 0.1.6 - 2026-11-23
 
 ### 修正

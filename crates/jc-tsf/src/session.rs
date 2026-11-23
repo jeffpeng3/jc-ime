@@ -546,16 +546,16 @@ pub fn to_jc_request(envelope: &Value) -> Value {
     match envelope["op"].as_str().unwrap_or("") {
         "handle" => match envelope["req"]["type"].as_str().unwrap_or("") {
             "key" => {
-                // private 是 req 的欄位，jc 的 Key 才認得它。0c 的 key 是字串鍵名，
-                // 只有要帶 private 時才轉成 jc 的結構化 Key；其餘維持舊形狀。
+                // 0c 的 key 是字串鍵名，jc 的 `Key` 是 struct（code／text／shift）。
+                // **一定**要轉：送 {"op":"key","key":"l"} 會讓引擎反序列化失敗，
+                // pipe listener 直接把連線關掉，外殼之後每次寫入都失敗——實機
+                // tsf.log 的「call: 寫入失敗，斷線」就是這樣來的。
                 let raw = &envelope["req"]["key"];
                 let private = envelope["req"]["private"].as_bool() == Some(true);
-                if private {
-                    if let Some(name) = raw.as_str() {
-                        if let Some(mut key) = protocol_key(name) {
-                            key.private = true;
-                            return json!({"op": "key", "key": key});
-                        }
+                if let Some(name) = raw.as_str() {
+                    if let Some(mut key) = protocol_key(name) {
+                        key.private = private;
+                        return json!({"op": "key", "key": key});
                     }
                 }
                 let mut key = raw.clone();
@@ -2170,6 +2170,29 @@ mod tests {
     #[cfg(windows)]
     use crate::keys::to_protocol as protocol_name;
 
+    /// 沒有 private 的字串鍵名也要轉成結構化 Key。
+    ///
+    /// 少了這一步，引擎收到 `{"op":"key","key":"l"}` 會反序列化失敗並關掉連線，
+    /// 外殼之後每次寫入都失敗；實機症狀就是「每鍵都放行、只打出英文」。
+    #[test]
+    fn to_jc_request_converts_plain_key_names() {
+        let envelope = json!({
+            "op": "handle",
+            "session": 1,
+            "req": {"type": "key", "key": "l"},
+        });
+        let request = to_jc_request(&envelope);
+        assert_eq!(request["op"], "key");
+        let parsed: jc_proto::Request = serde_json::from_value(request).unwrap();
+        match parsed {
+            jc_proto::Request::Key { key } => {
+                assert_eq!(key.code, jc_proto::KeyCode::Char('l'));
+                assert!(!key.private);
+            }
+            other => panic!("應是 Key 請求：{other:?}"),
+        }
+    }
+
     #[test]
     fn to_jc_request_moves_private_flag_into_key() {
         // 0c 的 key 是字串鍵名；private 為 true 時要轉成 jc Key 才帶得過去。
@@ -2205,14 +2228,19 @@ mod tests {
         assert_eq!(request["key"]["private"], true);
         assert_eq!(request["key"]["text"], "a");
 
-        // private 為 false 時維持舊的字串形狀，也不寫入 private。
+        // private 為 false 時一樣轉成結構化 Key：引擎的 Key 是 struct，
+        // 字串形狀會讓它反序列化失敗並關掉連線。
         let plain = json!({
             "op": "handle",
             "session": 1,
             "req": {"type": "key", "key": "a"},
         });
         let request = to_jc_request(&plain);
-        assert_eq!(request["key"], "a");
+        assert_eq!(request["key"]["text"], "a");
+        assert!(
+            request["key"].get("private").is_none(),
+            "沒指定就不寫 private"
+        );
     }
 
     struct MockState {
@@ -2350,10 +2378,19 @@ mod tests {
                 // private 按鍵會被 to_jc_request 轉成結構化 Key；其他維持 0c 字串。
                 let key = match request["key"].as_str() {
                     Some(name) => name.to_string(),
-                    None => serde_json::from_value::<jc_proto::Key>(request["key"].clone())
-                        .ok()
-                        .and_then(|key| protocol_name(&key))
-                        .unwrap_or_default(),
+                    None => {
+                        let name = serde_json::from_value::<jc_proto::Key>(request["key"].clone())
+                            .ok()
+                            .and_then(|key| protocol_name(&key))
+                            .unwrap_or_default();
+                        // `to_protocol` 把 Tab 與 ShiftTab 都寫成 "BackTab"（0c 約定）；
+                        // TIP 實際送出的是 "Tab"，假引擎要照同一個名字判斷。
+                        if name == "BackTab" {
+                            "Tab".to_string()
+                        } else {
+                            name
+                        }
+                    }
                 };
                 if st.commit_keys {
                     st.keys.push(key.clone()); // 假引擎照 Go 的 RestartServer 記下收到的鍵
@@ -2695,7 +2732,14 @@ mod tests {
         for key in ["KP1", "KP0", "KP*", "KP+", "KP-", "KP.", "KP/"] {
             let want = s.english_state.full_width_keypad(key);
             let snap = s.key(key);
-            assert_eq!(want, snap.handled, "{key}：{snap:?}");
+            // jc 的 Key 沒有鍵台旗標：`from_protocol` 把 KP1 還原成字元 '1'，
+            // 引擎看到的就是「1」。所以全寬鍵台完全由外殼的 `full_width_keypad`
+            // 決定——預測不消費時根本不會送出，這裡只驗送出去時引擎接得住。
+            assert!(snap.ok, "{key} 送出去後引擎要接得住：{snap:?}");
+            assert!(
+                !want || snap.handled,
+                "{key}：外殼預測要消費時引擎也要處理：{snap:?}"
+            );
             s.reset();
         }
         for key in ["1", "KP", "Left", "@"] {
