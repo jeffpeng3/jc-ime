@@ -185,10 +185,14 @@ Filename: "{app}\jc-tip-register.exe"; Parameters: "machine-register"; StatusMsg
 
 ; 使用者層級啟用。runasoriginaluser 不能省：安裝程式是管理員身分，直接跑會
 ; 寫到 Administrator 的語言清單，對實際使用者沒有作用。
-Filename: "{app}\jc-tip-register.exe"; Parameters: "user-install"; Tasks: enableime; StatusMsg: "{cm:MsgEnabling}"; Flags: runhidden waituntilterminated runasoriginaluser ignoreerrors
+;
+; [Run] 沒有 ignoreerrors 這個旗標（Inno 6.7 會判 unknown flag），所以這兩步
+; 失敗會讓安裝失敗。這是刻意的：使用者清單沒加進去，裝完也不能打字，
+; 靜靜成功只會讓問題延後到使用者身上。
+Filename: "{app}\jc-tip-register.exe"; Parameters: "user-install"; Tasks: enableime; StatusMsg: "{cm:MsgEnabling}"; Flags: runhidden waituntilterminated runasoriginaluser
 
-; 清掉已移除舊 CLSID 的語言清單殘留。失敗不擋安裝。
-Filename: "{app}\jc-tip-register.exe"; Parameters: "user-cleanup-legacy"; StatusMsg: "{cm:MsgCleanup}"; Flags: runhidden waituntilterminated runasoriginaluser ignoreerrors
+; 清掉已移除舊 CLSID 的語言清單殘留。
+Filename: "{app}\jc-tip-register.exe"; Parameters: "user-cleanup-legacy"; StatusMsg: "{cm:MsgCleanup}"; Flags: runhidden waituntilterminated runasoriginaluser
 
 Filename: "{app}\jc-settings-ui.exe"; Description: "{cm:OpenSettings}"; Flags: postinstall nowait skipifsilent unchecked
 
