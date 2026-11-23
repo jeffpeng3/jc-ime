@@ -15,6 +15,7 @@ pub mod ja;
 pub mod key;
 pub mod lang;
 pub mod lattice;
+pub mod learn_guard;
 pub mod lm;
 pub mod mixed;
 pub mod mixed_latin;

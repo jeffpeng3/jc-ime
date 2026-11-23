@@ -356,6 +356,8 @@ impl Session {
         let readings = self.zh_readings(&self.syllables[edit.start..edit.start + edit.len]);
         let reading = readings.join(" ");
         if self.config.learning
+            && !self.private
+            && !crate::learn_guard::is_sensitive(&candidate.surface)
             && candidate
                 .surface
                 .chars()
@@ -364,6 +366,8 @@ impl Session {
         {
             self.personal
                 .note_manual(&candidate.surface, &reading, edit.len);
+        } else if self.config.learning && crate::learn_guard::is_sensitive(&candidate.surface) {
+            log::debug!("學習守門：片段候選像敏感資料，跳過寫入");
         }
         self.mark_zh_user_syllables(edit.start, edit.len, &candidate.surface);
         self.segment_manual = None;
@@ -1112,6 +1116,10 @@ impl Session {
 
     /// 把這次送出的候選記進個人學習。
     pub(super) fn learn_composition(&mut self) {
+        if self.private {
+            log::debug!("私密欄位：跳過這次提交的學習");
+            return;
+        }
         let index = self.highlighted;
         self.learn_candidate(index);
     }
@@ -1121,6 +1129,10 @@ impl Session {
     /// 動手前先留一份快照：下一次輸入若是 Backspace／Esc／Ctrl+Z，就把這次
     /// 學習補償掉；否則在 [`Session::press`] 開頭丟掉快照。
     pub(super) fn learn_candidate(&mut self, index: usize) {
+        if self.private {
+            log::debug!("私密欄位：跳過候選學習");
+            return;
+        }
         if !self.config.learning || self.menu.is_some() {
             return;
         }
@@ -1185,6 +1197,7 @@ impl Session {
                     || segment.start >= segment.end
                     || segment.end > units.len()
                     || !segment.word.chars().next().is_some_and(is_han)
+                    || crate::learn_guard::is_sensitive(&segment.word)
                 {
                     continue;
                 }
@@ -1201,6 +1214,10 @@ impl Session {
                 }
             }
         } else if candidate.surface.chars().next().is_some_and(is_han) {
+            if crate::learn_guard::is_sensitive(&candidate.surface) {
+                log::debug!("學習守門：注音候選像敏感資料，跳過寫入");
+                return;
+            }
             // 模糊音或自訂詞候選沒有對應路徑，整串當一個單位學習。
             let syllables = units.len();
             if manual {
@@ -1229,12 +1246,21 @@ impl Session {
             return;
         };
         let wrong = self.raw.trim().to_string();
+        if crate::learn_guard::is_sensitive(&wrong)
+            || crate::learn_guard::is_sensitive(&candidate.surface)
+        {
+            log::debug!("學習守門：英文候選像敏感資料，跳過寫入");
+            return;
+        }
         self.learn_english_choice(&wrong, &candidate.surface);
     }
 
     /// 記錄一次英文選取：修正或跳過。
     fn learn_english_choice(&mut self, wrong: &str, chosen: &str) {
         if !self.config.learning
+            || self.private
+            || crate::learn_guard::is_sensitive(wrong)
+            || crate::learn_guard::is_sensitive(chosen)
             || wrong.is_empty()
             || !wrong.chars().all(|ch| ch.is_ascii_alphabetic())
             || !chosen.chars().all(|ch| ch.is_ascii_alphabetic())
@@ -1267,6 +1293,10 @@ impl Session {
         let Some(candidate) = self.candidates.get(index).cloned() else {
             return;
         };
+        if crate::learn_guard::is_sensitive(&candidate.surface) {
+            log::debug!("學習守門：日文候選像敏感資料，跳過寫入");
+            return;
+        }
         let manual = self.candidate_window;
         let weight = if manual {
             ja_personal::UNIFIED_MANUAL_WEIGHT
@@ -1286,6 +1316,13 @@ impl Session {
                 cost: candidate.cost,
             }],
         };
+        if clauses
+            .iter()
+            .any(|clause| crate::learn_guard::is_sensitive(&clause.surface))
+        {
+            log::debug!("學習守門：日文文節像敏感資料，跳過寫入");
+            return;
+        }
         self.note_ja_skips(index, &candidate.surface);
         let at = now_seconds();
         let short = crate::personal::reading_len(&candidate.reading) < self.config.min_trigger_len;

@@ -21,6 +21,11 @@ use std::time::{Duration, Instant};
 use jc_proto::{Response, PROTOCOL_VERSION as JC_PROTOCOL_VERSION};
 use serde_json::{json, Value};
 
+#[cfg(not(windows))]
+use self::keys::from_protocol as protocol_key;
+#[cfg(windows)]
+use crate::keys::from_protocol as protocol_key;
+
 /// debug-keypath：0c 的 `zlog` 改接 crate 層，讓按鍵路徑的 log 寫進 tsf.log。
 use crate::log::zlog;
 
@@ -35,6 +40,8 @@ pub const RESTART_WAIT: Duration = Duration::from_secs(5);
 
 /// 從 0c `keys.rs` 搬過來的最小集合；session 移植只需要這幾個判斷。
 pub mod keys {
+    #[cfg(not(windows))]
+    use jc_proto::{Key, KeyCode};
     use serde_json::Value;
 
     /// 引擎載入的鍵盤排列（health 的 `keyboard_layout`）。
@@ -130,6 +137,114 @@ pub mod keys {
                 Side::Right => self.right,
             }
         }
+    }
+
+    /// 0c 協定字串鍵 → jc 結構化 [`Key`]。
+    ///
+    /// 與 Windows 專用的 `crate::keys::from_protocol` 同一套規則；非 Windows
+    /// 建置保留這一份，讓 `to_jc_request` 也能把 private 旗標帶進 Key。
+    #[cfg(not(windows))]
+    pub fn from_protocol(key: &str) -> Option<Key> {
+        if key == "BackTab" || key == "ShiftTab" {
+            return Some(Key::new(KeyCode::ShiftTab, None, false));
+        }
+        let (base, shift) = match key.strip_prefix("Shift") {
+            Some(rest) if !rest.is_empty() => {
+                let base = match rest {
+                    "Space" => " ",
+                    other => other,
+                };
+                (base, true)
+            }
+            _ => (key, false),
+        };
+        if let Some(c) = base.strip_prefix("Ctrl+") {
+            if c.chars().count() != 1 {
+                return None;
+            }
+            let ch = c.chars().next()?;
+            return Some(Key::new(KeyCode::Char(ch), Some(ch), shift).with_ctrl());
+        }
+        let code = match base {
+            "Enter" => KeyCode::Enter,
+            "Escape" => KeyCode::Escape,
+            "Backspace" => KeyCode::Backspace,
+            "Delete" => KeyCode::Delete,
+            "Tab" => KeyCode::Tab,
+            "Left" => KeyCode::ArrowLeft,
+            "Right" => KeyCode::ArrowRight,
+            "Up" => KeyCode::Up,
+            "Down" => KeyCode::Down,
+            "PageUp" => KeyCode::PageUp,
+            "PageDown" => KeyCode::PageDown,
+            "Home" => KeyCode::Home,
+            "End" => KeyCode::End,
+            " " => KeyCode::Space,
+            other => {
+                if let Some(n) = other.strip_prefix('F') {
+                    if let Ok(n) = n.parse::<u8>() {
+                        if (1..=24).contains(&n) {
+                            return Some(Key::new(KeyCode::F(n), None, shift));
+                        }
+                    }
+                }
+                let original = other.strip_prefix("KP").unwrap_or(other);
+                if original.chars().count() != 1 {
+                    return None;
+                }
+                let mut ch = original.chars().next()?;
+                let upper = ch.is_ascii_uppercase();
+                if upper {
+                    ch = ch.to_ascii_lowercase();
+                }
+                if !('!'..='~').contains(&ch) {
+                    return None;
+                }
+                return Some(Key::new(KeyCode::Char(ch), Some(ch), shift || upper));
+            }
+        };
+        Some(Key::new(code, None, shift))
+    }
+
+    /// jc 結構化 [`Key`] → 0c 協定字串鍵；測試用的反向轉換。
+    #[cfg(not(windows))]
+    pub fn to_protocol(key: &Key) -> Option<String> {
+        let name = match key.code {
+            KeyCode::Enter => "Enter",
+            KeyCode::Escape => "Escape",
+            KeyCode::Backspace if key.shift => "ShiftBackspace",
+            KeyCode::Backspace => "Backspace",
+            KeyCode::Delete if key.shift => "ShiftDelete",
+            KeyCode::Delete => "Delete",
+            KeyCode::Tab | KeyCode::ShiftTab => "BackTab",
+            KeyCode::ArrowLeft if key.shift => "ShiftLeft",
+            KeyCode::ArrowRight if key.shift => "ShiftRight",
+            KeyCode::ArrowLeft => "Left",
+            KeyCode::ArrowRight => "Right",
+            KeyCode::Up => "Up",
+            KeyCode::Down => "Down",
+            KeyCode::Home => "Home",
+            KeyCode::End => "End",
+            KeyCode::PageUp => "PageUp",
+            KeyCode::PageDown => "PageDown",
+            KeyCode::Space if key.shift => "ShiftSpace",
+            KeyCode::Space => " ",
+            KeyCode::F(n) if (1..=24).contains(&n) => return Some(format!("F{n}")),
+            KeyCode::Char(ch) => {
+                let mut out = String::new();
+                if key.ctrl {
+                    out.push_str("Ctrl+");
+                }
+                if key.shift && ch.is_ascii_alphabetic() {
+                    out.push(ch.to_ascii_uppercase());
+                } else {
+                    out.push(ch);
+                }
+                return Some(out);
+            }
+            _ => return None,
+        };
+        Some(name.to_string())
     }
 }
 
@@ -430,7 +545,25 @@ pub fn response_to_reply(response: &Response) -> Value {
 pub fn to_jc_request(envelope: &Value) -> Value {
     match envelope["op"].as_str().unwrap_or("") {
         "handle" => match envelope["req"]["type"].as_str().unwrap_or("") {
-            "key" => json!({"op": "key", "key": envelope["req"]["key"]}),
+            "key" => {
+                // private 是 req 的欄位，jc 的 Key 才認得它。0c 的 key 是字串鍵名，
+                // 只有要帶 private 時才轉成 jc 的結構化 Key；其餘維持舊形狀。
+                let raw = &envelope["req"]["key"];
+                let private = envelope["req"]["private"].as_bool() == Some(true);
+                if private {
+                    if let Some(name) = raw.as_str() {
+                        if let Some(mut key) = protocol_key(name) {
+                            key.private = true;
+                            return json!({"op": "key", "key": key});
+                        }
+                    }
+                }
+                let mut key = raw.clone();
+                if private && key.is_object() {
+                    key["private"] = Value::Bool(true);
+                }
+                json!({"op": "key", "key": key})
+            }
             "toggle" => json!({"op": "toggle"}),
             "commit" => json!({"op": "commit"}),
             other => {
@@ -2025,6 +2158,56 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    #[cfg(not(windows))]
+    use super::keys::to_protocol as protocol_name;
+    #[cfg(windows)]
+    use crate::keys::to_protocol as protocol_name;
+
+    #[test]
+    fn to_jc_request_moves_private_flag_into_key() {
+        // 0c 的 key 是字串鍵名；private 為 true 時要轉成 jc Key 才帶得過去。
+        let envelope = json!({
+            "op": "handle",
+            "session": 1,
+            "req": {"type": "key", "key": "a", "private": true},
+        });
+        let request = to_jc_request(&envelope);
+        assert_eq!(request["op"], "key");
+        assert_eq!(request["key"]["private"], true);
+        assert_eq!(request["key"]["text"], "a");
+        let parsed: jc_proto::Request = serde_json::from_value(request).unwrap();
+        match parsed {
+            jc_proto::Request::Key { key } => {
+                assert!(key.private);
+                assert_eq!(key.code, jc_proto::KeyCode::Char('a'));
+            }
+            other => panic!("應是 Key 請求：{other:?}"),
+        }
+
+        // 已經是結構化 Key 的 envelope 直接補 private。
+        let structured = json!({
+            "op": "handle",
+            "session": 1,
+            "req": {
+                "type": "key",
+                "key": {"code": {"kind": "char", "value": "a"}, "text": "a", "shift": false},
+                "private": true,
+            },
+        });
+        let request = to_jc_request(&structured);
+        assert_eq!(request["key"]["private"], true);
+        assert_eq!(request["key"]["text"], "a");
+
+        // private 為 false 時維持舊的字串形狀，也不寫入 private。
+        let plain = json!({
+            "op": "handle",
+            "session": 1,
+            "req": {"type": "key", "key": "a"},
+        });
+        let request = to_jc_request(&plain);
+        assert_eq!(request["key"], "a");
+    }
+
     struct MockState {
         connected: bool,
         down: bool,
@@ -2157,7 +2340,14 @@ mod tests {
                 Some(json!(toy_state(st)))
             }
             "key" => {
-                let key = request["key"].as_str().unwrap_or("").to_string();
+                // private 按鍵會被 to_jc_request 轉成結構化 Key；其他維持 0c 字串。
+                let key = match request["key"].as_str() {
+                    Some(name) => name.to_string(),
+                    None => serde_json::from_value::<jc_proto::Key>(request["key"].clone())
+                        .ok()
+                        .and_then(|key| protocol_name(&key))
+                        .unwrap_or_default(),
+                };
                 if st.commit_keys {
                     st.keys.push(key.clone()); // 假引擎照 Go 的 RestartServer 記下收到的鍵
                     return Some(json!(Response::Committed { text: key }));

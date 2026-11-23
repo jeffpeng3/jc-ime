@@ -353,6 +353,8 @@ pub struct Session {
     pub(super) live_plan: Option<LivePlan>,
     /// 上次清理個人資料後累積的學習事件數。
     pub(super) learn_events: usize,
+    /// 目前按鍵是否來自私密欄位；每個按鍵明確覆寫，commit／cancel 後歸零。
+    pub(super) private: bool,
     /// 輸入風格與鍵位；由設定複製進來。
     pub(super) style: InputStyle,
     /// 是否為全形（Shift＋空白切換）；風格狀態，不存檔。
@@ -446,6 +448,7 @@ impl Session {
             live,
             live_plan: None,
             learn_events: 0,
+            private: false,
             style,
             full_width: false,
             symbol_prefix: false,
@@ -508,7 +511,12 @@ impl Session {
     /// 翻頁鍵、Home／End 在候選清單中移動，左右方向鍵與 Tab 也在候選間移動。
     pub fn press(&mut self, key: Key) -> Snapshot {
         self.expire_segment_view();
-        self.resolve_pending_learning(&key);
+        // 私密狀態跟著每個按鍵走：true 設起來，false 明確清掉，不跨欄位殘留。
+        self.private = key.private;
+        // 私密欄位裡的反悔鍵不該動到前一個一般欄位的學習。
+        if !self.private {
+            self.resolve_pending_learning(&key);
+        }
         if key.ctrl {
             self.pending_tone = None;
             self.press_ctrl(key);
@@ -572,6 +580,10 @@ impl Session {
             }
         } else {
             self.pending_tone = None;
+        }
+        // Esc 是取消：處理完就離開私密狀態，下一次按鍵再明確帶值。
+        if key.code == KeyCode::Escape {
+            self.private = false;
         }
         self.rebuild();
         self.snapshot()
@@ -684,12 +696,17 @@ impl Session {
     /// 有 `Enter` 放進來的結果時直接回傳它；否則送出目前高亮的候選或組字
     /// 字串。沒有組字內容時回傳空字串。
     pub fn commit(&mut self) -> String {
+        // 取走這個欄位最後一個按鍵留下的私密狀態；提交後歸零，不跨欄位殘留。
+        let private = self.private;
+        self.private = false;
         if let Some(text) = self.pending_commit.take() {
             self.clear_composition();
             self.remember_committed(&text);
             return text;
         }
-        self.remember_selection();
+        if !private {
+            self.remember_selection();
+        }
         if self.config.mode == Mode::Mixed {
             self.ascii.flush();
         }
@@ -709,6 +726,7 @@ impl Session {
     /// 已送出的左文保留；那是文件內容，不屬於組字狀態。
     pub fn reset(&mut self) {
         self.pending_commit = None;
+        self.private = false;
         self.clear_composition();
     }
 
@@ -997,6 +1015,18 @@ mod tests {
         }
     }
 
+    fn type_syllable_private(session: &mut Session, reading: &str, private: bool) {
+        let keyboard = crate::zh::keyboard::Keyboard::standard();
+        for syllable in crate::zh::syllable::parse_reading(reading) {
+            let keys = keyboard.keys(&syllable).expect("音節應該有對應按鍵");
+            for ch in keys.chars() {
+                let mut key = Key::char(ch, false);
+                key.private = private;
+                session.press(key);
+            }
+        }
+    }
+
     #[test]
     fn test_commit_exactly_once() {
         let mut s = session();
@@ -1009,6 +1039,46 @@ mod tests {
         // 已無組字時再按 Enter 不得重複提交。
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "");
+    }
+
+    #[test]
+    fn test_private_keys_skip_learning_and_clear_after_commit() {
+        let mut s = session();
+        let before = s.personal().clone();
+
+        type_syllable_private(&mut s, "ㄈㄥ", true);
+        type_syllable_private(&mut s, "ㄐㄧㄥˇ", true);
+        let mut down = Key::new(KeyCode::Down, None, false);
+        down.private = true;
+        s.press(down);
+        let mut enter = Key::new(KeyCode::Enter, None, false);
+        enter.private = true;
+        s.press(enter);
+        assert!(s.private, "提交前仍要記得這是私密欄位");
+        assert_eq!(s.commit(), "風景");
+        assert!(!s.private, "commit 後 private 必須歸零");
+        assert_eq!(s.personal(), &before, "私密欄位不得寫入個人學習");
+
+        // 下一個一般欄位的按鍵明確帶 false，要能正常學習。
+        type_syllable(&mut s, "ㄈㄥ");
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "風景");
+        assert!(s.personal().is_learned("風景"));
+        assert_ne!(s.personal(), &before);
+    }
+
+    #[test]
+    fn test_private_escape_cancels_state_without_learning() {
+        let mut s = session();
+        let before = s.personal().clone();
+        type_syllable_private(&mut s, "ㄐㄧㄥˇ", true);
+        let mut escape = Key::new(KeyCode::Escape, None, false);
+        escape.private = true;
+        s.press(escape);
+        assert!(!s.private, "cancel 後 private 必須歸零");
+        assert_eq!(s.personal(), &before);
     }
 
     /// rollback window：提交後立刻退格，這次學習要補償回提交前。
