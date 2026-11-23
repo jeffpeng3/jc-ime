@@ -227,6 +227,14 @@ impl AsciiInput {
             ..Default::default()
         };
         let with_space = format!("{} ", self.pending);
+        // 切分器把尾巴判成已完成的注音音節時，照它的切點把前段留成字面，
+        // 尾巴當注音。`rishireej/ ` 因此是 `rishire`＋`ㄍㄨㄥ`，不是整串
+        // 字面；空白是否為一聲完全交給同一條管線決定。
+        if let Some((at, syllable)) = self.planned_boundary(&with_space, lexicon) {
+            self.split_literal(at);
+            self.push_zh(syllable);
+            return;
+        }
         if crate::mixed_latin::space_is_first_tone(
             &with_space,
             &crate::mixed_latin::Options::default(),
@@ -274,6 +282,15 @@ impl AsciiInput {
         }
         self.typed.push(key);
         if let Some(syllable) = mixed_reading(&self.pending, symbol, &self.pieces, lexicon) {
+            self.push_zh(syllable);
+            return true;
+        }
+        // 批次管線會把英數前段和尾巴的注音音節分開（`savul3` 是 `sa`＋
+        // `vul3`），聲調鍵完成的是尾巴那一個音節；照同一份規劃切點拆開，
+        // 增量狀態才不會整串留在 pending。
+        let with_tone = format!("{}{key}", self.pending);
+        if let Some((at, syllable)) = self.planned_boundary(&with_tone, lexicon) {
+            self.split_literal(at);
             self.push_zh(syllable);
             return true;
         }
@@ -346,6 +363,46 @@ impl AsciiInput {
             Some(text) => self.accept(&text),
             None => false,
         }
+    }
+
+    /// 找統一管線判定的英→中切點：回傳（前段字元數, 尾巴的注音音節）。
+    ///
+    /// 只接受最後一個輸出片段是注音、且尾巴只剩空白的情況；前段是 `text`
+    /// 的位元組位移換算成字元數。這是增量版的 `plan_input`，與批次使用同一套
+    /// 詞典與計分，切點不會因為「英文詞前綴」的舊規則而不同。
+    fn planned_boundary(&self, text: &str, lexicon: &dyn Lexicon) -> Option<(usize, Syllable)> {
+        let english = default_english();
+        let adapter = crate::mixed_latin::LexiconAdapter {
+            zh: Some(lexicon),
+            english: Some(english),
+            ..Default::default()
+        };
+        let cfg = crate::mixed::Config::default();
+        let plans = crate::mixed::plan_input(
+            text,
+            english as &dyn crate::mixed::Lookup,
+            &cfg,
+            Some(&adapter),
+        );
+        let plans = crate::mixed::visible_plans(plans, text);
+        let plan = plans.last()?;
+        if plan.mode != Mode::Zh || plan.start == 0 {
+            return None;
+        }
+        // 前段要是純英文字母的 run；`3.5 ` 這種數字與標點混排仍照字面，
+        // 不因為尾巴剛好組得成注音就被拆開。
+        let prefix = &text[..plan.start];
+        if !ascii_letters(prefix) {
+            return None;
+        }
+        if !text[plan.end..].chars().all(char::is_whitespace) {
+            return None;
+        }
+        let syllable = plan.zh.as_deref()?.split_whitespace().next_back()?;
+        Some((
+            text[..plan.start].chars().count(),
+            Syllable::from_raw(syllable),
+        ))
     }
 
     /// 找英→中切點：回傳（前段長度, 後段音節）。
@@ -647,6 +704,7 @@ impl Session {
         }
         self.ascii.reset();
         self.romaji.reset();
+        self.ja_run_keys = raw.clone();
         for ch in raw.chars() {
             self.romaji.press(Key::char(ch, false));
         }
@@ -666,10 +724,42 @@ impl Session {
         }
         self.config.mode = self.ja_prev_mode;
         self.ja_run = false;
+        self.ja_run_keys.clear();
+    }
+
+    /// 日文推斷中退格後，把原始按鍵同步回目前的羅馬字狀態。
+    ///
+    /// `romaji.backspace` 可能一次退掉一整組羅馬字（`kya` 是三個鍵），直接
+    /// 砍一個字元會讓退回混打時重播錯的按鍵。用目前狀態反推最長的原始前綴；
+    /// 找不到時清空，退回混打時就不會硬塞已刪除的按鍵。
+    pub(super) fn sync_ja_run_keys(&mut self) {
+        if !self.ja_run {
+            return;
+        }
+        let units = self.romaji.units().to_vec();
+        let pending = self.romaji.pending().to_string();
+        let chars: Vec<char> = self.ja_run_keys.chars().collect();
+        let mut probe = self.romaji.clone();
+        probe.reset();
+        for len in (0..=chars.len()).rev() {
+            let mut trial = probe.clone();
+            trial.reset();
+            let mut accepted = true;
+            for ch in &chars[..len] {
+                if trial.press(Key::char(*ch, false)) == crate::ja::input::RomajiEvent::Rejected {
+                    accepted = false;
+                    break;
+                }
+            }
+            if accepted && trial.units() == units.as_slice() && trial.pending() == pending {
+                self.ja_run_keys = chars[..len].iter().collect();
+                return;
+            }
+        }
+        self.ja_run_keys.clear();
     }
 
     /// 混合模式的 Backspace：刪掉游標前一個片段。
-    ///
     /// 片段已經是使用者看到的字（`台`、`hello`），不再退回注音或逐字母刪。
     /// 游標在結尾時就是刪最右邊那一段。沒有游標前的片段時回傳 `false`，
     /// 交給呼叫端的舊路徑處理。
@@ -866,20 +956,17 @@ impl Session {
 
     /// 混打推斷的日文片段遇到接不上的按鍵時，結束推斷並改走混打。
     ///
-    /// 已顯示的日文（含尚未完成的羅馬字前綴）先放回混合模式的按鍵流，再把
-    /// 這個按鍵交給混打。這樣 `watashiwaw96j0` 不會停在 `w`：前面的
-    /// `わたしわ` 固定下來，`w96` 接成注音，後續按鍵照常輸入。
+    /// 推斷期間吃掉的原始羅馬字按鍵全部重播回混合模式的按鍵流，再把這個
+    /// 按鍵交給混打。直接固定已顯示的かな會讓增量結果和批次規劃不一致：
+    /// `rishire` 先推斷成日文、多打一個 `e` 後遇到 `j` 時，若把 `りしれえ`
+    /// 整段固定，後面的 `j/` 就只能切成 `ㄨㄥ`；用原按鍵重播則批次會把
+    /// `e` 還給 `ej/`，得到 `りしれ`＋`供`。`watashiwaw96j0` 也走同一條路徑，
+    /// 前面的 `watashiwa` 仍切成日文，`w96` 接成注音。
     pub(super) fn leave_ja_run_for_mixed(&mut self, ch: char) -> bool {
         if !self.ja_run || self.config.mode != Mode::Ja {
             return false;
         }
-        let pending = self.romaji.pending().to_string();
-        let reading: String = self.romaji.units().iter().map(Unit::as_str).collect();
-        let prefix = if self.base.is_empty() {
-            reading
-        } else {
-            self.base.clone()
-        };
+        let keys = std::mem::take(&mut self.ja_run_keys);
         self.romaji.reset();
         if let Some(live) = self.live.as_mut() {
             live.reset();
@@ -887,10 +974,7 @@ impl Session {
         self.ja_run = false;
         self.config.mode = self.ja_prev_mode;
         self.ja_cursor = 0;
-        self.ascii.seed_literal(&prefix);
-        for key in pending.chars() {
-            self.ascii.press(key);
-        }
+        self.ascii.replay(&keys, &self.lexicon);
         if !self.ascii.tone(ch, &self.lexicon) {
             self.ascii.press(ch);
         }
@@ -959,6 +1043,28 @@ impl Session {
             self.rebuild_mixed_zh_candidates();
             return;
         }
+        // 待定按鍵還沒清空，但統一管線已經把尾巴判成完成的注音音節
+        // （`savul3` 是 `sa`＋`vul3`）。候選要列那個音節的詞，不能只列
+        // 原始按鍵；`cands=1` 的字面候選會讓使用者永遠選不到「小」。
+        if let Some(reading) = self.planned_trailing_zh_reading() {
+            if self.mixed_cursor.min(self.segments.len()) == self.segments.len() {
+                self.fill_zh_candidates(reading);
+                if !self
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.surface == raw)
+                {
+                    self.candidates.push(Candidate::new(
+                        raw.clone(),
+                        raw.clone(),
+                        i32::MAX,
+                        CandidateSource::Literal,
+                    ));
+                }
+                self.candidates.truncate(self.max_candidates());
+                return;
+            }
+        }
         let limit = self.max_candidates();
         let mut seen = vec![raw.to_lowercase()];
         if let Some(learned) = self.personal.english_correction(&raw) {
@@ -1015,10 +1121,50 @@ impl Session {
     /// 顯示仍由統一管線決定；候選只取游標所在的那一個音節，不列整串詞，
     /// 也不跨過英文片段去猜前面中文的詞。沒有注音音節時不產生候選。
     fn rebuild_mixed_zh_candidates(&mut self) {
+        // 游標在結尾時直接問統一管線：已完成注音的尾巴就是最後一個注音
+        // 片段。這條路不依賴 `AsciiInput` 的 pending 狀態，`ej/ ` 這種
+        // 空白當一聲、或前段是 ja 的混合 run 才不會只剩字面候選。
+        if self.mixed_cursor.min(self.segments.len()) == self.segments.len() {
+            if let Some(reading) = self.planned_trailing_zh_reading() {
+                self.fill_zh_candidates(reading);
+                return;
+            }
+        }
         let Some((_, _, syllable)) = self.mixed_zh_syllable() else {
             return;
         };
-        let reading = syllable.as_str().to_string();
+        self.fill_zh_candidates(syllable.as_str().to_string());
+    }
+
+    /// 最後一個輸出片段是完成的注音時，回傳尾巴那個音節的讀音。
+    ///
+    /// 只認結尾是聲調鍵或空白（一聲）的注音片段；打在音節中間的前綴仍走
+    /// 原本的英文／注音前綴候選邏輯。
+    fn planned_trailing_zh_reading(&self) -> Option<String> {
+        let text = self.latin_run_text()?;
+        let (plans, _) = self.incremental_latin_split_for(&text)?;
+        let plan = plans.last()?;
+        if plan.mode != Mode::Zh {
+            return None;
+        }
+        let literal = &text[plan.start..plan.end];
+        let last = literal.chars().last()?;
+        let completed = last.is_whitespace()
+            || Keyboard::standard()
+                .symbol(last)
+                .is_some_and(|symbol| class_of(symbol) == Class::Tone);
+        if !completed {
+            return None;
+        }
+        plan.zh
+            .as_deref()?
+            .split_whitespace()
+            .next_back()
+            .map(str::to_string)
+    }
+
+    /// 用一個注音讀音重建候選：詞格＋解碼器取最佳解，字面也保留。
+    fn fill_zh_candidates(&mut self, reading: String) {
         let units = [reading.as_str()];
         let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) else {
             return;
@@ -1766,6 +1912,118 @@ mod tests {
         assert_eq!(s.snapshot().preedit, "りしれ供さ小");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "りしれ供さ小");
+    }
+
+    /// 有競爭者的詞典：多個 ㄍㄨㄥ 詞、`りしれえ` 這類也合法的日文前綴。
+    fn competitive_lexicon() -> InMemoryLexicon {
+        let mut lex = InMemoryLexicon::new();
+        for (surface, reading, cost) in [
+            ("供", "ㄍㄨㄥ", 0),
+            ("公", "ㄍㄨㄥ", 1),
+            ("工", "ㄍㄨㄥ", 2),
+            ("功", "ㄍㄨㄥ", 3),
+            ("小", "ㄒㄧㄠˇ", 0),
+            ("曉", "ㄒㄧㄠˇ", 1),
+            ("翁", "ㄨㄥ", 0),
+        ] {
+            lex.push(LexEntry::new(surface, reading, cost, 0));
+        }
+        lex
+    }
+
+    /// 日文解碼器：真實機器一定載入；會讓 `rishire` 先走日文推斷，
+    /// 再從 `rishiree` 退回混合模式，增量切分才走得到 bug。
+    fn test_ja_decoder() -> std::sync::Arc<crate::ja::decode::JaDecoder> {
+        let entry = crate::ja::lexicon::JaEntry {
+            surface: "今日".into(),
+            reading: "きょう".into(),
+            pos: "名詞,普通名詞,一般,*".into(),
+            conj_type: "*".into(),
+            conj_form: "*".into(),
+            cost: 0,
+            split: crate::ja::lexicon::Split::C,
+        };
+        std::sync::Arc::new(crate::ja::decode::JaDecoder::new(std::sync::Arc::new(
+            TestJaSource(vec![entry]),
+        )))
+    }
+
+    #[test]
+    fn test_mixed_latin_split_commit_with_competitors() {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(competitive_lexicon()));
+        config.ja = Some(test_ja_decoder());
+        let mut s = Session::new(config);
+        for ch in "rishireej/".chars() {
+            s.press(Key::char(ch, false));
+        }
+        assert_eq!(
+            s.snapshot().preedit,
+            "りしれ供",
+            "`rishiree` 不能整段留在日文：e 要還給 ej/"
+        );
+        s.press(Key::new(KeyCode::Space, None, false));
+        assert_eq!(s.snapshot().preedit, "りしれ供", "空白是一聲，不是分隔字面");
+        let after_space = s.snapshot().candidates;
+        assert!(
+            after_space
+                .iter()
+                .any(|candidate| candidate.surface == "供"),
+            "空白後ㄍㄨㄥ要有詞典候選：{:?}",
+            after_space
+                .iter()
+                .map(|candidate| candidate.surface.clone())
+                .collect::<Vec<_>>()
+        );
+        for ch in "savul3".chars() {
+            s.press(Key::char(ch, false));
+        }
+        assert_eq!(s.snapshot().preedit, "りしれ供さ小");
+        let candidates: Vec<String> = s
+            .snapshot()
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.clone())
+            .collect();
+        assert!(candidates.iter().any(|text| text == "小"), "{candidates:?}");
+        assert!(
+            candidates.iter().any(|text| text == "曉"),
+            "同音競爭者也要在候選裡：{candidates:?}"
+        );
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "りしれ供さ小");
+    }
+
+    /// 第二例：`rishireej/ sasmall` 的逐鍵切分要與批次規劃一致。
+    #[test]
+    fn test_mixed_latin_split_sasmall_matches_batch() {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(competitive_lexicon()));
+        config.ja = Some(test_ja_decoder());
+        let mut s = Session::new(config);
+        mixed_type(&mut s, "rishireej/ sasmall");
+        let snap = s.snapshot();
+        assert_eq!(snap.preedit, "りしれ供さsmall");
+        let got: Vec<(Mode, String)> = s
+            .segments()
+            .iter()
+            .map(|segment| {
+                (
+                    segment.mode,
+                    snap.preedit[segment.start..segment.end].to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (Mode::Ja, "りしれ".to_string()),
+                (Mode::Zh, "供".to_string()),
+                (Mode::Ja, "さ".to_string()),
+                (Mode::En, "small".to_string()),
+            ],
+            "批次規劃是 rishire｜ej/ ｜sa｜small"
+        );
     }
 
     /// 對照 `openMixedCandidates`：原按鍵之外列注音本身與結尾聲調的注音。

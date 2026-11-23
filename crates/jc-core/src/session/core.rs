@@ -269,9 +269,14 @@ impl Session {
             Mode::Ja => {
                 let event = self.romaji.press(Key::char(ch, false));
                 // 混打推斷出來的日文片段遇到羅馬字接不上的按鍵（數字、標點）
-                // 時結束推斷，把已顯示的日文當固定前綴，這個鍵改走混打。
-                if self.ja_run && event == crate::ja::input::RomajiEvent::Rejected {
-                    self.leave_ja_run_for_mixed(ch);
+                // 時結束推斷，把原始羅馬字按鍵交回混打重算，這個鍵也一起送。
+                if self.ja_run {
+                    if event == crate::ja::input::RomajiEvent::Rejected {
+                        self.leave_ja_run_for_mixed(ch);
+                    } else {
+                        // 留下原始按鍵，退回混打時用同一串按鍵重算切分。
+                        self.ja_run_keys.push(ch);
+                    }
                 }
             }
             Mode::En => self.raw.push(ch),
@@ -781,6 +786,9 @@ impl Session {
             Mode::Zh => self.backspace_zh(),
             Mode::Ja => {
                 self.romaji.backspace();
+                if self.ja_run {
+                    self.sync_ja_run_keys();
+                }
                 self.leave_empty_japanese_run();
             }
             Mode::En => {
@@ -1694,6 +1702,7 @@ impl Session {
             self.config.mode = self.ja_prev_mode;
             self.ja_run = false;
         }
+        self.ja_run_keys.clear();
         self.zh.reset();
         self.zh_lane = false;
         self.zh_pending_keys.clear();

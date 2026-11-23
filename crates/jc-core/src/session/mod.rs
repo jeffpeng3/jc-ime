@@ -356,6 +356,12 @@ pub struct Session {
     /// 有值時 [`Session::config`] 的 `mode` 暫時是 [`Mode::Ja`]，送出或取消後
     /// 回到原本的模式（對照 `ja_mixed.go` 的 `japaneseRun`）。
     pub(super) ja_run: bool,
+    /// 日文推斷從混合模式接手時吃掉的原始羅馬字按鍵。
+    ///
+    /// 推斷結束要交回混打時，用這串按鍵重新走統一管線，不能直接送出已顯示
+    /// 的かな：`rishiree` 會顯示成 `りしれえ`，但批次規劃會把 `e` 留給後面的
+    /// 注音（`rishire`＋`ej/`）。
+    pub(super) ja_run_keys: String,
     /// 日文推斷前的模式；結束日文片段時還原。
     pub(super) ja_prev_mode: Mode,
     /// Shift 切到 En 之前的模式；再按一次回到它，而不是固定的 Zh。
@@ -480,6 +486,7 @@ impl Session {
             zh_window_last: false,
             zh_run_breaks: Vec::new(),
             ja_run: false,
+            ja_run_keys: String::new(),
             ja_prev_mode: Mode::Mixed,
             toggle_previous_mode: None,
             menu: None,
