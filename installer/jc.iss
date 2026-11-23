@@ -403,11 +403,29 @@ end;
 
 // 檔案複製之前唯一的動手時機。先移除舊 MSI，再清 .old-* 殘骸，最後把
 // 三個可能被載入／映射的程式檔讓開。
+// 安裝／反安裝前先結束常駐的 jc-engine。
+//
+// 它從 {app} 執行並握著 jc-engine.exe；不先收掉，Inno 只能把舊檔改名成
+// .old-<時間戳> 並排到重開機刪除，使用者會出現「DLL 是新的、引擎是舊的」
+// 這種半套升級。安裝程式此時是提權的，taskkill 一定殺得掉；失敗只記 log，
+// 後面 ParkProtectedFiles 仍會讓路。
+procedure StopEngine;
+var
+  ResultCode: Integer;
+begin
+  if Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM jc-engine.exe', '',
+      SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log(Format('停止 jc-engine：exit=%d', [ResultCode]))
+  else
+    Log('停止 jc-engine 失敗（可能沒在執行）');
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Dir: String;
 begin
   Dir := ExpandConstant('{app}');
+  StopEngine;
   RemoveLegacyMsi;
   SweepLeftovers(Dir);
   Result := ParkProtectedFiles(Dir);
@@ -420,6 +438,8 @@ procedure CurUninstallStepChanged(CurStep: TUninstallStep);
 var
   Dir: String;
 begin
+  if CurStep = usUninstall then
+    StopEngine;
   if CurStep = usPostUninstall then begin
     Dir := ExpandConstant('{app}');
     SweepLeftovers(Dir);

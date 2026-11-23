@@ -4,6 +4,20 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.18 - 2026-11-24
+
+### 修正
+
+- 安裝／反安裝前先結束常駐的 `jc-engine`。它從安裝目錄執行並握著
+  `jc-engine.exe`；不先收掉，Inno 只能把舊檔改名成 `.old-<時間戳>` 排到重開機
+  刪除，使用者會遇到「DLL 是新的、引擎是舊的」這種半套升級。
+
+### 文件
+
+- `docs/port/mode-unification.md`：把 core 的 `Zh`／`Ja`／`En` 收斂成只剩
+  `Mixed`、英文只留在 TSF 的分階段計畫。這輪所有候選／游標／刪除 bug 都源自
+  「同一個行為只實作在 `Mode::Zh`」。
+
 ## 0.1.17 - 2026-11-24
 
 ### 修正
