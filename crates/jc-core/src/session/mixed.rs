@@ -1093,7 +1093,7 @@ mod tests {
         assert!(swapped_vowels("2/u"));
     }
 
-    struct TestJaSource(Vec<crate::ja::lexicon::JaEntry>);
+    struct TestJaSource(Vec<crate::ja::lexicon::JaEntry<'static>>);
 
     impl crate::ja::decode::JaWordSource for TestJaSource {
         fn longest_reading_units(&self) -> usize {
@@ -1114,21 +1114,22 @@ mod tests {
                 }
                 out(crate::ja::decode::JaWordMatch {
                     end,
-                    entry,
+                    entry: entry.clone(),
                     left_id: None,
                     right_id: None,
                 });
             }
         }
 
-        fn exact(&self, reading: &[char]) -> Vec<&crate::ja::lexicon::JaEntry> {
+        fn exact<'a>(&'a self, reading: &[char]) -> Vec<crate::ja::lexicon::JaEntry<'a>> {
             self.0
                 .iter()
                 .filter(|entry| entry.reading.chars().eq(reading.iter().copied()))
+                .cloned()
                 .collect()
         }
 
-        fn prefixed(&self, reading: &[char]) -> Vec<&crate::ja::lexicon::JaEntry> {
+        fn prefixed<'a>(&'a self, reading: &[char]) -> Vec<crate::ja::lexicon::JaEntry<'a>> {
             self.0
                 .iter()
                 .filter(|entry| {
@@ -1138,6 +1139,7 @@ mod tests {
                         .take(reading.len())
                         .eq(reading.iter().copied())
                 })
+                .cloned()
                 .collect()
         }
     }
@@ -1151,9 +1153,9 @@ mod tests {
         let entry = crate::ja::lexicon::JaEntry {
             surface: "今日".into(),
             reading: "きょう".into(),
-            pos: Arc::from("名詞,普通名詞,一般,*"),
-            conj_type: Arc::from("*"),
-            conj_form: Arc::from("*"),
+            pos: "名詞,普通名詞,一般,*".into(),
+            conj_type: "*".into(),
+            conj_form: "*".into(),
             cost: 0,
             split: crate::ja::lexicon::Split::C,
         };
@@ -1173,9 +1175,9 @@ mod tests {
             let entry = crate::ja::lexicon::JaEntry {
                 surface: "今日".into(),
                 reading: "きょう".into(),
-                pos: Arc::from("名詞,普通名詞,一般,*"),
-                conj_type: Arc::from("*"),
-                conj_form: Arc::from("*"),
+                pos: "名詞,普通名詞,一般,*".into(),
+                conj_type: "*".into(),
+                conj_form: "*".into(),
                 cost: 0,
                 split: crate::ja::lexicon::Split::C,
             };

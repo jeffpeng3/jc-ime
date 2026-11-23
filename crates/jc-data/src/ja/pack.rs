@@ -1,7 +1,8 @@
 //! 0CJADIC v1／v2 pack 的零拷貝讀取與驗證。
 //!
-//! 檔案用 `memmap2` 映射，結構驗證與字串解碼都在開啟時完成一次；
-//! 之後 `lookup`／`prefix` 只做二分搜尋與切片。
+//! 檔案用 `memmap2` 映射，結構驗證在開啟時完成一次；之後所有查詢都只做
+//! 二分搜尋與切片，詞面與讀音直接借用映射，不建立 `String`／`Box<str>`。
+//! 詞條與 surface index 都留在原本的檔案版面，`Pack` 不另外保存逐筆資料。
 //!
 //! v2 在 v1 之上加了每筆詞條的 left／right context id 與連接成本矩陣，
 //! v1 仍然完整支援。格式定義見
@@ -158,7 +159,47 @@ impl Split {
     }
 }
 
-/// 一筆解碼後的詞條。成本越小越優先。
+/// 一筆借用 pack 映射的詞條。
+///
+/// 這個型別只含切片與整數，不持有任何字串；存活期限受 `Pack` 的借用限制。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntryRef<'a> {
+    /// surface 字串，直接指向映射。
+    pub surface: &'a str,
+    /// 讀音（平假名），直接指向映射。
+    pub reading: &'a str,
+    /// POS table 的索引。
+    pub pos_id: u16,
+    /// 活用型索引。
+    pub conj_type: u8,
+    /// 活用形索引。
+    pub conj_form: u8,
+    /// 詞成本。
+    pub cost: i16,
+    /// split 類別。
+    pub split: Split,
+    /// 原始 flags。
+    pub flags: u16,
+    left_id: Option<u16>,
+    right_id: Option<u16>,
+}
+
+impl EntryRef<'_> {
+    /// left context id。v1 pack 回傳 `None`。
+    pub fn left_id(&self) -> Option<u16> {
+        self.left_id
+    }
+
+    /// right context id。v1 pack 回傳 `None`。
+    pub fn right_id(&self) -> Option<u16> {
+        self.right_id
+    }
+}
+
+/// 一筆擁有字串的詞條。
+///
+/// 讀取端不再使用這個型別（改用 [`EntryRef`]）；保留給寫入端的排序工具與
+/// 測試建構詞條，避免為了排序另外配置一份映射。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     /// surface 字串。
@@ -246,12 +287,6 @@ pub struct Capabilities {
     pub connection_matrix: bool,
 }
 
-struct SurfaceRef {
-    surface: String,
-    first_entry: u32,
-    count: u32,
-}
-
 struct Section {
     name: &'static str,
     start: u64,
@@ -259,14 +294,15 @@ struct Section {
 }
 
 /// 已開啟並驗證的 pack。
+///
+/// 只保存映射與小型的 POS／活用字串表；詞條、surface 與讀音都留在映射裡，
+/// 每次查詢直接切片，不複製到 heap。
 pub struct Pack {
     _map: Mmap,
     header: Header,
     entry_size: usize,
     payload_sha256: [u8; 32],
     file_sha256: [u8; 32],
-    surfaces: Vec<SurfaceRef>,
-    entries: Vec<Entry>,
     pos: Vec<String>,
     conj_types: Vec<String>,
     conj_forms: Vec<String>,
@@ -387,9 +423,16 @@ impl Pack {
         )?;
         let (conj_types, conj_forms) = parse_conj_table(data, &header)?;
         let raw_index = parse_surface_index(data, &header)?;
-        let entries = decode_entries(data, &header, entry_size, &pos, &conj_types, &conj_forms)?;
-        let surfaces = build_surfaces(data, &header, &raw_index, &entries)?;
-        let stats = collect_stats(&entries, &raw_index, header.entry_count)?;
+        let stats = scan_entries(
+            data,
+            &header,
+            entry_size,
+            &pos,
+            &conj_types,
+            &conj_forms,
+            &raw_index,
+        )?;
+        validate_surfaces(data, &header, &raw_index)?;
         let file_sha256 = sha256(data);
 
         Ok(Pack {
@@ -398,8 +441,6 @@ impl Pack {
             entry_size,
             payload_sha256: payload_sum,
             file_sha256,
-            surfaces,
-            entries,
             pos,
             conj_types,
             conj_forms,
@@ -529,9 +570,32 @@ impl Pack {
         self._map.len() as u64
     }
 
+    /// 指定位置的詞條；越界回傳 `None`。
+    pub fn entry(&self, index: usize) -> Option<EntryRef<'_>> {
+        if index >= self.entry_count() {
+            return None;
+        }
+        Some(self.entry_at(index))
+    }
+
+    /// 指定詞條的讀音；越界回傳 `None`。
+    ///
+    /// 只解碼讀音欄位，供依讀音排序或二分搜尋時避免建立整筆 [`EntryRef`]。
+    pub fn entry_reading(&self, index: usize) -> Option<&str> {
+        if index >= self.entry_count() {
+            return None;
+        }
+        let b = self.entry_bytes(index);
+        Some(self.reading_str(u32_at(b, 6), u16_at(b, 10)))
+    }
+
     /// 全部詞條，順序與 pack 內相同。
-    pub fn entries(&self) -> &[Entry] {
-        &self.entries
+    pub fn entries(&self) -> Entries<'_> {
+        Entries {
+            pack: self,
+            start: 0,
+            end: self.entry_count(),
+        }
     }
 
     /// 查 POS 字串。
@@ -550,40 +614,231 @@ impl Pack {
     }
 
     /// 回傳 surface 完全相等的所有詞條，順序與 pack 內相同。
-    pub fn lookup(&self, surface: &str) -> &[Entry] {
-        let idx = self
-            .surfaces
-            .partition_point(|s| s.surface.as_str() < surface);
-        let Some(found) = self.surfaces.get(idx) else {
-            return &[];
-        };
-        if found.surface != surface {
-            return &[];
+    pub fn lookup(&self, surface: &str) -> Vec<EntryRef<'_>> {
+        let count = self.surface_count();
+        let mut lo = 0usize;
+        let mut hi = count;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.surface_at(mid) < surface {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
         }
-        let start = found.first_entry as usize;
-        &self.entries[start..start + found.count as usize]
+        if lo >= count || self.surface_at(lo) != surface {
+            return Vec::new();
+        }
+        self.surface_entries(lo).into_iter().collect()
     }
 
     /// surface 是否存在。
     pub fn has(&self, surface: &str) -> bool {
-        !self.lookup(surface).is_empty()
+        let count = self.surface_count();
+        let mut lo = 0usize;
+        let mut hi = count;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.surface_at(mid) < surface {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo < count && self.surface_at(lo) == surface
     }
 
     /// 以 prefix 開頭的 surface 的所有詞條，依 surface 排序。
     pub fn prefix<'a>(&'a self, prefix: &str) -> PrefixIter<'a> {
-        let idx = self
-            .surfaces
-            .partition_point(|s| s.surface.as_str() < prefix);
+        let count = self.surface_count();
+        let mut lo = 0usize;
+        let mut hi = count;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.surface_at(mid) < prefix {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
         PrefixIter {
             pack: self,
-            surface_idx: idx,
+            surface_idx: lo,
             entry_idx: 0,
             started: false,
-            finished: idx >= self.surfaces.len(),
+            finished: lo >= count,
             prefix: prefix.to_owned(),
         }
     }
+
+    /// 詞條原始位元組。
+    fn entry_bytes(&self, index: usize) -> &[u8] {
+        let start = self.header.entries_offset as usize + index * self.entry_size;
+        &self._map[start..start + self.entry_size]
+    }
+
+    /// 由原始位元組建立借用詞條。
+    fn entry_at(&self, index: usize) -> EntryRef<'_> {
+        let b = self.entry_bytes(index);
+        let surface_offset = u32_at(b, 0);
+        let surface_len = u16_at(b, 4);
+        let reading_offset = u32_at(b, 6);
+        let reading_len = u16_at(b, 10);
+        let flags = u16_at(b, 18);
+        let (left_id, right_id) = if self.entry_size == ENTRY_SIZE_V2 {
+            (Some(u16_at(b, 20)), Some(u16_at(b, 22)))
+        } else {
+            (None, None)
+        };
+        EntryRef {
+            surface: self.surface_str(surface_offset, surface_len),
+            reading: self.reading_str(reading_offset, reading_len),
+            pos_id: u16_at(b, 12),
+            conj_type: b[14],
+            conj_form: b[15],
+            cost: i16::from_le_bytes([b[16], b[17]]),
+            // 開啟時已驗證 flags 只有合法值。
+            split: Split::from_bits(flags).expect("pack 開啟時已驗證 split"),
+            flags,
+            left_id,
+            right_id,
+        }
+    }
+
+    /// surface blob 的切片。
+    fn surface_str(&self, offset: u32, len: u16) -> &str {
+        let start = self.header.surface_blob_offset as usize + offset as usize;
+        let end = start + len as usize;
+        std::str::from_utf8(&self._map[start..end]).expect("pack 開啟時已驗證 UTF-8")
+    }
+
+    /// reading blob 的切片。
+    fn reading_str(&self, offset: u32, len: u16) -> &str {
+        let start = self.header.reading_blob_offset as usize + offset as usize;
+        let end = start + len as usize;
+        std::str::from_utf8(&self._map[start..end]).expect("pack 開啟時已驗證 UTF-8")
+    }
+
+    /// surface index 的 `(offset, first_entry)`。
+    fn surface_index_at(&self, index: usize) -> (u32, u32) {
+        let base = self.header.index_offset as usize + index * INDEX_ENTRY_SIZE;
+        (u32_at(&self._map, base), u32_at(&self._map, base + 4))
+    }
+
+    /// surface index 指向的詞面。
+    fn surface_at(&self, index: usize) -> &str {
+        let (offset, first) = self.surface_index_at(index);
+        let len = u16_at(self.entry_bytes(first as usize), 4);
+        self.surface_str(offset, len)
+    }
+
+    /// surface index 對應的詞條範圍。
+    fn surface_entries(&self, index: usize) -> Entries<'_> {
+        let (_, first) = self.surface_index_at(index);
+        let end = if index + 1 < self.surface_count() {
+            self.surface_index_at(index + 1).1
+        } else {
+            self.header.entry_count
+        };
+        Entries {
+            pack: self,
+            start: first as usize,
+            end: end as usize,
+        }
+    }
 }
+
+/// `Pack::entries` 回傳的詞條範圍。
+#[derive(Clone, Copy)]
+pub struct Entries<'a> {
+    pack: &'a Pack,
+    start: usize,
+    end: usize,
+}
+
+impl<'a> Entries<'a> {
+    /// 範圍內的詞條數。
+    pub fn len(&self) -> usize {
+        self.end.saturating_sub(self.start)
+    }
+
+    /// 範圍是否為空。
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// 指定位置的詞條；越界回傳 `None`。
+    pub fn get(&self, index: usize) -> Option<EntryRef<'a>> {
+        if index >= self.len() {
+            return None;
+        }
+        self.pack.entry(self.start + index)
+    }
+
+    /// 依序走訪範圍內的詞條。
+    pub fn iter(&self) -> EntryIter<'a> {
+        EntryIter {
+            pack: self.pack,
+            next: self.start,
+            end: self.end,
+        }
+    }
+}
+
+impl std::fmt::Debug for Entries<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Entries").field("len", &self.len()).finish()
+    }
+}
+
+impl<'a> IntoIterator for Entries<'a> {
+    type Item = EntryRef<'a>;
+    type IntoIter = EntryIter<'a>;
+
+    fn into_iter(self) -> EntryIter<'a> {
+        EntryIter {
+            pack: self.pack,
+            next: self.start,
+            end: self.end,
+        }
+    }
+}
+
+impl<'a> IntoIterator for &Entries<'a> {
+    type Item = EntryRef<'a>;
+    type IntoIter = EntryIter<'a>;
+
+    fn into_iter(self) -> EntryIter<'a> {
+        self.iter()
+    }
+}
+
+/// [`Entries`] 的迭代器。
+pub struct EntryIter<'a> {
+    pack: &'a Pack,
+    next: usize,
+    end: usize,
+}
+
+impl<'a> Iterator for EntryIter<'a> {
+    type Item = EntryRef<'a>;
+
+    fn next(&mut self) -> Option<EntryRef<'a>> {
+        if self.next >= self.end {
+            return None;
+        }
+        let entry = self.pack.entry_at(self.next);
+        self.next += 1;
+        Some(entry)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = self.end.saturating_sub(self.next);
+        (left, Some(left))
+    }
+}
+
+impl ExactSizeIterator for EntryIter<'_> {}
 
 /// `Pack::prefix` 的迭代器。
 pub struct PrefixIter<'a> {
@@ -596,28 +851,37 @@ pub struct PrefixIter<'a> {
 }
 
 impl<'a> Iterator for PrefixIter<'a> {
-    type Item = &'a Entry;
+    type Item = EntryRef<'a>;
 
-    fn next(&mut self) -> Option<&'a Entry> {
+    fn next(&mut self) -> Option<EntryRef<'a>> {
         loop {
             if self.finished {
                 return None;
             }
-            let Some(current) = self.pack.surfaces.get(self.surface_idx) else {
+            if self.surface_idx >= self.pack.surface_count() {
                 self.finished = true;
                 return None;
-            };
+            }
+            let (_, first) = self.pack.surface_index_at(self.surface_idx);
             if !self.started {
-                if !current.surface.starts_with(&self.prefix) {
+                if !self
+                    .pack
+                    .surface_at(self.surface_idx)
+                    .starts_with(&self.prefix)
+                {
                     self.finished = true;
                     return None;
                 }
                 self.started = true;
-                self.entry_idx = current.first_entry as usize;
+                self.entry_idx = first as usize;
             }
-            let end = current.first_entry as usize + current.count as usize;
-            if self.entry_idx < end {
-                let entry = &self.pack.entries[self.entry_idx];
+            let end = if self.surface_idx + 1 < self.pack.surface_count() {
+                self.pack.surface_index_at(self.surface_idx + 1).1
+            } else {
+                self.pack.header.entry_count
+            };
+            if self.entry_idx < end as usize {
+                let entry = self.pack.entry_at(self.entry_idx);
                 self.entry_idx += 1;
                 return Some(entry);
             }
@@ -640,6 +904,19 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{b:02x}");
     }
     out
+}
+
+fn u16_at(data: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([data[offset], data[offset + 1]])
+}
+
+fn u32_at(data: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ])
 }
 
 fn validate_sections(header: &Header, payload_end: usize) -> Result<(), PackError> {
@@ -922,18 +1199,8 @@ fn parse_surface_index(data: &[u8], header: &Header) -> Result<Vec<(u32, u32)>, 
     let mut prev_first = 0u32;
     for i in 0..count {
         let base = i * INDEX_ENTRY_SIZE;
-        let offset = u32::from_le_bytes([
-            bytes[base],
-            bytes[base + 1],
-            bytes[base + 2],
-            bytes[base + 3],
-        ]);
-        let first = u32::from_le_bytes([
-            bytes[base + 4],
-            bytes[base + 5],
-            bytes[base + 6],
-            bytes[base + 7],
-        ]);
+        let offset = u32_at(bytes, base);
+        let first = u32_at(bytes, base + 4);
         if i == 0 {
             if offset != 0 {
                 return Err(PackError::FirstSurfaceOffset(offset));
@@ -975,15 +1242,16 @@ fn parse_surface_index(data: &[u8], header: &Header) -> Result<Vec<(u32, u32)>, 
     Ok(out)
 }
 
-fn blob_str(
-    data: &[u8],
+/// 借用 blob 內的 UTF-8 字串；不配置。
+fn blob_str<'a>(
+    data: &'a [u8],
     blob_offset: u32,
     blob_len: u32,
     offset: u32,
     length: u16,
     field: &'static str,
     index: u32,
-) -> Result<String, PackError> {
+) -> Result<&'a str, PackError> {
     let end = offset as u64 + length as u64;
     if end > blob_len as u64 {
         return Err(match field {
@@ -1004,37 +1272,42 @@ fn blob_str(
     let start = blob_offset as usize + offset as usize;
     let stop = start + length as usize;
     let raw = &data[start..stop];
-    std::str::from_utf8(raw)
-        .map(str::to_owned)
-        .map_err(|_| PackError::InvalidUtf8 { index, field })
+    std::str::from_utf8(raw).map_err(|_| PackError::InvalidUtf8 { index, field })
 }
 
-fn decode_entries(
+/// 掃描全部詞條、驗證欄位並累計統計；不建立逐筆結構。
+fn scan_entries(
     data: &[u8],
     header: &Header,
     entry_size: usize,
     pos: &[String],
     conj_types: &[String],
     conj_forms: &[String],
-) -> Result<Vec<Entry>, PackError> {
+    raw_index: &[(u32, u32)],
+) -> Result<Stats, PackError> {
     let count = header.entry_count as usize;
-    let mut out = Vec::with_capacity(count);
+    let mut stats = Stats {
+        cost_min: i16::MAX,
+        cost_max: MIN_COST,
+        negative_costs: 0,
+        split_counts: [0; 3],
+        max_readings: 0,
+        max_reading_unit: 0,
+    };
     for i in 0..count {
         let base = header.entries_offset as usize + i * entry_size;
         let b = &data[base..base + entry_size];
-        let surface_offset = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-        let surface_len = u16::from_le_bytes([b[4], b[5]]);
-        let reading_offset = u32::from_le_bytes([b[6], b[7], b[8], b[9]]);
-        let reading_len = u16::from_le_bytes([b[10], b[11]]);
-        let pos_id = u16::from_le_bytes([b[12], b[13]]);
+        let surface_offset = u32_at(b, 0);
+        let surface_len = u16_at(b, 4);
+        let reading_offset = u32_at(b, 6);
+        let reading_len = u16_at(b, 10);
+        let pos_id = u16_at(b, 12);
         let conj_type = b[14];
         let conj_form = b[15];
         let cost = i16::from_le_bytes([b[16], b[17]]);
-        let flags = u16::from_le_bytes([b[18], b[19]]);
-        let (left_id, right_id) = if entry_size == ENTRY_SIZE_V2 {
-            let left = u16::from_le_bytes([b[20], b[21]]);
-            let right = u16::from_le_bytes([b[22], b[23]]);
-            for (side, id) in [("left_id", left), ("right_id", right)] {
+        let flags = u16_at(b, 18);
+        if entry_size == ENTRY_SIZE_V2 {
+            for (side, id) in [("left_id", u16_at(b, 20)), ("right_id", u16_at(b, 22))] {
                 if id >= header.context_count {
                     return Err(PackError::EntryContextOutOfRange {
                         index: i as u32,
@@ -1044,10 +1317,7 @@ fn decode_entries(
                     });
                 }
             }
-            (Some(left), Some(right))
-        } else {
-            (None, None)
-        };
+        }
         let index = i as u32;
 
         if pos_id as usize >= pos.len() {
@@ -1112,22 +1382,25 @@ fn decode_entries(
         if reading.is_empty() {
             return Err(PackError::EmptyReading { index });
         }
-        check_reading(index, &surface, &reading)?;
+        check_reading(index, surface, reading)?;
 
-        out.push(Entry {
-            surface: surface.into_boxed_str(),
-            reading: reading.into_boxed_str(),
-            pos_id,
-            conj_type,
-            conj_form,
-            cost,
-            split,
-            flags,
-            left_id,
-            right_id,
-        });
+        stats.cost_min = stats.cost_min.min(cost);
+        stats.cost_max = stats.cost_max.max(cost);
+        if cost < 0 {
+            stats.negative_costs += 1;
+        }
+        stats.split_counts[split as usize] += 1;
+        let units = reading.chars().count();
+        stats.max_reading_unit = stats.max_reading_unit.max(units);
     }
-    Ok(out)
+    for (i, &(_, first)) in raw_index.iter().enumerate() {
+        let end = raw_index
+            .get(i + 1)
+            .map(|r| r.1)
+            .unwrap_or(header.entry_count);
+        stats.max_readings = stats.max_readings.max((end - first) as usize);
+    }
+    Ok(stats)
 }
 
 pub(crate) fn is_hiragana(ch: char) -> bool {
@@ -1166,13 +1439,28 @@ fn check_reading(index: u32, surface: &str, reading: &str) -> Result<(), PackErr
     Ok(())
 }
 
-fn build_surfaces(
+fn validate_surfaces(
     data: &[u8],
     header: &Header,
     raw_index: &[(u32, u32)],
-    entries: &[Entry],
-) -> Result<Vec<SurfaceRef>, PackError> {
-    let mut surfaces = Vec::with_capacity(raw_index.len());
+) -> Result<(), PackError> {
+    let entry_size = entry_len(header);
+    let entry_surface = |first: u32| -> Result<&str, PackError> {
+        let base = header.entries_offset as usize + first as usize * entry_size;
+        let b = &data[base..base + entry_size];
+        let offset = u32_at(b, 0);
+        let len = u16_at(b, 4);
+        blob_str(
+            data,
+            header.surface_blob_offset,
+            header.surface_blob_length,
+            offset,
+            len,
+            "surface",
+            first,
+        )
+    };
+
     for (i, &(offset, first)) in raw_index.iter().enumerate() {
         let end = raw_index
             .get(i + 1)
@@ -1181,11 +1469,11 @@ fn build_surfaces(
         if end <= first {
             return Err(PackError::EmptySurfaceRange { index: i + 1 });
         }
-        let entry = &entries[first as usize];
-        if entry.surface.len() > u16::MAX as usize {
+        let surface = entry_surface(first)?;
+        if surface.len() > u16::MAX as usize {
             return Err(PackError::SurfaceLengthOverflow {
                 index: i + 1,
-                length: entry.surface.len(),
+                length: surface.len(),
             });
         }
         let indexed = blob_str(
@@ -1193,103 +1481,86 @@ fn build_surfaces(
             header.surface_blob_offset,
             header.surface_blob_length,
             offset,
-            entry.surface.len() as u16,
+            surface.len() as u16,
             "surface",
             first,
         )?;
-        if indexed != entry.surface.as_ref() {
+        if indexed != surface {
             return Err(PackError::SurfaceIndexPointsElsewhere {
                 index: i + 1,
-                indexed,
-                entry: entry.surface.to_string(),
+                indexed: indexed.to_owned(),
+                entry: surface.to_owned(),
             });
         }
-        surfaces.push(SurfaceRef {
-            surface: entry.surface.to_string(),
-            first_entry: first,
-            count: end - first,
-        });
     }
 
     let mut surface_idx = 0usize;
     let mut previous: Option<&str> = None;
-    for (i, entry) in entries.iter().enumerate() {
+    for i in 0..header.entry_count as usize {
+        let entry = entry_surface(i as u32)?;
         if let Some(prev) = previous {
-            if entry.surface.as_ref() < prev {
+            if entry < prev {
                 return Err(PackError::SurfaceOrder {
                     index: i as u32,
-                    surface: entry.surface.to_string(),
+                    surface: entry.to_owned(),
                     previous: prev.to_owned(),
                 });
             }
         }
-        let is_new = previous != Some(entry.surface.as_ref());
+        let is_new = previous != Some(entry);
         if is_new {
-            let Some(reference) = surfaces.get(surface_idx) else {
+            let Some(reference) = raw_index.get(surface_idx) else {
                 return Err(PackError::UnindexedSurface {
                     index: i as u32,
-                    surface: entry.surface.to_string(),
+                    surface: entry.to_owned(),
                 });
             };
-            if reference.first_entry != i as u32 {
+            if reference.1 != i as u32 {
                 return Err(PackError::SurfaceFirstEntryMismatch {
                     index: surface_idx + 1,
-                    expected: reference.first_entry,
+                    expected: reference.1,
                     actual: i as u32,
                 });
             }
-            if reference.surface.len() != entry.surface.len() {
+            let indexed = blob_str(
+                data,
+                header.surface_blob_offset,
+                header.surface_blob_length,
+                reference.0,
+                entry.len() as u16,
+                "surface",
+                i as u32,
+            )?;
+            if indexed.len() != entry.len() {
                 return Err(PackError::SurfaceLengthMismatch {
-                    surface: entry.surface.to_string(),
-                    length: entry.surface.len(),
-                    indexed: reference.surface.len() as u16,
+                    surface: entry.to_owned(),
+                    length: entry.len(),
+                    indexed: indexed.len() as u16,
                 });
             }
             surface_idx += 1;
         }
-        previous = Some(entry.surface.as_ref());
+        previous = Some(entry);
     }
-    if surface_idx != surfaces.len() {
+    if surface_idx != raw_index.len() {
         return Err(PackError::SurfaceIndexCountMismatch {
-            index_count: surfaces.len(),
+            index_count: raw_index.len(),
             matched: surface_idx,
         });
     }
     if let Some(last) = raw_index.last() {
-        let last_len = entries[last.1 as usize].surface.len() as u64;
+        let last_len = entry_surface(last.1)?.len() as u64;
         if last.0 as u64 + last_len != header.surface_blob_length as u64 {
             return Err(PackError::SurfaceBlobTrailingBytes);
         }
     }
-    Ok(surfaces)
+    Ok(())
 }
 
-fn collect_stats(
-    entries: &[Entry],
-    raw_index: &[(u32, u32)],
-    entry_count: u32,
-) -> Result<Stats, PackError> {
-    let mut stats = Stats {
-        cost_min: i16::MAX,
-        cost_max: MIN_COST,
-        negative_costs: 0,
-        split_counts: [0; 3],
-        max_readings: 0,
-        max_reading_unit: 0,
-    };
-    for entry in entries {
-        stats.cost_min = stats.cost_min.min(entry.cost);
-        stats.cost_max = stats.cost_max.max(entry.cost);
-        if entry.cost < 0 {
-            stats.negative_costs += 1;
-        }
-        stats.split_counts[entry.split as usize] += 1;
-        let units = entry.reading.chars().count();
-        stats.max_reading_unit = stats.max_reading_unit.max(units);
+fn entry_len(header: &Header) -> usize {
+    if header.format_version == FORMAT_VERSION_V2 {
+        ENTRY_SIZE_V2
+    } else {
+        ENTRY_SIZE
     }
-    for (i, &(_, first)) in raw_index.iter().enumerate() {
-        let end = raw_index.get(i + 1).map(|r| r.1).unwrap_or(entry_count);
-        stats.max_readings = stats.max_readings.max((end - first) as usize);
-    }
-    Ok(stats)
 }

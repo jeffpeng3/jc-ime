@@ -137,7 +137,7 @@ fn run() -> Result<(), String> {
             "surface", "lid", "rid", "cost", "pos"
         );
         for entry in raw_pack.entries() {
-            if entry.reading.as_ref() != reading {
+            if entry.reading != reading {
                 continue;
             }
             println!(
@@ -268,13 +268,16 @@ impl PathCost {
 }
 
 /// 依位置展開所有完整路徑。
-fn enumerate(lat: &jc_core::ja::decode::Lattice, len: usize) -> Vec<Vec<&JaNode>> {
+fn enumerate<'a>(
+    lat: &'a jc_core::ja::decode::Lattice<'a>,
+    len: usize,
+) -> Vec<Vec<&'a JaNode<'a>>> {
     fn walk<'a>(
-        lat: &'a jc_core::ja::decode::Lattice,
+        lat: &'a jc_core::ja::decode::Lattice<'a>,
         len: usize,
         pos: usize,
-        cur: &mut Vec<&'a JaNode>,
-        out: &mut Vec<Vec<&'a JaNode>>,
+        cur: &mut Vec<&'a JaNode<'a>>,
+        out: &mut Vec<Vec<&'a JaNode<'a>>>,
     ) {
         if pos == len {
             out.push(cur.clone());
@@ -296,7 +299,7 @@ fn enumerate(lat: &jc_core::ja::decode::Lattice, len: usize) -> Vec<Vec<&JaNode>
 ///
 /// 連接成本的判定與 [`JaDecoder`] 相同：左詞有 right ID 且右詞有 left ID 時
 /// 查 context 矩陣，否則退回固定詞性成本。
-fn cost_path(path: &[&JaNode], matrix: &JaConnectionCost, has_matrix: bool) -> PathCost {
+fn cost_path(path: &[&JaNode<'_>], matrix: &JaConnectionCost, has_matrix: bool) -> PathCost {
     let mut words = 0i32;
     let mut conn = 0i32;
     let mut word_terms: Vec<(String, i32)> = Vec::new();

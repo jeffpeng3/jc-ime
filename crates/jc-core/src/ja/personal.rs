@@ -1939,7 +1939,7 @@ mod tests {
     // ---- learning.go ----
 
     struct TestSource {
-        words: Vec<JaEntry>,
+        words: Vec<JaEntry<'static>>,
         longest: usize,
     }
 
@@ -1962,28 +1962,30 @@ mod tests {
                 }
                 out(JaWordMatch {
                     end,
-                    entry,
+                    entry: entry.clone(),
                     left_id: None,
                     right_id: None,
                 });
             }
         }
 
-        fn exact(&self, reading: &[char]) -> Vec<&JaEntry> {
+        fn exact<'a>(&'a self, reading: &[char]) -> Vec<JaEntry<'a>> {
             self.words
                 .iter()
                 .filter(|entry| entry.reading.chars().eq(reading.iter().copied()))
+                .cloned()
                 .collect()
         }
 
-        fn prefixed(&self, reading: &[char]) -> Vec<&JaEntry> {
-            let mut out: Vec<&JaEntry> = self
+        fn prefixed<'a>(&'a self, reading: &[char]) -> Vec<JaEntry<'a>> {
+            let mut out: Vec<JaEntry<'a>> = self
                 .words
                 .iter()
                 .filter(|entry| {
                     let units: Vec<char> = entry.reading.chars().collect();
                     units.len() >= reading.len() && units[..reading.len()] == reading[..]
                 })
+                .cloned()
                 .collect();
             out.sort_by(|a, b| {
                 a.cost
@@ -1995,19 +1997,19 @@ mod tests {
         }
     }
 
-    fn test_entry(surface: &str, cost: i32, reading: &str) -> JaEntry {
+    fn test_entry(surface: &'static str, cost: i32, reading: &'static str) -> JaEntry<'static> {
         JaEntry {
             surface: surface.into(),
             reading: reading.into(),
-            pos: Arc::from("名詞,普通名詞,一般,*"),
-            conj_type: Arc::from("*"),
-            conj_form: Arc::from("*"),
+            pos: "名詞,普通名詞,一般,*".into(),
+            conj_type: "*".into(),
+            conj_form: "*".into(),
             cost,
             split: Split::C,
         }
     }
 
-    fn test_decoder(entries: Vec<JaEntry>) -> JaDecoder {
+    fn test_decoder(entries: Vec<JaEntry<'static>>) -> JaDecoder {
         let longest = entries.iter().map(JaEntry::units).max().unwrap_or(0);
         JaDecoder::new(Arc::new(TestSource {
             words: entries,
