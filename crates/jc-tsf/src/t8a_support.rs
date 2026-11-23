@@ -675,7 +675,23 @@ impl Transport for Scripted {
                 Some(self.snapshot(String::new()))
             }
             "key" => {
-                let key = request["key"].as_str().unwrap_or("").to_string();
+                // 按鍵現在一律是 jc 的結構化 Key（`to_jc_request` 轉的）；這裡是
+                // 假引擎，要把它還原成 0c 鍵名才對得上下面的邊界判斷。
+                let key = match request["key"].as_str() {
+                    Some(name) => name.to_string(),
+                    None => {
+                        let name = serde_json::from_value::<jc_proto::Key>(request["key"].clone())
+                            .ok()
+                            .and_then(|key| crate::keys::to_protocol(&key))
+                            .unwrap_or_default();
+                        // `to_protocol` 把 Tab 與 ShiftTab 都寫成 "BackTab"。
+                        if name == "BackTab" {
+                            "Tab".to_string()
+                        } else {
+                            name
+                        }
+                    }
+                };
                 let boundary = matches!(
                     key.as_str(),
                     " " | "Left" | "Enter" | "Delete" | "Tab" | "."
