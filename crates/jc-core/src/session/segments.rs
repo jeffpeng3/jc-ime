@@ -721,13 +721,13 @@ mod tests {
 
     fn session() -> Session {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         Session::new(config)
     }
 
     fn toneless_session() -> Session {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.toneless = true;
         Session::new(config)
     }
@@ -967,7 +967,7 @@ mod tests {
     #[test]
     fn test_phonetic_candidates_find_one_symbol_apart_word() {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.max_candidates = 10;
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄇㄚˊ");
@@ -997,7 +997,7 @@ mod tests {
     }
     fn error_hint_session() -> Session {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.zhuyin_error_hint = true;
         Session::new(config)
     }
@@ -1129,7 +1129,7 @@ mod tests {
     #[test]
     fn test_fuzzy_near_reading_is_not_blocked() {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.zhuyin_error_hint = true;
         config.fuzzy_pairs = vec![('ㄙ', 'ㄕ')];
         let mut s = Session::new(config);
@@ -1138,7 +1138,7 @@ mod tests {
         assert_eq!(snap.preedit, "書");
 
         let mut strict = SessionConfig::new(Mode::Zh);
-        strict.zh_lexicon = Some(lexicon());
+        strict.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         strict.zhuyin_error_hint = true;
         strict.fuzzy_pairs = Vec::new();
         let mut s = Session::new(strict);
@@ -1176,7 +1176,7 @@ mod tests {
     #[test]
     fn test_tone_gate_is_off_when_toneless() {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.zhuyin_error_hint = true;
         config.toneless = true;
         let mut s = Session::new(config);

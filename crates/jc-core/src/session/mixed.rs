@@ -1229,7 +1229,7 @@ mod tests {
         let mut lex = InMemoryLexicon::new();
         lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
         let mut config = SessionConfig::new(Mode::Mixed);
-        config.zh_lexicon = Some(lex);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         let mut s = Session::new(config);
         for ch in "ji3".chars() {
             s.press(Key::char(ch, false));
@@ -1259,7 +1259,7 @@ mod tests {
         lex.push(LexEntry::new("供", "ㄍㄨㄥ", 0, 0));
         lex.push(LexEntry::new("小", "ㄒㄧㄠˇ", 0, 0));
         let mut config = SessionConfig::new(Mode::Mixed);
-        config.zh_lexicon = Some(lex);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         let mut s = Session::new(config);
         for ch in "rishireej/".chars() {
             s.press(Key::char(ch, false));
@@ -1369,7 +1369,7 @@ mod tests {
         let ctx = ScoreContext::default();
         let router = Router::new().with_zh(&lex, &ctx);
         let mut config = SessionConfig::new(Mode::Mixed);
-        config.zh_lexicon = Some(lex.clone());
+        config.zh_lexicon = Some(std::sync::Arc::new(lex.clone()));
 
         let mut inputs = Vec::new();
         for left in &keys {

@@ -98,7 +98,7 @@ pub struct SessionConfig {
     /// 一次轉換保留幾個候選。
     pub max_candidates: usize,
     /// 注音詞典；`None` 時注音只做原樣輸出。
-    pub zh_lexicon: Option<InMemoryLexicon>,
+    pub zh_lexicon: Option<Arc<InMemoryLexicon>>,
     /// 注音成本設定；`None` 用 [`ScoreContext::default`]。
     pub zh_ctx: Option<ScoreContext>,
     /// 注音 bigram 語言模型（`lm.bin`）；`None` 或沒有 bigram 時只用 unigram。
@@ -271,9 +271,9 @@ pub struct Session {
     /// 換字後是否保留候選窗，直到 Esc 或游標離開目前片段。
     pub(super) keep_candidates: bool,
     pub(super) romaji: RomajiInput,
-    pub(super) lexicon: InMemoryLexicon,
+    pub(super) lexicon: Arc<InMemoryLexicon>,
     /// 不含自訂詞的原始詞典；自訂詞變動時由它重建 [`Session::lexicon`]。
-    pub(super) base_lexicon: InMemoryLexicon,
+    pub(super) base_lexicon: Arc<InMemoryLexicon>,
     /// 個人化學習資料。
     pub(super) personal: PersonalStore,
     pub(super) ctx: ScoreContext,
@@ -382,7 +382,12 @@ impl Session {
             }
         }
         let ctx = config.zh_ctx.clone().unwrap_or_default();
-        let base_lexicon = config.zh_lexicon.clone().unwrap_or_default();
+        // 共用同一份詞典：`config` 的 `Arc` 由引擎的設定工廠提供，多個
+        // session（多個程式）與 `lexicon`／`base_lexicon` 都指向同一塊記憶體。
+        let base_lexicon = config
+            .zh_lexicon
+            .clone()
+            .unwrap_or_else(|| Arc::new(InMemoryLexicon::new()));
         let personal = config.personal.clone();
         let lexicon = personal.augment_lexicon(&base_lexicon);
         let zh_lm = config.zh_lm.clone();
@@ -1001,7 +1006,7 @@ mod tests {
 
     fn session() -> Session {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         Session::new(config)
     }
 
@@ -1124,7 +1129,7 @@ mod tests {
         lex.push(LexEntry::new("井", "ㄐㄧㄥˇ", 0, 0));
         lex.push(LexEntry::new("景", "ㄐㄧㄥˇ", 40, 0));
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lex);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.personal.note_seed("井", 1.0);
         let mut s = Session::new(config);
 
@@ -1148,7 +1153,7 @@ mod tests {
         lex.push(LexEntry::new("井", "ㄐㄧㄥˇ", 0, 0));
         lex.push(LexEntry::new("景", "ㄐㄧㄥˇ", 40, 0));
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lex);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.personal.note_seed("井", 1.0);
         for _ in 0..crate::personal::SKIP_LIMIT {
             config.personal.note_skip("井");
@@ -1287,7 +1292,7 @@ mod tests {
     #[test]
     fn test_ctrl_comma_inserts_fullwidth_comma() {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.ctrl_punct = true;
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄨㄛˇ");
@@ -1300,7 +1305,7 @@ mod tests {
     #[test]
     fn test_punctuator_inserts_mark_before_last_han() {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.punct_mark = Some('，');
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄈㄥ");
@@ -1321,7 +1326,7 @@ mod tests {
     #[test]
     fn test_rerank_prefers_configured_candidate() {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.rerank = Some(RerankOptions {
             weight: 1.0,
             prefer: vec!["城市".to_string()],
@@ -1343,7 +1348,7 @@ mod tests {
         lex.push(LexEntry::new("窩", "ㄨㄛ", 10, 0));
         lex.push(LexEntry::new("想", "ㄒㄧㄤˇ", 0, 0));
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lex);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.toneless = true;
         let mut s = Session::new(config);
         for keys in ["ji", "vu;"] {
@@ -1359,7 +1364,7 @@ mod tests {
     #[test]
     fn test_fuzzy_candidates_appear_before_literal() {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.fuzzy_pairs = vec![('ㄗ', 'ㄓ')];
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄗㄨㄥ");
@@ -1377,7 +1382,7 @@ mod tests {
         lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
         lex.push(LexEntry::new("窩", "ㄨㄛˇ", 5, 0));
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lex);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         let mut s = Session::new(config);
         assert!(s.config.learning, "學習預設必須開啟");
         type_syllable(&mut s, "ㄨㄛˇ");
@@ -1399,7 +1404,7 @@ mod tests {
         lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
         lex.push(LexEntry::new("窩", "ㄨㄛˇ", 5, 0));
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lex);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.learning = false;
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄨㄛˇ");
@@ -1431,7 +1436,7 @@ mod tests {
             lexicon.push(LexEntry::new(*surface, "ㄐㄧ", index as i32, 0));
         }
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon);
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon));
         config.max_candidates = 20;
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄐㄧ");
@@ -1484,7 +1489,7 @@ mod tests {
             lex.push(LexEntry::new(*surface, "ㄕˋ", index as i32, 0));
         }
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lex);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.max_candidates = DEFAULT_MAX_CANDIDATES;
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄕˋ");
@@ -1511,14 +1516,14 @@ mod tests {
             ));
         }
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lex);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.max_candidates = DEFAULT_MAX_CANDIDATES;
         Session::new(config)
     }
 
     fn mixed_session() -> Session {
         let mut config = SessionConfig::new(Mode::Mixed);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         Session::new(config)
     }
 
@@ -1572,7 +1577,7 @@ mod tests {
     #[test]
     fn test_mixed_english_suggestion_and_completion() {
         let mut config = SessionConfig::new(Mode::Mixed);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.english_autocomplete = true;
         let mut s = Session::new(config);
         type_keys(&mut s, "ji3hellp");
@@ -1595,7 +1600,7 @@ mod tests {
             lex.push(LexEntry::new(surface, reading, 0, 0));
         }
         let mut config = SessionConfig::new(Mode::Mixed);
-        config.zh_lexicon = Some(lex);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.english_autocomplete = true;
         Session::new(config)
     }
@@ -1640,7 +1645,7 @@ mod tests {
     #[test]
     fn test_hello_tab_completion_unchanged() {
         let mut config = SessionConfig::new(Mode::Mixed);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.english_autocomplete = true;
         let mut s = Session::new(config);
         type_keys(&mut s, "hellp");
@@ -1687,7 +1692,7 @@ mod tests {
     #[test]
     fn test_ji3hellp_completion_not_regressed() {
         let mut config = SessionConfig::new(Mode::Mixed);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.english_autocomplete = true;
         let mut s = Session::new(config);
         type_keys(&mut s, "ji3hellp");
@@ -1706,7 +1711,7 @@ mod tests {
         ] {
             for space in [false, true] {
                 let mut config = SessionConfig::new(Mode::Mixed);
-                config.zh_lexicon = Some(lexicon());
+                config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
                 config.cjk_latin_space = space;
                 let mut s = Session::new(config);
                 type_keys(&mut s, keys);
@@ -1722,7 +1727,7 @@ mod tests {
         let path = jc_testdata::require_data!("opencc");
         let converter = crate::zhconv::tw2s_from_dir(&path).expect("讀取 OpenCC 字典");
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.simplified = Some(Arc::new(converter));
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄌㄨㄥˊ");
@@ -2083,7 +2088,7 @@ mod tests {
     #[test]
     fn test_mixed_candidates_include_spelling_suggestions() {
         let mut config = SessionConfig::new(Mode::Mixed);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         let mut s = Session::new(config);
         type_keys(&mut s, "recieve");
         let surfaces: Vec<String> = s

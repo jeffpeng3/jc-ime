@@ -653,14 +653,14 @@ mod tests {
 
     fn style_session(id: &str) -> Session {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.style = InputStyle::preset(id).expect("預設存在");
         Session::new(config)
     }
 
     fn plain_session() -> Session {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         Session::new(config)
     }
 
@@ -696,7 +696,7 @@ mod tests {
             ));
         }
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lex);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.max_candidates = 20;
         config.style = InputStyle {
             selection_keys: selection_keys.to_string(),
@@ -822,7 +822,7 @@ mod tests {
     #[test]
     fn test_shift_letter_commit_appends_to_composition() {
         let mut config = SessionConfig::new(Mode::Mixed);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.style = InputStyle::preset("mcbopomofo").expect("預設存在");
         let mut s = Session::new(config);
         type_keys(&mut s, "hello");

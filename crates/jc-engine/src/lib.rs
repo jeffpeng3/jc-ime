@@ -1052,7 +1052,7 @@ mod tests {
         let mut lexicon = InMemoryLexicon::new();
         lexicon.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
         let config = SessionConfig {
-            zh_lexicon: Some(lexicon),
+            zh_lexicon: Some(std::sync::Arc::new(lexicon)),
             ..Default::default()
         };
         let mut engine = Engine::with_session(Session::new(config));

@@ -2313,7 +2313,7 @@ mod tests {
 
     fn session() -> Session {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.max_candidates = 20;
         Session::new(config)
     }
@@ -2479,7 +2479,7 @@ mod tests {
     #[test]
     fn test_space_inserts_space_keeps_literal_behavior() {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.style.space_inserts_space = true;
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄨㄛˇ");
@@ -2501,7 +2501,7 @@ mod tests {
     #[test]
     fn test_snapshot_label_marks_personal_vocab() {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.personal.add_vocab("窩", "ㄨㄛˇ");
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄨㄛˇ");

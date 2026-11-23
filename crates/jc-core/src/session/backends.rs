@@ -15,7 +15,8 @@ use crate::decode::Locks;
 
 /// 注音轉換後端。
 pub struct ZhConvertBackend {
-    lexicon: InMemoryLexicon,
+    /// 與 session 共用同一份詞典；這裡不複製。
+    lexicon: Arc<InMemoryLexicon>,
     ctx: ScoreContext,
     lm: Option<Arc<crate::score::ZhLm>>,
 }
@@ -23,7 +24,7 @@ pub struct ZhConvertBackend {
 impl ZhConvertBackend {
     /// 建立後端。
     pub fn new(
-        lexicon: InMemoryLexicon,
+        lexicon: Arc<InMemoryLexicon>,
         ctx: ScoreContext,
         lm: Option<Arc<crate::score::ZhLm>>,
     ) -> Self {
@@ -168,7 +169,7 @@ mod tests {
 
     #[test]
     fn zh_backend_converts_only_the_given_run() {
-        let mut backend = ZhConvertBackend::new(lexicon(), ScoreContext::default(), None);
+        let mut backend = ZhConvertBackend::new(Arc::new(lexicon()), ScoreContext::default(), None);
         let run = AutoRun {
             span: 0..2,
             reading: "ㄊㄞˊ ㄅㄟˇ".to_string(),
@@ -194,7 +195,7 @@ mod tests {
 
     #[test]
     fn backend_rejects_other_language() {
-        let mut backend = ZhConvertBackend::new(lexicon(), ScoreContext::default(), None);
+        let mut backend = ZhConvertBackend::new(Arc::new(lexicon()), ScoreContext::default(), None);
         let run = AutoRun {
             span: 0..1,
             reading: "あ".to_string(),
@@ -225,7 +226,7 @@ mod tests {
         composition.push_auto("北", "ㄅㄟˇ", 1, Lang::Zh);
         composition.mark_user(0..1);
         let segments = composition.segments().to_vec();
-        let mut backend = ZhConvertBackend::new(lexicon(), ScoreContext::default(), None);
+        let mut backend = ZhConvertBackend::new(Arc::new(lexicon()), ScoreContext::default(), None);
         let mut out = String::new();
         for segment in &segments {
             if segment.owner == Owner::User {

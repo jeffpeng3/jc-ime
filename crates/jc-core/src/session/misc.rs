@@ -641,7 +641,7 @@ mod tests {
 
     fn session() -> Session {
         let mut config = SessionConfig::new(Mode::Zh);
-        config.zh_lexicon = Some(lexicon());
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         Session::new(config)
     }
 
@@ -808,7 +808,7 @@ mod tests {
             let mut lex = InMemoryLexicon::new();
             lex.push(LexEntry::new("新", "ㄒㄧㄣ", 0, 0));
             lex.push(LexEntry::new("圖", "ㄊㄨˊ", 0, 0));
-            config.zh_lexicon = Some(lex);
+            config.zh_lexicon = Some(std::sync::Arc::new(lex));
             config
         });
         type_syllable(&mut s, "ㄒㄧㄣ");
@@ -870,7 +870,7 @@ mod tests {
         let mut config = SessionConfig::new(Mode::Zh);
         let mut lex = InMemoryLexicon::new();
         lex.push(LexEntry::new("風景", "ㄈㄥ ㄐㄧㄥˇ", 0, 0));
-        config.zh_lexicon = Some(lex);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄈㄥ");
         assert_eq!(s.committed_tail(), None);

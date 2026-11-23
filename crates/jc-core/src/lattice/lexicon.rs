@@ -73,6 +73,23 @@ pub trait Lexicon {
     }
 }
 
+/// `Arc<T>` 也是 `Lexicon`：讓呼叫端可以傳 `&self.lexicon`，不必到處寫 `&*`。
+///
+/// 詞典在實機上是 40～55MB，共用一份才有意義；這一層只做轉發，不多一次配置。
+impl<T: Lexicon + ?Sized> Lexicon for std::sync::Arc<T> {
+    fn lookup(&self, reading: &str) -> &[LexEntry] {
+        (**self).lookup(reading)
+    }
+
+    fn prefix(&self, reading: &str) -> Vec<&LexEntry> {
+        (**self).prefix(reading)
+    }
+
+    fn longest_word_units(&self) -> usize {
+        (**self).longest_word_units()
+    }
+}
+
 /// 音節以單一空格分隔的讀音音節數。
 ///
 /// 空字串與只有空白的讀音算 0 個音節。

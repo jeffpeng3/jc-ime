@@ -83,8 +83,8 @@ impl LoadError {
 /// 注音資源：固定詞典、成本設定與 bigram 語言模型。
 #[derive(Debug, Clone)]
 pub struct ZhResources {
-    /// 固定詞典。
-    pub lexicon: InMemoryLexicon,
+    /// 固定詞典；`Arc` 讓所有 session 共用同一份，不逐個複製。
+    pub lexicon: Arc<InMemoryLexicon>,
     /// 成本設定（含 bigram 內插權重）。
     pub ctx: ScoreContext,
     /// bigram 語言模型；`None` 表示只有詞典的 unigram 成本。
@@ -151,7 +151,7 @@ fn load_zh_tsv_resources(data_dir: &Path, bigram: Option<ZhLm>) -> Result<ZhReso
         ..ScoreContext::default()
     };
     Ok(ZhResources {
-        lexicon,
+        lexicon: Arc::new(lexicon),
         ctx,
         lm: bigram.map(Arc::new),
     })
@@ -195,7 +195,7 @@ pub fn load_zh_bin_resources_with_lm(
         ..ScoreContext::default()
     };
     Ok(ZhResources {
-        lexicon,
+        lexicon: Arc::new(lexicon),
         ctx,
         lm: Some(Arc::new(lm)),
     })
@@ -588,7 +588,7 @@ pub fn zh_session_config(mode: Mode, resources: &ZhResources) -> SessionConfig {
     SessionConfig {
         mode,
         max_candidates: 5,
-        zh_lexicon: Some(resources.lexicon.clone()),
+        zh_lexicon: Some(Arc::clone(&resources.lexicon)),
         zh_ctx: Some(resources.ctx.clone()),
         zh_lm: resources.lm.clone(),
         ..SessionConfig::default()

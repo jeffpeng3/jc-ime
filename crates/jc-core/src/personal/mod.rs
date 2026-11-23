@@ -34,6 +34,7 @@ pub mod zhuyin_keys;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -685,15 +686,25 @@ impl Store {
             .map(|(text, readings)| (text.as_str(), readings.as_slice()))
     }
 
-    /// 個人詞典。
-    pub fn augment_lexicon(&self, base: &InMemoryLexicon) -> InMemoryLexicon {
-        let mut lexicon = base.clone();
-        for (text, readings) in self.vocab_entries() {
-            for reading in readings {
-                lexicon.push(LexEntry::new(text, reading, VOCAB_COST, 1));
-            }
+    /// 在固定詞典上疊個人詞，回傳可以直接共用的 `Arc`。
+    ///
+    /// 沒有個人詞時回 `Arc::clone(base)`，**不要**複製：這份詞典在實機上是
+    /// 40～55MB，每個 session 一份、每個程式一份，複製一次就是直接翻倍。
+    pub fn augment_lexicon(&self, base: &Arc<InMemoryLexicon>) -> Arc<InMemoryLexicon> {
+        let extra: Vec<LexEntry> = self
+            .vocab_entries()
+            .flat_map(|(text, readings)| {
+                readings
+                    .iter()
+                    .map(move |reading| LexEntry::new(text, reading, VOCAB_COST, 1))
+            })
+            .collect();
+        if extra.is_empty() {
+            return Arc::clone(base);
         }
-        lexicon
+        let mut lexicon = (**base).clone();
+        lexicon.extend(extra);
+        Arc::new(lexicon)
     }
 
     /// 候選排序鍵：自訂詞與手選單字釘選，其餘依學習權重折抵成本。
@@ -1753,6 +1764,7 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lattice::lexicon::Lexicon;
 
     fn ranked(reading: &str, surfaces: &[(&str, i32)]) -> Vec<crate::Candidate> {
         surfaces
@@ -1766,6 +1778,41 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// 沒有個人詞時 `augment_lexicon` 必須共用同一份 `Arc`。
+    ///
+    /// 這份詞典在實機上是 40～55MB；每一次複製都是直接翻倍，而 session 是每個
+    /// 程式一個，所以這條測試擋的是「明明沒個人詞還複製」的退化。
+    #[test]
+    fn augment_lexicon_shares_base_without_personal_entries() {
+        let base = Arc::new(InMemoryLexicon::new());
+        let store = Store::new();
+        let augmented = store.augment_lexicon(&base);
+        assert!(
+            Arc::ptr_eq(&base, &augmented),
+            "沒有個人詞時要共用同一份詞典，不能複製"
+        );
+    }
+
+    /// 有個人詞時才需要複製：個人詞是疊在固定詞典上的增量。
+    #[test]
+    fn augment_lexicon_copies_when_personal_entries_exist() {
+        let mut base = InMemoryLexicon::new();
+        base.push(LexEntry::new("台北", "ㄊㄞˊ ㄅㄟˇ", 10, 0));
+        let base = Arc::new(base);
+        let mut store = Store::new();
+        store.add_vocab("我家", "ㄨㄛˇ ㄐㄧㄚ");
+        let augmented = store.augment_lexicon(&base);
+        assert!(!Arc::ptr_eq(&base, &augmented), "有個人詞時要另建一份");
+        assert!(
+            !augmented.lookup("ㄨㄛˇ ㄐㄧㄚ").is_empty(),
+            "個人詞要進詞典"
+        );
+        assert!(
+            !augmented.lookup("ㄊㄞˊ ㄅㄟˇ").is_empty(),
+            "固定詞典要保留"
+        );
     }
 
     #[test]

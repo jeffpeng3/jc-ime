@@ -901,7 +901,7 @@ mod tests {
         lexicon.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
         lexicon.push(LexEntry::new("想", "ㄒㄧㄤˇ", 0, 0));
         ZhResources {
-            lexicon,
+            lexicon: std::sync::Arc::new(lexicon),
             ctx: ScoreContext::default(),
             lm: None,
         }
