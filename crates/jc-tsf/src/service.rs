@@ -842,12 +842,9 @@ impl TextService_Impl {
                 .map(|(_, r)| r);
             (st.anchor, recent)
         };
-        let placed = caret::choose(
-            *located,
-            || None, // 本 crate 不查系統插入點：拿不到精確位置就退到上一次組字位置。
-            previous,
-            || caret::around_field(recent),
-        );
+        let placed = caret::choose(*located, caret::system_caret, previous, || {
+            caret::around_field(recent)
+        });
         let st = self.state.borrow();
         if let Err(miss) = located {
             let to = placed.map(|(_, source)| source.name()).unwrap_or("none");
@@ -898,6 +895,8 @@ impl TextService_Impl {
             let mut st = self.state.borrow_mut();
             st.shown = None;
             st.anchor = None;
+            // 失焦、Escape、提交都走這裡：候選窗要跟著收，不能留在畫面上。
+            st.ui.hide();
         }
         self.watch_layout(None);
     }
@@ -1841,6 +1840,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                 st.callback = None;
                 st.ui.hide();
                 st.ui.set_elements(None);
+                // Deactivate 要真的銷毀候選窗與 D2D／D3D／DComp 資源，DllCanUnloadNow 才能回 0。
+                st.ui.shutdown();
                 st.completing = None;
                 st.pending_repost = None;
                 st.composition = None;

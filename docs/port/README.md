@@ -154,6 +154,7 @@
 | [`tsf-installer.md`](tsf-installer.md) | per-machine MSI、TIP 註冊與反安裝 |
 | [`installer-payload.md`](installer-payload.md) | 授權文件與 Jinen tokenizer 進 MSI payload |
 | [`candidate-click.md`](candidate-click.md) | 滑鼠點選改成只送一個數字鍵 |
+| [`d2d-candidates.md`](d2d-candidates.md) | TSF DLL 內自繪候選窗：Direct2D＋DirectComposition，不新增程序 |
 | [`pipe-name.md`](pipe-name.md) | pipe 名稱加入 SID、`JC_IME_PIPE` 與機碼覆寫 |
 | [`os-isolation.md`](os-isolation.md) | 平台 cfg 邊界與 Windows 目標型別檢查 |
 | [`settings-ui.md`](settings-ui.md) | GPUI Kit 設定程式與 `settings.json` |

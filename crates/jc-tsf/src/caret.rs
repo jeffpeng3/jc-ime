@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GUITHREADINFO};
+use windows::Win32::UI::WindowsAndMessaging::{GetCaretPos, GetGUIThreadInfo, GUITHREADINFO};
 
 /// 候選窗位置是從哪裡來的（只進 tsf.log，不進 UI）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +71,54 @@ pub fn thread_has_caret() -> bool {
             y: info.rcCaret.top,
         };
         ClientToScreen(info.hwndCaret, &mut point).as_bool()
+    }
+}
+
+/// 系統插入點：`GetTextExt` 失敗時的退路（要求 3 的 `GetCaretPos`）。
+///
+/// 先問呼叫執行緒自己的插入點；TSF 執行緒通常不持有插入點，再問前景執行緒
+/// （`GetGUIThreadInfo(0)`）的 `rcCaret`，那是同一組「插入點矩形」。
+pub fn system_caret() -> Option<RECT> {
+    unsafe {
+        let current = GetCurrentThreadId();
+        let mut info = GUITHREADINFO {
+            cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        if GetGUIThreadInfo(current, &mut info).is_ok() && !info.hwndCaret.is_invalid() {
+            let mut point = POINT::default();
+            if GetCaretPos(&mut point).is_ok()
+                && ClientToScreen(info.hwndCaret, &mut point).as_bool()
+            {
+                return Some(caret_at(point, info.rcCaret));
+            }
+        }
+        let mut info = GUITHREADINFO {
+            cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        if GetGUIThreadInfo(0, &mut info).is_ok() && !info.hwndCaret.is_invalid() {
+            let mut point = POINT {
+                x: info.rcCaret.left,
+                y: info.rcCaret.top,
+            };
+            if ClientToScreen(info.hwndCaret, &mut point).as_bool() {
+                return Some(caret_at(point, info.rcCaret));
+            }
+        }
+        None
+    }
+}
+
+/// 插入點左上角（螢幕座標）與 GUI 執行緒回報的大小；寬高至少 1，空矩形不算。
+unsafe fn caret_at(point: POINT, client: RECT) -> RECT {
+    let width = (client.right - client.left).max(1);
+    let height = (client.bottom - client.top).max(1);
+    RECT {
+        left: point.x,
+        top: point.y,
+        right: point.x + width,
+        bottom: point.y + height,
     }
 }
 

@@ -10,6 +10,9 @@
 
 pub mod session;
 
+/// 候選窗的純版面（Linux 也編、也測）。
+pub mod candidate_layout;
+
 /// 診斷紀錄、COM 邊界 `guarded`、物件計數。T7a 的過渡實作在 T6 改接這裡。
 pub mod log;
 
@@ -48,6 +51,8 @@ pub mod privacy;
 pub mod service;
 #[cfg(windows)]
 pub mod ui;
+#[cfg(windows)]
+pub mod ui_window;
 
 pub use session::{
     response_to_reply, state_to_snapshot_value, to_jc_request, Client, Mode, Segment, Session,
