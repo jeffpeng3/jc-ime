@@ -576,6 +576,13 @@ pub fn to_jc_request(envelope: &Value) -> Value {
             // UnknownOp；那個請求又進了重播紀錄，之後每次 ensure_open 重播都會
             // 失敗，整個 session 就再也開不起來（實機：每個鍵都「server 不可用」）。
             "display" => json!({"op": "snapshot"}),
+            // 0c 的 cancel 是「宿主終止了組字，丟掉它」。jc 沒有 cancel op，
+            // 對應的動作是按 Escape：引擎清掉組字。送原樣會回 UnknownOp，
+            // 而且每次宿主終止組字都會重試三次（實機 log 會連三行「未知的操作」）。
+            "cancel" => match protocol_key("Escape") {
+                Some(key) => json!({"op": "key", "key": key}),
+                None => json!({"op": "snapshot"}),
+            },
             other => {
                 let mut request = envelope["req"].clone();
                 request["op"] = Value::from(other);
@@ -2215,6 +2222,21 @@ mod tests {
     /// 直接送 `display` 引擎會回 UnknownOp，而這個請求會被記進重播紀錄；之後
     /// `ensure_open` 每次重播都失敗，session 再也開不起來——實機症狀是進英文
     /// 模式後每個鍵都「server 不可用，放行按鍵」。
+    /// 0c 的 cancel 要翻成「按 Escape」，引擎才清得掉組字。
+    ///
+    /// 送原樣會回 UnknownOp，宿主每次終止組字都重試三次。
+    #[test]
+    fn to_jc_request_maps_cancel_to_escape() {
+        let envelope = json!({"op": "handle", "session": 1, "req": {"type": "cancel"}});
+        let request = to_jc_request(&envelope);
+        assert_eq!(request["op"], "key");
+        let parsed: jc_proto::Request = serde_json::from_value(request).unwrap();
+        match parsed {
+            jc_proto::Request::Key { key } => assert_eq!(key.code, jc_proto::KeyCode::Escape),
+            other => panic!("應是 Escape：{other:?}"),
+        }
+    }
+
     #[test]
     fn to_jc_request_maps_display_to_snapshot() {
         let envelope = json!({
