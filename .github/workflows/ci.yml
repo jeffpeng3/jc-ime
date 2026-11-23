@@ -1142,6 +1142,11 @@ jobs:
           }
           Write-Host '32 位元檢視的 profile 機碼已移除'
 
+          # 上面那行 reg query 找不到機碼時 exit 1，那正是「已移除」；但 GitHub
+          # 的 pwsh 包裝會在指令碼結尾用 $LASTEXITCODE 當步驟結束碼，所以要在
+          # 收工前歸零，否則整步明明全過還是紅（run 45148101737）。
+          $global:LASTEXITCODE = 0
+
       # 失敗時把 log 留下來：install.log 有自訂動作的完整輸出，
       # smoke.json 有 12 項 doctor 檢查的逐項結果。
       - name: 上傳失敗記錄
