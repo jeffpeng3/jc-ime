@@ -178,30 +178,34 @@ impl AsciiInput {
         self.typed.push(ch);
     }
 
-    /// 刪掉最後一個按鍵；待定按鍵沒有時刪掉最後一個片段的一個字。
-    pub fn backspace(&mut self) -> bool {
-        if self.pending.pop().is_some() {
-            self.typed.pop();
-            return true;
+    /// 把一段已定案的字面放進按鍵流；不進待定按鍵。
+    ///
+    /// 混打推斷完日文片段後改走別的語言時，已顯示的日文要先變成固定前綴，
+    /// 否則下一次重建會從按鍵流重算而消失。
+    pub(super) fn seed_literal(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
         }
-        let popped = match self.pieces.last_mut() {
-            Some(AsciiPiece::Literal(text)) => {
-                text.pop();
-                if text.is_empty() {
-                    self.pieces.pop();
-                }
-                true
+        self.push_literal(text);
+        self.typed.push_str(text);
+    }
+
+    /// 用新的按鍵流重建待定按鍵與片段。
+    ///
+    /// 刪除整個片段時按鍵流中間會少一段，待定按鍵與片段必須跟著重算；重播
+    /// 規則與 [`Session::press_char`] 相同：空白、聲調鍵、其餘按鍵。非 ASCII
+    /// 的固定字面直接放回片段，不進待定按鍵。
+    pub(super) fn replay(&mut self, keys: &str, lexicon: &dyn Lexicon) {
+        self.reset();
+        for ch in keys.chars() {
+            if !ch.is_ascii() {
+                self.seed_literal(&ch.to_string());
+            } else if ch == ' ' {
+                self.space(lexicon);
+            } else if !self.tone(ch, lexicon) {
+                self.press(ch);
             }
-            Some(AsciiPiece::Zh(_)) => {
-                self.pieces.pop();
-                true
-            }
-            None => false,
-        };
-        if popped {
-            self.typed.pop();
         }
-        popped
     }
 
     /// 空白：完成待定按鍵。
@@ -628,6 +632,171 @@ impl Session {
         self.ja_run = false;
     }
 
+    /// 混合模式的 Backspace：刪掉游標前一個片段。
+    ///
+    /// 片段已經是使用者看到的字（`台`、`hello`），不再退回注音或逐字母刪。
+    /// 游標在結尾時就是刪最右邊那一段。沒有游標前的片段時回傳 `false`，
+    /// 交給呼叫端的舊路徑處理。
+    pub(super) fn backspace_mixed(&mut self) -> bool {
+        let len = self.segments.len();
+        let at = self.mixed_cursor.min(len);
+        if at == 0 {
+            return false;
+        }
+        if self.remove_mixed_segment(at - 1) {
+            return true;
+        }
+        // 舊路徑（沒有統一管線片段）至少退掉按鍵流最後一個字元。
+        let mut typed = self.ascii.typed().to_string();
+        if typed.pop().is_none() {
+            return false;
+        }
+        self.ascii.replay(&typed, &self.lexicon);
+        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        true
+    }
+
+    /// 混合模式的 Delete：刪掉游標後一個片段。
+    pub(super) fn remove_mixed_segment(&mut self, index: usize) -> bool {
+        let Some((start, end)) = self.mixed_typed_spans().get(index).copied() else {
+            return false;
+        };
+        let typed = self.ascii.typed().to_string();
+        if start > end || end > typed.len() || !typed.is_char_boundary(start) {
+            return false;
+        }
+        let mut next = String::with_capacity(typed.len().saturating_sub(end - start));
+        next.push_str(&typed[..start]);
+        next.push_str(&typed[end..]);
+        self.ascii.replay(&next, &self.lexicon);
+        // 游標停在被刪片段的位置：後面若還有片段就停在它前面，否則回到結尾。
+        self.mixed_cursor = index.min(self.segments.len());
+        true
+    }
+
+    /// 目前顯示片段對應的按鍵流範圍（位元組）。
+    ///
+    /// 顯示一律走統一管線，因此用同一份 `plan_input` 重算；回傳長度與
+    /// [`Session::segments`] 對不上時表示目前是舊路徑，呼叫端不要依索引刪除。
+    fn mixed_typed_spans(&self) -> Vec<(usize, usize)> {
+        let Some(text) = self.latin_run_text() else {
+            return Vec::new();
+        };
+        let Some((plans, _)) = self.incremental_latin_split_for(&text) else {
+            return Vec::new();
+        };
+        let rendered = self.render_latin_plans(&text, &plans);
+        plans
+            .iter()
+            .zip(rendered)
+            .filter(|(_, item)| !item.surface.is_empty())
+            .map(|(plan, _)| (plan.start, plan.end))
+            .collect()
+    }
+
+    /// 尾巴連續注音片段在按鍵流中的範圍；沒有時回傳 `None`。
+    ///
+    /// 跟 [`Session::mixed_typed_spans`] 共用同一份切分結果，只用來把選到的
+    /// 中文候選換回按鍵流，不會跨過英文或記號片段。
+    pub(super) fn mixed_trailing_zh_span(&self) -> Option<(usize, usize)> {
+        let text = self.latin_run_text()?;
+        let (plans, _) = self.incremental_latin_split_for(&text)?;
+        let rendered = self.render_latin_plans(&text, &plans);
+        // 先去掉尾端空白（開候選窗時留下的按鍵），再從尾端往回收注音片段。
+        let last = plans.iter().zip(&rendered).rposition(|(_, item)| {
+            !item.surface.is_empty() && !item.surface.chars().all(char::is_whitespace)
+        })?;
+        let mut span: Option<(usize, usize)> = None;
+        for (plan, item) in plans.iter().zip(rendered).take(last + 1) {
+            if item.surface.is_empty() {
+                continue;
+            }
+            if plan.zh.is_some() {
+                span = Some(match span {
+                    Some((start, _)) => (start, plan.end),
+                    None => (plan.start, plan.end),
+                });
+            } else {
+                span = None;
+            }
+        }
+        span
+    }
+
+    /// 把選到的中文候選換進按鍵流，取代目前結尾的注音片段。
+    ///
+    /// 候選字面不是按鍵，放進按鍵流後由管線當固定字面保留；後續打字不會再
+    /// 把它重新解碼掉。沒有結尾注音片段或範圍不對時回傳 `false`。
+    pub(super) fn select_mixed_zh_candidate(&mut self, surface: &str) -> bool {
+        let Some((start, end)) = self.mixed_trailing_zh_span() else {
+            return false;
+        };
+        let typed = self.ascii.typed().to_string();
+        if start > end || end > typed.len() || !typed.is_char_boundary(start) {
+            return false;
+        }
+        let mut next = String::with_capacity(typed.len() + surface.len());
+        next.push_str(&typed[..start]);
+        next.push_str(surface);
+        // 開候選窗的尾端空白不算內容；選字後不要一起送出。
+        if !typed[end..].chars().all(char::is_whitespace) {
+            next.push_str(&typed[end..]);
+        }
+        self.ascii.replay(&next, &self.lexicon);
+        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        true
+    }
+
+    /// 候選窗是空白打開的時候，按鍵流尾巴會留一個空白；送出前拿掉。
+    ///
+    /// 只處理 Mixed 且候選窗開著的情況；英文待定詞真正的結尾空白不會走到
+    /// 這裡（那時候沒有中文候選）。
+    pub(super) fn trim_mixed_candidate_space(&mut self) {
+        if self.config.mode != Mode::Mixed || !self.candidate_window {
+            return;
+        }
+        let typed = self.ascii.typed().to_string();
+        let trimmed = typed.trim_end_matches(' ');
+        if trimmed.len() == typed.len() {
+            return;
+        }
+        self.ascii.replay(trimmed, &self.lexicon);
+    }
+
+    /// 混打推斷的日文片段遇到接不上的按鍵時，結束推斷並改走混打。
+    ///
+    /// 已顯示的日文（含尚未完成的羅馬字前綴）先放回混合模式的按鍵流，再把
+    /// 這個按鍵交給混打。這樣 `watashiwaw96j0` 不會停在 `w`：前面的
+    /// `わたしわ` 固定下來，`w96` 接成注音，後續按鍵照常輸入。
+    pub(super) fn leave_ja_run_for_mixed(&mut self, ch: char) -> bool {
+        if !self.ja_run || self.config.mode != Mode::Ja {
+            return false;
+        }
+        let pending = self.romaji.pending().to_string();
+        let reading: String = self.romaji.units().iter().map(Unit::as_str).collect();
+        let prefix = if self.base.is_empty() {
+            reading
+        } else {
+            self.base.clone()
+        };
+        self.romaji.reset();
+        if let Some(live) = self.live.as_mut() {
+            live.reset();
+        }
+        self.ja_run = false;
+        self.config.mode = self.ja_prev_mode;
+        self.ja_cursor = 0;
+        self.ascii.seed_literal(&prefix);
+        for key in pending.chars() {
+            self.ascii.press(key);
+        }
+        if !self.ascii.tone(ch, &self.lexicon) {
+            self.ascii.press(ch);
+        }
+        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        true
+    }
+
     pub(super) fn rebuild_mixed(&mut self) {
         if self.ascii.is_empty() {
             self.composition.clear();
@@ -684,6 +853,9 @@ impl Session {
         // 同一個拼法有學過的修正時，修正直接排第一，原按鍵留在第二項。
         let raw = self.ascii.pending().to_string();
         if raw.is_empty() {
+            // 注音音節打完後，待定按鍵是空的，但已完成的注音片段仍有候選；
+            // 少了這段，Mixed 按 ↓ 或空白永遠開不了候選窗。
+            self.rebuild_mixed_zh_candidates();
             return;
         }
         let limit = self.max_candidates();
@@ -735,6 +907,55 @@ impl Session {
             }
         }
         self.candidates.truncate(limit);
+    }
+
+    /// 已完成的注音片段（尾巴連續的注音 piece）的候選。
+    ///
+    /// 顯示仍由統一管線決定；候選只取自目前結尾的注音 run，不能跨過英文
+    /// 片段去猜前面中文的詞。沒有注音片段時不產生候選。
+    fn rebuild_mixed_zh_candidates(&mut self) {
+        let mut readings: Vec<String> = Vec::new();
+        let mut trailing = true;
+        for piece in self.ascii.pieces().iter().rev() {
+            match piece {
+                // 開候選窗的空白會留在按鍵流；尾端空白不屬於注音 run。
+                AsciiPiece::Literal(text) if trailing && text.chars().all(char::is_whitespace) => {}
+                AsciiPiece::Zh(syllable) => {
+                    trailing = false;
+                    readings.push(syllable.as_str().to_string());
+                }
+                AsciiPiece::Literal(_) => break,
+            }
+        }
+        readings.reverse();
+        if readings.is_empty() {
+            return;
+        }
+        let units: Vec<&str> = readings.iter().map(String::as_str).collect();
+        let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) else {
+            return;
+        };
+        let scorer = super::core::zh_scorer(&self.ctx, self.zh_lm.as_deref());
+        let decoder = super::core::zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
+        let (mut hypotheses, _) =
+            decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
+        let reading = readings.join(" ");
+        let literal = readings.join("");
+        if self.config.learning {
+            self.personal.rank_hypotheses(&mut hypotheses, &reading);
+        }
+        self.candidates = hypotheses
+            .into_iter()
+            .map(|hypothesis| {
+                let source = if hypothesis.text == literal {
+                    CandidateSource::Literal
+                } else {
+                    CandidateSource::Lexicon
+                };
+                Candidate::new(hypothesis.text, reading.clone(), hypothesis.cost, source)
+            })
+            .collect();
+        self.candidates.truncate(self.max_candidates());
     }
 
     /// 已完成的注音音節轉成字面。
@@ -1218,6 +1439,193 @@ mod tests {
         assert_eq!(s.snapshot().preedit, "わたしです");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "わたしです");
+    }
+
+    /// 混合模式的按鍵輸入；空白走 `Space`，其餘照字元。
+    fn mixed_type(session: &mut Session, keys: &str) {
+        for ch in keys.chars() {
+            let key = if ch == ' ' {
+                Key::new(KeyCode::Space, None, false)
+            } else {
+                Key::char(ch, false)
+            };
+            session.press(key);
+        }
+    }
+
+    /// 注音片段已經轉成詞（`台`）時，Backspace 刪掉整個片段而不是退回
+    /// 注音。使用者看到什麼就刪什麼；退回 `ㄊㄞ` 會讓畫面多出沒看過的字。
+    #[test]
+    fn test_mixed_backspace_deletes_converted_syllable() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("台", "ㄊㄞˊ", 0, 0));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        let mut s = Session::new(config);
+        mixed_type(&mut s, "w96");
+        assert_eq!(s.snapshot().preedit, "台");
+
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "", "整個已轉換的片段被刪掉");
+        assert_eq!(snap.cursor_rune, 0);
+    }
+
+    /// 英文字面片段也是整段刪，不是逐字母退。
+    #[test]
+    fn test_mixed_backspace_deletes_whole_english_segment() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        let mut s = Session::new(config);
+        mixed_type(&mut s, "ji3hello");
+        assert_eq!(s.snapshot().preedit, "我hello");
+
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "我", "英文片段整段刪掉");
+    }
+
+    /// 混合模式打完注音後要有中文候選；↓ 進入選取模式，空白開候選窗。
+    #[test]
+    fn test_mixed_candidates_open_on_down_and_space() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("台", "ㄊㄞˊ", 0, 0));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        let mut s = Session::new(config);
+        mixed_type(&mut s, "w96");
+        let snap = s.snapshot();
+        assert_eq!(snap.preedit, "台");
+        assert!(!snap.candidates.is_empty(), "已完成的注音要有候選");
+        assert!(!s.candidate_window);
+
+        let down = s.press(Key::new(KeyCode::Down, None, false));
+        assert!(s.candidate_window, "↓ 開候選窗");
+        assert!(down.navigating, "↓ 進入選取模式");
+        assert_eq!(down.highlighted, 0, "第一下不移動反白");
+
+        let mut s = Session::new({
+            let mut config = SessionConfig::new(Mode::Mixed);
+            let mut lex = InMemoryLexicon::new();
+            lex.push(LexEntry::new("台", "ㄊㄞˊ", 0, 0));
+            config.zh_lexicon = Some(std::sync::Arc::new(lex));
+            config
+        });
+        mixed_type(&mut s, "w96");
+        let space = s.press(Key::new(KeyCode::Space, None, false));
+        assert!(s.candidate_window, "空白開候選窗");
+        assert!(!space.navigating, "空白只顯示候選");
+        assert_eq!(space.preedit, "台", "空白不插入字面空白");
+    }
+
+    /// 混合模式選中文候選只換結尾的注音片段，前面已固定的內容保留。
+    #[test]
+    fn test_mixed_selects_zh_candidate_in_place() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("台", "ㄊㄞˊ", 0, 0));
+        lex.push(LexEntry::new("颱", "ㄊㄞˊ", 1, 0));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        let mut s = Session::new(config);
+        mixed_type(&mut s, "w96");
+        let index = s
+            .candidates()
+            .iter()
+            .position(|candidate| candidate.surface == "颱")
+            .expect("要有颱候選");
+        assert!(index < PAGE_SIZE, "測試候選要在第一頁");
+        s.press(Key::new(KeyCode::Down, None, false));
+        let digit = char::from(b'1' + index as u8);
+        s.press(Key::char(digit, false));
+        let snap = s.snapshot();
+        assert_eq!(snap.preedit, "颱", "選字只換結尾的注音片段");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "颱");
+    }
+
+    /// 日文片段卡在那裡；`watashiwaw96j0` 後面的注音與空白都要能繼續輸入。
+    #[test]
+    fn test_mixed_ja_run_falls_back_on_non_romaji_key() {
+        use std::sync::Arc;
+
+        let entry = crate::ja::lexicon::JaEntry {
+            surface: "今日".into(),
+            reading: "きょう".into(),
+            pos: "名詞,普通名詞,一般,*".into(),
+            conj_type: "*".into(),
+            conj_form: "*".into(),
+            cost: 0,
+            split: crate::ja::lexicon::Split::C,
+        };
+        let decoder = crate::ja::decode::JaDecoder::new(Arc::new(TestJaSource(vec![entry])));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.ja = Some(Arc::new(decoder));
+        let mut s = Session::new(config);
+        mixed_type(&mut s, "watashiwaw96j0");
+        let snap = s.snapshot();
+        assert_eq!(s.mode(), Mode::Mixed, "數字鍵要結束日文推斷");
+        assert!(
+            snap.preedit.starts_with("わたしわ"),
+            "已顯示的日文要保留：{}",
+            snap.preedit
+        );
+        assert!(
+            !snap.preedit.ends_with('w'),
+            "不能停在未完成的羅馬字：{}",
+            snap.preedit
+        );
+        assert!(
+            snap.preedit.contains("ㄊㄞ"),
+            "w96 要接成注音：{}",
+            snap.preedit
+        );
+
+        let before = snap.preedit;
+        mixed_type(&mut s, " bp6");
+        let after = s.snapshot().preedit;
+        assert_ne!(after, before, "後續按鍵仍要能輸入");
+        assert!(after.contains("ㄖㄣ"), "bp6 要接成下一個音節：{after}");
+    }
+
+    /// 混合模式的方向鍵在片段邊界之間移動，英文片段也算一格。
+    #[test]
+    fn test_mixed_arrows_move_between_segments() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        let mut s = Session::new(config);
+        mixed_type(&mut s, "ji3hello");
+        let typed = s.snapshot();
+        assert_eq!(typed.preedit, "我hello");
+        assert_eq!(typed.cursor_rune, 6);
+
+        let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(left.cursor_rune, 1, "← 移到英文片段開頭");
+        assert_eq!(left.preedit, "我hello", "移動游標不改內容");
+        let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(left.cursor_rune, 0, "← 再移到注音片段開頭");
+        let right = s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(right.cursor_rune, 1, "→ 回到英文片段開頭");
+        let right = s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(right.cursor_rune, 6, "→ 回到整段結尾");
+    }
+
+    /// 游標停在英文片段前時，Delete 刪掉游標後那一段。
+    #[test]
+    fn test_mixed_delete_forward_removes_segment_after_cursor() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        let mut s = Session::new(config);
+        mixed_type(&mut s, "ji3hello");
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(s.snapshot().cursor_rune, 1);
+
+        let snap = s.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "我", "Delete 刪掉游標後的英文片段");
+        assert_eq!(snap.cursor_rune, 1);
     }
 
     /// 對照 `language_learning.go`：混打送出時把注音片段記成中文、

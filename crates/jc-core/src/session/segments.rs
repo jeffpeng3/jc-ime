@@ -104,6 +104,14 @@ impl Session {
         if self.config.mode == Mode::Ja {
             return self.ja_cursor.min(text.len());
         }
+        if self.config.mode == Mode::Mixed {
+            let segments = self.segments();
+            let at = self.mixed_cursor.min(segments.len());
+            return segments
+                .get(at)
+                .map(|segment| segment.start.min(text.len()))
+                .unwrap_or(text.len());
+        }
         if self.config.mode != Mode::Zh {
             return text.len();
         }

@@ -266,6 +266,11 @@ pub struct Session {
     /// 注音路徑用音節格 [`Session::cursor`]；日文沒有音節格，另外記在
     /// 顯示字串上，左右鍵與片段候選共用同一個位置。
     pub(super) ja_cursor: usize,
+    /// 混合模式的組字游標：片段邊界索引，`0..=segments.len()`。
+    ///
+    /// [`Self::MIXED_CURSOR_END`] 代表結尾；打字時一律回到結尾，方向鍵與刪除
+    /// 才會把游標停在兩個片段之間。混合模式沒有音節格，游標以顯示片段為單位。
+    pub(super) mixed_cursor: usize,
     /// 游標所在片段的編輯視窗；有值時候選清單只算這一段。
     pub(super) edit: Option<EditWindow>,
     /// 換字後是否保留候選窗，直到 Esc 或游標離開目前片段。
@@ -375,6 +380,9 @@ impl Default for Session {
 }
 
 impl Session {
+    /// 混合模式游標代表「在整段結尾」的哨兵值。
+    pub(super) const MIXED_CURSOR_END: usize = usize::MAX;
+
     /// 依設定建立工作階段。
     pub fn new(mut config: SessionConfig) -> Self {
         // 關閉重排時複製一份解碼器再停用；`JaDecoder` 內部都是 `Arc`，
@@ -416,6 +424,7 @@ impl Session {
             syllables: Vec::new(),
             cursor: 0,
             ja_cursor: 0,
+            mixed_cursor: Self::MIXED_CURSOR_END,
             edit: None,
             keep_candidates: false,
             romaji: RomajiInput::new(),
@@ -589,6 +598,9 @@ impl Session {
                                 && self.ascii.accept_suggestion();
                             if !accepted && !self.accept_suggestion() {
                                 self.move_highlight(1);
+                                if self.config.mode == Mode::Mixed {
+                                    self.navigating = true;
+                                }
                             }
                         }
                     }

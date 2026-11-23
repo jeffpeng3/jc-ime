@@ -207,6 +207,7 @@ impl Session {
             self.navigating = false;
             self.keep_candidates = false;
             self.highlighted = 0;
+            self.mixed_cursor = Self::MIXED_CURSOR_END;
             self.rebuild();
             return;
         }
@@ -280,10 +281,16 @@ impl Session {
                 }
             }
             Mode::Ja => {
-                self.romaji.press(Key::char(ch, false));
+                let event = self.romaji.press(Key::char(ch, false));
+                // 混打推斷出來的日文片段遇到羅馬字接不上的按鍵（數字、標點）
+                // 時結束推斷，把已顯示的日文當固定前綴，這個鍵改走混打。
+                if self.ja_run && event == crate::ja::input::RomajiEvent::Rejected {
+                    self.leave_ja_run_for_mixed(ch);
+                }
             }
             Mode::En => self.raw.push(ch),
             Mode::Mixed => {
+                self.mixed_cursor = Self::MIXED_CURSOR_END;
                 if !self.ascii.tone(ch, &self.lexicon) {
                     self.ascii.press(ch);
                 }
@@ -306,6 +313,11 @@ impl Session {
         {
             return None;
         }
+        // 混合模式只有按過 ↓／↑ 進入選取模式才用數字選字；空白開窗後
+        // 直接打數字仍照一般按鍵走，避免吃掉下一個注音或英數。
+        if self.config.mode == Mode::Mixed && !self.navigating {
+            return None;
+        }
         let within = self.selection_index(ch)?;
         // 頁位移由核心算：頁碼來自 `highlighted`，頁面大小固定。
         let index = self.current_page() * self.page_size() + within;
@@ -316,11 +328,19 @@ impl Session {
         if self.edit.is_some() {
             return Some(self.select_window_candidate(index));
         }
-        // 混合模式的候選是英文補完或拼字建議，選了就取代待定按鍵。
+        // 混合模式的候選是英文補完、拼字建議或已完成的注音詞；英文候選
+        // 取代待定按鍵，注音候選換掉結尾的注音片段。
         if self.config.mode == Mode::Mixed {
             let raw = self.ascii.pending().to_string();
-            if self.ascii.accept(&candidate.surface) {
+            if !raw.is_empty() && self.ascii.accept(&candidate.surface) {
                 self.learn_english_choice(&raw, &candidate.surface);
+                self.candidate_window = false;
+                self.navigating = false;
+                self.highlighted = 0;
+                self.mixed_cursor = Self::MIXED_CURSOR_END;
+                return Some(true);
+            }
+            if self.select_mixed_zh_candidate(&candidate.surface) {
                 self.candidate_window = false;
                 self.navigating = false;
                 self.highlighted = 0;
@@ -404,12 +424,33 @@ impl Session {
                     self.open_ja_candidates();
                 }
             }
+            // 混合模式的中文音節已完成：先把殘留的注音補完，再把空白當成
+            // 開候選窗，而不是插入空白。英文待定按鍵仍走 `ascii.space`。
+            Mode::Mixed
+                if self.ascii.pending().is_empty()
+                    && !self.candidate_window
+                    && !self.style.space_inserts_space
+                    && self.mixed_trailing_zh_span().is_some() =>
+            {
+                if !self.zh.pending().is_empty() {
+                    self.complete_pending();
+                    self.rebuild();
+                }
+                // 空白仍留在按鍵流，後續打字才會與管線的切分一致；送出或
+                // 選字時再由 `trim_mixed_candidate_space` 拿掉。
+                self.ascii.space(&self.lexicon);
+                self.mixed_cursor = Self::MIXED_CURSOR_END;
+                self.candidate_window = true;
+                self.navigating = false;
+                self.highlighted = 0;
+            }
             _ if self.candidate_window && !self.candidates.is_empty() => {
                 if self.edit.is_some() {
                     self.select_window_candidate(self.highlighted);
                     return;
                 }
                 self.navigating = false;
+                self.trim_mixed_candidate_space();
                 self.remember_selection();
                 self.learn_composition();
                 let text = self.finalize(self.current_text());
@@ -417,7 +458,10 @@ impl Session {
                 self.clear_composition();
             }
             Mode::En => self.raw.push(' '),
-            Mode::Mixed => self.ascii.space(&self.lexicon),
+            Mode::Mixed => {
+                self.mixed_cursor = Self::MIXED_CURSOR_END;
+                self.ascii.space(&self.lexicon);
+            }
             _ => {}
         }
     }
@@ -587,7 +631,7 @@ impl Session {
                 self.raw.pop();
             }
             Mode::Mixed => {
-                self.ascii.backspace();
+                self.backspace_mixed();
             }
         }
     }
@@ -634,6 +678,16 @@ impl Session {
     pub(super) fn delete_forward(&mut self) {
         self.keep_candidates = false;
         self.edit = None;
+        if self.config.mode == Mode::Mixed {
+            self.candidate_window = false;
+            self.navigating = false;
+            self.highlighted = 0;
+            let at = self.mixed_cursor.min(self.segments.len());
+            if at < self.segments.len() {
+                self.remove_mixed_segment(at);
+            }
+            return;
+        }
         if self.config.mode == Mode::Zh
             && self.zh.pending().is_empty()
             && self.remove_syllable(self.cursor)
@@ -649,6 +703,14 @@ impl Session {
 
     /// 下鍵：第一次開候選窗並進入選取模式，之後往下換一項。
     pub(super) fn down(&mut self) {
+        // 注音還沒完成時先把目前的音節補完，再判斷候選；Mixed 也套同一條
+        // 規則（等待中的注音在 `ZhInput`，補完後才會有中文候選）。
+        if matches!(self.config.mode, Mode::Zh | Mode::Mixed)
+            && !self.zh.pending().is_empty()
+            && self.complete_pending()
+        {
+            self.rebuild();
+        }
         if self.candidates.is_empty() {
             return;
         }
@@ -883,6 +945,7 @@ impl Session {
         }
         if self.config.mode == Mode::Mixed {
             self.ascii.flush();
+            self.trim_mixed_candidate_space();
         }
         self.remember_selection();
         self.learn_composition();
@@ -1101,6 +1164,15 @@ impl Session {
         if self.config.mode == Mode::Ja && self.live.is_some() && self.move_ja_cursor(delta) {
             return;
         }
+        if self.config.mode == Mode::Mixed {
+            if self.candidate_window && self.navigating && !self.candidates.is_empty() {
+                // 已經進入明確的選取模式時，左右鍵仍然換候選。
+                self.move_highlight(delta);
+                return;
+            }
+            self.navigate_mixed(delta);
+            return;
+        }
         if self.config.mode == Mode::Zh && self.candidate_window && !self.navigating {
             let target = self.cursor.saturating_add_signed(delta);
             if self.move_cursor_to(target) {
@@ -1121,6 +1193,28 @@ impl Session {
             return;
         }
         self.move_highlight(delta);
+    }
+
+    /// 混合模式的方向鍵：在片段邊界之間移動游標。
+    ///
+    /// 混合模式沒有音節格，游標以顯示片段為單位；英文與注音片段都算一格。
+    /// 移動游標只改插入／刪除位置，不動候選與片段內容。
+    pub(super) fn navigate_mixed(&mut self, delta: isize) {
+        let len = self.segments.len();
+        if len == 0 {
+            return;
+        }
+        let at = self.mixed_cursor.min(len);
+        let target = at.saturating_add_signed(delta).min(len);
+        if target == at {
+            return;
+        }
+        self.mixed_cursor = target;
+        self.candidate_window = false;
+        self.navigating = false;
+        self.keep_candidates = false;
+        self.edit = None;
+        self.highlighted = 0;
     }
 
     /// 把這次送出的候選記進個人學習。
@@ -1422,6 +1516,7 @@ impl Session {
         self.syllables.clear();
         self.cursor = 0;
         self.ja_cursor = 0;
+        self.mixed_cursor = Self::MIXED_CURSOR_END;
         self.edit = None;
         self.keep_candidates = false;
         self.romaji.reset();
