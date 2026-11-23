@@ -4,6 +4,15 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.21 - 2026-11-24
+
+### 修正
+
+- 無資料環境（還沒載入英文詞表）時，混打切分會把 `sasmall` 整段當英文，導致
+  `rishireej/ sasmall` 變成 `りしれ供sasmall`。內建原型英文詞彙補上 `small`
+  等常用詞，讓沒有資料包的情境與有資料時切分一致（Windows 測試 runner 沒有
+  資料包，就是這個差異）。
+
 ## 0.1.20 - 2026-11-24
 
 ### 修正

@@ -1230,7 +1230,7 @@ hello meeting message email document write writing text type typing search make 
 version go api python docker github redis linux macos chatgpt openai kubernetes javascript \
 typescript function string boolean integer database network website browser terminal error \
 request response cancel accept learning personal dictionary word words download install \
-uninstall package path url https http foo bar";
+uninstall package path url https http foo small large long short name value bar";
         let words: Vec<&str> = LIST.split_whitespace().collect();
         let n = words.len();
         Dictionary::new(
