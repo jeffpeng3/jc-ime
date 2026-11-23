@@ -254,6 +254,7 @@ fn composing_in_a() -> Option<ComposingInA> {
 
 #[test]
 fn focus_to_null_then_another_document_commits_to_the_composing_document() {
+    let _serial = crate::host_test_lock::serial();
     // 發版前 code review（#189 修正後的回歸）：組字中焦點 A → NULL → B，第二次焦點變化在確認之前（50ms 內）就來了。
     // 修正前第二次拿它的原文件（NULL）去送出，沒有 context，打到一半的字就丟了。
     let Some((service, doc_a, edits_a, doc_b, edits_b)) = composing_in_a() else {
@@ -271,6 +272,7 @@ fn focus_to_null_then_another_document_commits_to_the_composing_document() {
 
 #[test]
 fn focus_handed_to_the_composing_document_keeps_composing() {
+    let _serial = crate::host_test_lock::serial();
     // #189 原本的情況：A → NULL → A（宿主把組字所在的文件交回焦點）：不送出、繼續組字。
     let Some((service, doc_a, edits_a, _doc_b, _)) = composing_in_a() else {
         return;
@@ -285,6 +287,7 @@ fn focus_handed_to_the_composing_document_keeps_composing() {
 
 #[test]
 fn switching_documents_directly_commits_to_the_previous() {
+    let _serial = crate::host_test_lock::serial();
     let Some((service, doc_a, edits_a, doc_b, edits_b)) = composing_in_a() else {
         return;
     };
@@ -308,6 +311,7 @@ fn move_composition(service: &ComObject<TextService>, ctx: ITfContext) {
 
 #[test]
 fn focus_to_null_commits_to_where_the_composition_now_is() {
+    let _serial = crate::host_test_lock::serial();
     // 發版前 code review 第二輪：組字中焦點 A → NULL，確認前宿主把組字搬到 C，焦點卻接著落到 B（例如馬上點了別的地方）。
     // 要送到組字實際所在的 C；送到焦點移到 NULL 前記下的 A，A 的 edit session 改不到 C 裡的組字範圍，打到一半的字會不見。
     let Some((service, doc_a, edits_a, doc_b, edits_b)) = composing_in_a() else {
@@ -325,6 +329,7 @@ fn focus_to_null_commits_to_where_the_composition_now_is() {
 
 #[test]
 fn switching_documents_commits_to_the_composition_context() {
+    let _serial = crate::host_test_lock::serial();
     // 直接換文件時也以組字範圍本身的 context 為準：原文件 A 的 context 跟組字所在的 C 不同時送到 C。
     let Some((service, doc_a, edits_a, doc_b, edits_b)) = composing_in_a() else {
         return;
@@ -363,6 +368,7 @@ fn break_composition(service: &ComObject<TextService>) {
 
 #[test]
 fn focus_to_null_then_another_document_with_a_dead_range_commits_to_the_original() {
+    let _serial = crate::host_test_lock::serial();
     // 發版前 code review 第三輪：A → NULL 之後組字範圍失效（composition_context() 拿不到），焦點接著落到 B。
     // 第二次焦點變化的原文件是 NULL，組字範圍也沒有 context：只剩焦點移到 NULL 時記下的 A，沒有它打到一半的字就沒地方送。
     let Some((service, doc_a, edits_a, doc_b, edits_b)) = composing_in_a() else {
@@ -384,6 +390,7 @@ fn focus_to_null_then_another_document_with_a_dead_range_commits_to_the_original
 
 #[test]
 fn settling_with_a_dead_range_commits_to_the_original() {
+    let _serial = crate::host_test_lock::serial();
     // 同上，焦點停在 NULL、等到佇列空下來才確認（settle_focus）：一樣送到焦點移到 NULL 時記下的 A。
     let Some((service, doc_a, edits_a, _doc_b, edits_b)) = composing_in_a() else {
         return;
@@ -401,6 +408,7 @@ fn settling_with_a_dead_range_commits_to_the_original() {
 
 #[test]
 fn focus_handed_back_forgets_the_original() {
+    let _serial = crate::host_test_lock::serial();
     // A → NULL → A（繼續組字）之後不再記著 A：之後的送出照組字範圍與那次的原文件決定，不會送到舊的記錄。
     let Some((service, doc_a, _edits_a, _doc_b, _)) = composing_in_a() else {
         return;

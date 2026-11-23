@@ -575,6 +575,7 @@ fn init() {
 
 #[test]
 fn refused_sync_edit_session_opens_the_field() {
+    let _serial = crate::host_test_lock::serial();
     // fix-probe-debug：host 正在處理按鍵（InputScope probe 在按鍵 callback 內），
     // RequestEditSession 回 TF_E_SYNCHRONOUS（0x80040208）。這是「讀不到」，不是「確認敏感」。
     init();
@@ -595,6 +596,7 @@ fn refused_sync_edit_session_opens_the_field() {
 
 #[test]
 fn unreal_text_store_without_inputscope_composes_privately() {
+    let _serial = crate::host_test_lock::serial();
     init();
     let unreal = window(w!("UnrealWindow"), 0);
     // WARDOGS 的 tsf.log：scope=E_FAIL status=0x8/0x0 focus=UnrealWindow view=UnrealWindow same=true。
@@ -651,6 +653,7 @@ fn unreal_text_store_without_inputscope_composes_privately() {
 
 #[test]
 fn missing_inputscope_still_blocks_readonly_unfocused_and_protected_fields() {
+    let _serial = crate::host_test_lock::serial();
     init();
     let unreal = window(w!("UnrealWindow"), 0);
     let other = window(w!("UnrealWindow"), 0);
@@ -693,6 +696,7 @@ fn missing_inputscope_still_blocks_readonly_unfocused_and_protected_fields() {
 
 #[test]
 fn missing_inputscope_on_a_native_edit_checks_the_password_style() {
+    let _serial = crate::host_test_lock::serial();
     use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GWL_STYLE};
     init();
     let edit = window(w!("Edit"), 0);
@@ -714,6 +718,7 @@ fn missing_inputscope_on_a_native_edit_checks_the_password_style() {
 
 #[test]
 fn imm32_context_without_caret_passes_english_keys_to_the_app() {
+    let _serial = crate::host_test_lock::serial();
     use windows::Win32::UI::WindowsAndMessaging::{CreateCaret, DestroyCaret};
     init();
     // #210：IMM32 程式的暫時 context（系統相容層）在焦點不是文字框時也有；Photoshop 的畫布沒有系統插入點。
@@ -771,6 +776,7 @@ fn imm32_context_without_caret_passes_english_keys_to_the_app() {
 
 #[test]
 fn host_secret_scopes_block_keys_and_hotkeys() {
+    let _serial = crate::host_test_lock::serial();
     init();
     let view = window(w!("UnrealWindow"), 0);
     for secret in [
@@ -801,6 +807,7 @@ fn host_secret_scopes_block_keys_and_hotkeys() {
 
 #[test]
 fn host_private_scopes_compose_without_learning() {
+    let _serial = crate::host_test_lock::serial();
     init();
     let view = window(w!("UnrealWindow"), 0);
     for scopes in [
@@ -826,6 +833,7 @@ fn host_private_scopes_compose_without_learning() {
 
 #[test]
 fn host_open_scopes_accept_keys_and_hotkeys() {
+    let _serial = crate::host_test_lock::serial();
     init();
     let view = window(w!("UnrealWindow"), 0);
     for scopes in [
@@ -853,6 +861,7 @@ fn host_open_scopes_accept_keys_and_hotkeys() {
 
 #[test]
 fn host_imm32_context_requires_transitory_without_nohiddentext() {
+    let _serial = crate::host_test_lock::serial();
     init();
     let canvas = window(w!("UnrealWindow"), 0);
     // 系統相容層的暫時 context：只有 TS_SS_TRANSITORY，啟用旗標為 0。
@@ -891,6 +900,7 @@ fn host_imm32_context_requires_transitory_without_nohiddentext() {
 
 #[test]
 fn host_winui_island_without_scope_uses_static_flags() {
+    let _serial = crate::host_test_lock::serial();
     init();
     register(w!("InputSiteWindowClass"), Some(plain_proc));
     let view = window(w!("InputSiteWindowClass"), 0);
@@ -909,6 +919,7 @@ fn host_winui_island_without_scope_uses_static_flags() {
 
 #[test]
 fn host_onenote_canvas_without_scope_is_an_open_field() {
+    let _serial = crate::host_test_lock::serial();
     init();
     register(w!("OneNote::DocumentCanvas"), Some(plain_proc));
     let view = window(w!("OneNote::DocumentCanvas"), 0);
@@ -926,6 +937,7 @@ fn host_onenote_canvas_without_scope_is_an_open_field() {
 
 #[test]
 fn cache_is_separate_for_each_context() {
+    let _serial = crate::host_test_lock::serial();
     invalidate();
     init();
     let view = window(w!("UnrealWindow"), 0);
@@ -955,6 +967,7 @@ fn cache_is_separate_for_each_context() {
 
 #[test]
 fn unreadable_probe_uses_the_cached_field() {
+    let _serial = crate::host_test_lock::serial();
     invalidate();
     init();
     let view = window(w!("UnrealWindow"), 0);
@@ -976,6 +989,7 @@ fn unreadable_probe_uses_the_cached_field() {
 
 #[test]
 fn async_edit_session_updates_the_cache() {
+    let _serial = crate::host_test_lock::serial();
     invalidate();
     init();
     let view = window(w!("UnrealWindow"), 0);
@@ -1006,6 +1020,7 @@ fn async_edit_session_updates_the_cache() {
 
 #[test]
 fn stale_async_result_is_discarded_after_generation_changes() {
+    let _serial = crate::host_test_lock::serial();
     invalidate();
     init();
     let view = window(w!("UnrealWindow"), 0);
@@ -1035,6 +1050,7 @@ fn stale_async_result_is_discarded_after_generation_changes() {
 
 #[test]
 fn cached_secret_field_still_blocks_the_hotkey() {
+    let _serial = crate::host_test_lock::serial();
     invalidate();
     init();
     let view = window(w!("UnrealWindow"), 0);
