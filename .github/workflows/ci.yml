@@ -158,6 +158,10 @@ jobs:
           cache-targets: "true"
           cache-all-crates: "true"
           cache-on-failure: "true"
+          # PR 的快取只有同一條 PR 讀得到，卻照樣佔 repo 的 10GB 額度。
+          # 只在 main 存檔，PR 只還原；本 workflow 只在 push main 與
+          # workflow_dispatch 跑，tag 不會另外觸發。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # 部署環境一定有資料根目錄，CI 不能在「沒有資料」的降級環境跑測試。
       # 兩個 repo variable 都是公開的，fork PR 也讀得到；任一為空就明確失敗。
       # 資料包解開後接近 1GB，每次重下重解要一分多鐘。key 直接綁 SHA-256：
@@ -317,6 +321,10 @@ jobs:
           cache-targets: "true"
           cache-all-crates: "true"
           cache-on-failure: "true"
+          # PR 的快取只有同一條 PR 讀得到，卻照樣佔 repo 的 10GB 額度。
+          # 只在 main 存檔，PR 只還原；本 workflow 只在 push main 與
+          # workflow_dispatch 跑，tag 不會另外觸發。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # 與 linux job 相同：用公開 repo variable 下載正式資料包；空值直接失敗。
       # 用 pwsh 是為了照 release.yml 的寫法，在 Windows tar 不支援 zstd 時退回 7-Zip。
       # 資料包解開後接近 1GB，每次重下重解要一分多鐘。key 直接綁 SHA-256：
@@ -480,6 +488,10 @@ jobs:
           cache-targets: "true"
           cache-all-crates: "true"
           cache-on-failure: "true"
+          # PR 的快取只有同一條 PR 讀得到，卻照樣佔 repo 的 10GB 額度。
+          # 只在 main 存檔，PR 只還原；本 workflow 只在 push main 與
+          # workflow_dispatch 跑，tag 不會另外觸發。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # jc-settings-ui 依賴 GPUI，與 Linux job 一樣排除；它的 Windows 建置由
       # build-windows 負責。
@@ -557,6 +569,10 @@ jobs:
           cache-targets: "true"
           cache-all-crates: "false"
           cache-on-failure: "true"
+          # PR 的快取只有同一條 PR 讀得到，卻照樣佔 repo 的 10GB 額度。
+          # 只在 main 存檔，PR 只還原；本 workflow 只在 push main 與
+          # workflow_dispatch 跑，tag 不會另外觸發。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # rust-cache 的 key 不含版本，會把上一版的 target 目錄還原回來；
       # 若 cargo 判定指紋未變就不重編，build.ps1 會把還原的舊 jc_tsf.dll 裝進
@@ -1200,6 +1216,10 @@ jobs:
           cache-targets: "true"
           cache-all-crates: "false"
           cache-on-failure: "true"
+          # PR 的快取只有同一條 PR 讀得到，卻照樣佔 repo 的 10GB 額度。
+          # 只在 main 存檔，PR 只還原；本 workflow 只在 push main 與
+          # workflow_dispatch 跑，tag 不會另外觸發。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: 建置 Linux 執行檔
         run: cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui
