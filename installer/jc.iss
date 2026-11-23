@@ -118,6 +118,7 @@ Source: "{#PayloadDir}\jc-tip-register.exe"; DestDir: "{app}"; Flags: ignorevers
 Source: "{#PayloadDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\NOTICE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\legal\THIRD-PARTY-NOTICES.md"; DestDir: "{app}\legal"; Flags: ignoreversion
+Source: "{#PayloadDir}\legal\RUST-THIRD-PARTY-NOTICES.md"; DestDir: "{app}\legal"; Flags: ignoreversion
 Source: "{#PayloadDir}\legal\licenses\README.md"; DestDir: "{app}\legal\licenses"; Flags: ignoreversion
 Source: "{#PayloadDir}\legal\licenses\Apache-2.0.txt"; DestDir: "{app}\legal\licenses"; Flags: ignoreversion
 Source: "{#PayloadDir}\legal\licenses\CC-BY-4.0.txt"; DestDir: "{app}\legal\licenses"; Flags: ignoreversion

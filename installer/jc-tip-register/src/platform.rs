@@ -510,28 +510,32 @@ pub fn open_settings() -> Result<(), Error> {
     Ok(())
 }
 
-/// 開啟 `legal\THIRD-PARTY-NOTICES.md`。
+/// 開啟 `legal\THIRD-PARTY-NOTICES.md` 與 `legal\RUST-THIRD-PARTY-NOTICES.md`。
 ///
 /// 捷徑只帶 `legal` 一個字，路徑由安裝目錄組合，所以換安裝槽或目錄名稱都不受
 /// 影響。用記事本開啟：乾淨的 Windows 對 `.md` 沒有預設關聯，交給 ShellExecute
 /// 會跳出「選擇應用程式」，而授權文件本來就是純文字。
+///
+/// 兩份都開：資料與模型的授權在 `THIRD-PARTY-NOTICES.md`，600 多個 Rust crate
+/// 的授權在 `RUST-THIRD-PARTY-NOTICES.md`，只開一份等於少給一半。
 pub fn open_legal() -> Result<(), Error> {
     let current = std::env::current_exe()?;
     let dir = current
         .parent()
         .ok_or_else(|| Error::Failure("無法取得安裝目錄".into()))?;
-    let notices = dir.join("legal").join("THIRD-PARTY-NOTICES.md");
-    if !notices.is_file() {
-        return Err(Error::Failure(format!(
-            "找不到 {}；安裝目錄不完整",
-            notices.display()
-        )));
+    for name in ["THIRD-PARTY-NOTICES.md", "RUST-THIRD-PARTY-NOTICES.md"] {
+        let notices = dir.join("legal").join(name);
+        if !notices.is_file() {
+            return Err(Error::Failure(format!(
+                "找不到 {}；安裝目錄不完整",
+                notices.display()
+            )));
+        }
+        std::process::Command::new("notepad.exe")
+            .arg(&notices)
+            .spawn()
+            .map_err(|error| Error::Failure(format!("開啟 {} 失敗：{error}", notices.display())))?;
     }
-
-    std::process::Command::new("notepad.exe")
-        .arg(&notices)
-        .spawn()
-        .map_err(|error| Error::Failure(format!("開啟 {} 失敗：{error}", notices.display())))?;
     Ok(())
 }
 
@@ -814,7 +818,7 @@ mod tests {
     fn profile_reg_path_uses_hex_langid_and_full_identity() {
         assert_eq!(
             profile_reg_path(&IDENTITY_CURRENT),
-            r"SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\LanguageProfile\0x0404\{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56}"
+            r"SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\LanguageProfile\0x00000404\{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56}"
         );
         assert!(profile_reg_path(&IDENTITY_LEGACY).contains(r"\0x0404\{8F0A9B3C-"));
     }

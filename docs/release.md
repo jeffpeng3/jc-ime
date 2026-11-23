@@ -436,7 +436,7 @@ bump 版本會改 `Cargo.lock`，精確 key 末段的 hash 跟著變。
 
 | 檔案 | 內容 |
 |---|---|
-| `jc-ime-<version>-x64-setup.exe` | per-machine Inno 安裝程式：七個程式、資料 manifest 與 13 個 shipped 資料檔、20 份授權文件；AppId 固定，升級靠它 |
+| `jc-ime-<version>-x64-setup.exe` | per-machine Inno 安裝程式：七個程式、資料 manifest 與 13 個 shipped 資料檔、`LICENSE`／`NOTICE`／兩份第三方聲明與 17 份授權全文；AppId 固定，升級靠它 |
 | `jc-ime-<version>-x64-setup.exe.sha256` | setup.exe 的 SHA-256 |
 | `data-manifest.json` | 安裝包內資料 manifest 的副本，publish 用它填 Release 的資料版本 |
 
@@ -532,6 +532,8 @@ release workflow 只能證明「建置與打包成功」，下面這些要在第
       從 catalog 移除）。
 - [ ] `legal/licenses/MIT-Funmula.txt` 已隨 setup.exe 安裝，copyright 與授權全文保留。
 - [ ] `LICENSE`、`NOTICE`、`legal/` 已打進 setup.exe（`installer-payload` 的缺口）。
+- [ ] `legal/RUST-THIRD-PARTY-NOTICES.md` 與 `Cargo.lock` 一致：
+      `python3 scripts/gen-rust-notices.py --check`（CI 的 linux job 每次都跑）。
 - [ ] `Cargo.toml` 版本符合 `x.y.z` 或 `x.y.z-<pre-release>`，`v<version>` 標籤
       與它完全一致；RC 的 `VersionInfoVersion` 是三段數字加 rc 序號
       （`0.1.0-rc.9` → `0.1.0.9`）。

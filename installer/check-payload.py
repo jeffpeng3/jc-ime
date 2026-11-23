@@ -80,7 +80,12 @@ SOURCE_RE = re.compile(
 )
 
 # 授權文件在 repo 與 payload 使用同一個相對路徑；jc.iss 也照這個路徑引用。
-LEGAL_FIXED = ("LICENSE", "NOTICE", "legal/THIRD-PARTY-NOTICES.md")
+LEGAL_FIXED = (
+    "LICENSE",
+    "NOTICE",
+    "legal/THIRD-PARTY-NOTICES.md",
+    "legal/RUST-THIRD-PARTY-NOTICES.md",
+)
 
 
 def iss_files(iss: Path) -> list[tuple[str, str]]:

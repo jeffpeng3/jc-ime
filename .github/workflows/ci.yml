@@ -280,6 +280,11 @@ jobs:
           --target x86_64-pc-windows-msvc
       - name: Test
         run: cargo test --workspace
+      # 授權清單是散布條件，不能跟 Cargo.lock 脫節。改了相依沒重跑
+      # scripts/gen-rust-notices.py 就讓 CI 紅，不要等到發版才發現安裝包少條款。
+      # 全文從 ~/.cargo/registry/cache 的 .crate 讀，上面的步驟已經抓好三個平台。
+      - name: 檢查 Rust 依賴授權清單
+        run: python3 scripts/gen-rust-notices.py --check
 
       # 收尾清理舊快取：只在 main 跑，PR 不動快取。清理失敗不讓 build 變紅。
       # 並行 run 可能正在使用既有快取，所以跳過建立未滿 1 小時的項目；

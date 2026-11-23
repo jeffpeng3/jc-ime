@@ -3,6 +3,10 @@
 本檔逐來源列出 jc-ime 使用的第三方資料、模型與題庫。散布時保留本檔與
 [`licenses/`](licenses/) 的完整條款。來源方未背書本專案，也未參與本專案的模型訓練或輸出。
 
+Rust crate 的授權另外列在 [`RUST-THIRD-PARTY-NOTICES.md`](RUST-THIRD-PARTY-NOTICES.md)，
+由 `scripts/gen-rust-notices.py` 從 `Cargo.lock` 產生：DLL 與執行檔靜態連結了 600 多個
+crate，那些不是資料，所以不混進這份由人工維護的清單。
+
 ## 1. 本專案
 
 - 授權：AGPL-3.0-only。

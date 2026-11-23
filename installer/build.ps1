@@ -310,11 +310,13 @@ foreach ($name in @('LICENSE', 'NOTICE')) {
     if (-not (Test-Path $source)) { throw "缺少授權文件 $name（$source）" }
     Copy-Item $source $Payload
 }
-$notices = Join-Path $Root 'legal\THIRD-PARTY-NOTICES.md'
-if (-not (Test-Path $notices)) {
-    throw "缺少授權文件 legal\THIRD-PARTY-NOTICES.md（$notices）"
+foreach ($name in @('THIRD-PARTY-NOTICES.md', 'RUST-THIRD-PARTY-NOTICES.md')) {
+    $notices = Join-Path $Root "legal\$name"
+    if (-not (Test-Path $notices)) {
+        throw "缺少授權文件 legal\$name（$notices）"
+    }
+    Copy-Item $notices $legalStage
 }
-Copy-Item $notices $legalStage
 $licenseFiles = @(Get-ChildItem -Path (Join-Path $Root 'legal\licenses') -File)
 if ($licenseFiles.Count -eq 0) {
     throw 'legal\licenses 沒有任何授權全文，拒絕產生安裝包'

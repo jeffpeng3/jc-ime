@@ -51,7 +51,7 @@ fn usage() -> &'static str {
      \x20 user-cleanup-legacy               清除已移除舊版的語言清單項目\n\
      \x20 user-uninstall <0|1>              刪除使用者資料；1 表示保留（語言清單不動）\n\
      \x20 settings                          以目前使用者的路徑啟動 jc-settings-ui.exe\n\
-     \x20 legal                             用記事本開啟 legal\\THIRD-PARTY-NOTICES.md\n\
+     \x20 legal                             用記事本開啟 legal\\THIRD-PARTY-NOTICES.md 與 legal\\RUST-THIRD-PARTY-NOTICES.md\n\
      \n\
      machine-* 與 user-* 由 installer/jc.iss 的自訂動作呼叫；settings 是開始\n\
      功能表捷徑的入口，會把 %LOCALAPPDATA% 展開後再交給設定程式；legal 是「授權」\n\
