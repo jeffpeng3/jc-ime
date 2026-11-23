@@ -152,8 +152,8 @@ pub fn load_ja_decoder_with_pack(
     loader::load_ja_decoder_with_pack(root, pack).map_err(to_cli)
 }
 
-/// 載入 OpenCC tw2s 字典；資料在資料根目錄的 `opencc/`。
-pub fn load_zhconv(root: &Path) -> Result<jc_core::zhconv::Converter, CliError> {
+/// 取得 tw2s 轉換器（字典已編進 `jc-core`，不再依賴資料根目錄的 `opencc/`）。
+pub fn load_zhconv(root: &Path) -> Result<std::sync::Arc<jc_core::zhconv::Converter>, CliError> {
     loader::load_zhconv(root).map_err(to_cli)
 }
 

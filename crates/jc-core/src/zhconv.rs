@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 /// 字典解析、建立或讀取失敗。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -321,6 +322,42 @@ pub fn tw2s_from_dir(dir: &Path) -> Result<Converter, ZhconvError> {
         ts_phrases: &phrases,
         ts_characters: &chars,
     })
+}
+
+/// 編進 crate 的 tw2s 字典（`crates/jc-core/data/opencc/`）。
+///
+/// 授權 Apache-2.0，全文在 `legal/licenses/Apache-2.0.txt` 與同目錄的 `LICENSE`。
+/// 字典只有約 175KB，直接編進二進位，安裝版就不必再帶資料檔，也不會因為
+/// `opencc/` 缺席而讓「輸出簡體字」變成空殼。
+const EMBEDDED_CJK_COMPATIBILITY: &str =
+    include_str!("../data/opencc/CJK_Compatibility_Ideographs.txt");
+const EMBEDDED_TW_VARIANTS: &str = include_str!("../data/opencc/TWVariants.txt");
+const EMBEDDED_TW_VARIANTS_REV_PHRASES: &str =
+    include_str!("../data/opencc/TWVariantsRevPhrases.txt");
+const EMBEDDED_TS_PHRASES: &str = include_str!("../data/opencc/TSPhrases.txt");
+const EMBEDDED_TS_CHARACTERS: &str = include_str!("../data/opencc/TSCharacters.txt");
+
+/// 內建字典建好的轉換器；第一次使用才解析，之後共用。
+static EMBEDDED: std::sync::OnceLock<Result<Arc<Converter>, ZhconvError>> =
+    std::sync::OnceLock::new();
+
+/// 用內建字典建立 tw2s 轉換器。
+///
+/// 回傳的 `Arc` 可以跨 session 共用；解析只做一次。字典壞掉時回 `Err`，
+/// 引擎會把「輸出簡體字」當成不可用，而不是每次按鍵都重試。
+pub fn tw2s_embedded() -> Result<Arc<Converter>, ZhconvError> {
+    EMBEDDED
+        .get_or_init(|| {
+            tw2s(Data {
+                cjk_compatibility: EMBEDDED_CJK_COMPATIBILITY,
+                tw_variants: EMBEDDED_TW_VARIANTS,
+                tw_variants_rev_phrases: EMBEDDED_TW_VARIANTS_REV_PHRASES,
+                ts_phrases: EMBEDDED_TS_PHRASES,
+                ts_characters: EMBEDDED_TS_CHARACTERS,
+            })
+            .map(Arc::new)
+        })
+        .clone()
 }
 
 impl Converter {

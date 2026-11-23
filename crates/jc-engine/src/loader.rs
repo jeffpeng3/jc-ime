@@ -553,10 +553,14 @@ pub fn load_ja_reranker(root: &Path) -> Result<Arc<NeuralReranker>, LoadError> {
         .map_err(|err| LoadError(format!("{}：{err}", models.display())))
 }
 
-/// 載入 OpenCC tw2s 字典；資料在資料根目錄的 `opencc/`。
-pub fn load_zhconv(root: &Path) -> Result<jc_core::zhconv::Converter, LoadError> {
-    let dir = root.join("opencc");
-    jc_core::zhconv::tw2s_from_dir(&dir).map_err(|err| LoadError::read(&dir, err))
+/// 取得 tw2s 轉換器。
+///
+/// 字典已經編進 `jc-core`（約 175KB，Apache-2.0），不再依賴資料根目錄的
+/// `opencc/`：安裝版原本沒帶那幾個檔，導致「輸出簡體字」永遠是空殼。
+/// `root` 只在要覆寫時使用——目前不覆寫，保留參數讓呼叫端不必改。
+pub fn load_zhconv(_root: &Path) -> Result<Arc<jc_core::zhconv::Converter>, LoadError> {
+    jc_core::zhconv::tw2s_embedded()
+        .map_err(|err| LoadError(format!("內建 tw2s 字典無法載入：{err}")))
 }
 
 /// 載入並安裝注音選字模型。
@@ -880,11 +884,11 @@ pub fn load_engine_data(root: &Path) -> Result<EngineData, EngineDataError> {
             }
         }
     };
-    // 簡體輸出用 OpenCC 的 tw2s 字典；缺檔只停用這個開關，不擋啟動。
+    // 簡體輸出用編進 jc-core 的 tw2s 字典；解析失敗只停用這個開關，不擋啟動。
     let zhconv = match load_zhconv(root) {
         Ok(converter) => {
-            log::info!("已載入 OpenCC tw2s：{}", root.join("opencc").display());
-            Some(Arc::new(converter))
+            log::info!("已啟用內建 OpenCC tw2s（tw2s，約 175KB 編進二進位）");
+            Some(converter)
         }
         Err(err) => {
             log::warn!("OpenCC tw2s 不可用，輸出簡體停用：{err}");

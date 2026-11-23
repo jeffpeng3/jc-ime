@@ -4,6 +4,15 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.13 - 2026-11-23
+
+### 修正
+
+- 「輸出簡體字」不再依賴資料檔：tw2s 字典（5 份，約 175KB，Apache-2.0）直接編進
+  `jc-core`，安裝版不必再帶 `opencc/`。原本安裝包的資料根目錄根本沒有那個目錄，
+  引擎因此從來不宣告 `output_simplified_live`，狀態列的開關等於空的。
+  字典只在第一次使用時解析一次，之後所有 session 共用同一個 `Arc<Converter>`。
+
 ## 0.1.12 - 2026-11-23
 
 ### 修正

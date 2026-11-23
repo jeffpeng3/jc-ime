@@ -94,7 +94,7 @@ pub fn zh_golden(options: GoldenOptions, out: &mut dyn Write) -> Result<(), CliE
         resources.ctx.bigram_mu = mu;
     }
     let converter = if suite.cases().iter().any(|case| case.options.simplified) {
-        Some(Arc::new(data::load_zhconv(&data::data_root(&dir))?))
+        Some(data::load_zhconv(&data::data_root(&dir))?)
     } else {
         None
     };
