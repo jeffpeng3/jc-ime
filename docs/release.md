@@ -109,6 +109,14 @@ CI 的 `linux`／`windows` job 也下載這同一份資料包，但只讀公開 
 失敗，不會退回沒有資料的降級環境。CI 把找到的資料根目錄寫進 `JC_IMEDATA`，並在
 log 印出根目錄與 manifest 的 `version` 供核對。
 
+解開後接近 1GB，因此 `linux`、`windows`、`build-windows` 三個 job 都用
+`actions/cache` 快取 `${{ runner.temp }}/jc-ime-data`，key 直接綁
+`jc-ime-data-<runner.os>-<JC_DATA_BUNDLE_SHA256>`：資料包沒換就整段跳過下載與解開，
+換了 SHA 自然換 key、不必手動清。只有 `linux` 與 `build-windows` 負責存檔（各自對應
+一個 `runner.os`），其餘 job 只還原，避免同一份快取被多個 job 同時上傳；PR 不存檔，
+因為 PR 的快取只有自己讀得到。快取命中時不會跑原本寫 `JC_IMEDATA`／`JC_DATA_ROOT`
+的那一步，改由緊接的「設定資料根目錄」負責。
+
 資料包格式可以是 `.tar.zst`、`.tzst`、`.tar.gz`、`.tgz` 或 `.zip`，內容是資料
 根目錄；上層多一層 `jc-ime-data/` 也可以，workflow 會自動找有 `manifest.json`
 的那一層。Windows runner 的 `tar` 若不支援 zstd，workflow 會退回 7-Zip；兩者都

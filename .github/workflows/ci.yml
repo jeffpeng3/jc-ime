@@ -160,7 +160,17 @@ jobs:
           cache-on-failure: "true"
       # 部署環境一定有資料根目錄，CI 不能在「沒有資料」的降級環境跑測試。
       # 兩個 repo variable 都是公開的，fork PR 也讀得到；任一為空就明確失敗。
+      # 資料包解開後接近 1GB，每次重下重解要一分多鐘。key 直接綁 SHA-256：
+      # 資料沒換就沿用同一份，換了 key 自然失效，不必手動清。
+      - name: 還原資料包快取
+        id: data-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/jc-ime-data
+          key: jc-ime-data-${{ runner.os }}-${{ vars.JC_DATA_BUNDLE_SHA256 }}
+
       - name: 下載並展開資料包
+        if: steps.data-cache.outputs.cache-hit != 'true'
         shell: bash
         env:
           DATA_BUNDLE_URL: ${{ vars.JC_DATA_BUNDLE_URL }}
@@ -217,6 +227,40 @@ jobs:
           echo "JC_IMEDATA=${data_root}" >> "${GITHUB_ENV}"
           echo "資料根目錄：${data_root}"
           echo "資料版本：${data_version}"
+      # 快取命中時上面的下載步驟整個跳過，環境變數改由這裡設定。
+      - name: 設定資料根目錄
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/jc-ime-data"
+          data_root="${root}"
+          if [[ ! -f "${data_root}/manifest.json" ]]; then
+            candidates=()
+            for dir in "${root}"/*/; do
+              if [[ -f "${dir}manifest.json" ]]; then
+                candidates+=("${dir%/}")
+              fi
+            done
+            if [[ ${#candidates[@]} -eq 1 ]]; then
+              data_root="${candidates[0]}"
+            fi
+          fi
+          if [[ ! -f "${data_root}/manifest.json" ]]; then
+            echo "::error::資料包裡找不到 manifest.json（位置：${root}）"
+            exit 1
+          fi
+          echo "JC_IMEDATA=${data_root}" >> "${GITHUB_ENV}"
+          echo "資料根目錄：${data_root}"
+      # 只有 linux 與 build-windows 負責存檔：兩者各自對應一個 runner.os 的 key，
+      # 其他 job 只還原，避免同一份近 1GB 的快取被多個 job 同時上傳。
+      - name: 儲存資料包快取
+        if: >-
+          steps.data-cache.outputs.cache-hit != 'true' &&
+          github.event_name != 'pull_request'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/jc-ime-data
+          key: jc-ime-data-${{ runner.os }}-${{ vars.JC_DATA_BUNDLE_SHA256 }}
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -270,7 +314,17 @@ jobs:
           cache-on-failure: "true"
       # 與 linux job 相同：用公開 repo variable 下載正式資料包；空值直接失敗。
       # 用 pwsh 是為了照 release.yml 的寫法，在 Windows tar 不支援 zstd 時退回 7-Zip。
+      # 資料包解開後接近 1GB，每次重下重解要一分多鐘。key 直接綁 SHA-256：
+      # 資料沒換就沿用同一份，換了 key 自然失效，不必手動清。
+      - name: 還原資料包快取
+        id: data-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/jc-ime-data
+          key: jc-ime-data-${{ runner.os }}-${{ vars.JC_DATA_BUNDLE_SHA256 }}
+
       - name: 下載並展開資料包
+        if: steps.data-cache.outputs.cache-hit != 'true'
         shell: pwsh
         env:
           DATA_BUNDLE_URL: ${{ vars.JC_DATA_BUNDLE_URL }}
@@ -361,6 +415,25 @@ jobs:
           "JC_IMEDATA=$dataRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "資料根目錄：$dataRoot"
           Write-Host "資料版本：$dataVersion"
+      # 快取命中時上面的下載步驟整個跳過，環境變數改由這裡設定。
+      - name: 設定資料根目錄
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'jc-ime-data'
+          $dataRoot = $root
+          if (-not (Test-Path (Join-Path $dataRoot 'manifest.json'))) {
+            $candidates = @(Get-ChildItem -Path $root -Directory |
+              Where-Object { Test-Path (Join-Path $_.FullName 'manifest.json') })
+            if ($candidates.Count -eq 1) {
+              $dataRoot = $candidates[0].FullName
+            }
+          }
+          if (-not (Test-Path (Join-Path $dataRoot 'manifest.json'))) {
+            throw "資料包裡找不到 manifest.json（位置：$root）"
+          }
+          "JC_IMEDATA=$dataRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "資料根目錄：$dataRoot"
       # 只跑 test（debug）。release 建置由下面的 build-windows job 並行處理，
       # 不必等測試結束才起步。
       - name: Test
@@ -513,7 +586,18 @@ jobs:
 
       # build.ps1 需要資料根目錄。資料不進 git，因此由此 job 下載
       # 預先打包的資料包；URL 由公開 repo variable 提供。
+      #
+      # 解開後接近 1GB，每次重下重解要一分多鐘。快取 key 直接綁 SHA-256：
+      # 資料沒換就沿用同一份，換了 key 自然失效。
+      - name: 還原資料包快取
+        id: data-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/jc-ime-data
+          key: jc-ime-data-${{ runner.os }}-${{ vars.JC_DATA_BUNDLE_SHA256 }}
+
       - name: 下載並展開資料包
+        if: steps.data-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -606,6 +690,35 @@ jobs:
 
           Add-GitHubEnv 'JC_DATA_ROOT' $dataRoot
           Write-Host "資料根目錄：$dataRoot"
+      # 快取命中時上面的下載步驟整個跳過，環境變數改由這裡設定。
+      - name: 設定資料根目錄
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'jc-ime-data'
+          $dataRoot = $root
+          if (-not (Test-Path (Join-Path $dataRoot 'manifest.json'))) {
+            $candidates = @(Get-ChildItem -Path $root -Directory |
+              Where-Object { Test-Path (Join-Path $_.FullName 'manifest.json') })
+            if ($candidates.Count -eq 1) {
+              $dataRoot = $candidates[0].FullName
+            }
+          }
+          if (-not (Test-Path (Join-Path $dataRoot 'manifest.json'))) {
+            throw "資料包裡找不到 manifest.json（位置：$root）"
+          }
+          "JC_DATA_ROOT=$dataRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "資料根目錄：$dataRoot"
+      # 只有 linux 與 build-windows 負責存檔：兩者各自對應一個 runner.os 的 key，
+      # 其他 job 只還原，避免同一份近 1GB 的快取被多個 job 同時上傳。
+      - name: 儲存資料包快取
+        if: >-
+          steps.data-cache.outputs.cache-hit != 'true' &&
+          github.event_name != 'pull_request'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/jc-ime-data
+          key: jc-ime-data-${{ runner.os }}-${{ vars.JC_DATA_BUNDLE_SHA256 }}
 
       # Python 版與 `jc-cli data verify` 的 Full 驗證等價（見 scripts/verify-bundle.py），
       # 省掉為了驗證而單獨編一次 release jc-cli 的 5～6 分鐘。build.ps1 仍會建
