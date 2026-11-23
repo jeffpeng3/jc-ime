@@ -43,7 +43,9 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
 
     let mut report = Report::new(options.json);
     report.heading(format!("jc-ime 安裝診斷（{}）", product::DISPLAY_NAME));
-    report.heading("不需要管理員；只讀機碼與 TSF API，不呼叫 Register／ActivateProfile。");
+    report.heading(
+        "不需要管理員；只讀機碼與 TSF API。唯一的寫入是在本行程 ActivateProfile，不改系統或使用者的預設輸入法。",
+    );
     report.heading("");
 
     // TSF 的 COM 物件是 apartment-threaded；先初始化再建立任何物件。
@@ -234,20 +236,46 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
                         "ITfThreadMgr::Activate → 應用程式 client_id={application_client_id}（不是 TIP 的 client_id）"
                     ));
 
+                    // 「已為使用者啟用」不等於「這個執行緒正在用它」：msctf 要等到
+                    // ActivateProfile 才會載入 TIP，並用真正的 TIP client id 呼叫
+                    // Activate。少了這一步，GetClientId 建出的 id 背後沒有 TIP，
+                    // AdviseKeyEventSink 就回 E_INVALIDARG（這就是先前的
+                    // 0x80070057）。TF_IPPMF_FORPROCESS 只影響本行程。
+                    let profile_activated = match tsf_profile::activate_ours() {
+                        Ok(()) => {
+                            report.info(
+                                "ITfInputProcessorProfileMgr::ActivateProfile(TF_IPPMF_FORPROCESS) = S_OK；                                 msctf 已在本行程載入 jc-tsf",
+                            );
+                            true
+                        }
+                        Err(error) => {
+                            report.fail(
+                                "tsf.activate",
+                                "Activate",
+                                format!(
+                                    "{error}；msctf 沒有載入 jc-tsf，Activate 無法驗證。\
+                                     只註冊 profile 不夠，它還不是這個執行緒的作用中輸入法"
+                                ),
+                                "以管理員執行 jc-tip-register machine-register，再以目前使用者執行 user-install",
+                            );
+                            false
+                        }
+                    };
+
                     // 應用程式與文字服務的 TfClientId 來源不同：前者從
                     // ITfThreadMgr::Activate 拿到，後者由 TSF 在
                     // ITfTextInputProcessor::Activate 傳進來。把前者傳給 TIP 會讓
                     // msctf 的 AdviseKeyEventSink 回 E_INVALIDARG，因為它不是 TIP
                     // 的 client id。這裡自己建的 TIP 物件用 ITfClientId::GetClientId
-                    // 取得與 CLSID 綁定的 id；已安裝時 msctf 在上一行的 Activate
-                    // 中就已經用同一個 id 激活過 TIP，這時會回 CONNECT_E_ADVISELIMIT。
-                    let tip_client_id =
-                        manager.cast::<ITfClientId>().and_then(|client_id| unsafe {
-                            client_id.GetClientId(&product::CLSID_JC_TSF)
-                        });
-
+                    // 取得與 CLSID 綁定的 id；上一行 ActivateProfile 之後 msctf 已經
+                    // 用同一個 id 激活過 TIP，這時會回 CONNECT_E_ADVISELIMIT。
                     let mut activated = false;
-                    match tip_client_id {
+                    if profile_activated {
+                        let tip_client_id =
+                            manager.cast::<ITfClientId>().and_then(|client_id| unsafe {
+                                client_id.GetClientId(&product::CLSID_JC_TSF)
+                            });
+                        match tip_client_id {
                         Ok(tip_client_id) => {
                             report.info(format!(
                                 "ITfClientId::GetClientId(CLSID_JC_TSF) → TIP client_id={tip_client_id}"
@@ -273,7 +301,8 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
                                             "Activate",
                                             format!(
                                                 "TIP client_id={tip_client_id} 已有 key sink（HRESULT {}）：\
-                                                 msctf 在 ITfThreadMgr::Activate 時已激活本 TIP，不需再手動激活",
+                                                 msctf 在 ActivateProfile 時已用真正的 TIP client id 激活本 TIP，\
+                                                 手動建立的物件不需再激活一次",
                                                 report::hex(CONNECT_E_ADVISELIMIT.0 as u32)
                                             ),
                                         );
@@ -302,6 +331,7 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
                             ),
                             "確認 ITfThreadMgr 支援 ITfClientId；這是 msctf 版本問題，先修復 Windows TSF",
                         ),
+                    }
                     }
 
                     if activated {

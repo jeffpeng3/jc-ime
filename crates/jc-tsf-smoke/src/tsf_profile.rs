@@ -9,9 +9,11 @@
 
 use windows::core::Interface;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, ITfInputProcessorProfileMgr, ITfInputProcessorProfiles,
-    GUID_TFCAT_TIP_KEYBOARD, TF_INPUTPROCESSORPROFILE, TF_LANGUAGEPROFILE,
+    GUID_TFCAT_TIP_KEYBOARD, TF_INPUTPROCESSORPROFILE, TF_IPPMF_FORPROCESS, TF_LANGUAGEPROFILE,
+    TF_PROFILETYPE_INPUTPROCESSOR,
 };
 
 use crate::error::SmokeError;
@@ -117,6 +119,49 @@ pub fn query() -> Result<UserProfileState, SmokeError> {
         active,
         active_is_ours,
     })
+}
+
+/// 在目前執行緒把本產品設為作用中的輸入法。
+///
+/// 註冊 profile 加上 `EnableLanguageProfile` 只代表「已為這個使用者安裝並啟用」，
+/// 不等於這個執行緒正在用它。msctf 要等到 `ActivateProfile` 才會載入 TIP，並用
+/// 真正的 TIP client id 呼叫 `ITfTextInputProcessor::Activate`。少了這一步，
+/// `ITfClientId::GetClientId` 建出來的 id 背後沒有任何 TIP，
+/// `AdviseKeyEventSink` 就回 `E_INVALIDARG`（run 45140346900 的 `tsf.log` 只有
+/// `activate 開始 tid=29` 一行，之後什麼都沒有）。
+///
+/// `TF_IPPMF_FORPROCESS` 讓影響只留在本行程：不改系統或使用者的預設輸入法，
+/// 行程結束就沒了。這正是宿主程式（記事本等）切到本產品時走的路。
+pub fn activate_ours() -> Result<(), SmokeError> {
+    // SAFETY: 呼叫端已 CoInitializeEx；這是標準的 in-proc COM 建立。
+    let profiles: ITfInputProcessorProfiles = unsafe {
+        CoCreateInstance(
+            &CLSID_TF_InputProcessorProfiles,
+            None::<&windows::core::IUnknown>,
+            CLSCTX_INPROC_SERVER,
+        )
+    }
+    .map_err(|error| {
+        SmokeError::hresult(
+            "CoCreateInstance(CLSID_TF_InputProcessorProfiles)",
+            error.code(),
+        )
+    })?;
+    let manager: ITfInputProcessorProfileMgr = profiles.cast().map_err(|error| {
+        SmokeError::hresult("ITfInputProcessorProfiles::cast(ProfileMgr)", error.code())
+    })?;
+    // SAFETY: manager 有效；GUID 都是常數，hkl 傳預設值代表不指定鍵盤配置。
+    unsafe {
+        manager.ActivateProfile(
+            TF_PROFILETYPE_INPUTPROCESSOR,
+            product::LANGID_ZH_TW,
+            &product::CLSID_JC_TSF,
+            &product::GUID_PROFILE_JC_TSF,
+            HKL::default(),
+            TF_IPPMF_FORPROCESS,
+        )
+    }
+    .map_err(|error| SmokeError::hresult("ActivateProfile", error.code()))
 }
 
 /// 列舉 `0x0404` 的 profile，回傳（是否含本產品, 總數）。

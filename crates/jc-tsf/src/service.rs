@@ -1706,7 +1706,18 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             unsafe {
                 let keystrokes: ITfKeystrokeMgr = tm.cast()?;
                 let key_sink: ITfKeyEventSink = self.to_interface();
-                keystrokes.AdviseKeyEventSink(tid, &key_sink, true)?;
+                // 這個呼叫的 E_INVALIDARG 只有一個意思：tid 背後沒有已激活的 TIP
+                // （msctf 用 tid 反查 TIP CLSID，查不到就回 E_INVALIDARG）。把它連
+                // tid 一起寫進日誌，免得還要猜是哪一行回的錯。
+                if let Err(error) = keystrokes.AdviseKeyEventSink(tid, &key_sink, true) {
+                    zlog!(
+                        "AdviseKeyEventSink 失敗 tid={} code={:#010x}",
+                        tid,
+                        error.code().0 as u32
+                    );
+                    return Err(error);
+                }
+                zlog!("advise key sink 完成 tid={}", tid);
                 let source: ITfSource = tm.cast()?;
                 let tm_sink: ITfThreadMgrEventSink = self.to_interface();
                 let cookie = source

@@ -105,6 +105,14 @@ msctf 在 `AdviseKeyEventSink` 回 `E_INVALIDARG`。已安裝 `jc-tsf` 時，msc
 `CONNECT_E_ADVISELIMIT`，這代表 TIP 已經在跑，判為通過。詳細文件依據與真機指令見
 `docs/port/activate-second-call.md`。
 
+「已為使用者啟用」還不等於「這個執行緒正在用它」。只註冊 profile 加上
+`EnableLanguageProfile` 時，msctf 不會載入 TIP；`GetClientId` 會給一個背後沒有
+任何 TIP 的 id，`AdviseKeyEventSink` 就回 `E_INVALIDARG`（run 45140346900 的
+`tsf.log` 只有 `activate 開始 tid=29` 一行，之後空白）。所以檢查 5 會先呼叫
+`ITfInputProcessorProfileMgr::ActivateProfile(TF_IPPMF_FORPROCESS)`，把本產品設成
+**本行程**的作用中輸入法；msctf 這時才真的載入 DLL、用真正的 TIP client id 呼叫
+`Activate`。旗標只影響本行程，不改系統或使用者的預設輸入法。
+
 檢查 5 成功後會立刻 `Deactivate` 並等 200 ms：`jc-tsf` 的 worker 在 `Activate`
 時會連上引擎，而引擎一次只服務一條連線，不先放掉的話檢查 6 會連不進去。
 
