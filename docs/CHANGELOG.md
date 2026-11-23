@@ -4,6 +4,18 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.11 - 2026-11-23
+
+### 新增
+
+- 候選窗：改由 TSF DLL 內自繪（Direct2D + DirectComposition），不再需要外部
+  程式。`WS_EX_NOACTIVATE` 全程不搶焦點、跟隨插入點與監視器 DPI、深淺色主題、
+  點選沿用原本的 edit session 核對流程。GPU 初始化失敗只收起候選窗並記一行
+  日誌，不影響打字。
+- 狀態列的「輸出簡體字」：引擎載入資料根目錄 `opencc/` 的 tw2s 字典，送出時
+  轉成簡體，組字中的預覽仍是繁體。轉換器缺席時不宣告能力，也不會留下按了沒
+  反應的假開關。
+
 ## 0.1.10 - 2026-11-23
 
 ### 修正
@@ -21,9 +33,6 @@ GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`�
   `right_shift`，jc-tsf 的 `ShiftConfig::from_info` 因此退回
   `left_shift=false`——只剩右 Shift 能用。現在依生效設定的 `toggle_key`
   回報兩個旗標（Windows 預設 `both`，左右都能切）。
-- 狀態列的「輸出簡體字」現在可用：引擎載入資料根目錄 `opencc/` 的 tw2s
-  字典，送出時轉成簡體，組字中的預覽仍是繁體。轉換器缺席時不宣告
-  `output_simplified_live`，也不會留下假開關。
 
 ## 0.1.8 - 2026-11-23
 
