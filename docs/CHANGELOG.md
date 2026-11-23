@@ -4,6 +4,15 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.10 - 2026-11-23
+
+### 修正
+
+- Windows：打英文單字打到一半，整個輸入法變成英文模式，要按兩下 Shift 才回得來。
+  引擎的 `Snapshot.mode` 是「這一段組字是什麼語言」，mixed 模式打英文字時它就是
+  `english`；外殼原本把它當成中英模式直接採用。現在只有 Caps Lock 英文這種
+  暫時狀態才以引擎為權威，一般按鍵一律用外殼記住的中英模式。
+
 ## 0.1.9 - 2026-11-23
 
 ### 修正

@@ -1538,10 +1538,17 @@ impl Session {
             }
             let mut s = parse(&reply);
             s.reconnected = generation_before != self.client.generation();
-            // 有組字片段時引擎的模式是權威值；空組字與提交則補外殼記得的模式。
-            if s.commit.is_empty() && !s.preedit.is_empty() {
-                // 引擎的模式照用。
-            } else {
+            // 引擎的 `Snapshot.mode` 是「這一段組字是什麼語言」，不是中英模式。
+            // mixed 模式打英文單字時它會是 english，但那只是一段字，不該把整個
+            // 輸入法切成英文模式——實機症狀是「打到一半變全英文」。
+            // 所以按鍵請求一律用外殼記住的中英模式；其他請求才照原邏輯，
+            // 在組字中採用引擎回報的語言（給 UI 顯示用）。
+            // Caps Lock 英文是暫時狀態，引擎才是權威（重連後設定可能已被關掉）；
+            // 一般按鍵則一律用外殼記住的中英模式。
+            let adopt_engine_mode = (kind != "key" || self.caps_english)
+                && s.commit.is_empty()
+                && !s.preedit.is_empty();
+            if !adopt_engine_mode {
                 s.english = want_english;
                 s.japanese = self.japanese && self.japanese_cap;
             }
@@ -2850,6 +2857,29 @@ mod tests {
         let snap = s.handle(json!({"type": "mode", "on": false}));
         assert!(snap.text().is_empty());
         assert!(!snap.english);
+    }
+
+    /// 打英文單字不該把整個輸入法切成英文模式。
+    ///
+    /// mixed 模式的 `Snapshot.mode` 是「這一段組字是什麼語言」；打完一句英文
+    /// 它會是 english，但中英模式只由 toggle／mode／caps_lock 改變。實機症狀：
+    /// 打到一半變全英文，要按兩下 Shift 才回來。
+    #[test]
+    fn english_word_does_not_flip_the_input_mode() {
+        let (mut s, st) = toy_session();
+        {
+            let mut state = st.lock().unwrap();
+            state.english = false;
+        }
+        let first = s.key("h");
+        assert!(first.ok, "{first:?}");
+        // 假引擎照 mixed 模式回報 english 片段。
+        let mut state = st.lock().unwrap();
+        state.english = true;
+        drop(state);
+        let typed = s.key("e");
+        assert!(!typed.english, "英文片段不該把輸入模式切成英文：{typed:?}");
+        assert!(!s.english(), "外殼的中英模式要維持中文");
     }
 
     #[test]
