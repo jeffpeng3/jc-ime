@@ -162,8 +162,9 @@ Name: "{group}\jc 注音授權"; Filename: "{app}\jc-tip-register.exe"; Paramete
 ; 32 位元行程讀 32 位元檢視（實體位置是 Wow6432Node）。兩份共用同一個 CLSID，
 ; 使用者的語言清單只有一項。
 ;
-; 檢視用 Root 的 HKLM64／HKLM32 指定，不要用 Flags。Inno Setup 6.7 的
-; [Registry] 沒有 32bit／64bit 旗標（那是 [Files] 的），寫上去會編譯失敗。
+; 檢視用 Root 的 HKLM64／HKLM32 指定，不要用 Flags。Inno 的 [Registry] 從
+; 來沒有 32bit／64bit 旗標，任何版本都沒有；那是 [Files]／[Run] 用來指定
+; 「這個檔案／行程是 32 位元」的旗標，名字一樣但意義不同。
 ; HKLM\Software\Classes 就是 HKCR 的機器層級來源，效果與寫 HKCR 相同。
 ; PipePrefix 是 jc 自己的值，啟動器靠它知道要連 jc-ime-<rid> 的 pipe。
 Root: HKLM64; Subkey: "Software\Classes\CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\jc-tsf.dll"; Flags: uninsdeletekey
@@ -186,9 +187,10 @@ Filename: "{app}\jc-tip-register.exe"; Parameters: "machine-register"; StatusMsg
 ; 使用者層級啟用。runasoriginaluser 不能省：安裝程式是管理員身分，直接跑會
 ; 寫到 Administrator 的語言清單，對實際使用者沒有作用。
 ;
-; [Run] 沒有 ignoreerrors 這個旗標（Inno 6.7 會判 unknown flag），所以這兩步
-; 失敗會讓安裝失敗。這是刻意的：使用者清單沒加進去，裝完也不能打字，
-; 靜靜成功只會讓問題延後到使用者身上。
+; [Run] 沒有 ignoreerrors 這個旗標（任何版本都沒有），所以這兩步失敗會讓安裝
+; 失敗。這是刻意的：使用者清單沒加進去，裝完也不能打字，靜靜成功只會讓問題
+; 延後到使用者身上。真的需要「失敗也繼續」，得改用 [Code] 的 Exec／
+; ExecAsOriginalUser 自己處理結束碼。
 Filename: "{app}\jc-tip-register.exe"; Parameters: "user-install"; Tasks: enableime; StatusMsg: "{cm:MsgEnabling}"; Flags: runhidden waituntilterminated runasoriginaluser
 
 ; 清掉已移除舊 CLSID 的語言清單殘留。

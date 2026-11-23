@@ -41,8 +41,20 @@ pub const ILOT_INSTALL: u32 = 0x0000_0000;
 pub const PIPE_PREFIX: &str = "jc-ime";
 
 /// 共用 `InstallLayoutOrTip` 字串格式：`<LangID>:<profile GUID><CLSID>`。
+/// `InstallLayoutOrTip` 的文字服務字串。
+///
+/// 官方格式是 `<LangID>:{CLSID}{profile};`（見 MicrosoftDocs/win32 的
+/// `TSF/installlayoutortip.md` 範例）：
+///
+/// ```text
+/// 0x0412:{A028AE76-...}{B5FE1F02-...};0x040C:0x0000040C
+/// ```
+///
+/// 三個地方都不能省：LangID 要帶 `0x`、大括號裡先 CLSID 再 profile、結尾有分號。
+/// 格式不對時 `InstallLayoutOrTip` 會回 TRUE 但什麼都不做，所以這些字元是鎖在
+/// 測試裡的，不是排好看的。
 fn tip_string_for(profile: &str, clsid: &str) -> String {
-    format!("0x{LANGID_ZH_TW:04X}:{profile}{clsid}")
+    format!("0x{LANGID_ZH_TW:04X}:{clsid}{profile};")
 }
 
 /// 現行身分的 `InstallLayoutOrTip` 字串。
@@ -55,13 +67,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tip_string_uses_langid_then_profile_then_clsid() {
+    fn tip_string_is_langid_then_clsid_then_profile() {
         assert_eq!(
             tip_string(),
-            format!("0x{LANGID_ZH_TW:04X}:{PROFILE_JC_TSF}{CLSID_JC_TSF}")
+            format!("0x{LANGID_ZH_TW:04X}:{CLSID_JC_TSF}{PROFILE_JC_TSF};")
         );
-        assert!(tip_string().starts_with("0x0404:{C4E8D217-"));
-        assert!(tip_string().ends_with("{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}"));
+        assert_eq!(
+            tip_string(),
+            "0x0404:{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56};"
+        );
+        assert!(tip_string().starts_with("0x0404:{2F6B41D8-"));
+        assert!(tip_string().ends_with("{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56};"));
     }
 
     #[test]

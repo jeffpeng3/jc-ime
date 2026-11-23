@@ -796,6 +796,10 @@ jobs:
       # 內含 12 項檢查。除了結束碼，還要求關鍵項目的 status 不是 fail。
       - name: 執行 jc-tsf-smoke（doctor）
         shell: pwsh
+        env:
+          # Activate 失敗時 TSF 會在 DLL 裡記下是哪一步回錯誤。doctor 只看得到
+          # HRESULT，真正的原因在 tsf.log。
+          JC_TSF_LOG: "1"
         run: |
           $ErrorActionPreference = 'Stop'
 
@@ -976,6 +980,7 @@ jobs:
             ${{ runner.temp }}/uninstall.log
             ${{ runner.temp }}/smoke.json
             ${{ runner.temp }}/smoke.err.log
+            ${{ env.LOCALAPPDATA }}/jc-ime/tsf.log
 
 
   # 與 build-windows 相同：只 needs check-tag，與測試並行起步。
