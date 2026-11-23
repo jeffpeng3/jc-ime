@@ -1,6 +1,6 @@
 //! 安裝日誌：一行一個動作，寫入後立即 `flush` 並 `sync_all`。
 //!
-//! MSI 的 deferred 自訂動作在 SYSTEM 身分執行，`stderr` 與 `OutputDebugStringW`
+//! 安裝器以 runhidden 執行自訂動作時，`stderr` 與 `OutputDebugStringW`
 //! 都收不到。註冊若在 DLL 內崩潰，唯一留下來的線索就是這個檔案。因此每個標記
 //! 都獨立開檔、寫入、同步，不靠 `BufWriter` 的聚合；行程被存取違規終止時，最後
 //! 一行仍然在磁碟上。

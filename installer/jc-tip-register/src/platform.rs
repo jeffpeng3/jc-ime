@@ -6,14 +6,13 @@
 //!
 //! | 機碼 | 誰寫 | 何時 |
 //! |---|---|---|
-//! | `HKCR\CLSID\{CLSID}\InprocServer32`（64 位元與 `Wow6432Node`） | MSI（WXS 的 `<Class>`） | `WriteRegistryValues` |
-//! | `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}` 與分類 | 這支程式 | `WriteRegistryValues` 之後 |
+//! | `HKCR\CLSID\{CLSID}\InprocServer32`（64 位元與 `Wow6432Node`） | 安裝器（`jc.iss` 的 `[Registry]`） | 安裝檔案時 |
+//! | `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}` 與分類 | 這支程式 | CLSID 寫入之後 |
 //!
-//! CLSID 交給 MSI 是 rc.7 的修正：rc.5／rc.6 由 `DllRegisterServer` 自己寫，當時
+//! CLSID 交給安裝器是 rc.7 的修正：rc.5／rc.6 由 `DllRegisterServer` 自己寫，當時
 //! 64 位元檢視的 CLSID 在 `RegisterCategory` 執行時還不存在，msctf 直接存取違規
-//! （`0xC0000005`）。`<Class Advertise="no">` 產生 Registry table 的資料列，
-//! `WriteRegistryValues` 排在 `RegisterTip` 之前，這支程式因此完全不需要 DLL
-//! 路徑與架構判斷。
+//! （`0xC0000005`）。`jc.iss` 的 `[Registry]` 會先寫好兩個檢視，自訂動作排在後面，
+//! 這支程式因此完全不需要 DLL 路徑與架構判斷。
 //!
 //! `HKLM\SOFTWARE\Microsoft\CTF` 不是 WOW64 轉向機碼，兩個架構讀寫同一份資料，
 //! 所以 profile 與分類只註冊一次、也只移除一次。
@@ -150,7 +149,7 @@ const IDENTITY_LEGACY: Identity = Identity {
 
 /// 註冊文字服務的 profile 與五個分類。
 ///
-/// CLSID 的 `InprocServer32` 由 MSI 寫好才呼叫這裡。`bEnabledByDefault` 傳
+/// CLSID 的 `InprocServer32` 由安裝器寫好才呼叫這裡。`bEnabledByDefault` 傳
 /// `false`：不要讓 msctf 進入 quasi-installed（Loaded 但未 Installed for current
 /// user）。目前使用者的 `Enable` 改由 `user-install` 的 `EnableLanguageProfile` 寫入；
 /// 仍然不呼叫 `ActivateProfile`，不改系統預設輸入法。
@@ -162,7 +161,7 @@ pub fn machine_register() -> Result<(), Error> {
 fn machine_register_impl(identity: &Identity) -> Result<(), Error> {
     log::step("machine-register：開始");
     log::step(&format!(
-        "CLSID {}：InprocServer32 由 MSI 寫入（WXS 的 <Class>）；這裡只註冊 profile 與分類",
+        "CLSID {}：InprocServer32 由安裝器寫入（jc.iss 的 [Registry]）；這裡只註冊 profile 與分類",
         identity.clsid
     ));
 
@@ -218,7 +217,7 @@ fn machine_register_impl(identity: &Identity) -> Result<(), Error> {
     log::step("ensure_tip_key：成功");
 
     // AppContainer（UWP）要讀得到安裝目錄才能載入 TIP。目錄取自這支 exe 的位置，
-    // 不需要 MSI 再傳路徑進來。ACL 是冪等的（`SET_ACCESS`），重跑不會堆疊重複的
+    // 不需要安裝器再傳路徑進來。ACL 是冪等的（`SET_ACCESS`），重跑不會堆疊重複的
     // ACE。這是 UWP 才需要的權限，桌面程式不受影響；預設關閉，避免手工 ACL 操作
     // 落在安裝關鍵路徑上（見 docs/port/tsf-installer.md 的 RC5 bisect）。
     if app_container_enabled() {
@@ -295,11 +294,11 @@ fn log_hr<T>(label: &str, result: &windows::core::Result<T>) {
 
 /// 移除 TSF 的 profile 與五個分類。
 ///
-/// 不刪 `HKCR\CLSID`：MSI 的 `RemoveRegistryValues` 會把兩個檢視的 CLSID 機碼
-/// 一起移除，這裡若先刪就會跟 MSI 搶，也會讓 `RemoveRegistryValues` 找不到目標。
+/// 不刪 `HKCR\CLSID`：安裝器的 `[Registry]` 會把兩個檢視的 CLSID 機碼一起移除，
+/// 這裡若先刪就會跟安裝器搶，也會讓反安裝找不到目標。
 ///
-/// 個別步驟失敗只記日誌、不中斷：反安裝不能被殘缺的 CTF 狀態卡住，MSI 這一端
-/// 也是 `Return="ignore"`。
+/// 個別步驟失敗只記日誌、不中斷：反安裝不能被殘缺的 CTF 狀態卡住，安裝器端也
+/// 不會因為這支程式失敗而中止。
 pub fn machine_unregister() -> Result<(), Error> {
     machine_unregister_impl(&IDENTITY_CURRENT)
 }
@@ -308,7 +307,7 @@ pub fn machine_unregister() -> Result<(), Error> {
 fn machine_unregister_impl(identity: &Identity) -> Result<(), Error> {
     log::step("machine-unregister：開始");
     log::step(&format!(
-        "CLSID {} 的機碼由 MSI 的 RemoveRegistryValues 移除；這裡只清 profile 與分類",
+        "CLSID {} 的機碼由安裝器的 [Registry] 移除；這裡只清 profile 與分類",
         identity.clsid
     ));
 
@@ -408,8 +407,8 @@ fn enable_current_profile() -> Result<(), Error> {
 /// 不使用 `ILOT_UNINSTALL`（移除語系最後一個 layout 時會把系統地區改成英文）。
 /// 升級時 Windows 不會自動清掉舊版孤兒項目，所以要排在新的 `user-install` 之前。
 ///
-/// 個別步驟失敗只記日誌、不回錯誤：這一步是清理，不能擋住安裝（WXS 端也是
-/// `Return="ignore"`）。
+/// 個別步驟失敗只記日誌、不回錯誤：這一步是清理，不能擋住安裝（安裝器端也不
+/// 擋安裝）。
 pub fn user_cleanup_legacy() -> Result<(), Error> {
     log::step("user-cleanup-legacy：開始");
     // SAFETY: CoInitializeEx 對已初始化的執行緒是無害的。
@@ -448,7 +447,7 @@ pub fn user_cleanup_legacy() -> Result<(), Error> {
 /// 使用者的整個介面因此變調。參考專案在 `disable()` 明確停用
 /// `InstallLayoutOrTip(ILOT_UNINSTALL)`，理由與追蹤見
 /// <https://codeberg.org/chewing/windows-chewing-tsf/issues/553>。這裡照做，只留
-/// 一行日誌說明：MSI 移除 profile 之後，殘留的語言清單項目會自然變成無效項目，
+/// 一行日誌說明：安裝器移除 profile 之後，殘留的語言清單項目會自然變成無效項目，
 /// 由使用者自己在語言設定移除。
 ///
 /// `keep_user_data` 為 `false` 時一併刪除 `%LOCALAPPDATA%\jc-ime`
@@ -547,7 +546,7 @@ fn user_dir() -> Option<std::path::PathBuf> {
 
 /// 確認完整的 profile 子機碼已寫進 TSF 的 store，而且 32 位元檢視也讀得到。
 ///
-/// 只檢查 `CTF\TIP\{CLSID}` 不夠：`RegisterCategory` 與 MSI 的 `<Class>` 也會建立
+/// 只檢查 `CTF\TIP\{CLSID}` 不夠：`RegisterCategory` 與安裝器的 `[Registry]` 也會建立
 /// 那個機碼，即使 `LanguageProfile` 完全不存在仍會通過。所以要一路查到
 /// `LanguageProfile\{langid}\{profile}`。
 ///
@@ -609,7 +608,7 @@ fn profile_reg_path(identity: &Identity) -> String {
     )
 }
 
-/// 送到 debugger（DebugView／VS 輸出視窗）；MSI 的 deferred 動作看不到 stderr。
+/// 送到 debugger（DebugView／VS 輸出視窗）；安裝器以 runhidden 執行時看不到 stderr。
 fn debug_warning(text: &str) {
     let text = wide(&format!("[jc-tip-register] {text}"));
     // SAFETY: text 以 NUL 結尾且呼叫期間保持存活。
