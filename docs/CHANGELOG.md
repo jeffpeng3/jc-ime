@@ -4,6 +4,15 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.8 - 2026-11-23
+
+### 修正
+
+- Windows：切到英文後切不回來，而且之後每個鍵都變成「server 不可用，放行按鍵」。
+  0c 的 `display` 請求被原樣送給引擎，jc 沒有這個 op，回 `UnknownOp`；它又被記進
+  重播紀錄，之後每次 `ensure_open` 重播都失敗，session 再也開不起來。改成翻成
+  jc 的 `snapshot`（只是要目前的顯示狀態），重播也跟著正常。
+
 ## 0.1.7 - 2026-11-23
 
 ### 修正

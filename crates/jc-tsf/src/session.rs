@@ -566,6 +566,10 @@ pub fn to_jc_request(envelope: &Value) -> Value {
             }
             "toggle" => json!({"op": "toggle"}),
             "commit" => json!({"op": "commit"}),
+            // 0c 的 display 是「給我目前的顯示狀態」。jc 沒有這個 op，送過去會回
+            // UnknownOp；那個請求又進了重播紀錄，之後每次 ensure_open 重播都會
+            // 失敗，整個 session 就再也開不起來（實機：每個鍵都「server 不可用」）。
+            "display" => json!({"op": "snapshot"}),
             other => {
                 let mut request = envelope["req"].clone();
                 request["op"] = Value::from(other);
@@ -2191,6 +2195,24 @@ mod tests {
             }
             other => panic!("應是 Key 請求：{other:?}"),
         }
+    }
+
+    /// 0c 的 `display` 要翻成 jc 的 `snapshot`。
+    ///
+    /// 直接送 `display` 引擎會回 UnknownOp，而這個請求會被記進重播紀錄；之後
+    /// `ensure_open` 每次重播都失敗，session 再也開不起來——實機症狀是進英文
+    /// 模式後每個鍵都「server 不可用，放行按鍵」。
+    #[test]
+    fn to_jc_request_maps_display_to_snapshot() {
+        let envelope = json!({
+            "op": "handle",
+            "session": 1,
+            "req": {"type": "display", "columns": 0},
+        });
+        let request = to_jc_request(&envelope);
+        assert_eq!(request["op"], "snapshot");
+        let parsed: jc_proto::Request = serde_json::from_value(request).unwrap();
+        assert!(matches!(parsed, jc_proto::Request::Snapshot));
     }
 
     #[test]
