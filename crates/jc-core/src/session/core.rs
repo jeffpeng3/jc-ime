@@ -94,6 +94,7 @@ impl Session {
         self.cursor = at + 1;
         self.edit = None;
         self.keep_candidates = false;
+        self.zh_window_last = false;
     }
 
     /// 刪除音節索引 `at` 的音節；游標不動，呼叫端自己決定位置。
@@ -108,6 +109,7 @@ impl Session {
         self.cursor = self.cursor.min(self.syllables.len());
         self.edit = None;
         self.keep_candidates = false;
+        self.zh_window_last = false;
         true
     }
 
@@ -137,6 +139,7 @@ impl Session {
         }
         match self.zh.press(Key::new(KeyCode::Space, None, false)) {
             crate::zh::input::ZhInputEvent::SyllableComplete(syllable) => {
+                self.zh_pending_keys.clear();
                 self.insert_syllable(self.cursor, syllable);
                 self.zh.reset();
                 true
@@ -177,11 +180,7 @@ impl Session {
 
     pub(super) fn press_char(&mut self, ch: char) {
         // 選取模式中 j／k 換前後一個候選；其他時候 j／k 仍是注音鍵。
-        if self.config.mode == Mode::Zh
-            && self.candidate_window
-            && self.navigating
-            && self.edit.is_some()
-        {
+        if self.in_zh_lane() && self.candidate_window && self.navigating && self.edit.is_some() {
             match ch {
                 'j' => {
                     self.move_highlight(-1);
@@ -197,6 +196,7 @@ impl Session {
         // Mixed 模式下聲調鍵先於選字鍵：未完成的注音前綴遇到數字時先補成音節，
         // 即使外殼在單一數字鍵前補了 Down，也不會選到英文補全候選。
         if self.config.mode == Mode::Mixed
+            && !self.in_zh_lane()
             && self.candidate_window
             && self.ascii.tone_completes(ch, &self.lexicon)
         {
@@ -220,6 +220,7 @@ impl Session {
                 return;
             }
         }
+        self.zh_window_last = false;
         self.accepted_completion = None;
         self.suggestion = None;
         self.navigating = false;
@@ -246,40 +247,25 @@ impl Session {
         if !window {
             self.highlighted = 0;
         }
-        match self.config.mode {
-            Mode::Zh => {
-                if self.zh.pending().is_empty() {
-                    if ch == '`' {
-                        self.open_menu(MenuKind::Symbols, 0);
-                        return;
-                    }
-                    if ch == '=' {
-                        self.open_menu(MenuKind::Emoji, self.palette_tab);
-                        return;
-                    }
-                }
-                match self.zh.press(Key::char(ch, false)) {
-                    crate::zh::input::ZhInputEvent::Consumed => {}
-                    crate::zh::input::ZhInputEvent::SyllableComplete(syllable) => {
-                        // 音節完成後搬進工作階段自己的音節清單，才能在中間插字。
-                        self.insert_syllable(self.cursor, syllable);
-                        self.zh.reset();
-                    }
-                    crate::zh::input::ZhInputEvent::Commit(reading) => {
-                        // 空白鍵在沒有未完成注音時提交；改用轉換後的結果。
-                        if let Some(text) = self.convert_reading(&reading) {
-                            self.pending_commit = Some(text);
-                            self.zh.reset();
-                        }
-                    }
-                    crate::zh::input::ZhInputEvent::Cancel => self.zh.reset(),
-                    crate::zh::input::ZhInputEvent::Ignored => {
-                        let punct = self.zh.keyboard().punct(ch);
-                        let text = punct.map(str::to_string).unwrap_or_else(|| ch.to_string());
-                        self.push_literal(&text);
-                    }
-                }
+        // 符號與表情選單：注音沒有未完成的音節時，反引號與等號直接開選單。
+        // 純注音與 Mixed 共用同一條路徑；microsoft 風格的反引號前導已在
+        // `style_key` 先處理。
+        if self.menu.is_none()
+            && self.zh.pending().is_empty()
+            && self.ascii.pending().is_empty()
+            && matches!(self.config.mode, Mode::Zh | Mode::Mixed)
+        {
+            if ch == '`' {
+                self.open_menu(MenuKind::Symbols, 0);
+                return;
             }
+            if ch == '=' {
+                self.open_menu(MenuKind::Emoji, self.palette_tab);
+                return;
+            }
+        }
+        match self.config.mode {
+            Mode::Zh => self.press_zh_char(ch),
             Mode::Ja => {
                 let event = self.romaji.press(Key::char(ch, false));
                 // 混打推斷出來的日文片段遇到羅馬字接不上的按鍵（數字、標點）
@@ -291,12 +277,149 @@ impl Session {
             Mode::En => self.raw.push(ch),
             Mode::Mixed => {
                 self.mixed_cursor = Self::MIXED_CURSOR_END;
+                // 純注音組字走注音狀態機，與舊的純注音模式一致；按鍵打不成
+                // 注音時整段交回混打管線。
+                if self.zh_lane {
+                    if self.mixed_zh_lane_continues(ch) {
+                        self.press_zh_char(ch);
+                    } else {
+                        self.leave_zh_lane_for_mixed(ch);
+                    }
+                    return;
+                }
+                if self.mixed_zh_lane_starts(ch) {
+                    self.zh_lane = true;
+                    self.zh_pending_keys.clear();
+                    self.press_zh_char(ch);
+                    return;
+                }
+                // 沒在組字時的鍵盤標點照注音的標點表打全形；注音鍵本身已在
+                // 上面走注音路徑。
+                if self.ascii.is_empty() && self.syllables.is_empty() {
+                    if let Some(punct) = self.zh.keyboard().punct(ch) {
+                        self.push_literal(punct);
+                        return;
+                    }
+                }
                 if !self.ascii.tone(ch, &self.lexicon) {
                     self.ascii.press(ch);
                 }
                 self.try_japanese_run();
             }
         }
+    }
+
+    /// 把一個按鍵交給注音狀態機；純注音與 Mixed 的注音路徑共用。
+    fn press_zh_char(&mut self, ch: char) {
+        match self.zh.press(Key::char(ch, false)) {
+            crate::zh::input::ZhInputEvent::Consumed => self.zh_pending_keys.push(ch),
+            crate::zh::input::ZhInputEvent::SyllableComplete(syllable) => {
+                // 音節完成後搬進工作階段自己的音節清單，才能在中間插字。
+                self.zh_pending_keys.clear();
+                self.insert_syllable(self.cursor, syllable);
+                self.zh.reset();
+            }
+            crate::zh::input::ZhInputEvent::Commit(reading) => {
+                self.zh_pending_keys.clear();
+                // 空白鍵在沒有未完成注音時提交；改用轉換後的結果。
+                if let Some(text) = self.convert_reading(&reading) {
+                    self.pending_commit = Some(text);
+                    self.zh.reset();
+                }
+            }
+            crate::zh::input::ZhInputEvent::Cancel => {
+                self.zh_pending_keys.clear();
+                self.zh.reset();
+            }
+            crate::zh::input::ZhInputEvent::Ignored => {
+                let punct = self.zh.keyboard().punct(ch);
+                let text = punct.map(str::to_string).unwrap_or_else(|| ch.to_string());
+                self.push_literal(&text);
+            }
+        }
+    }
+
+    /// Mixed 從空白開始打注音鍵時，這次組字走注音路徑。
+    fn mixed_zh_lane_starts(&self, ch: char) -> bool {
+        if self.ja_run || !self.ascii.is_empty() || !self.syllables.is_empty() {
+            return false;
+        }
+        // 孤立的聲調鍵已在 `segments_press` 當成數字處理，不會走到這裡。
+        self.zh.keyboard().symbol(ch).is_some_and(|symbol| {
+            crate::zh::syllable::class_of(symbol) != crate::zh::syllable::Class::Tone
+        })
+    }
+
+    /// 注音路徑中的下一個按鍵是否仍打得成注音。
+    ///
+    /// 標點、非注音鍵與環境鍵留在注音路徑當字面；字母或數字讓目前未完成的
+    /// 音節出現同類別重複（`hel` 的兩個聲母）或剛好是英文詞時，代表使用者
+    /// 在打英文，整段交回混打管線。
+    fn mixed_zh_lane_continues(&self, ch: char) -> bool {
+        if self.ja_run {
+            return false;
+        }
+        let Some(symbol) = self.zh.keyboard().symbol(ch) else {
+            // 大寫字母、全形字母與其他非注音字元代表這段已經離開注音；
+            // 只有鍵盤標點留在注音路徑做全形標點轉換。
+            return self.zh.keyboard().punct(ch).is_some();
+        };
+        if crate::zh::syllable::class_of(symbol) == crate::zh::syllable::Class::Tone {
+            return true;
+        }
+        let mut keys = self.zh_pending_keys.clone();
+        keys.push(ch);
+        if crate::mixed::prototype().has(&keys) {
+            return false;
+        }
+        if super::mixed::compose_keys(&keys).is_none() {
+            return false;
+        }
+        // 已經有完成的字、而且正在開新音節時，`,`、`.`、`/` 視為標點，
+        // 整段交回混打管線，畫面與 Router 一致（`字.` 而不是 `字ㄡ`）。
+        self.syllables.is_empty()
+            || !self.zh_pending_keys.is_empty()
+            || !matches!(ch, ',' | '.' | '/')
+    }
+
+    /// 結束這次的注音路徑，把整段按鍵重播進混打管線。
+    fn leave_zh_lane_for_mixed(&mut self, ch: char) {
+        // 已完成的音節還原成原本的按鍵，才能讓混打管線重新判斷前後片段；
+        // 直接塞入漢字會讓前面的注音片段失去讀音與候選。
+        let keyboard = self.zh.keyboard();
+        let mut keys = String::new();
+        for syllable in &self.syllables {
+            if let Ok(syllable_keys) = keyboard.keys(syllable) {
+                keys.push_str(&syllable_keys);
+            }
+        }
+        keys.push_str(&self.zh_pending_keys);
+        keys.push(ch);
+        keys.push_str(&self.literal);
+        self.zh.reset();
+        self.zh_lane = false;
+        self.zh_pending_keys.clear();
+        self.syllables.clear();
+        self.cursor = 0;
+        self.locks.clear();
+        self.composition.clear();
+        self.edit = None;
+        self.keep_candidates = false;
+        self.highlighted = 0;
+        self.candidate_window = false;
+        self.navigating = false;
+        self.segment_manual = None;
+        self.last_hypotheses.clear();
+        self.pending.clear();
+        self.base.clear();
+        self.segments.clear();
+        self.literal.clear();
+        self.literal_anchor = 0;
+        self.literal_offset = 0;
+        self.pending_tone = None;
+        self.ascii.replay(&keys, &self.lexicon);
+        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.rebuild();
     }
 
     /// 候選視窗開啟時，選字鍵選取目前頁的第幾項。
@@ -307,15 +430,14 @@ impl Session {
     pub(super) fn select_by_digit(&mut self, ch: char) -> Option<bool> {
         if self.candidates.is_empty()
             || !self.candidate_window
-            || (self.config.mode == Mode::Zh
-                && !self.zh.pending().is_empty()
-                && self.menu.is_none())
+            || (self.in_zh_lane() && !self.zh.pending().is_empty() && self.menu.is_none())
         {
             return None;
         }
         // 混合模式只有按過 ↓／↑ 進入選取模式才用數字選字；空白開窗後
-        // 直接打數字仍照一般按鍵走，避免吃掉下一個注音或英數。
-        if self.config.mode == Mode::Mixed && !self.navigating {
+        // 直接打數字仍照一般按鍵走，避免吃掉下一個注音或英數。選單開著時
+        // 仍然照選單的選字鍵處理。
+        if self.config.mode == Mode::Mixed && !self.navigating && self.menu.is_none() {
             return None;
         }
         let within = self.selection_index(ch)?;
@@ -328,9 +450,19 @@ impl Session {
         if self.edit.is_some() {
             return Some(self.select_window_candidate(index));
         }
+        // ↓／空白開的純注音候選只涵蓋最後一個音節：選字換那一段，整段留著。
+        if self.config.mode == Mode::Mixed && self.in_zh_lane() && self.zh_window_last {
+            self.zh_window_last = false;
+            self.edit = Some(EditWindow {
+                start: self.syllables.len().saturating_sub(1),
+                len: 1,
+            });
+            return Some(self.select_window_candidate(index));
+        }
         // 混合模式的候選是英文補完、拼字建議或已完成的注音詞；英文候選
-        // 取代待定按鍵，注音候選換掉結尾的注音片段。
-        if self.config.mode == Mode::Mixed {
+        // 取代待定按鍵，注音候選換掉結尾的注音片段。純注音路徑（含 Mixed
+        // 的 zh_lane）與選單照注音的通用路徑處理。
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && self.menu.is_none() {
             let raw = self.ascii.pending().to_string();
             if !raw.is_empty() && self.ascii.accept(&candidate.surface) {
                 self.learn_english_choice(&raw, &candidate.surface);
@@ -400,19 +532,41 @@ impl Session {
     }
 
     pub(super) fn space(&mut self) {
-        match self.config.mode {
-            Mode::Zh if !self.zh.pending().is_empty() => {
+        // 注音路徑（純注音或 Mixed 的純注音組字）：未完成的注音先補完；
+        // 已完成音節時空白開候選窗；窗開著時空白選字。
+        if self.in_zh_lane() {
+            if !self.zh.pending().is_empty() {
                 self.complete_pending();
+                return;
             }
-            Mode::Zh
-                if !self.candidate_window
-                    && !self.candidates.is_empty()
-                    && !self.style.space_inserts_space =>
+            if !self.candidate_window
+                && !self.candidates.is_empty()
+                && !self.style.space_inserts_space
             {
                 // 音節打完後空白開候選窗；「空白只插空白」設定保持原行為。
+                self.narrow_mixed_zh_candidates();
+                if self.config.mode == Mode::Mixed {
+                    self.zh_run_breaks.push(self.syllables.len());
+                }
                 self.candidate_window = true;
                 self.navigating = false;
+                return;
             }
+            if self.candidate_window && !self.candidates.is_empty() {
+                if self.edit.is_some() {
+                    self.select_window_candidate(self.highlighted);
+                    return;
+                }
+                self.navigating = false;
+                self.remember_selection();
+                self.learn_composition();
+                let text = self.finalize(self.current_text());
+                self.pending_commit = Some(text);
+                self.clear_composition();
+                return;
+            }
+        }
+        match self.config.mode {
             Mode::Ja if self.live.is_some() => {
                 if self.candidate_window {
                     if self.navigating && !self.candidates.is_empty() {
@@ -464,6 +618,18 @@ impl Session {
             }
             _ => {}
         }
+    }
+
+    /// Mixed 的純注音組字開候選窗時只列游標所在音節。
+    ///
+    /// 一般顯示與建議仍用整段解碼（聲調選填、詞組建議要靠前後文）；按下
+    /// ↓／空白要選字時才縮到游標那一格，與 Mixed 既有的選字行為一致。
+    /// Enter 不選字，仍送出整段，所以不能直接把 `edit` 設起來。
+    fn narrow_mixed_zh_candidates(&mut self) {
+        if self.config.mode != Mode::Mixed || self.syllables.is_empty() {
+            return;
+        }
+        self.zh_window_last = true;
     }
 
     /// 打開日文逐字変換片段的候選。
@@ -612,17 +778,7 @@ impl Session {
         self.edit = None;
         self.highlighted = 0;
         match self.config.mode {
-            Mode::Zh => {
-                if !self.zh.pending().is_empty() {
-                    // 還沒完成的注音先退一格；退完才動已完成的音節。
-                    self.zh.press(Key::new(KeyCode::Backspace, None, false));
-                } else if self.cursor > 0 {
-                    self.remove_syllable(self.cursor - 1);
-                    self.cursor = self.cursor.saturating_sub(1);
-                } else if !self.literal.is_empty() {
-                    self.literal.pop();
-                }
-            }
+            Mode::Zh => self.backspace_zh(),
             Mode::Ja => {
                 self.romaji.backspace();
                 self.leave_empty_japanese_run();
@@ -631,8 +787,27 @@ impl Session {
                 self.raw.pop();
             }
             Mode::Mixed => {
-                self.backspace_mixed();
+                if self.zh_lane {
+                    self.backspace_zh();
+                } else if !self.backspace_mixed() && !self.literal.is_empty() {
+                    // 孤立聲調鍵先留在字面；沒有混打按鍵可退時退回那一個字面。
+                    self.literal.pop();
+                }
             }
+        }
+    }
+
+    /// 注音路徑的 Backspace：先退未完成的注音，再退已完成音節與字面。
+    fn backspace_zh(&mut self) {
+        if !self.zh.pending().is_empty() {
+            // 還沒完成的注音先退一格；退完才動已完成的音節。
+            self.zh.press(Key::new(KeyCode::Backspace, None, false));
+            self.zh_pending_keys.pop();
+        } else if self.cursor > 0 {
+            self.remove_syllable(self.cursor - 1);
+            self.cursor = self.cursor.saturating_sub(1);
+        } else if !self.literal.is_empty() {
+            self.literal.pop();
         }
     }
 
@@ -648,7 +823,7 @@ impl Session {
             self.highlighted = 0;
             return;
         }
-        if self.config.mode == Mode::Zh && !self.zh.pending().is_empty() {
+        if self.in_zh_lane() && !self.zh.pending().is_empty() {
             self.clear_pending_zhuyin();
             return;
         }
@@ -670,6 +845,7 @@ impl Session {
             guard += 1;
         }
         self.pending_tone = None;
+        self.zh_pending_keys.clear();
         self.candidate_window = false;
         self.navigating = false;
     }
@@ -678,7 +854,7 @@ impl Session {
     pub(super) fn delete_forward(&mut self) {
         self.keep_candidates = false;
         self.edit = None;
-        if self.config.mode == Mode::Mixed {
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
             self.candidate_window = false;
             self.navigating = false;
             self.highlighted = 0;
@@ -688,10 +864,7 @@ impl Session {
             }
             return;
         }
-        if self.config.mode == Mode::Zh
-            && self.zh.pending().is_empty()
-            && self.remove_syllable(self.cursor)
-        {
+        if self.in_zh_lane() && self.zh.pending().is_empty() && self.remove_syllable(self.cursor) {
             return;
         }
         if self.candidate_window {
@@ -703,14 +876,13 @@ impl Session {
 
     /// 下鍵：第一次開候選窗並進入選取模式，之後往下換一項。
     pub(super) fn down(&mut self) {
-        // 注音還沒完成時先把目前的音節補完，再判斷候選；Mixed 也套同一條
-        // 規則（等待中的注音在 `ZhInput`，補完後才會有中文候選）。
-        if matches!(self.config.mode, Mode::Zh | Mode::Mixed)
-            && !self.zh.pending().is_empty()
-            && self.complete_pending()
+        // 純注音模式還沒完成時先把目前的音節補完，再判斷候選。Mixed 不補：
+        // 外殼送來 Down 只是為了避開數字選字，後面的聲調鍵仍要完成原本的音節。
+        if self.config.mode == Mode::Zh && !self.zh.pending().is_empty() && self.complete_pending()
         {
             self.rebuild();
         }
+        self.narrow_mixed_zh_candidates();
         if self.candidates.is_empty() {
             return;
         }
@@ -772,6 +944,7 @@ impl Session {
         if pos == before {
             return false;
         }
+        self.zh_window_last = false;
         self.keep_candidates = false;
         self.navigating = false;
         self.highlighted = 0;
@@ -790,10 +963,7 @@ impl Session {
     /// `delta = +1` 加長（Shift＋→），`delta = -1` 縮短（Shift＋←）。長度界在
     /// 一個音節到剩餘音節數之間；沒有片段時不動作。
     pub(super) fn resize_segment(&mut self, delta: isize) {
-        if self.config.mode != Mode::Zh
-            || !self.zh.pending().is_empty()
-            || self.syllables.is_empty()
-        {
+        if !self.in_zh_lane() || !self.zh.pending().is_empty() || self.syllables.is_empty() {
             return;
         }
         let Some((anchor, len)) = self
@@ -831,7 +1001,7 @@ impl Session {
             return;
         }
         if !self.navigating {
-            if self.config.mode == Mode::Zh {
+            if self.in_zh_lane() {
                 let target = if end { self.syllables.len() } else { 0 };
                 self.move_cursor_to(target);
             }
@@ -849,7 +1019,8 @@ impl Session {
         if self.menu.is_some() || self.candidate_window || self.accepted_completion.is_some() {
             return None;
         }
-        if self.config.mode == Mode::Mixed && self.config.english_autocomplete {
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && self.config.english_autocomplete
+        {
             if let Some(text) = self.ascii.suggestion() {
                 let rest = text.strip_prefix(self.ascii.pending()).unwrap_or(&text);
                 return (!rest.is_empty()).then(|| rest.to_string());
@@ -866,7 +1037,7 @@ impl Session {
     /// 看已送出左文最後一個詞的 bigram 提升，常用標示看系統 unigram 機率。
     /// 每列只給一個標示，優先序是個人、關聯、常用。
     pub(super) fn highlighted_label(&self) -> Option<&'static str> {
-        if self.config.mode != Mode::Zh || self.menu.is_some() {
+        if !self.in_zh_lane() || self.menu.is_some() {
             return None;
         }
         let candidate = self.candidates.get(self.highlighted)?;
@@ -908,6 +1079,12 @@ impl Session {
     }
 
     pub(super) fn finish_composition(&mut self) {
+        // Mixed 的純注音候選窗只列游標那一格；Enter 仍送出整段，先恢復整段
+        // 候選再走一般提交路徑，學習才會記到整個詞。
+        if self.config.mode == Mode::Mixed && self.in_zh_lane() && self.zh_window_last {
+            self.zh_window_last = false;
+            self.rebuild();
+        }
         // 延遲整句模式：還在假名就同步轉換一次再提交，不默默送出假名。
         if self.config.mode == Mode::Ja {
             let pending = self
@@ -935,7 +1112,7 @@ impl Session {
             return;
         }
         // 游標在片段中且候選窗開著：Enter 先把候選套到這一段，不送出整段。
-        if self.config.mode == Mode::Zh
+        if self.in_zh_lane()
             && self.edit.is_some()
             && self.candidate_window
             && !self.candidates.is_empty()
@@ -943,16 +1120,13 @@ impl Session {
         {
             return;
         }
-        if self.config.mode == Mode::Mixed {
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
             self.ascii.flush();
             self.trim_mixed_candidate_space();
         }
         self.remember_selection();
         self.learn_composition();
-        let text = match self.config.mode {
-            Mode::Mixed => self.mixed_surface(),
-            _ => self.current_text(),
-        };
+        let text = self.current_text();
         let text = self.finalize(text);
         if !text.is_empty() {
             self.pending_commit = Some(text);
@@ -1164,7 +1338,7 @@ impl Session {
         if self.config.mode == Mode::Ja && self.live.is_some() && self.move_ja_cursor(delta) {
             return;
         }
-        if self.config.mode == Mode::Mixed {
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
             if self.candidate_window && self.navigating && !self.candidates.is_empty() {
                 // 已經進入明確的選取模式時，左右鍵仍然換候選。
                 self.move_highlight(delta);
@@ -1173,7 +1347,7 @@ impl Session {
             self.navigate_mixed(delta);
             return;
         }
-        if self.config.mode == Mode::Zh && self.candidate_window && !self.navigating {
+        if self.in_zh_lane() && self.candidate_window && !self.navigating {
             let target = self.cursor.saturating_add_signed(delta);
             if self.move_cursor_to(target) {
                 return;
@@ -1240,6 +1414,14 @@ impl Session {
             return;
         }
         self.personal.begin_rollback(now_millis());
+        if self.in_zh_lane() {
+            self.note_learning_event();
+            self.learn_zh_candidate(index);
+            if self.config.mode == Mode::Mixed {
+                self.learn_zh_lane_languages();
+            }
+            return;
+        }
         match self.config.mode {
             Mode::Zh => {
                 self.note_learning_event();
@@ -1513,6 +1695,10 @@ impl Session {
             self.ja_run = false;
         }
         self.zh.reset();
+        self.zh_lane = false;
+        self.zh_pending_keys.clear();
+        self.zh_window_last = false;
+        self.zh_run_breaks.clear();
         self.syllables.clear();
         self.cursor = 0;
         self.ja_cursor = 0;
@@ -1549,13 +1735,15 @@ impl Session {
 
     /// 目前要提交的文字：接受的補全優先，其次高亮候選，最後轉換結果。
     pub(super) fn current_text(&self) -> String {
-        if self.config.mode == Mode::Mixed {
-            return self.mixed_surface();
-        }
+        // 選單開著時送出高亮候選，字面按鍵插在原本的位置。
         if self.menu.is_some() {
             if let Some(candidate) = self.candidates.get(self.highlighted) {
                 return self.compose_literal(&candidate.surface);
             }
+        }
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
+            // 混打的字面標點、選單插入與前導符號記在 `literal`，要一起送出。
+            return self.insert_literal(&self.mixed_surface());
         }
         if let Some(text) = &self.accepted_completion {
             return format!("{}{}", self.insert_literal(text), self.pending);
@@ -1589,14 +1777,18 @@ impl Session {
         if self.edit.is_some() {
             return &self.base;
         }
+        // 純注音組字的 Mixed 顯示整段最佳路徑；候選只供選字，不取代組字區。
+        if self.config.mode == Mode::Mixed && self.zh_lane {
+            return &self.base;
+        }
         match (
             &self.accepted_completion,
             self.candidates.get(self.highlighted),
         ) {
             (Some(text), _) => text.as_str(),
             // 混合模式的候選只取代待定英數按鍵，`base` 已含前面的中文片段；
-            // 直接拿候選當整個組字字串會把中文吃掉。
-            (None, _) if self.config.mode == Mode::Mixed => &self.base,
+            // 直接拿候選當整個組字字串會把中文吃掉。純注音路徑照注音處理。
+            (None, _) if self.config.mode == Mode::Mixed && !self.in_zh_lane() => &self.base,
             (None, Some(candidate)) => candidate.surface.as_str(),
             (None, None) => &self.base,
         }
@@ -1608,7 +1800,7 @@ impl Session {
         if self.pending.is_empty() {
             return base;
         }
-        if self.config.mode != Mode::Zh || self.cursor >= self.syllables.len() {
+        if !self.in_zh_lane() || self.cursor >= self.syllables.len() {
             return format!("{}{}", base, self.pending);
         }
         let mut at = self.cell_byte(&base, self.cursor).unwrap_or(base.len());
@@ -1675,7 +1867,13 @@ impl Session {
             Mode::Zh => self.rebuild_zh(),
             Mode::Ja => self.rebuild_ja(),
             Mode::En => self.rebuild_en(),
-            Mode::Mixed => self.rebuild_mixed(),
+            Mode::Mixed => {
+                if self.zh_lane {
+                    self.rebuild_zh();
+                } else {
+                    self.rebuild_mixed();
+                }
+            }
         }
         if self.highlighted >= self.candidates.len() {
             self.highlighted = 0;
@@ -1723,15 +1921,26 @@ impl Session {
         if let Some(options) = &self.config.rerank {
             Self::apply_rerank(&mut hypotheses, options);
         }
-        if let Some(best) = hypotheses.first() {
-            self.base = best.text.clone();
-            self.segments = Self::segments_of(&best.segments, Mode::Zh, Script::Bopomofo);
+        // Mixed 的純注音組字沿用混打管線的顯示：整段最佳路徑才是組字字串，
+        // 候選清單再依學習與 rerank 排序。純注音模式仍然讓第一候選決定顯示，
+        // 兩邊的舊測試各自鎖住原本行為。
+        let mixed_lane = self.config.mode == Mode::Mixed && self.zh_lane;
+        if !mixed_lane {
+            if let Some(best) = hypotheses.first() {
+                self.base = best.text.clone();
+                self.segments = Self::segments_of(&best.segments, Mode::Zh, Script::Bopomofo);
+            }
         }
         self.last_hypotheses = hypotheses.clone();
-        let best_segments = hypotheses
-            .first()
-            .map(|hypothesis| hypothesis.segments.clone())
-            .unwrap_or_default();
+        let best_segments = if mixed_lane {
+            // Mixed 的顯示用整段最佳轉換，這個路徑才對得上 `base`。
+            segs.clone()
+        } else {
+            hypotheses
+                .first()
+                .map(|hypothesis| hypothesis.segments.clone())
+                .unwrap_or_default()
+        };
         let mut candidates: Vec<Candidate> = hypotheses
             .into_iter()
             .map(|hypothesis| {
@@ -1780,6 +1989,39 @@ impl Session {
         }
         candidates.truncate(self.max_candidates());
         self.candidates = candidates;
+        // Mixed 的純注音顯示沿用混打管線：整段沒有詞可解時，若模糊音候選
+        // 有真字就顯示那個字，而不是留一串注音。
+        if mixed_lane && self.base == literal {
+            if let Some(first) = self.candidates.first() {
+                if first.surface.chars().next().is_some_and(is_han) {
+                    self.base = first.surface.clone();
+                    self.segments =
+                        vec![Segment::new(0, self.base.len(), Mode::Zh, Script::Bopomofo)];
+                }
+            }
+        }
+        // 混打管線把一段連續注音當一個片段（`字字`），純注音模式則照詞切。
+        // Mixed 的組字字串沿用前者：相鄰同字面、中間沒有空白打斷的片段合併。
+        if mixed_lane && self.segments.len() == segs.len() {
+            let mut merged: Vec<Segment> = Vec::with_capacity(self.segments.len());
+            for (index, segment) in std::mem::take(&mut self.segments).into_iter().enumerate() {
+                let boundary = segs[index].start;
+                let joinable = self.zh_run_breaks.binary_search(&boundary).is_err();
+                if let Some(last) = merged.last_mut() {
+                    if joinable
+                        && last.mode == segment.mode
+                        && last.script == segment.script
+                        && self.base.get(last.start..last.end)
+                            == self.base.get(segment.start..segment.end)
+                    {
+                        last.end = segment.end;
+                        continue;
+                    }
+                }
+                merged.push(segment);
+            }
+            self.segments = merged;
+        }
         let (completion, _) = decoder.complete(&lattice, &segs);
         self.suggestion = if completion.found() {
             Some(completion.entry.surface)
@@ -1790,6 +2032,17 @@ impl Session {
             if edit.len > 0 && edit.start.saturating_add(edit.len) <= syllables.len() {
                 self.candidates = self.window_candidates(edit);
             }
+        } else if self.zh_window_last
+            && self.config.mode == Mode::Mixed
+            && self.candidate_window
+            && !syllables.is_empty()
+        {
+            // ↓／空白開窗：只列游標所在音節；顯示仍是整段最佳路徑。
+            let last = syllables.len() - 1;
+            self.candidates = self.window_candidates(EditWindow {
+                start: last,
+                len: 1,
+            });
         }
         // 尚未完成的注音也是組字的一部分；片段要覆蓋整個 preedit。
         if !self.pending.is_empty() {
@@ -2416,7 +2669,7 @@ mod tests {
     }
 
     fn session() -> Session {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.max_candidates = 20;
         Session::new(config)
@@ -2582,7 +2835,7 @@ mod tests {
     /// 「空白只插空白」設定關閉空白開候選。
     #[test]
     fn test_space_inserts_space_keeps_literal_behavior() {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.style.space_inserts_space = true;
         let mut s = Session::new(config);
@@ -2604,7 +2857,7 @@ mod tests {
     /// 個人詞彙的候選標上 `personal`，不影響排序。
     #[test]
     fn test_snapshot_label_marks_personal_vocab() {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.personal.add_vocab("窩", "ㄨㄛˇ");
         let mut s = Session::new(config);

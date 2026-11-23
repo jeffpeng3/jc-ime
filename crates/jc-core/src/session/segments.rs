@@ -104,6 +104,32 @@ impl Session {
         if self.config.mode == Mode::Ja {
             return self.ja_cursor.min(text.len());
         }
+        if self.in_zh_lane() {
+            let cells = self.syllables.len();
+            let at = self.cursor.min(cells);
+            if at >= cells {
+                return text.len();
+            }
+            let base = self.displayed_base();
+            let Some(mut byte) = self.cell_byte(base, at) else {
+                return text.len();
+            };
+            // 未完成的注音插在游標位置；游標在它後面。
+            if !self.pending.is_empty() {
+                byte += self.pending.len();
+            }
+            // 字面按鍵插在 `base` 中間；游標在插入點之後就加上字面長度。
+            if !self.literal.is_empty() {
+                let mut at_literal = self.literal_offset.min(base.len());
+                while at_literal > 0 && !base.is_char_boundary(at_literal) {
+                    at_literal -= 1;
+                }
+                if at_literal <= byte {
+                    byte += self.literal.len();
+                }
+            }
+            return byte.min(text.len());
+        }
         if self.config.mode == Mode::Mixed {
             let segments = self.segments();
             let at = self.mixed_cursor.min(segments.len());
@@ -112,33 +138,7 @@ impl Session {
                 .map(|segment| segment.start.min(text.len()))
                 .unwrap_or(text.len());
         }
-        if self.config.mode != Mode::Zh {
-            return text.len();
-        }
-        let cells = self.syllables.len();
-        let at = self.cursor.min(cells);
-        if at >= cells {
-            return text.len();
-        }
-        let base = self.displayed_base();
-        let Some(mut byte) = self.cell_byte(base, at) else {
-            return text.len();
-        };
-        // 未完成的注音插在游標位置；游標在它後面。
-        if !self.pending.is_empty() {
-            byte += self.pending.len();
-        }
-        // 字面按鍵插在 `base` 中間；游標在插入點之後就加上字面長度。
-        if !self.literal.is_empty() {
-            let mut at_literal = self.literal_offset.min(base.len());
-            while at_literal > 0 && !base.is_char_boundary(at_literal) {
-                at_literal -= 1;
-            }
-            if at_literal <= byte {
-                byte += self.literal.len();
-            }
-        }
-        byte.min(text.len())
+        text.len()
     }
 
     /// 把音節格換成 `base` 內的位元組位置。
@@ -315,7 +315,12 @@ impl Session {
     ///
     /// 回傳 `true` 表示這一鍵已經處理完；`false` 表示仍要交給一般按鍵路徑。
     pub(super) fn segments_press(&mut self, key: &Key) -> bool {
-        if self.config.mode != Mode::Zh {
+        if !matches!(self.config.mode, Mode::Zh | Mode::Mixed) {
+            self.pending_tone = None;
+            return false;
+        }
+        // 混打已經有英數待定按鍵時，聲調鍵是那個詞的一部分，不是孤立聲調。
+        if self.config.mode == Mode::Mixed && !self.ascii.is_empty() {
             self.pending_tone = None;
             return false;
         }
@@ -728,13 +733,13 @@ mod tests {
     }
 
     fn session() -> Session {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         Session::new(config)
     }
 
     fn toneless_session() -> Session {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.toneless = true;
         Session::new(config)
@@ -974,7 +979,7 @@ mod tests {
     /// 對照 `phoneticWindow` 的明確候選：尾端差一個符號的完整詞。
     #[test]
     fn test_phonetic_candidates_find_one_symbol_apart_word() {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.max_candidates = 10;
         let mut s = Session::new(config);
@@ -1004,7 +1009,7 @@ mod tests {
         assert!(!one_symbol_apart(&syl("ㄓ"), &syl("ㄗㄨㄚ")));
     }
     fn error_hint_session() -> Session {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.zhuyin_error_hint = true;
         Session::new(config)
@@ -1136,7 +1141,7 @@ mod tests {
     /// 模糊音近音有字時不擋。
     #[test]
     fn test_fuzzy_near_reading_is_not_blocked() {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.zhuyin_error_hint = true;
         config.fuzzy_pairs = vec![('ㄙ', 'ㄕ')];
@@ -1145,7 +1150,7 @@ mod tests {
         assert!(!s.tone_blocked(), "近音 ㄕㄨ 有字，不擋");
         assert_eq!(snap.preedit, "書");
 
-        let mut strict = SessionConfig::new(Mode::Zh);
+        let mut strict = SessionConfig::new(Mode::Mixed);
         strict.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         strict.zhuyin_error_hint = true;
         strict.fuzzy_pairs = Vec::new();
@@ -1183,7 +1188,7 @@ mod tests {
     /// 聲調選填不套用擋聲調規則。
     #[test]
     fn test_tone_gate_is_off_when_toneless() {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.zhuyin_error_hint = true;
         config.toneless = true;

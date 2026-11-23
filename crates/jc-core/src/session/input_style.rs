@@ -264,8 +264,7 @@ impl Session {
     ///
     /// 混打與英文模式的「組字」由各自的路徑判斷，這裡只描述注音狀態。
     pub(super) fn composing(&self) -> bool {
-        self.config.mode == Mode::Zh
-            && (!self.zh.pending().is_empty() || !self.syllables.is_empty())
+        self.in_zh_lane() && (!self.zh.pending().is_empty() || !self.syllables.is_empty())
     }
 
     /// 候選一頁幾項。
@@ -409,7 +408,7 @@ impl Session {
     fn halfwidth_shift_active(&self, ch: char) -> bool {
         self.style.shift_symbol_halfwidth
             && !self.full_width
-            && self.config.mode == Mode::Zh
+            && matches!(self.config.mode, Mode::Zh | Mode::Mixed)
             && SHIFTED_SYMBOLS.contains(ch)
             && !(self.style.rules.punctuation == "microsoft" && microsoft_raw_punctuation(ch))
             && self.zh.keyboard().punct(ch).is_some()
@@ -500,7 +499,7 @@ impl Session {
         if self.candidate_window {
             return false;
         }
-        if self.full_width && key.code == KeyCode::Space && self.config.mode == Mode::Zh {
+        if self.full_width && key.code == KeyCode::Space && self.in_zh_lane() {
             let wide = "\u{3000}".to_string();
             if self.composing() {
                 self.insert_style_literal(&wide);
@@ -515,7 +514,7 @@ impl Session {
             return true;
         }
         // 微軟風格：反引號是標點前導，不開符號選單。
-        if self.config.mode == Mode::Zh
+        if matches!(self.config.mode, Mode::Zh | Mode::Mixed)
             && self.style.rules.punctuation == "microsoft"
             && key.code == KeyCode::Char('`')
         {
@@ -556,6 +555,7 @@ impl Session {
             // 未完成的注音被半形原字元取消；已轉換的字保留原本順序。
             if !self.zh.pending().is_empty() {
                 self.zh.reset();
+                self.zh_pending_keys.clear();
                 if !self.composing() {
                     self.commit_style_text(ch.to_string());
                     return true;
@@ -652,14 +652,14 @@ mod tests {
     }
 
     fn style_session(id: &str) -> Session {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.style = InputStyle::preset(id).expect("預設存在");
         Session::new(config)
     }
 
     fn plain_session() -> Session {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         Session::new(config)
     }
@@ -695,7 +695,7 @@ mod tests {
                 0,
             ));
         }
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.max_candidates = 20;
         config.style = InputStyle {
@@ -744,7 +744,7 @@ mod tests {
         assert_eq!(enter(&mut s), "ａＡ１\u{3000}", "全形空白也在組字裡");
         s.press(Key::new(KeyCode::Space, None, true));
         assert!(!s.full_width(), "再按一次切回半形");
-        s.set_mode(Mode::Zh);
+        s.set_mode(Mode::Mixed);
         type_syllable(&mut s, "ㄨㄛˇ");
         let snap = s.press(Key::new(KeyCode::Space, None, true));
         assert_eq!(snap.preedit, "我", "切字寬不動組字");
@@ -1013,7 +1013,7 @@ mod tests {
     /// 對照 `TestSelectionKeysInEmojiPalette`：選單也用同一組選字鍵。
     #[test]
     fn test_selection_keys_in_emoji_palette() {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.style = InputStyle {
             selection_keys: "1234qweras".to_string(),
             ..InputStyle::default()

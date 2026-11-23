@@ -114,7 +114,7 @@ mod tests {
     use std::collections::HashSet;
 
     fn session() -> Session {
-        Session::new(SessionConfig::new(Mode::Zh))
+        Session::new(SessionConfig::new(Mode::Mixed))
     }
 
     /// 對照 `TestSymbolMenuTabs`／`TestSymbolMenuRecentTab` 的標題斷言：

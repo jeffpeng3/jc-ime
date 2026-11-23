@@ -213,7 +213,7 @@ impl Session {
                 notice: String::new(),
             };
         }
-        if self.config.mode != Mode::Zh {
+        if !self.in_zh_lane() {
             return WordMark::refused("這裡不加入詞庫");
         }
         if end - start < MIN_COMPOSE_WORD {
@@ -640,7 +640,7 @@ mod tests {
     }
 
     fn session() -> Session {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         Session::new(config)
     }
@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn test_local_evidence_from_neighbouring_lock() {
         let mut s = Session::new({
-            let mut config = SessionConfig::new(Mode::Zh);
+            let mut config = SessionConfig::new(Mode::Mixed);
             let mut lex = InMemoryLexicon::new();
             lex.push(LexEntry::new("新", "ㄒㄧㄣ", 0, 0));
             lex.push(LexEntry::new("圖", "ㄊㄨˊ", 0, 0));
@@ -867,7 +867,7 @@ mod tests {
         assert_eq!(s.committed_tail(), None);
 
         // 尾端不是詞庫實際有的完整詞時不算末詞。
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         let mut lex = InMemoryLexicon::new();
         lex.push(LexEntry::new("風景", "ㄈㄥ ㄐㄧㄥˇ", 0, 0));
         config.zh_lexicon = Some(std::sync::Arc::new(lex));

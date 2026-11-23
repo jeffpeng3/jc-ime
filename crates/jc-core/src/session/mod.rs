@@ -331,6 +331,26 @@ pub struct Session {
     pub(super) last_ja_results: Vec<JaResult>,
     /// 混合模式的英數按鍵推斷。
     pub(super) ascii: AsciiInput,
+    /// 這次組字是否走純注音路徑。
+    ///
+    /// `Mode::Mixed` 從第一個注音鍵開始先走注音狀態機；遇到打不成注音的
+    /// 英數按鍵時整段交回混打管線（`ascii`）。`Mode::Zh` 一律是 `false`，
+    /// 由 [`Session::in_zh_lane`] 一併視為注音路徑。
+    pub(super) zh_lane: bool,
+    /// 注音路徑目前尚未完成音節的原始按鍵。
+    ///
+    /// 由注音轉混打時要重播整段按鍵；已完成的音節用
+    /// [`crate::zh::keyboard::Keyboard::keys`] 還原按鍵，這一份只記最後一個
+    /// 還沒完成的音節。
+    pub(super) zh_pending_keys: String,
+    /// Mixed 的純注音候選窗是否只列最後一個音節。
+    ///
+    /// 按 ↓／空白開窗時成立；候選只顯示游標那一格，但 Enter 仍送出整段。
+    pub(super) zh_window_last: bool,
+    /// Mixed 純注音組字中按過空白的位置（音節索引）。
+    ///
+    /// 空白在混打管線裡切開拉丁 run；顯示片段合併時不能跨過它。
+    pub(super) zh_run_breaks: Vec<usize>,
     /// 混合模式依按鍵推斷出來的日文片段。
     ///
     /// 有值時 [`Session::config`] 的 `mode` 暫時是 [`Mode::Ja`]，送出或取消後
@@ -455,6 +475,10 @@ impl Session {
             last_hypotheses: Vec::new(),
             last_ja_results: Vec::new(),
             ascii: AsciiInput::new(),
+            zh_lane: false,
+            zh_pending_keys: String::new(),
+            zh_window_last: false,
+            zh_run_breaks: Vec::new(),
             ja_run: false,
             ja_prev_mode: Mode::Mixed,
             toggle_previous_mode: None,
@@ -480,6 +504,15 @@ impl Session {
     /// 目前模式。
     pub fn mode(&self) -> Mode {
         self.config.mode
+    }
+
+    /// 目前組字是否走注音路徑。
+    ///
+    /// `Mode::Zh` 一律是注音；`Mode::Mixed` 從純注音按鍵開始的這次組字也走
+    /// 同一條路徑，才會有一致的候選、游標、鎖定與聲調閘門。混打片段仍在
+    /// [`AsciiInput`] 管線裡。
+    pub(super) fn in_zh_lane(&self) -> bool {
+        self.config.mode == Mode::Zh || (self.config.mode == Mode::Mixed && self.zh_lane)
     }
 
     /// 目前是否把送出的文字轉成簡體。
@@ -594,6 +627,7 @@ impl Session {
                             self.move_highlight(1);
                         } else {
                             let accepted = self.config.mode == Mode::Mixed
+                                && !self.in_zh_lane()
                                 && self.config.english_autocomplete
                                 && self.ascii.accept_suggestion();
                             if !accepted && !self.accept_suggestion() {
@@ -741,10 +775,14 @@ impl Session {
             self.remember_committed(&text);
             return text;
         }
+        if self.config.mode == Mode::Mixed && self.in_zh_lane() && self.zh_window_last {
+            self.zh_window_last = false;
+            self.rebuild();
+        }
         if !private {
             self.remember_selection();
         }
-        if self.config.mode == Mode::Mixed {
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
             self.ascii.flush();
         }
         let text = self.output_text(self.finalize(self.current_text()));
@@ -1037,7 +1075,7 @@ mod tests {
     }
 
     fn session() -> Session {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         Session::new(config)
     }
@@ -1160,7 +1198,7 @@ mod tests {
         let mut lex = InMemoryLexicon::new();
         lex.push(LexEntry::new("井", "ㄐㄧㄥˇ", 0, 0));
         lex.push(LexEntry::new("景", "ㄐㄧㄥˇ", 40, 0));
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.personal.note_seed("井", 1.0);
         let mut s = Session::new(config);
@@ -1184,7 +1222,7 @@ mod tests {
         let mut lex = InMemoryLexicon::new();
         lex.push(LexEntry::new("井", "ㄐㄧㄥˇ", 0, 0));
         lex.push(LexEntry::new("景", "ㄐㄧㄥˇ", 40, 0));
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.personal.note_seed("井", 1.0);
         for _ in 0..crate::personal::SKIP_LIMIT {
@@ -1308,7 +1346,7 @@ mod tests {
 
     #[test]
     fn test_without_lexicon_commits_reading() {
-        let mut s = Session::new(SessionConfig::new(Mode::Zh));
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
         let keyboard = crate::zh::keyboard::Keyboard::standard();
         for ch in keyboard
             .keys(&crate::zh::syllable::Syllable::parse("ㄇㄚ").unwrap())
@@ -1323,7 +1361,7 @@ mod tests {
 
     #[test]
     fn test_ctrl_comma_inserts_fullwidth_comma() {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.ctrl_punct = true;
         let mut s = Session::new(config);
@@ -1336,7 +1374,7 @@ mod tests {
 
     #[test]
     fn test_punctuator_inserts_mark_before_last_han() {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.punct_mark = Some('，');
         let mut s = Session::new(config);
@@ -1357,7 +1395,7 @@ mod tests {
 
     #[test]
     fn test_rerank_prefers_configured_candidate() {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.rerank = Some(RerankOptions {
             weight: 1.0,
@@ -1379,7 +1417,7 @@ mod tests {
         lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
         lex.push(LexEntry::new("窩", "ㄨㄛ", 10, 0));
         lex.push(LexEntry::new("想", "ㄒㄧㄤˇ", 0, 0));
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.toneless = true;
         let mut s = Session::new(config);
@@ -1395,7 +1433,7 @@ mod tests {
 
     #[test]
     fn test_fuzzy_candidates_appear_before_literal() {
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.fuzzy_pairs = vec![('ㄗ', 'ㄓ')];
         let mut s = Session::new(config);
@@ -1413,7 +1451,7 @@ mod tests {
         let mut lex = InMemoryLexicon::new();
         lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
         lex.push(LexEntry::new("窩", "ㄨㄛˇ", 5, 0));
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
         let mut s = Session::new(config);
         assert!(s.config.learning, "學習預設必須開啟");
@@ -1435,7 +1473,7 @@ mod tests {
         let mut lex = InMemoryLexicon::new();
         lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
         lex.push(LexEntry::new("窩", "ㄨㄛˇ", 5, 0));
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.learning = false;
         let mut s = Session::new(config);
@@ -1467,7 +1505,7 @@ mod tests {
         {
             lexicon.push(LexEntry::new(*surface, "ㄐㄧ", index as i32, 0));
         }
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon));
         config.max_candidates = 20;
         let mut s = Session::new(config);
@@ -1520,7 +1558,7 @@ mod tests {
         for (index, surface) in ["甲", "乙", "丙"].iter().enumerate() {
             lex.push(LexEntry::new(*surface, "ㄕˋ", index as i32, 0));
         }
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.max_candidates = DEFAULT_MAX_CANDIDATES;
         let mut s = Session::new(config);
@@ -1547,7 +1585,7 @@ mod tests {
                 0,
             ));
         }
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.max_candidates = DEFAULT_MAX_CANDIDATES;
         Session::new(config)
@@ -1758,7 +1796,7 @@ mod tests {
     fn test_simplified_output_converts_commit_only() {
         let path = jc_testdata::require_data!("opencc");
         let converter = crate::zhconv::tw2s_from_dir(&path).expect("讀取 OpenCC 字典");
-        let mut config = SessionConfig::new(Mode::Zh);
+        let mut config = SessionConfig::new(Mode::Mixed);
         let mut lex = lexicon();
         lex.push(LexEntry::new("台", "ㄊㄞˊ", 0, 0));
         lex.push(LexEntry::new("灣", "ㄨㄢ", 0, 0));

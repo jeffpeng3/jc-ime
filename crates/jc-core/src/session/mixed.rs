@@ -38,7 +38,7 @@ fn reading_reachable(reading: &str, pieces: &[AsciiPiece], lexicon: &dyn Lexicon
 ///
 /// 與 [`crate::zh::input::ZhInput`] 的差別：這裡是英數混打的待定按鍵，同一
 /// 類別重複出現時整串不算注音（`hello` 的 h／e 都是聲母），不做同類別覆蓋。
-fn compose_keys(raw: &str) -> Option<Composer> {
+pub(super) fn compose_keys(raw: &str) -> Option<Composer> {
     let keyboard = Keyboard::standard();
     let mut composer = Composer::new();
     let mut seen = [false; 3];
@@ -574,6 +574,42 @@ impl Session {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// Mixed 的純注音片段記錄語言證據。
+    ///
+    /// 混打管線的 `learn_mixed_languages` 讀 `ascii.pieces()`；純注音組字走
+    /// 注音狀態機，沒有那條按鍵流，改由已完成的音節解碼出詞面。
+    pub(super) fn learn_zh_lane_languages(&mut self) {
+        if !self.config.learning || self.private {
+            return;
+        }
+        let at = super::core::now_seconds();
+        let left = self.committed.clone();
+        let syllables = self.syllables.clone();
+        for syllable in syllables {
+            let surface = self.decode_syllable(&syllable);
+            if surface.is_empty() || crate::learn_guard::is_sensitive(&surface) {
+                continue;
+            }
+            let reading = syllable.as_str();
+            if crate::personal::reading_len(reading) < self.config.min_trigger_len {
+                self.personal.note_language_surface(
+                    crate::personal::LanguageId::Zh,
+                    &surface,
+                    1,
+                    at,
+                );
+            } else {
+                self.personal.note_language(
+                    crate::personal::LanguageId::Zh,
+                    reading,
+                    &surface,
+                    &left,
+                    at,
+                );
             }
         }
     }
@@ -1891,6 +1927,8 @@ mod tests {
         assert_eq!(snap.cursor_rune, 7, "選字後游標回到結尾");
     }
 
+    /// 統一管線的一致性：把注音讀音拆回大千按鍵流，逐鍵走 session 的增量
+    /// 路徑，結果必須與 `Router::convert` 相同。
     /// 統一管線的一致性：把注音讀音拆回大千按鍵流，逐鍵走 session 的增量
     /// 路徑，結果必須與 `Router::convert` 相同。
     #[test]
