@@ -604,11 +604,15 @@ fn ensure_tip_key(identity: &Identity) -> Result<(), Error> {
 
 /// 指定身分在 HKLM 下的完整 profile 機碼路徑（相對於 `HKEY_LOCAL_MACHINE`）。
 ///
-/// `{:#06X}` 才會產生 Windows 機碼名用的 `0x0404`；用 `{}` 會得到十進位。
+/// msctf 的 `LanguageProfile` 子機碼是八位十六進位：`0x00000404`。六位的
+/// `0x0404` 查不到任何東西——這支函式原本就是寫成六位，導致 `ensure_tip_key`
+/// 在每次 `machine-register` 結尾都回失敗（profile 其實已經註冊成功）。
 fn profile_reg_path(identity: &Identity) -> String {
     format!(
-        r"SOFTWARE\Microsoft\CTF\TIP\{}\LanguageProfile\{:#06X}\{}",
-        identity.clsid, LANGID_ZH_TW, identity.profile
+        r"SOFTWARE\Microsoft\CTF\TIP\{}\LanguageProfile\0x{:08X}\{}",
+        identity.clsid,
+        u32::from(LANGID_ZH_TW),
+        identity.profile
     )
 }
 
@@ -820,7 +824,7 @@ mod tests {
             profile_reg_path(&IDENTITY_CURRENT),
             r"SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\LanguageProfile\0x00000404\{C4E8D217-5B3F-4A96-8E0C-7F1A2B3D4E56}"
         );
-        assert!(profile_reg_path(&IDENTITY_LEGACY).contains(r"\0x0404\{8F0A9B3C-"));
+        assert!(profile_reg_path(&IDENTITY_LEGACY).contains(r"\0x00000404\{8F0A9B3C-"));
     }
 
     /// 五個分類都要有，而且互不相同；少一個就少一項 Windows 功能。

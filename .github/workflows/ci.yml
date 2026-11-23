@@ -993,13 +993,29 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           $profileKey = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{0}\LanguageProfile\0x00000404\{1}' -f $env:JC_TIP_CLSID, $env:JC_TIP_PROFILE
+          $userKey = 'HKCU:\SOFTWARE\Microsoft\CTF\TIP\{0}\LanguageProfile\0x00000404\{1}' -f $env:JC_TIP_CLSID, $env:JC_TIP_PROFILE
 
-          # SYSTEM 身分註冊的 profile：Enable 由 Windows 的
-          # EnableLanguageProfile 寫成 DWORD 1，字串比對同時接受 REG_SZ。
+          # 失敗時把兩個 store 整個倒出來，下一次就不用再猜路徑。
+          Write-Host '== HKLM CTF profile =='
+          reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\$env:JC_TIP_CLSID\LanguageProfile" /s
+          Write-Host '== HKCU CTF profile =='
+          reg query "HKCU\SOFTWARE\Microsoft\CTF\TIP\$env:JC_TIP_CLSID\LanguageProfile" /s
+
+          # 機器層級：Enable 是 RegisterProfile 的 bEnabledByDefault。jc 刻意傳
+          # false，不讓 msctf 對「每個新使用者」預設啟用，所以 HKLM 的 Enable=0
+          # 是預期值。這裡只驗 profile 真的註冊進去了（Description 非空）。
           if (-not (Test-Path $profileKey)) { throw "缺少 profile 機碼：$profileKey" }
-          $enable = (Get-ItemProperty -Path $profileKey -Name 'Enable' -ErrorAction SilentlyContinue).Enable
-          if ("$enable" -ne '1') { throw "$profileKey 的 Enable 不是 1（實際：$enable）" }
-          Write-Host "profile 機碼存在，Enable=1：$profileKey"
+          $description = (Get-ItemProperty -Path $profileKey -Name 'Description' -ErrorAction SilentlyContinue).Description
+          if ([string]::IsNullOrWhiteSpace("$description")) { throw "$profileKey 的 Description 是空的" }
+          Write-Host "machine profile 機碼存在，Description=$description"
+
+          # 使用者層級：user-install 的 EnableLanguageProfile 會寫 HKCU 的
+          # Enable=1。這才是「這個使用者真的切得到 jc 注音」的機器可驗證證據；
+          # msctf 的 IsEnabledLanguageProfile 也是讀這裡。
+          if (-not (Test-Path $userKey)) { throw "缺少使用者層級的 profile 機碼：$userKey" }
+          $userEnable = (Get-ItemProperty -Path $userKey -Name 'Enable' -ErrorAction SilentlyContinue).Enable
+          if ("$userEnable" -ne '1') { throw "$userKey 的 Enable 不是 1（實際：$userEnable）" }
+          Write-Host "使用者層級的 profile 已啟用：$userKey"
 
           # 32 位元檢視。CTF 機碼不是 WOW64 轉向機碼，兩個檢視應該看得到同一份；
           # 用 /reg:32 明示，才不會被 PowerShell 的預設檢視掩蓋。
