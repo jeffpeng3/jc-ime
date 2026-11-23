@@ -694,6 +694,70 @@ impl Session {
             .collect()
     }
 
+    /// 游標所在注音音節在按鍵流中的範圍；沒有時回傳 `None`。
+    ///
+    /// 候選與選字都只處理游標所在的那一個音節：游標在結尾時是尾端最後一個
+    /// 注音（尾端開候選窗的空白不算）；游標停在片段邊界時，取游標左側片段
+    /// 的最後一個注音音節。回傳（起點, 終點, 音節），範圍是 `typed` 的位元組
+    /// 位移。
+    fn mixed_zh_syllable(&self) -> Option<(usize, usize, Syllable)> {
+        let text = self.latin_run_text()?;
+        let at = self.mixed_cursor.min(self.segments.len());
+        let end = if at < self.segments.len() {
+            // 游標在片段邊界：游標左側那個片段的最後一個音節。
+            if at == 0 {
+                return None;
+            }
+            self.mixed_typed_spans().get(at - 1)?.1
+        } else {
+            // 游標在結尾：先試整串按鍵流；尾端只是開候選窗的空白時再省略。
+            let mut whole = AsciiInput::new();
+            whole.replay(&text, &self.lexicon);
+            let complete = whole.pending().is_empty()
+                && matches!(whole.pieces().last(), Some(AsciiPiece::Zh(_)));
+            if complete {
+                text.len()
+            } else {
+                text.trim_end().len()
+            }
+        };
+        if end == 0 || end > text.len() || !text.is_char_boundary(end) {
+            return None;
+        }
+        // 重播到目標結尾：最後一個片段必須是注音音節，前面片段是它的前綴。
+        let mut before = AsciiInput::new();
+        before.replay(&text[..end], &self.lexicon);
+        if !before.pending().is_empty() {
+            return None;
+        }
+        let pieces = before.pieces();
+        let Some(AsciiPiece::Zh(expected)) = pieces.last() else {
+            return None;
+        };
+        let expected = expected.clone();
+        let prefix_pieces = &pieces[..pieces.len() - 1];
+        // 從尾端往回掃切點：後段重播後只能有這一個注音音節，前段重播要
+        // 重現前面的片段，這樣才不會切在音節按鍵中間。
+        let starts: Vec<usize> = text[..end].char_indices().map(|(start, _)| start).collect();
+        for start in starts.into_iter().rev() {
+            let mut suffix = AsciiInput::new();
+            suffix.replay(&text[start..end], &self.lexicon);
+            if !suffix.pending().is_empty() || suffix.pieces().len() != 1 {
+                continue;
+            }
+            match &suffix.pieces()[0] {
+                AsciiPiece::Zh(syllable) if syllable == &expected => {}
+                _ => continue,
+            }
+            let mut prefix = AsciiInput::new();
+            prefix.replay(&text[..start], &self.lexicon);
+            if prefix.pending().is_empty() && prefix.pieces() == prefix_pieces {
+                return Some((start, end, expected));
+            }
+        }
+        None
+    }
+
     /// 尾巴連續注音片段在按鍵流中的範圍；沒有時回傳 `None`。
     ///
     /// 跟 [`Session::mixed_typed_spans`] 共用同一份切分結果，只用來把選到的
@@ -723,12 +787,13 @@ impl Session {
         span
     }
 
-    /// 把選到的中文候選換進按鍵流，取代目前結尾的注音片段。
+    /// 把選到的中文候選換進按鍵流，取代游標所在的那一個注音音節。
     ///
     /// 候選字面不是按鍵，放進按鍵流後由管線當固定字面保留；後續打字不會再
-    /// 把它重新解碼掉。沒有結尾注音片段或範圍不對時回傳 `false`。
+    /// 把它重新解碼掉。其他片段（前面的中文、英文、日文與游標後的內容）原樣
+    /// 保留。沒有注音音節或範圍不對時回傳 `false`。
     pub(super) fn select_mixed_zh_candidate(&mut self, surface: &str) -> bool {
-        let Some((start, end)) = self.mixed_trailing_zh_span() else {
+        let Some((start, end, _)) = self.mixed_zh_syllable() else {
             return false;
         };
         let typed = self.ascii.typed().to_string();
@@ -909,29 +974,16 @@ impl Session {
         self.candidates.truncate(limit);
     }
 
-    /// 已完成的注音片段（尾巴連續的注音 piece）的候選。
+    /// 游標所在注音音節的候選。
     ///
-    /// 顯示仍由統一管線決定；候選只取自目前結尾的注音 run，不能跨過英文
-    /// 片段去猜前面中文的詞。沒有注音片段時不產生候選。
+    /// 顯示仍由統一管線決定；候選只取游標所在的那一個音節，不列整串詞，
+    /// 也不跨過英文片段去猜前面中文的詞。沒有注音音節時不產生候選。
     fn rebuild_mixed_zh_candidates(&mut self) {
-        let mut readings: Vec<String> = Vec::new();
-        let mut trailing = true;
-        for piece in self.ascii.pieces().iter().rev() {
-            match piece {
-                // 開候選窗的空白會留在按鍵流；尾端空白不屬於注音 run。
-                AsciiPiece::Literal(text) if trailing && text.chars().all(char::is_whitespace) => {}
-                AsciiPiece::Zh(syllable) => {
-                    trailing = false;
-                    readings.push(syllable.as_str().to_string());
-                }
-                AsciiPiece::Literal(_) => break,
-            }
-        }
-        readings.reverse();
-        if readings.is_empty() {
+        let Some((_, _, syllable)) = self.mixed_zh_syllable() else {
             return;
-        }
-        let units: Vec<&str> = readings.iter().map(String::as_str).collect();
+        };
+        let reading = syllable.as_str().to_string();
+        let units = [reading.as_str()];
         let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) else {
             return;
         };
@@ -939,8 +991,7 @@ impl Session {
         let decoder = super::core::zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
         let (mut hypotheses, _) =
             decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
-        let reading = readings.join(" ");
-        let literal = readings.join("");
+        let literal = reading.clone();
         if self.config.learning {
             self.personal.rank_hypotheses(&mut hypotheses, &reading);
         }
@@ -1734,6 +1785,110 @@ mod tests {
         let mut lex = InMemoryLexicon::new();
         lex.push(LexEntry::new("因", "ㄧㄣ", 0, 0));
         assert_eq!(typed("up").display_pending(&lex), "ㄧㄣ");
+    }
+
+    /// 三個音節的測試詞典：台灣人，另收同音的仁當第二個候選。
+    fn taiwan_ren_lexicon() -> InMemoryLexicon {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("台", "ㄊㄞˊ", 0, 0));
+        lex.push(LexEntry::new("灣", "ㄨㄢˊ", 0, 0));
+        lex.push(LexEntry::new("人", "ㄖㄣˊ", 0, 0));
+        lex.push(LexEntry::new("仁", "ㄖㄣˊ", 1, 0));
+        lex
+    }
+
+    fn taiwan_ren_session(lex: InMemoryLexicon) -> Session {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        Session::new(config)
+    }
+
+    /// 游標在結尾按 ↓ 只列最後一個音節的候選，不再列整串詞候選。
+    #[test]
+    fn mixed_down_lists_only_the_last_syllable() {
+        let mut s = taiwan_ren_session(taiwan_ren_lexicon());
+        mixed_type(&mut s, "w96j06bp6");
+        assert_eq!(s.snapshot().preedit, "台灣人");
+
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = s.snapshot();
+        assert!(s.candidate_window, "↓ 開候選窗");
+        assert!(!snap.candidates.is_empty(), "最後一個音節要有候選");
+        for candidate in &snap.candidates {
+            assert_ne!(candidate.surface, "台灣人", "不再列整串詞候選");
+            assert_ne!(candidate.surface, "臺灣人", "不再列整串詞候選");
+            assert!(
+                !candidate.surface.contains('台') && !candidate.surface.contains('灣'),
+                "候選不能包含前面音節的字：{}",
+                candidate.surface
+            );
+            assert_eq!(candidate.reading, "ㄖㄣˊ", "候選讀音是最後一個音節");
+        }
+        assert!(
+            snap.candidates
+                .iter()
+                .any(|candidate| candidate.surface == "仁"),
+            "要有最後一個音節的同音候選"
+        );
+    }
+
+    /// 選字只換游標所在的那一個音節，前面已組好的字原樣保留。
+    #[test]
+    fn mixed_select_replaces_only_the_last_syllable() {
+        let mut s = taiwan_ren_session(taiwan_ren_lexicon());
+        mixed_type(&mut s, "w96j06bp6");
+        assert_eq!(s.snapshot().preedit, "台灣人");
+
+        s.press(Key::new(KeyCode::Down, None, false));
+        let index = s
+            .candidates()
+            .iter()
+            .position(|candidate| candidate.surface == "仁")
+            .expect("要有仁候選");
+        assert!(index < PAGE_SIZE, "測試候選要在第一頁");
+        let digit = char::from(b'1' + index as u8);
+        s.press(Key::char(digit, false));
+        let snap = s.snapshot();
+        assert_eq!(snap.preedit, "台灣仁", "只換最後一個字");
+        assert_eq!(snap.cursor_rune, 3, "選字後游標回到結尾");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "台灣仁");
+    }
+
+    /// 游標停在片段邊界時，候選取游標左側片段的最後一個注音音節。
+    #[test]
+    fn mixed_down_uses_syllable_left_of_cursor() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
+        lex.push(LexEntry::new("婐", "ㄨㄛˇ", 1, 0));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        let mut s = Session::new(config);
+        mixed_type(&mut s, "ji3hello ");
+        assert_eq!(s.snapshot().preedit, "我hello ");
+
+        // ← 停在注音與英文片段的邊界（尾端空白自成一段）。
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(s.snapshot().cursor_rune, 1);
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = s.snapshot();
+        assert!(!snap.candidates.is_empty(), "左側注音片段要有候選");
+        for candidate in &snap.candidates {
+            assert_eq!(candidate.reading, "ㄨㄛˇ", "只取左側片段的那一個音節");
+        }
+
+        let index = s
+            .candidates()
+            .iter()
+            .position(|candidate| candidate.surface == "婐")
+            .expect("要有婐候選");
+        assert!(index < PAGE_SIZE, "測試候選要在第一頁");
+        let digit = char::from(b'1' + index as u8);
+        s.press(Key::char(digit, false));
+        let snap = s.snapshot();
+        assert_eq!(snap.preedit, "婐hello ", "只換游標所在的字，後面英文保留");
+        assert_eq!(snap.cursor_rune, 7, "選字後游標回到結尾");
     }
 
     /// 統一管線的一致性：把注音讀音拆回大千按鍵流，逐鍵走 session 的增量
