@@ -1,97 +1,160 @@
 #!/usr/bin/env bash
-# 在 Linux 上做 jc-ime.wxs 的有限驗證。
+# 在 Linux 上做 Inno Setup 安裝腳本的有限靜態驗證。
 #
-# WiX v5 官方只支援 Windows，Linux 上會遇到兩個工具本身的限制：
-#   1. `Directory/@Name` 的正規化使用 `C:\` 當根目錄，Linux 上判定所有名稱
-#      都不是相對路徑（WIX0389）。這裡在暫存副本把名稱換成 "." 繞過。
-#   2. 綁定階段要載入 Windows 的 msi.dll，Linux 沒有，`wix build` 只能做到
-#      編譯與符號解析（WIX0001 是預期結果）。
+# 本機沒有 Inno Setup（ISCC 只有 Windows 版），所以這裡證明的是：
+#   1. jc.iss 的 [Setup]、[Run]、[Code] 關鍵設定都在；
+#   2. jc.iss 的每個 [Files] Source 都對得上 build.ps1 的 staging 或 repo 檔案；
+#   3. 有資料根目錄時，manifest 的 shipped 清單與 jc.iss 的 data 條目一致；
+#   4. 有 payload 時，check-payload.py 的大小與 SHA-256 檢查也一起跑。
 #
-# 因此這支腳本證明的是「XML、元素、屬性、符號引用、自訂動作排程都能通過
-# WiX 編譯器」，不是「MSI 已建好」。真正的 `wix build` 要在 Windows 執行。
+# 真正的編譯、簽章與安裝／升級／反安裝必須在 Windows 執行。
 #
 # 用法：
 #   installer/validate-linux.sh [payload 目錄]
 #
-# payload 省略時，腳本會依 WXS 的 File/@Source 建一個只有 1 位元組內容的暫存
-# 目錄，只為了讓檔案存在檢查通過。
+# 環境變數：
+#   JC_DATA_ROOT  資料根目錄；有 manifest.json 時順便比對 shipped 清單。
 
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-wxs="$repo_root/installer/jc-ime.wxs"
+iss="$repo_root/installer/jc.iss"
+build="$repo_root/installer/build.ps1"
+payload=${1:-}
+fail=0
 
-# 引擎 autostart 必須用 --supervise，且不得用 --socket 覆寫 pipe 名稱。
-# 直接伺服模式沒給 socket 參數時會走 stdio，完全不開 pipe，TIP 連不上；
-# 只有監督模式才會呼叫 default_supervisor_socket() → resolve_pipe_name()
-# 推出 jc-ime-<rid>，與 TIP 一致。顯式 --socket 會讓兩邊名稱不同。
-autostart=$(sed -n '/<Component Id="EngineAutostart"/,/<\/Component>/p' "$wxs")
-if grep -q -- '--socket' <<<"$autostart"; then
-    echo "EngineAutostart 不得帶 --socket；pipe 名稱要交給 resolve_pipe_name() 解析" >&2
-    exit 1
-fi
-if ! grep -q -- '--supervise' <<<"$autostart"; then
-    echo "EngineAutostart 必須帶 --supervise；直接伺服模式沒給 socket 參數會退回 stdio，不開 pipe" >&2
-    exit 1
-fi
-if ! grep -q -- '--data' <<<"$autostart" || ! grep -q -- '--settings' <<<"$autostart"; then
-    echo "EngineAutostart 必須保留 --data 與 --settings" >&2
-    exit 1
-fi
+error() {
+    echo "錯誤：$*" >&2
+    fail=1
+}
 
-if command -v wix >/dev/null 2>&1; then
-    wix=wix
-elif [ -x "$HOME/.dotnet/tools/wix" ]; then
-    wix="$HOME/.dotnet/tools/wix"
-else
-    echo "找不到 wix；請執行 dotnet tool install --global wix --version 5.*" >&2
+require_line() {
+    if ! grep -Fq -- "$1" "$iss"; then
+        error "jc.iss 缺少：$1"
+    fi
+}
+
+if [ ! -f "$iss" ]; then
+    echo "找不到 $iss" >&2
+    exit 2
+fi
+if [ ! -f "$build" ]; then
+    echo "找不到 $build" >&2
     exit 2
 fi
 
-payload=${1:-}
-cleanup_payload=0
-if [ -z "$payload" ]; then
-    payload=$(mktemp -d)
-    cleanup_payload=1
-    while IFS= read -r relative; do
-        relative=${relative#'$(var.PayloadDir)'}
-        relative=${relative#/}
-        mkdir -p "$payload/$(dirname "$relative")"
-        printf 'x' > "$payload/$relative"
-    done < <(grep -o '\$(var\.PayloadDir)/[^"]*' "$wxs" | sort -u)
+# [Setup] 與流程的關鍵設定。少任何一項都會回到 MSI 時代的症狀。
+require_line 'AppId={{EF7AD1D4-1BA4-41AE-AD3A-768BEA4D64B4}'
+require_line 'PrivilegesRequired=admin'
+require_line 'ArchitecturesInstallIn64BitMode=x64compatible'
+require_line 'DefaultDirName={autopf}\jc-ime'
+require_line 'CloseApplications=no'
+require_line 'RestartApplications=no'
+require_line 'function PrepareToInstall'
+require_line 'MoveFileExW@kernel32.dll stdcall'
+require_line 'GetDateTimeString('
+require_line 'runasoriginaluser'
+require_line 'machine-register'
+require_line 'user-install'
+require_line 'user-cleanup-legacy'
+require_line 'machine-unregister'
+require_line 'MOVEFILE_DELAY_UNTIL_REBOOT'
+require_line 'WindowsInstaller'
+require_line 'msiexec.exe'
+
+# 引擎 autostart 必須用 --supervise，資料與設定路徑不能少；socket 名稱要與
+# TIP 的 jc-ime-<rid> 一致。
+if ! grep -Fq -- '--supervise' "$iss"; then
+    error 'jc.iss 的引擎 autostart 缺少 --supervise'
+fi
+if ! grep -Fq -- '--data' "$iss" || ! grep -Fq -- '--settings' "$iss"; then
+    error 'jc.iss 的引擎 autostart 缺少 --data 或 --settings'
+fi
+if ! grep -Fq -- '--socket jc-ime-' "$iss"; then
+    error 'jc.iss 的引擎 autostart 缺少 --socket jc-ime-<rid>'
 fi
 
-lint=$(mktemp --suffix=.wxs)
-out_msi=$(mktemp --suffix=.msi)
-trap 'rm -f "$lint" "$out_msi"; if [ "$cleanup_payload" = 1 ]; then rm -rf "$payload"; fi' EXIT
-
-# 只把 Directory 元素的 Name 換成 "."；RegistryValue、Shortcut 的 Name 不動。
-sed -E 's/(<Directory [^>]*[[:space:]])Name="[^"]*"/\1Name="."/' "$wxs" > "$lint"
-
-version=$(sed -nE 's/^version = "([^"]+)"/\1/p' "$repo_root/Cargo.toml" | head -1)
-output=$("$wix" build -arch x64 -d "Version=$version" -d "PayloadDir=$payload" \
-    -o "$out_msi" "$lint" 2>&1 || true)
-
-if echo "$output" | grep -E 'error WIX[0-9]+' | grep -vq 'WIX0001'; then
-    echo "$output" | grep -E 'error WIX[0-9]+' >&2
-    echo "WiX 編譯失敗（上面的錯誤不是 Linux 的已知限制）" >&2
-    exit 1
+# [Files] 的 Source 清單。Source 一律寫成 {#PayloadDir}\relative。
+mapfile -t sources < <(
+    sed -n '/^\[Files\]/,/^\[/p' "$iss" |
+        sed -n 's/.*Source: "{#PayloadDir}[\\/]\+\([^"]*\)".*/\1/p' |
+        sed 's/\\/\//g'
+)
+if [ "${#sources[@]}" -eq 0 ]; then
+    error 'jc.iss 的 [Files] 沒有任何 Source'
 fi
 
-if ! echo "$output" | grep -q 'msi.dll'; then
-    echo "$output" >&2
-    echo "預期在綁定階段因 msi.dll 失敗，實際沒有；請檢查上面的輸出" >&2
-    exit 1
-fi
+for relative in "${sources[@]}"; do
+    case "$relative" in
+        data/*)
+            ;;
+        legal/*|LICENSE|NOTICE)
+            if [ ! -f "$repo_root/$relative" ]; then
+                error "repo 缺少 $relative（jc.iss 引用）"
+            fi
+            ;;
+        *)
+            # 程式檔必須是 build.ps1 真的會放進 payload 的名稱。
+            if ! grep -Fq -- "'$relative'" "$build"; then
+                error "build.ps1 沒有 staging $relative（jc.iss 引用）"
+            fi
+            ;;
+    esac
+done
 
-echo "WiX 編譯與符號解析通過（版本 $version）"
-echo "綁定階段因 Linux 沒有 msi.dll 停止，這是預期結果；完整建置請在 Windows 執行。"
+# 有資料根目錄時比對 manifest 的 shipped 清單。data/manifest.json 自己也進 payload。
+data_root=${JC_DATA_ROOT:-}
+if [ -n "$data_root" ] && [ -f "$data_root/manifest.json" ]; then
+    if ! python3 - "$iss" "$data_root/manifest.json" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
 
-if [ "$cleanup_payload" = 1 ]; then
-    echo "payload 是腳本建立的暫存檔，跳過 check-payload.py；"
-    echo "要一起驗資料時，傳入真正暫存的 payload 目錄。"
-elif command -v uv >/dev/null 2>&1; then
-    uv run --no-project "$repo_root/installer/check-payload.py" "$payload"
+iss = Path(sys.argv[1])
+manifest = Path(sys.argv[2])
+text = iss.read_text(encoding="utf-8-sig")
+pattern = re.compile(r'Source:\s*"\{#PayloadDir\}[\\/]+data[\\/]+([^"]+)"')
+actual = {"data/" + match.group(1).replace("\\", "/") for match in pattern.finditer(text)}
+shipped = {
+    "data/" + entry["path"]
+    for entry in json.loads(manifest.read_text(encoding="utf-8"))["files"]
+    if entry.get("shipped")
+}
+missing = sorted(shipped - actual)
+extra = sorted(actual - shipped - {"data/manifest.json"})
+for path in missing:
+    print(f"錯誤：manifest 隨附但 jc.iss 沒引用：{path}", file=sys.stderr)
+for path in extra:
+    print(f"錯誤：jc.iss 引用但 manifest 沒有隨附：{path}", file=sys.stderr)
+raise SystemExit(1 if missing or extra else 0)
+PY
+    then
+        fail=1
+    fi
 else
-    echo "找不到 uv；跳過 check-payload.py"
+    echo '略過 manifest 比對（沒有 JC_DATA_ROOT/manifest.json）'
 fi
+
+# 有真的 payload 時，讓 check-payload.py 驗檔案存在、大小與 SHA-256。
+if [ -n "$payload" ]; then
+    if [ ! -d "$payload" ]; then
+        error "payload 目錄不存在：$payload"
+    elif command -v python3 >/dev/null 2>&1; then
+        if ! python3 "$repo_root/installer/check-payload.py" "$payload"; then
+            fail=1
+        fi
+    else
+        echo '找不到 python3；跳過 check-payload.py'
+    fi
+else
+    echo '沒有傳 payload；跳過檔案大小與雜湊檢查'
+fi
+
+if [ "$fail" -ne 0 ]; then
+    echo 'jc.iss 靜態檢查失敗' >&2
+    exit 1
+fi
+
+echo "jc.iss 靜態檢查通過（$((${#sources[@]})) 個 [Files] 條目）"
+echo 'ISCC 編譯、簽章與安裝／升級／反安裝只能在 Windows 驗證。'

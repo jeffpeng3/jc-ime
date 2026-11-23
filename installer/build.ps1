@@ -1,17 +1,16 @@
 <#
 .SYNOPSIS
-    建置 jc 注音的可攜 payload 與 WiX v5 MSI。
+    建置 jc 注音的可攜 payload 與 Inno Setup setup.exe。
 
 .DESCRIPTION
     步驟：cargo build（x64 全部程式含 jc-tsf，i686 的 jc-tsf，
     以及 jc-tip-register）→ 使用或產生資料 manifest → 暫存 payload（程式、資料、
-    授權文件）→ wix build → 選用簽章。
+    授權文件）→ check-payload.py → 選用簽章 → ISCC 編 installer/jc.iss。
 
     版本號取自 workspace Cargo.toml 的 [workspace.package] version，可以是
-    pre-release（例如 0.1.0-rc.1）。MSI 的 ProductVersion 用四段 x.y.z.N，
-    N 是 rc 序號（正式版為 0），例如 0.1.0-rc.9 推出 0.1.0.9。Windows Installer
-    比較版本只看前三段，所以 WXS 的 AllowSameVersionUpgrades 必須保持 yes。MSI 檔名
-    一律用完整版本，例如 jc-ime-0.1.0-rc.1-x64.msi。
+    pre-release（例如 0.1.0-rc.1）。setup.exe 的 AppVersion 用完整版本，檔名也用
+    完整版本，例如 jc-ime-0.1.0-rc.1-x64-setup.exe；VersionInfoVersion 只吃四段
+    數字 x.y.z.N，N 是 rc 序號（正式版為 0），例如 0.1.0-rc.9 是 0.1.0.9。
 
     安裝包帶一份 TSF 文字服務的 x64 與 i686 兩份：jc-tsf.dll、jc-tsf-x86.dll。
     TSF 依宿主行程的位元數載入對應的那一份；兩份共用同一個 CLSID，理由見
@@ -20,7 +19,7 @@
     需要：
       - Visual Studio 2022 的 MSVC 工具鏈，Rust target x86_64-pc-windows-msvc 與
         i686-pc-windows-msvc（rustup target add i686-pc-windows-msvc）
-      - .NET 6 以上與 WiX v5：dotnet tool install --global wix --version 5.*
+      - Inno Setup 6（ISCC.exe 在 Program Files (x86)\Inno Setup 6 或 PATH）
       - 資料根目錄（預設讀 $env:JC_DATA_ROOT）
       - 選用：Windows SDK 的 signtool.exe（簽章時才需要）
 
@@ -29,25 +28,25 @@
     預設讀環境變數 JC_DATA_ROOT。搭配 -Manifest 時只需保留 shipped: true 的檔案。
 
 .PARAMETER Certificate
-    簽章用的 PFX 路徑。預設讀 JC_SIGN_CERT；沒給就輸出未簽章的 MSI。
+    簽章用的 PFX 路徑。預設讀 JC_SIGN_CERT；沒給就輸出未簽章的 setup.exe。
 
 .PARAMETER Manifest
     選用的既有資料 manifest。給定時直接複製這份 manifest，不再用
     `jc-cli data manifest` 重算；適合 CI 只帶 shipped: true 檔案、但仍要保留
     shipped: false 下載項 URL 的情況。預設讀 JC_DATA_MANIFEST。
 
-.PARAMETER MsiVersion
-    MSI 的 ProductVersion，x.y.z 或 x.y.z.N。預設讀 JC_MSI_VERSION；兩者都沒給時
-    由完整版本推導：正式版是 x.y.z.0，x.y.z-rc.N 是 x.y.z.N。給三段時會補上從
-    完整版本推出的 rc 序號，方便既有 CI 只傳 x.y.z。只用於 MSI 內部版本與升級
-    判斷，檔名與顯示版本仍是完整版本。
+.PARAMETER IsoVersion
+    setup.exe 的 VersionInfoVersion，x.y.z 或 x.y.z.N。預設讀 JC_ISO_VERSION，
+    其次是舊的 JC_MSI_VERSION；都沒給時由完整版本推導：正式版是 x.y.z.0，
+    x.y.z-rc.N 是 x.y.z.N。給三段時會補上從完整版本推出的 rc 序號，方便既有 CI
+    只傳 x.y.z。`-MsiVersion` 保留為別名，舊指令不必改。檔名與顯示版本仍是完整版本。
 
 .EXAMPLE
     .\installer\build.ps1 -DataRoot Z:\mnt\work\jc\jc-ime-data
 
 .EXAMPLE
-    # Cargo.toml 是 0.1.0-rc.1：MSI ProductVersion 0.1.0.1，檔名含 -rc.1。
-    .\installer\build.ps1 -DataRoot Z:\mnt\work\jc\jc-ime-data -MsiVersion 0.1.0.1
+    # Cargo.toml 是 0.1.0-rc.1：VersionInfoVersion 0.1.0.1，檔名含 -rc.1。
+    .\installer\build.ps1 -DataRoot Z:\mnt\work\jc\jc-ime-data -IsoVersion 0.1.0.1
 #>
 
 # 說明區塊必須是檔案的第一個元素，Get-Help 才讀得到，所以 #Requires 放在它
@@ -64,7 +63,9 @@ param(
     [string]$Certificate = $env:JC_SIGN_CERT,
     [string]$CertificatePassword = $env:JC_SIGN_PASSWORD,
     [string]$Manifest = $env:JC_DATA_MANIFEST,
-    [string]$MsiVersion = $env:JC_MSI_VERSION,
+    [Alias('MsiVersion')]
+    [string]$IsoVersion = $(if ($env:JC_ISO_VERSION) { $env:JC_ISO_VERSION } else { $env:JC_MSI_VERSION }),
+    [string]$Iscc = $env:JC_ISCC,
     [switch]$SkipSign
 )
 
@@ -154,8 +155,8 @@ Invoke-Checked '建置 jc-tip-register' {
 }
 
 # 預期輸出只在 target/<triple>/<profile>。絕不退回 target/<profile>：該目錄是
-# rust-cache 可能還原的舊產物，曾讓 MSI 打包到上一版的 jc_tsf.dll（0.1.2 的
-# pipe debug log 因此沒進 MSI，見 fix-msi-stale-dll）。找不到就直接失敗，並
+# rust-cache 可能還原的舊產物，曾讓安裝包打包到上一版的 jc_tsf.dll（0.1.2 的
+# pipe debug log 因此沒進安裝包，見 fix-msi-stale-dll）。找不到就直接失敗，並
 # 帶上剛才實際執行的 cargo 指令與 rustup target add，讓 CI log 能直接行動。
 function Resolve-ReleaseDir {
     param(
@@ -207,7 +208,7 @@ if (-not (Test-Path $DataRoot)) {
 }
 
 # 版本：只認 workspace.package 的 version。完整版本可以有 pre-release 後綴，
-# 例如 0.1.0-rc.1；MSI ProductVersion 用四段，第四段是 rc 序號。
+# 例如 0.1.0-rc.1；VersionInfoVersion 用四段，第四段是 rc 序號。
 $match = Select-String -Path (Join-Path $Root 'Cargo.toml') -Pattern '^version\s*=\s*"([^"]+)"' -List
 if (-not $match) { throw 'Cargo.toml 找不到 [workspace.package] version' }
 $Version = $match.Matches[0].Groups[1].Value
@@ -225,24 +226,24 @@ if ($versionParts.Count -gt 1) {
     }
 }
 
-# CI 到這裡仍只傳三段；補上 rc 序號，讓 ProductVersion 在相鄰 rc 之間不同。
-if (-not $MsiVersion) {
-    $MsiVersion = $versionParts[0]
+# CI 到這裡仍只傳三段；補上 rc 序號，讓相鄰 rc 的 VersionInfoVersion 不同。
+if (-not $IsoVersion) {
+    $IsoVersion = $versionParts[0]
 }
-if ($MsiVersion -match '^\d+\.\d+\.\d+$') {
-    $MsiVersion = "$MsiVersion.$rcNumber"
+if ($IsoVersion -match '^\d+\.\d+\.\d+$') {
+    $IsoVersion = "$IsoVersion.$rcNumber"
 }
-if ($MsiVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') {
-    throw "MSI ProductVersion 必須是 x.y.z 或 x.y.z.n（目前是 $MsiVersion）；pre-release 後綴只留在檔名與顯示版本。"
+if ($IsoVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+    throw "VersionInfoVersion 必須是 x.y.z 或 x.y.z.n（目前是 $IsoVersion）；pre-release 後綴只留在檔名與顯示版本。"
 }
-Write-Host "==> 發佈版本 $Version（MSI ProductVersion $MsiVersion）"
+Write-Host "==> 發佈版本 $Version（VersionInfoVersion $IsoVersion）"
 
 Write-Host '==> 暫存 payload'
 if (Test-Path $Payload) { Remove-Item $Payload -Recurse -Force }
 New-Item -ItemType Directory -Path $Payload | Out-Null
 
 # jc-tsf 是 cdylib，Cargo 的 lib target 名稱用底線，產物因此是 jc_tsf.dll；
-# payload 內才改成 WXS 使用的 jc-tsf.dll／jc-tsf-x86.dll。
+# payload 內才改成安裝腳本使用的 jc-tsf.dll／jc-tsf-x86.dll。
 # 其餘 bin target 保留連字號：jc-engine.exe、jc-cli.exe、jc-settings-ui.exe、
 # jc-tsf-smoke.exe，已用 cargo metadata 確認。
 $tsfLibName = 'jc_tsf.dll'
@@ -299,7 +300,7 @@ Invoke-Checked '驗證暫存資料' {
 }
 
 # 授權文件：payload 內的路徑與 repo 相同（LICENSE、NOTICE、legal/...），
-# 這樣 check-payload.py 可以直接比對雜湊，MSI 也照同一組相對路徑引用。
+# 這樣 check-payload.py 可以直接比對雜湊，jc.iss 也照同一組相對路徑引用。
 Write-Host '==> 暫存授權文件'
 $legalStage = Join-Path $Payload 'legal'
 $licenseStage = Join-Path $legalStage 'licenses'
@@ -327,11 +328,11 @@ if ($python) {
     # 這兩個變數讓 stdout／stderr 走 UTF-8；腳本本身也有 reconfigure 保護。
     $env:PYTHONUTF8 = '1'
     $env:PYTHONIOENCODING = 'utf-8'
-    Invoke-Checked '檢查 WXS 引用與 payload 一致' {
+    Invoke-Checked '檢查 jc.iss 引用與 payload 一致' {
         & $python.Source (Join-Path $PSScriptRoot 'check-payload.py') $Payload
     }
 } else {
-    Write-Warning '找不到 python；跳過 check-payload.py（wix build 仍會擋掉缺少的檔案）'
+    Write-Warning '找不到 python；跳過 check-payload.py（ISCC 仍會擋掉缺少的檔案）'
 }
 
 if (-not $SkipSign -and $Certificate) {
@@ -348,22 +349,47 @@ if (-not $SkipSign -and $Certificate) {
         Invoke-Checked "簽章 $name" { & $signtool.Source @signArgs (Join-Path $Payload $name) }
     }
 } else {
-    Write-Warning '未指定簽章憑證：MSI 與執行檔維持未簽章，SmartScreen 會顯示警告。'
+    Write-Warning '未指定簽章憑證：setup.exe 與執行檔維持未簽章，SmartScreen 會顯示警告。'
 }
 
-$wix = Get-Command wix.exe -ErrorAction SilentlyContinue
-if (-not $wix) {
-    throw '找不到 wix.exe；請執行 dotnet tool install --global wix --version 5.*'
+# 找 ISCC.exe：-Iscc／JC_ISCC 優先，其次 PATH，最後是 Inno Setup 6 的預設安裝路徑。
+if (-not $Iscc) {
+    $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($command) { $Iscc = $command.Source }
+}
+if (-not $Iscc) {
+    $candidates = @()
+    if (${env:ProgramFiles(x86)}) {
+        $candidates += (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')
+    }
+    if ($env:ProgramFiles) {
+        $candidates += (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+    }
+    if ($env:LOCALAPPDATA) {
+        $candidates += (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
+    }
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            $Iscc = $candidate
+            break
+        }
+    }
+}
+if (-not $Iscc -or -not (Test-Path $Iscc)) {
+    throw '找不到 ISCC.exe；請安裝 Inno Setup 6（choco install innosetup -y）或傳 -Iscc。'
 }
 
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
-$msi = Join-Path $OutDir "jc-ime-$Version-x64.msi"
-Invoke-Checked '建置 MSI' {
-    & $wix.Source build -arch x64 `
-        -d "Version=$MsiVersion" `
-        -d "PayloadDir=$Payload" `
-        -o $msi `
-        (Join-Path $PSScriptRoot 'jc-ime.wxs')
+$setup = Join-Path $OutDir "jc-ime-$Version-x64-setup.exe"
+Invoke-Checked '建置 setup.exe' {
+    & $Iscc "/DMyAppVersion=$Version" `
+        "/DIsoVersion=$IsoVersion" `
+        "/DPayloadDir=$Payload" `
+        "/O$OutDir" `
+        (Join-Path $PSScriptRoot 'jc.iss')
+}
+if (-not (Test-Path $setup)) {
+    throw "ISCC 結束但找不到預期的 setup.exe：$setup"
 }
 
 if (-not $SkipSign -and $Certificate) {
@@ -371,12 +397,12 @@ if (-not $SkipSign -and $Certificate) {
     $signArgs = @('sign', '/fd', 'sha256', '/tr', $TimestampUrl, '/td', 'sha256',
         '/f', $Certificate)
     if ($CertificatePassword) { $signArgs += @('/p', $CertificatePassword) }
-    Invoke-Checked '簽章 MSI' { & $signtool.Source @signArgs $msi }
+    Invoke-Checked '簽章 setup.exe' { & $signtool.Source @signArgs $setup }
 }
 
-$size = [math]::Round((Get-Item $msi).Length / 1MB, 1)
+$size = [math]::Round((Get-Item $setup).Length / 1MB, 1)
 Write-Host ''
-Write-Host "完成：$msi（$size MiB）"
-Write-Host "    發佈版本 $Version；MSI ProductVersion $MsiVersion"
-Write-Host '安裝：msiexec /i "jc-ime.msi" /l*v install.log'
-Write-Host '移除：msiexec /x "jc-ime.msi" /l*v uninstall.log'
+Write-Host "完成：$setup（$size MiB）"
+Write-Host "    發佈版本 $Version；VersionInfoVersion $IsoVersion"
+Write-Host '安裝：jc-ime-<version>-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=install.log'
+Write-Host '移除："C:\Program Files\jc-ime\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'

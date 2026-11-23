@@ -3,10 +3,11 @@
 `ci.yml` 是唯一入口。push main 時 `check-tag` 與五個 job 同時起步：linux／windows／
 test-windows 測試，以及 build-windows／build-linux。build 只 `needs: check-tag`，
 不等測試；`publish` 等 `check-tag`、三個測試、兩個 build 與 `install-smoke` 都成功
-才建立 GitHub Release。帶版本標籤的 push 會在 `build-windows` 產出 MSI 後跑
+才建立 GitHub Release。帶版本標籤的 push 會在 `build-windows` 產出 setup.exe 後跑
 `install-smoke`（見〈Windows CI 驗證〉），安裝或反安裝失敗就不發版。一般 push
-沒有版本標籤時 build、install-smoke 與 publish 直接跳過。所有 job 的 ref 都是
-`refs/heads/main`。
+沒有版本標籤時 build、install-smoke 與 publish 直接跳過；`workflow_dispatch` 可以
+勾 `run_install_smoke` 手動跑 build-windows 與 install-smoke，但不會發版。
+所有發版 job 的 ref 都是 `refs/heads/main`。
 
 `check-tag` 明確用 `fetch-tags: true` checkout，再主動 `git fetch --tags --force
 origin`，用 `github.sha`（完整 SHA）搭配 `git tag --points-at` 找 `v*` 標籤；
@@ -21,20 +22,23 @@ tag 到達 runner 有 race，只靠 `git tag --points-at HEAD` 會漏掉（run 4
 |---|---|---|
 | push main（帶 annotated `v<version>` 標籤） | `check-tag` + 測試 + build 同時起步 → `install-smoke` → `publish` | 是 |
 | push main（無版本標籤）／pull request | 只跑 `check-tag` + 測試 | 否 |
+| Actions → CI → Run workflow（勾 `run_install_smoke`） | `check-tag` + 測試 + `build-windows` → `install-smoke` | 否 |
 | Actions → Release → Run workflow | `verify` → `windows` → `linux`（只產 artifact） | 否 |
 
 `git push --follow-tags origin main` 把 commit 連同 annotated tag 一起推上 main，
 所以 release 跑在 main scope，`release-*` 快取不再掛在 tag ref。
-手動觸發可以填 `data_bundle_url`、`data_bundle_sha256` 覆寫公開 repo variable，
-適合第一次試跑或換資料包來源。手動觸發的版本號取自 `Cargo.toml`，不會發 Release。
+`ci.yml` 的 `workflow_dispatch` 沒有額外 input；`run_install_smoke` 預設 false，
+只有勾選時才建 setup.exe 並跑安裝 smoke。手動觸發的版本號取自 `Cargo.toml`，
+不會發 Release。`release.yml` 的手動觸發可以填 `data_bundle_url`、
+`data_bundle_sha256` 覆寫公開 repo variable，適合換資料包來源。
 
 ## 版本號規則
 
 - 唯一來源：`Cargo.toml` 的 `[workspace.package] version`。
 - 標籤必須是 `v<version>`，而且與 `Cargo.toml` 完全相同；不同就讓 `check-tag`（CI）／`verify`（手動測試）失敗。
 - 版本格式是 `x.y.z` 或 `x.y.z-<pre-release>`，例如 `0.1.0`、`0.1.0-rc.1`。
-- Release 標題、artifact 名稱、MSI 檔名都用完整版本：
-  - `jc-ime-<version>-x64.msi`
+- Release 標題、artifact 名稱、setup.exe 檔名都用完整版本：
+  - `jc-ime-<version>-x64-setup.exe`
   - `jc-ime-<version>-linux-x86_64.tar.gz`
 - 手動觸發不會建立 Release；要發佈仍要在 main commit 上打 annotated tag，並用
   `--follow-tags` 一起 push。
@@ -42,37 +46,33 @@ tag 到達 runner 有 race，只靠 `git tag --points-at HEAD` 會漏掉（run 4
 
 ### pre-release 版本規則
 
-MSI 的 `ProductVersion` 用四段數字，但完整版本仍可帶 pre-release 後綴。
-兩者分開處理：
+setup.exe 的 `AppVersion` 與檔名可以帶 pre-release 後綴，但
+`VersionInfoVersion` 只吃四段數字。兩者分開處理：
 
 | 用途 | 值 | 來源 |
 |---|---|---|
 | git tag | `v0.1.0-rc.1` | 人工建立 |
 | `Cargo.toml` version | `0.1.0-rc.1` | 必須與 tag 去掉 `v` 相同 |
-| Release 標題／artifact 名稱／MSI 檔名 | `0.1.0-rc.1` | 完整版本 |
-| MSI `ProductVersion` | `0.1.0.1` | `check-tag`／`verify` 輸出三段，`build.ps1` 補上 rc 序號 |
+| Release 標題／artifact 名稱／setup.exe 檔名 | `0.1.0-rc.1` | 完整版本 |
+| setup.exe `AppVersion` | `0.1.0-rc.1` | 完整版本（`/DMyAppVersion=`） |
+| setup.exe `VersionInfoVersion` | `0.1.0.1` | `check-tag`／`verify` 輸出三段，`build.ps1` 補上 rc 序號 |
 
 規則：
 
 - `check-tag`／`verify` 用 `^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$` 驗完整版本，接受 `-rc.1`。
-- `msi_version` 仍是完整版本 `-` 之前的三段數字；Windows job 用 `-MsiVersion`
+- `iso_version` 是完整版本 `-` 之前的三段數字；Windows job 用 `-IsoVersion`
   傳進 `installer/build.ps1`。
-- `build.ps1` 的 `-MsiVersion` 是選項，接受三段或四段。沒給時從 `Cargo.toml` 推導：
-  正式版是 `x.y.z.0`，`x.y.z-rc.N` 是 `x.y.z.N`。給三段時補上從完整版本推出的
-  rc 序號，所以現有 CI 不必改。第四段只認 `rc.<數字>`，其他 pre-release 要明確
-  傳四段 `-MsiVersion`。本機建置不必手動指定。
-- `wix build -d Version=` 只拿四段 MSI 版本；檔名、Release 標題與說明仍用完整版本。
-- Windows Installer 比較版本只用前三段，第四段被忽略。所以 `0.1.0-rc.8` 與
-  `0.1.0-rc.9` 在 MSI 眼中仍是同一版，WXS 的 `AllowSameVersionUpgrades="yes"`
-  必須保留，升級才會先移除舊版。第四段讓 `ProductVersion` 字串、ARP 顯示與升級
-  log 能區分相鄰 rc。
-- `PackageCode`（WXS 的 `Package/@ProductCode`）每次 build 由 WiX 自動產生，
-  WXS 明寫 `ProductCode="*"`；`UpgradeCode` 固定不變，舊版才會被認成升級目標。
-- `MajorUpgrade` 的預設排程是 `afterInstallValidate`，會先完整移除舊版再裝新版，
-  不需要另外加 `RemoveExistingProducts`。
-- 正式版 `0.1.0` 的 `ProductVersion` 是 `0.1.0.0`；從最後一個 RC（`0.1.0.9`）升到
-  正式版時前三段相同，靠 `AllowSameVersionUpgrades` 就地升級，不會出現兩個項目。
-  副作用是前三段相同也接受降級，rc 發版順序要遞增。
+- `build.ps1` 的 `-IsoVersion` 是選項，接受三段或四段；`-MsiVersion` 保留為別名。
+  沒給時從 `Cargo.toml` 推導：正式版是 `x.y.z.0`，`x.y.z-rc.N` 是 `x.y.z.N`。
+  給三段時補上從完整版本推出的 rc 序號，所以既有 CI 不必改。第四段只認
+  `rc.<數字>`，其他 pre-release 要明確傳四段 `-IsoVersion`。本機建置不必手動指定。
+- `ISCC` 的 `/DMyAppVersion=` 拿完整版本，`/DIsoVersion=` 拿四段版本；檔名、
+  Release 標題與說明仍用完整版本。
+- `AppId` 固定不變（`{{EF7AD1D4-1BA4-41AE-AD3A-768BEA4D64B4}`），Windows 靠它
+  認出同一個程式的新版本。改了會變成兩個項目並存。
+- 升級時 `PrepareToInstall` 會先移除舊 MSI（`WindowsInstaller=1` 且
+  `DisplayName` 以「jc 注音」開頭），再讓舊 DLL／EXE 改名為 `.old-<時間戳>`。
+  第一次從 MSI 換到 Inno 不需要使用者手動移除舊版。
 - 版本一致性檢查沒有放寬：tag 去掉 `v` 仍必須等於 `Cargo.toml` 的完整版本。
 
 發布 RC 的流程與正式版相同，只是 tag 帶後綴：
@@ -86,9 +86,9 @@ git push --follow-tags origin main
 
 ### 1. 資料包（必要）
 
-資料與模型不進 git，Windows runner 也沒有 `/mnt/work/jc/jc-ime-data`。MSI 需要
+資料與模型不進 git，Windows runner 也沒有 `/mnt/work/jc/jc-ime-data`。setup.exe 需要
 資料根目錄，因此 build job 會下載一個預先打包的資料包。沒有資料包 URL
-時 `windows` job 會直接失敗，不會產出缺資料的 MSI。
+時 `windows` job 會直接失敗，不會產出缺資料的安裝程式。
 
 資料包來源只有一個：公開 repo variable，或 `workflow_dispatch` 輸入覆寫。
 **不使用 repo secret**，讓 fork PR 也能重現同一份資料包。優先序是
@@ -138,7 +138,7 @@ catalog 目前沒有 `shipped: false` 的下載項。`scripts/verify-bundle.py` 
 
 workflow 會把 `-Manifest <資料根>/manifest.json` 傳給 `build.ps1`，直接複製這份
 對完整資料根目錄產生的 manifest。payload 只複製 `shipped: true` 的檔案，所以
-`model.q8_0.gguf`、`vocab.json` 與兩份 manifest 會進 MSI，原始 ONNX 不會。
+`model.q8_0.gguf`、`vocab.json` 與兩份 manifest 會進 setup.exe，原始 ONNX 不會。
 如果沒有 `-Manifest`，`build.ps1` 會用 `jc-cli data manifest` 重新掃描資料根目錄；
 那種情況資料包必須含上述四筆隨附檔。
 
@@ -173,8 +173,8 @@ HF 會把 `resolve` 轉到 CDN，`Invoke-WebRequest` 會跟隨 redirect。`<comm
 4. 更新公開 repo variable `JC_DATA_BUNDLE_URL` 為
    `https://huggingface.co/datasets/jeffpeng3/jc-ime-data/resolve/<commit>/jc-ime-data-<data-version>.tar.zst`。
 5. 更新公開 repo variable `JC_DATA_BUNDLE_SHA256` 為腳本印出的 SHA-256。
-6. 手動觸發 Release workflow 驗一次，確認 log 沒有「跳過資料包雜湊檢查」的警告，
-   且 MSI 內的 `data/manifest.json` 版本正確。
+6. 手動觸發 CI（勾 `run_install_smoke`）或 Release workflow 驗一次，確認 log
+   沒有「跳過資料包雜湊檢查」的警告，且安裝包內的 `data/manifest.json` 版本正確。
 7. 如果資料版本會影響使用者，更新 `docs/CHANGELOG.md` 與相關資料文件。
 
 平常程式改版不需要換 bundle。只有 shipped 檔案內容、`shipped` 清單、manifest
@@ -199,7 +199,7 @@ base64 -w0 jc-ime.pfx > jc-ime.pfx.b64
 有 `SIGNING_PFX_BASE64` 時，workflow 會把 PFX 寫到 runner 暫存目錄，找 Windows
 SDK 的 x64 `signtool.exe` 加進 PATH，然後設定 `JC_SIGN_CERT`／`JC_SIGN_PASSWORD`
 給 `installer/build.ps1`。`build.ps1` 會簽 payload 內的 `jc-tsf.dll`、
-`jc-engine.exe`、`jc-settings-ui.exe` 等執行檔，最後再簽 MSI。時間戳預設用
+`jc-engine.exe`、`jc-settings-ui.exe` 等執行檔，最後再簽 setup.exe。時間戳預設用
 `http://timestamp.digicert.com`。
 
 要關閉簽章，刪掉 `SIGNING_PFX_BASE64` secret。若 secret 存在但找不到
@@ -209,19 +209,19 @@ SDK 的 x64 `signtool.exe` 加進 PATH，然後設定 `JC_SIGN_CERT`／`JC_SIGN_
 驗證簽章（Windows）：
 
 ```bat
-signtool verify /pa /v jc-ime-<version>-x64.msi
+signtool verify /pa /v jc-ime-<version>-x64-setup.exe
 ```
 
 ## Job 內容
 
 | Job | 產出 |
 |---|---|
-| `check-tag` | `fetch-tags: true` + `git fetch --tags --force origin`，用 `github.sha` 比對 `v*` 標籤（最多三次，間隔 3 秒）；輸出 `has_tag`／`version`／`msi_version` |
+| `check-tag` | `fetch-tags: true` + `git fetch --tags --force origin`，用 `github.sha` 比對 `v*` 標籤（最多三次，間隔 3 秒）；輸出 `has_tag`／`version`／`iso_version` |
 | `linux`（測試） | 下載資料包 → fmt／clippy／Windows target check／test → 清理快取 |
 | `windows`（測試） | 下載資料包 → `cargo test --workspace` |
 | `test-windows`（測試） | 所有 push／PR；`cargo test --workspace --exclude jc-settings-ui` → Windows 專屬 crate 的 clippy → i686 型別檢查 → `installer/jc-tip-register` 測試 |
-| `build-windows` | `needs: check-tag`，與測試同時起步；下載資料包並驗 SHA → `verify-bundle.py` → WiX v5 → `installer/build.ps1 -MsiVersion <x.y.z>`（腳本補上 rc 序號）→ MSI、checksum、`data-manifest.json`，輸出 `signed` |
-| `install-smoke` | `needs: [check-tag, build-windows]`，條件同 `build-windows`；下載 MSI → 安裝 → 跑 `jc-tsf-smoke` → 斷言 TSF profile 機碼與語言清單 → 反安裝 → 斷言清乾淨 |
+| `build-windows` | `needs: check-tag`，與測試同時起步；下載資料包並驗 SHA → `verify-bundle.py` → Inno Setup 6 → `installer/build.ps1 -IsoVersion <x.y.z>`（腳本補上 rc 序號）→ setup.exe、checksum、`data-manifest.json`，輸出 `signed`；`workflow_dispatch` 勾 `run_install_smoke` 時也跑 |
+| `install-smoke` | `needs: [check-tag, build-windows]`，條件同 `build-windows`；下載 setup.exe → 靜默安裝 → 跑 `jc-tsf-smoke` → 斷言 TSF profile 機碼與語言清單 → `unins000.exe` 反安裝 → 斷言清乾淨 |
 | `build-linux` | `needs: check-tag`，與測試同時起步；GPUI 系統依賴 → `cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui` → tar.gz 與 checksum → 清理快取 |
 | `publish` | `needs: [check-tag, linux, windows, test-windows, build-windows, build-linux, install-smoke]`；全部成功才下載兩個 artifact、建立或更新 GitHub Release，不查 CI run |
 
@@ -233,7 +233,7 @@ Windows 的 Python 輸出必須是 UTF-8。Windows job 設 `PYTHONUTF8=1`，`bui
 
 build job 不跑 `cargo fmt`、clippy、test；那些由 `ci.yml` 在日常 push／PR 負責。`verify` 當初的 `cargo test --workspace --release` 已移除：CI 在 push main 時跑過同一批測試，release profile 重跑只是多花 8～9 分鐘。
 
-`publish` 直接宣告 `needs: [check-tag, linux, windows, test-windows, build-windows, build-linux, install-smoke]`：check-tag 失敗、任一測試失敗、MSI 安裝或反安裝失敗，或沒有版本標籤時都不會發版。`build-windows`／`build-linux` 只 `needs: check-tag`，與測試同時起步；`install-smoke` 等 MSI 產出後才跑。`release.yml` 已移除 `workflow_call`，`workflow_dispatch` 只產 artifact，供手動測試 build。
+`publish` 直接宣告 `needs: [check-tag, linux, windows, test-windows, build-windows, build-linux, install-smoke]`：check-tag 失敗、任一測試失敗、安裝或反安裝失敗，或沒有版本標籤時都不會發版。`build-windows`／`build-linux` 只 `needs: check-tag`，與測試同時起步；`install-smoke` 等 setup.exe 產出後才跑。`release.yml` 已移除 `workflow_call`，`workflow_dispatch` 只產 artifact，供手動測試 build。
 
 ## Windows CI 驗證
 
@@ -260,11 +260,12 @@ Windows 的程式有 66 處 `#[cfg(windows)]`，Linux 的 `cargo test` 完全看
 
 ### `install-smoke`
 
-只在帶版本標籤的 push 跑（`needs: [check-tag, build-windows]`，條件與
-`build-windows` 相同），拿 `windows-msi-<version>` artifact 做一次真的安裝：
+在帶版本標籤的 push，或 `workflow_dispatch` 勾 `run_install_smoke` 時跑
+（`needs: [check-tag, build-windows]`，條件與 `build-windows` 相同），拿
+`windows-setup-<version>` artifact 做一次真的安裝：
 
-1. `msiexec /i <msi> /qn /l*v %TEMP%\install.log`，自己等 10 分鐘，超過就中止並印
-   log 最後 40 行；結束碼只接受 `0` 與 `3010`（成功但需重開機）。
+1. `setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\install.log`，
+   自己等 10 分鐘，超過就中止並印 log 最後 60 行；結束碼只接受 `0`。
 2. 斷言 `C:\Program Files\jc-ime\` 有 `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe`。
 3. 執行 `C:\Program Files\jc-ime\jc-tsf-smoke.exe --json`，輸出寫到 `%TEMP%\smoke.json`，
    診斷訊息寫到 `%TEMP%\smoke.err.log`。斷言 schema 是 `jc-ime-doctor/1`、`ok` 為
@@ -277,28 +278,27 @@ Windows 的程式有 66 處 `#[cfg(windows)]`，Linux 的 `cargo test` 完全看
    - 同一路徑用 `reg query /reg:32` 也查得到。CTF 機碼不是 WOW64 轉向機碼，
      兩個檢視應該看得到同一份；查不到代表 32 位元程式載入不到輸入法。
    - `Get-WinUserLanguageList` 的 `InputMethodTips` 含 `0404:` 加同一個 profile GUID。
-     `InstallTipLayout` 以使用者身分執行，這一步是同一個使用者。
+     `user-install` 以 `runasoriginaluser` 執行，這一步是同一個使用者。
 5. 反安裝前先 `Stop-Process jc-engine -Force`、`Stop-Process explorer -Force`，等 3 秒，
-   讓 TSF DLL 不再被載入；runner 上重開 explorer 不影響後續步驟。ProductCode 每次
-   build 由 WiX 重新產生，先從解除安裝登錄的 `DisplayName -like 'jc 注音*'` 取，
-   找不到再讀 MSI 的 Property 表。
-6. `msiexec /x <product code> /qn /l*v %TEMP%\uninstall.log`，同樣等 10 分鐘；
-   結束碼接受 `0` 與 `3010`。
-7. 斷言 `C:\Program Files\jc-ime` 消失，profile 機碼在 64 位元與 32 位元檢視都不存在。
+   讓 TSF DLL 不再被載入；runner 上重開 explorer 不影響後續步驟。
+6. `{app}\unins000.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\uninstall.log`，
+   同樣等 10 分鐘；結束碼只接受 `0`。
+7. 斷言 `C:\Program Files\jc-ime` 消失、解除安裝登錄沒有「jc 注音」、Run 值
+   `jc-ime-engine` 不存在，profile 機碼在 64 位元與 32 位元檢視都不存在。
 
 ### 失敗時去哪裡看
 
-- 先看 job log：`msiexec` 非 0 結束碼會直接印出 `install.log`／`uninstall.log` 最後
-  40 行；1603 另外標成「安裝期間發生嚴重錯誤」，通常是自訂動作或 DLL 被鎖住。
+- 先看 job log：setup.exe／unins000.exe 非 0 結束碼會直接印出
+  `install.log`／`uninstall.log` 最後 60 行。Inno 的 log 會列出
+  `PrepareToInstall` 的讓路結果與 `machine-register` 的結束碼。
 - `if: failure()` 會上傳 artifact `install-smoke-logs-<version>`，內含
-  `install.log`、`uninstall.log`、`smoke.json`、`smoke.err.log`。`install.log` 的
-  `Return value 3` 往前找第一個 `CustomAction`，就是失敗的自訂動作。
+  `install.log`、`uninstall.log`、`smoke.json`、`smoke.err.log`。
 - `smoke.json` 的 `checks` 陣列會指出哪一項 status 是 `fail`，`fix` 欄位給修復指令；
   對照 `docs/port/tsf-smoke.md` 的 12 項檢查與可能原因。
 - `test-windows` 的失敗都在 job log：cargo test 的 crate 與測試名、clippy 的
   `-D warnings` 位置、i686 check 的型別錯誤。
 
-`install-smoke` 在 `publish` 的 `needs` 裡：MSI 安裝、`jc-tsf-smoke`、profile 與語言
+`install-smoke` 在 `publish` 的 `needs` 裡：安裝、`jc-tsf-smoke`、profile 與語言
 清單斷言、反安裝只要有一項失敗，就不會建立 Release。代價是發版多等一次 Windows
 安裝與反安裝（約 5 到 10 分鐘）。
 
@@ -427,19 +427,20 @@ bump 版本會改 `Cargo.lock`，精確 key 末段的 hash 跟著變。
 
 | 檔案 | 內容 |
 |---|---|
-| `jc-ime-<version>-x64.msi` | per-machine 安裝包：五個程式與 `jc-tip-register.exe`（共六個檔案）、資料 manifest 與 5 個 shipped 資料檔 |
-| `jc-ime-<version>-x64.msi.sha256` | MSI 的 SHA-256 |
+| `jc-ime-<version>-x64-setup.exe` | per-machine Inno 安裝程式：七個程式、資料 manifest 與 13 個 shipped 資料檔、20 份授權文件；AppId 固定，升級靠它 |
+| `jc-ime-<version>-x64-setup.exe.sha256` | setup.exe 的 SHA-256 |
 | `data-manifest.json` | 安裝包內資料 manifest 的副本，publish 用它填 Release 的資料版本 |
 
-MSI 的完整建置與 ICE 驗證只在 Windows runner 做；本機 Linux 沒有 Windows
-runner，能做的只有 WiX 語法驗證：
+setup.exe 的完整建置、簽章與安裝／升級／反安裝只能在 Windows runner 做；本機
+Linux 沒有 ISCC，能做的只有 `.iss`、payload 與 manifest 的靜態一致性檢查：
 
 ```sh
-bash installer/validate-linux.sh
+JC_DATA_ROOT=/mnt/work/jc/jc-ime-data bash installer/validate-linux.sh
 ```
 
-這支腳本需要 `dotnet tool install --global wix --version 5.*`，而且只到編譯與
-符號解析，綁定階段會因 Linux 沒有 `msi.dll` 停止，是預期結果。
+這支腳本會比對 `[Files]` 的 Source、`build.ps1` 的 staging、manifest 的
+`shipped: true` 清單與授權文件；有 payload 時再跑 `check-payload.py` 的大小與
+SHA-256 檢查。它不編譯 setup.exe。
 
 ### Linux
 
@@ -462,13 +463,13 @@ tar.gz 旁附 `.sha256`。Linux 版沒有 Fcitx5／IBus 整合，`jc-settings-ui
 
 `publish` 會產生並附上：
 
-- 版本與發佈日期（UTC）；版本有 pre-release 後綴時，另外註明 MSI
-  `ProductVersion` 的第四段是 rc 序號
+- 版本與發佈日期（UTC）；版本有 pre-release 後綴時，另外註明 setup.exe 的
+  `AppVersion` 是完整字串，`VersionInfoVersion` 只有四段數字
 - 模型與資料版本：安裝包內 `manifest.json` 的 `version`（涵蓋詞典與模型）
 - `docs/CHANGELOG.md` 中 `## <version>` 的段落
 - 兩個平台的下載檔名與 `.sha256` 提示
 - 簽章狀態：已簽章，或明確標「未簽章」與 SmartScreen／AppLocker 影響
-- 已知限制：x86 TIP 未支援、MSI 需要管理員、注音選字模型需另外下載、Linux
+- 已知限制：x86 TIP 未支援、安裝程式需要管理員、注音選字模型需另外下載、Linux
   沒有桌面整合、設定變更需重啟引擎
 
 Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets，方便重跑失敗
@@ -479,7 +480,7 @@ Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets�
 
 1. 更新 `docs/CHANGELOG.md`，確認有 `## <version>` 段落。
 2. 改 `Cargo.toml` 的 `[workspace.package] version`；必要時讓 `Cargo.lock` 跟著更新。
-   RC 就寫 `0.1.0-rc.1`，MSI 版本會自動推出 `0.1.0.1`。
+   RC 就寫 `0.1.0-rc.1`，`VersionInfoVersion` 會自動推出 `0.1.0.1`。
 3. 跑 `cargo check --workspace --all-targets`，commit 到 `main` 並 push。等 main 的
    CI 測試通過；`publish` 的 needs 含測試，測試沒過就不會發版。
 4. 在剛 push 的 commit 上建立 annotated 標籤，連同 commit 一起推上 main：
@@ -490,16 +491,17 @@ Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets�
    ```
 
    `--follow-tags` 只推 annotated tag，所以必須用 `-a`。RC 版本帶 pre-release
-   後綴，例如 `v0.1.0-rc.1`；MSI `ProductVersion` 是 `0.1.0.1`。
+   後綴，例如 `v0.1.0-rc.1`；`VersionInfoVersion` 是 `0.1.0.1`。
 
 5. 到 Actions → CI 看 `check-tag`、三個測試、`build-windows`／`build-linux`、
-   `install-smoke` 與 `publish`。build 與測試同時起步，`install-smoke` 等 MSI，
+   `install-smoke` 與 `publish`。build 與測試同時起步，`install-smoke` 等 setup.exe，
    `publish` 等全部成功。
 6. 檢查 Release assets、說明與 checksum。`install-smoke` 已在乾淨 runner 跑過
    安裝與反安裝；Windows 實機仍建議再跑一次升級與反安裝。
 
-手動試跑：Actions → Release → Run workflow。版本取自 `Cargo.toml`，只產
-artifact，不會建立 Release。
+手動試跑：Actions → CI → Run workflow，勾 `run_install_smoke`。版本取自
+`Cargo.toml`，只產 artifact 並跑安裝 smoke，不會建立 Release。另一個入口是
+Actions → Release → Run workflow，只產 artifact。
 
 ## 第一次發版要人工確認
 
@@ -510,19 +512,19 @@ release workflow 只能證明「建置與打包成功」，下面這些要在第
       印出的 SHA-256 相同；手動觸發時 log 沒有「跳過資料包雜湊檢查」警告。
 - [ ] 資料包 `manifest.json` 包含 Jinen tokenizer
       （`models/quant/jinen-v2-xsmall/tokenizer.json`）。依 `docs/models.md`，這筆
-      出貨前要補進 `jc-data` 的 catalog／manifest；沒列就不會進 MSI。
+      出貨前要補進 `jc-data` 的 catalog／manifest；沒列就不會進 setup.exe。
 - [ ] 資料包 `english/` 同時含 `words.bin`、`manifest.json`、`NOTICE.txt`。
       `Dictionary::load_pack` 三者都要過大小與 SHA 檢查；少任一個就會退回原型
       詞彙，英文輸入查不到正式詞表。可用 `tar -tf <bundle> | grep '^english/'`
       確認三筆都在。
 - [ ] `models/zh-select/model.q8_0.gguf`、`vocab.json`、`manifest.json` 與
-      `models/manifest.json` 都在資料包與 MSI，catalog 標 `shipped: true`；
+      `models/manifest.json` 都在資料包與 setup.exe，catalog 標 `shipped: true`；
       原始 `model.onnx` 與 `models/zh-punct/` 不在（`zh-punct` 已於 2026-11-21
       從 catalog 移除）。
-- [ ] `legal/licenses/MIT-Funmula.txt` 已隨 MSI 安裝，copyright 與授權全文保留。
-- [ ] `LICENSE`、`NOTICE`、`legal/` 已打進 MSI（`installer-payload` 的缺口）。
+- [ ] `legal/licenses/MIT-Funmula.txt` 已隨 setup.exe 安裝，copyright 與授權全文保留。
+- [ ] `LICENSE`、`NOTICE`、`legal/` 已打進 setup.exe（`installer-payload` 的缺口）。
 - [ ] `Cargo.toml` 版本符合 `x.y.z` 或 `x.y.z-<pre-release>`，`v<version>` 標籤
-      與它完全一致；RC 的 MSI `ProductVersion` 是三段數字加 rc 序號
+      與它完全一致；RC 的 `VersionInfoVersion` 是三段數字加 rc 序號
       （`0.1.0-rc.9` → `0.1.0.9`）。
 - [ ] `docs/CHANGELOG.md` 有對應版本段落，內容沒有承諾未實作的功能。
 - [ ] 要簽章的話，`SIGNING_PFX_BASE64`、`SIGNING_PFX_PASSWORD` 已設定，而且
@@ -537,13 +539,14 @@ release workflow 只能證明「建置與打包成功」，下面這些要在第
 ```sh
 python3 -c "import yaml;[yaml.safe_load(open(p)) for p in ['.github/workflows/ci.yml','.github/workflows/release.yml']]"
 bash -n scripts/data-bundle.sh
+bash -n installer/validate-linux.sh
 bash scripts/test-verify-bundle.sh              # Python 與 jc-cli 六情境比對
 python3 scripts/verify-bundle.py /mnt/work/jc/jc-ime-data
 cargo run -q -p jc-cli -- data verify /mnt/work/jc/jc-ime-data
-bash installer/validate-linux.sh                # 需要 wix；沒有就跳過
+JC_DATA_ROOT=/mnt/work/jc/jc-ime-data bash installer/validate-linux.sh
 cargo build --release -p jc-engine -p jc-cli
 
-# 版本推導乾跑：完整版本可含 pre-release，MSI 版補上 rc 序號
+# 版本推導乾跑：完整版本可含 pre-release，VersionInfoVersion 補上 rc 序號
 python3 - <<'PY'
 import re
 
@@ -551,17 +554,14 @@ for full in ("0.1.0", "0.1.0-rc.1", "0.1.0-rc.9"):
     assert re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?", full), full
     core, _, prerelease = full.partition("-")
     rc = 0 if not prerelease else int(re.fullmatch(r"rc\.(\d+)", prerelease).group(1))
-    print(full, "-> msi", f"{core}.{rc}")
+    print(full, "-> VersionInfoVersion", f"{core}.{rc}")
 PY
 ```
 
-PowerShell 的版本推導與 `wix build` 只能在 Windows 驗；本機 Linux 最多做到
-上面這些。`build.ps1` 的 `-MsiVersion` 若沒給，會自己從 `Cargo.toml` 推出四段版本；
-給三段時會補上 rc 序號。
+PowerShell 的版本推導與 ISCC 編譯只能在 Windows 驗；本機 Linux 最多做到上面這些。
+`build.ps1` 的 `-IsoVersion` 若沒給，會自己從 `Cargo.toml` 推出四段版本；給三段時
+會補上 rc 序號。`-MsiVersion` 是相容別名。
 
-`installer/validate-linux.sh` 目前直接把 `Cargo.toml` 的完整版本傳給 WiX
-`-d Version=`；`Cargo.toml` 是 pre-release（例如 `0.1.0-rc.1`）時，這支腳本會
-被 WiX 拒絕。要本機驗 WiX 語法，先暫時把版本改成四段數字（例如 `0.1.0.1`）。
-
-MSI 的完整建置、ICE 驗證與實機安裝只能在 Windows 做；release workflow 的
-`windows` job 是第一個實際產出 MSI 的地方。
+setup.exe 的完整建置、簽章與實機安裝只能在 Windows 做；`ci.yml` 的
+`build-windows` 與 `install-smoke` 是第一個實際產出與安裝 setup.exe 的地方。
+`release.yml` 的手動 job 也走同一支 `build.ps1`，產出一樣是 setup.exe。

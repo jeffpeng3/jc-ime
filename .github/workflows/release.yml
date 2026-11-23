@@ -37,7 +37,7 @@ jobs:
     timeout-minutes: 90
     outputs:
       version: ${{ steps.version.outputs.version }}
-      msi_version: ${{ steps.version.outputs.msi_version }}
+      iso_version: ${{ steps.version.outputs.iso_version }}
     steps:
       - uses: actions/checkout@v5
 
@@ -70,24 +70,24 @@ jobs:
 
           version="${cargo_version}"
 
-          # 發佈版本允許 pre-release 後綴（0.1.0-rc.1）；MSI 的 ProductVersion
-          # 只接受三段數字，因此另外推導 msi_version 給 installer/build.ps1。
+          # 發佈版本允許 pre-release 後綴（0.1.0-rc.1）；setup.exe 的
+          # VersionInfoVersion 只接受四段數字，因此另外推導 iso_version。
           if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::版本 ${version} 不是 x.y.z 或 x.y.z-<pre-release>"
             exit 1
           fi
-          msi_version="${version%%-*}"
+          iso_version="${version%%-*}"
 
           echo "Cargo.toml 版本：${cargo_version}"
           echo "本次發佈版本：${version}"
-          echo "MSI ProductVersion：${msi_version}"
+          echo "VersionInfoVersion：${iso_version}"
           {
             echo "version=${version}"
-            echo "msi_version=${msi_version}"
+            echo "iso_version=${iso_version}"
           } >> "${GITHUB_OUTPUT}"
 
   windows:
-    name: windows（MSI）
+    name: windows（setup.exe）
     needs: verify
     runs-on: windows-2022
     timeout-minutes: 90
@@ -95,9 +95,9 @@ jobs:
       signed: ${{ steps.signing.outputs.signed }}
     env:
       # RELEASE_VERSION 是完整版本（含 -rc.1），用於檔名與 Release 標題；
-      # MSI_VERSION 只有三段數字，給 MSI ProductVersion。
+      # ISO_VERSION 只有三段數字，給 setup.exe 的 VersionInfoVersion。
       RELEASE_VERSION: ${{ needs.verify.outputs.version }}
-      MSI_VERSION: ${{ needs.verify.outputs.msi_version }}
+      ISO_VERSION: ${{ needs.verify.outputs.iso_version }}
       # Windows 的 Python 3.12 預設 cp1252；build.ps1 呼叫 check-payload.py 時
       # 印中文不能爆，統一用 UTF-8。
       PYTHONUTF8: "1"
@@ -144,7 +144,7 @@ jobs:
           $url = $env:DATA_BUNDLE_URL
           if ([string]::IsNullOrWhiteSpace($url)) {
             throw @'
-          沒有資料包 URL。MSI 需要資料根目錄（manifest.json 與 shipped: true 的檔案）。
+          沒有資料包 URL。setup.exe 需要資料根目錄（manifest.json 與 shipped: true 的檔案）。
           請將資料包上傳到 runner 讀得到的位置，然後設定下列其中一個：
             - 公開 repo variable JC_DATA_BUNDLE_URL
             - workflow_dispatch 輸入 data_bundle_url
@@ -239,11 +239,15 @@ jobs:
             throw "資料驗證失敗（exit $LASTEXITCODE）"
           }
 
-      - name: 安裝 WiX v5
+      - name: 安裝 Inno Setup 6
         shell: pwsh
         run: |
-          dotnet tool install --global wix --version 5.*
-          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          choco install innosetup --no-progress -y
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            throw "找不到 ISCC.exe：$iscc"
+          }
+          Split-Path -Parent $iscc | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       # 簽章接口：有 SIGNING_PFX_BASE64 才簽；沒有就跳過，不讓流程失敗。
       - name: 準備簽章憑證
@@ -256,7 +260,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX_BASE64)) {
-            Write-Warning '沒有 SIGNING_PFX_BASE64；跳過簽章，產出未簽章 MSI。'
+            Write-Warning '沒有 SIGNING_PFX_BASE64；跳過簽章，產出未簽章 setup.exe。'
             'signed=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             exit 0
           }
@@ -286,42 +290,39 @@ jobs:
 
           'signed=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      - name: 建置 MSI
+      - name: 建置 setup.exe
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # runner 可能預裝 WiX v3；把 dotnet tool 的 v5 放到 PATH 最前面。
-          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
-
           # 資料包只帶 shipped 檔案，但 manifest 仍是對完整資料根目錄產生的；
           # -Manifest 讓安裝包保留 shipped: false 的下載項與 URL。
-          # -MsiVersion 給 MSI ProductVersion（x.y.z）；MSI 檔名用完整版本。
+          # -IsoVersion 給 VersionInfoVersion（x.y.z）；setup.exe 檔名用完整版本。
           .\installer\build.ps1 -DataRoot $env:JC_DATA_ROOT `
             -Manifest (Join-Path $env:JC_DATA_ROOT 'manifest.json') `
-            -MsiVersion $env:MSI_VERSION
+            -IsoVersion $env:ISO_VERSION
 
-          $msi = Join-Path 'target\installer' "jc-ime-$env:RELEASE_VERSION-x64.msi"
-          if (-not (Test-Path $msi)) {
-            throw "找不到預期的 MSI：$msi"
+          $setup = Join-Path 'target\installer' "jc-ime-$env:RELEASE_VERSION-x64-setup.exe"
+          if (-not (Test-Path $setup)) {
+            throw "找不到預期的 setup.exe：$setup"
           }
 
           # Release 說明要讀資料版本，複製一份到 artifact 根目錄。
           Copy-Item 'target\installer\payload\data\manifest.json' `
             'target\installer\data-manifest.json' -Force
 
-          $hash = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLowerInvariant()
-          "$hash  $(Split-Path -Leaf $msi)" |
-            Set-Content -Path "$msi.sha256" -Encoding ascii
+          $hash = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path -Leaf $setup)" |
+            Set-Content -Path "$setup.sha256" -Encoding ascii
 
       - name: 上傳 Windows artifact
         uses: actions/upload-artifact@v6
         with:
-          name: windows-msi-${{ needs.verify.outputs.version }}
+          name: windows-setup-${{ needs.verify.outputs.version }}
           if-no-files-found: error
           path: |
-            target/installer/jc-ime-${{ needs.verify.outputs.version }}-x64.msi
-            target/installer/jc-ime-${{ needs.verify.outputs.version }}-x64.msi.sha256
+            target/installer/jc-ime-${{ needs.verify.outputs.version }}-x64-setup.exe
+            target/installer/jc-ime-${{ needs.verify.outputs.version }}-x64-setup.exe.sha256
             target/installer/data-manifest.json
 
   linux:

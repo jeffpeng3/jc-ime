@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      run_install_smoke:
+        description: "建置 setup.exe 並在 Windows runner 跑安裝與反安裝 smoke"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,7 +36,7 @@ jobs:
     outputs:
       has_tag: ${{ steps.tag.outputs.has_tag }}
       version: ${{ steps.tag.outputs.version }}
-      msi_version: ${{ steps.tag.outputs.msi_version }}
+      iso_version: ${{ steps.tag.outputs.iso_version }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -83,8 +88,11 @@ jobs:
           )
 
           if [[ ${#v_tags[@]} -eq 0 ]]; then
-            echo "commit ${commit_sha} 沒有 v* 標籤；一般 push，只跑測試。"
+            echo "commit ${commit_sha} 沒有 v* 標籤；一般 push 只跑測試。"
+            echo "workflow_dispatch 手動安裝 smoke 需要版本，仍輸出 Cargo.toml 的版本。"
             echo "has_tag=false" >> "${GITHUB_OUTPUT}"
+            echo "version=${cargo_version}" >> "${GITHUB_OUTPUT}"
+            echo "iso_version=${cargo_version%%-*}" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
           if [[ ${#v_tags[@]} -gt 1 ]]; then
@@ -102,13 +110,13 @@ jobs:
             echo "::error::版本 ${version} 不是 x.y.z 或 x.y.z-<pre-release>"
             exit 1
           fi
-          msi_version="${version%%-*}"
+          iso_version="${version%%-*}"
 
-          echo "標籤：${tag}；版本：${version}；MSI 版本：${msi_version}"
+          echo "標籤：${tag}；版本：${version}；VersionInfoVersion：${iso_version}"
           {
             echo "has_tag=true"
             echo "version=${version}"
-            echo "msi_version=${msi_version}"
+            echo "iso_version=${iso_version}"
           } >> "${GITHUB_OUTPUT}"
 
   linux:
@@ -428,19 +436,23 @@ jobs:
 
   # 與測試同時起步。只 needs check-tag，不等 linux/windows 測試；
   # 一般 push（無 tag）跳過，帶 annotated tag 的 push main 才建置。
+  # workflow_dispatch 勾 run_install_smoke 時也建置，供真實 Windows runner 驗證
+  # 安裝器；手動 run 沒有 tag，版本由 check-tag 從 Cargo.toml 補上。
   build-windows:
-    name: build-windows（MSI）
+    name: build-windows（setup.exe）
     needs: check-tag
-    if: github.event_name == 'push' && needs.check-tag.outputs.has_tag == 'true'
+    if: >-
+      (github.event_name == 'push' && needs.check-tag.outputs.has_tag == 'true') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_install_smoke)
     runs-on: windows-2022
     timeout-minutes: 90
     outputs:
       signed: ${{ steps.signing.outputs.signed }}
     env:
       # RELEASE_VERSION 是完整版本（含 -rc.1），用於檔名與 Release 標題；
-      # MSI_VERSION 只有三段數字，給 MSI ProductVersion。
+      # ISO_VERSION 只有三段數字，給 setup.exe 的 VersionInfoVersion。
       RELEASE_VERSION: ${{ needs.check-tag.outputs.version }}
-      MSI_VERSION: ${{ needs.check-tag.outputs.msi_version }}
+      ISO_VERSION: ${{ needs.check-tag.outputs.iso_version }}
       # Windows 的 Python 3.12 預設 cp1252；build.ps1 呼叫 check-payload.py 時
       # 印中文不能爆，統一用 UTF-8。
       PYTHONUTF8: "1"
@@ -475,7 +487,7 @@ jobs:
 
       # rust-cache 的 key 不含版本，每次發版都會命中上一版的 target 目錄；
       # 若 cargo 判定指紋未變就不重編，build.ps1 會把還原的舊 jc_tsf.dll 裝進
-      # MSI（0.1.2 的 pipe debug log 因此消失，見 fix-msi-stale-dll）。
+      # 安裝包（0.1.2 的 pipe debug log 因此消失，見 fix-msi-stale-dll）。
       # 選清目錄而非換 cache key：發版 job 本來就該每次全量重建，清目錄見效
       # 最直接、不影響其他 job 的快取；build.ps1 另有 mtime／SHA-256 驗證把關。
       - name: 清除快取的 release 產物
@@ -509,7 +521,7 @@ jobs:
           $url = $env:DATA_BUNDLE_URL
           if ([string]::IsNullOrWhiteSpace($url)) {
             throw @'
-          沒有資料包 URL。MSI 需要資料根目錄（manifest.json 與 shipped: true 的檔案）。
+          沒有資料包 URL。setup.exe 需要資料根目錄（manifest.json 與 shipped: true 的檔案）。
           請將資料包上傳到 runner 讀得到的位置，並設定公開 repo variable
           JC_DATA_BUNDLE_URL。打包方式見 docs/release.md。
           打包方式見 docs/release.md。
@@ -603,11 +615,17 @@ jobs:
             throw "資料驗證失敗（exit $LASTEXITCODE）"
           }
 
-      - name: 安裝 WiX v5
+      - name: 安裝 Inno Setup 6
         shell: pwsh
         run: |
-          dotnet tool install --global wix --version 5.*
-          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          choco install innosetup --no-progress -y
+          # ISCC 在 Program Files (x86)\Inno Setup 6；build.ps1 也會自己找，
+          # 這裡放進 PATH 方便 log 直接顯示版本。
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            throw "找不到 ISCC.exe：$iscc"
+          }
+          Split-Path -Parent $iscc | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       # 簽章接口：有 SIGNING_PFX_BASE64 才簽；沒有就跳過，不讓流程失敗。
       - name: 準備簽章憑證
@@ -620,7 +638,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX_BASE64)) {
-            Write-Warning '沒有 SIGNING_PFX_BASE64；跳過簽章，產出未簽章 MSI。'
+            Write-Warning '沒有 SIGNING_PFX_BASE64；跳過簽章，產出未簽章 setup.exe。'
             'signed=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             exit 0
           }
@@ -650,55 +668,54 @@ jobs:
 
           'signed=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      - name: 建置 MSI
+      - name: 建置 setup.exe
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # runner 可能預裝 WiX v3；把 dotnet tool 的 v5 放到 PATH 最前面。
-          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
-
           # 資料包只帶 shipped 檔案，但 manifest 仍是對完整資料根目錄產生的；
           # -Manifest 讓安裝包保留 shipped: false 的下載項與 URL。
-          # -MsiVersion 給 MSI ProductVersion（x.y.z）；MSI 檔名用完整版本。
+          # -IsoVersion 給 VersionInfoVersion（x.y.z）；setup.exe 檔名用完整版本。
           .\installer\build.ps1 -DataRoot $env:JC_DATA_ROOT `
             -Manifest (Join-Path $env:JC_DATA_ROOT 'manifest.json') `
-            -MsiVersion $env:MSI_VERSION
+            -IsoVersion $env:ISO_VERSION
 
-          $msi = Join-Path 'target\installer' "jc-ime-$env:RELEASE_VERSION-x64.msi"
-          if (-not (Test-Path $msi)) {
-            throw "找不到預期的 MSI：$msi"
+          $setup = Join-Path 'target\installer' "jc-ime-$env:RELEASE_VERSION-x64-setup.exe"
+          if (-not (Test-Path $setup)) {
+            throw "找不到預期的 setup.exe：$setup"
           }
 
           # Release 說明要讀資料版本，複製一份到 artifact 根目錄。
           Copy-Item 'target\installer\payload\data\manifest.json' `
             'target\installer\data-manifest.json' -Force
 
-          $hash = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLowerInvariant()
-          "$hash  $(Split-Path -Leaf $msi)" |
-            Set-Content -Path "$msi.sha256" -Encoding ascii
+          $hash = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path -Leaf $setup)" |
+            Set-Content -Path "$setup.sha256" -Encoding ascii
 
       - name: 上傳 Windows artifact
         uses: actions/upload-artifact@v6
         with:
-          name: windows-msi-${{ needs.check-tag.outputs.version }}
+          name: windows-setup-${{ needs.check-tag.outputs.version }}
           if-no-files-found: error
           path: |
-            target/installer/jc-ime-${{ needs.check-tag.outputs.version }}-x64.msi
-            target/installer/jc-ime-${{ needs.check-tag.outputs.version }}-x64.msi.sha256
+            target/installer/jc-ime-${{ needs.check-tag.outputs.version }}-x64-setup.exe
+            target/installer/jc-ime-${{ needs.check-tag.outputs.version }}-x64-setup.exe.sha256
             target/installer/data-manifest.json
 
-  # 拿 build-windows 產出的 MSI 做一次真的安裝：裝、跑 jc-tsf-smoke、斷言 TSF
-  # 註冊與語言清單、再反安裝。MSI 的 ProductCode 每次 build 由 WiX 重新產生，
-  # 只有真的裝一次才知道自訂動作、註冊機碼與檔案清單有沒有對上。
+  # 拿 build-windows 產出的 setup.exe 做一次真的安裝：裝、跑 jc-tsf-smoke、
+  # 斷言 TSF 註冊與語言清單、再反安裝。Inno 的 AppId 固定，但檔案清單、
+  # 自訂動作與登錄值只有真的裝一次才知道有沒有對上。
   #
   # needs 除了 build-windows 還要 check-tag：artifact 名稱與版本都來自
   # needs.check-tag.outputs.version，只寫 build-windows 會讓這裡取到空字串。
-  # 條件與 build-windows 相同（帶 tag 的 push），PR 不跑。
+  # 條件與 build-windows 相同（帶 tag 的 push，或手動 dispatch 勾選）；PR 不跑。
   install-smoke:
     name: install-smoke（安裝與反安裝）
     needs: [check-tag, build-windows]
-    if: github.event_name == 'push' && needs.check-tag.outputs.has_tag == 'true'
+    if: >-
+      (github.event_name == 'push' && needs.check-tag.outputs.has_tag == 'true') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_install_smoke)
     runs-on: windows-2022
     timeout-minutes: 45
     env:
@@ -713,43 +730,45 @@ jobs:
       - name: 下載 Windows artifact
         uses: actions/download-artifact@v7
         with:
-          name: windows-msi-${{ needs.check-tag.outputs.version }}
+          name: windows-setup-${{ needs.check-tag.outputs.version }}
           path: dist/windows
 
-      # msiexec 卡住時 Start-Process -Wait 會一路等到 job 的 45 分鐘 timeout，
+      # setup.exe 卡住時 Start-Process -Wait 會一路等到 job 的 45 分鐘 timeout，
       # 什麼 log 都看不到；這裡自己等 10 分鐘，超時就中止並印 install.log。
-      - name: 安裝 MSI
+      - name: 安裝 setup.exe
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
           $log = Join-Path $env:TEMP 'install.log'
-          $msi = Get-ChildItem -Path 'dist\windows' -Filter '*.msi' -File |
+          $setup = Get-ChildItem -Path 'dist\windows' -Filter '*-setup.exe' -File |
             Sort-Object Name -Descending | Select-Object -First 1
-          if (-not $msi) {
-            throw 'dist\windows 底下找不到 .msi；artifact 下載失敗或檔名不符。'
+          if (-not $setup) {
+            throw 'dist\windows 底下找不到 *-setup.exe；artifact 下載失敗或檔名不符。'
           }
-          Write-Host "安裝 $($msi.FullName)"
+          Write-Host "安裝 $($setup.FullName)"
 
-          $proc = Start-Process -FilePath msiexec.exe `
-            -ArgumentList "/i `"$($msi.FullName)`" /qn /norestart /l*v `"$log`"" `
+          $proc = Start-Process -FilePath $setup.FullName `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"" `
             -PassThru
           if (-not $proc.WaitForExit(600000)) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            if (Test-Path $log) { Get-Content $log -Tail 40 | Write-Host }
-            throw 'msiexec 安裝超過 10 分鐘；已強制中止，上面是 install.log 最後 40 行。'
+            if (Test-Path $log) { Get-Content $log -Tail 60 | Write-Host }
+            throw 'setup.exe 安裝超過 10 分鐘；已強制中止，上面是 install.log 最後 60 行。'
           }
 
-          # 3010 是「成功，但需要重開機」；runner 不會重開，視為成功。
           $code = $proc.ExitCode
-          if ($code -ne 0 -and $code -ne 3010) {
-            if (Test-Path $log) { Get-Content $log -Tail 40 | Write-Host }
-            if ($code -eq 1603) {
-              throw 'msiexec 安裝回 1603（安裝期間發生嚴重錯誤）；上面是 install.log 最後 40 行。'
+          if ($code -ne 0) {
+            if (Test-Path $log) { Get-Content $log -Tail 60 | Write-Host }
+            if ($code -eq 4) {
+              throw 'setup.exe 的 PrepareToInstall 失敗（exit 4）；通常是舊檔無法讓路，詳見 install.log。'
             }
-            throw "msiexec 安裝失敗（exit $code）；install.log 最後 40 行已印在上面。"
+            if ($code -eq 5) {
+              throw 'setup.exe 在準備安裝階段被取消（exit 5）。'
+            }
+            throw "setup.exe 安裝失敗（exit $code）；install.log 最後 60 行已印在上面。"
           }
-          Write-Host "msiexec 安裝完成（exit $code）"
+          Write-Host "setup.exe 安裝完成（exit $code）"
 
       - name: 斷言安裝檔案
         shell: pwsh
@@ -841,7 +860,7 @@ jobs:
           }
           Write-Host '32 位元檢視的 profile 機碼存在'
 
-          # 使用者的語言清單。InstallTipLayout 以使用者身分執行，這裡是同一個
+          # 使用者的語言清單。user-install 以 runasoriginaluser 執行，這裡是同一個
           # 使用者，應該看得到 0404:{profile}。
           $tips = @(Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips })
           Write-Host "目前語言清單：$($tips -join ', ')"
@@ -853,78 +872,38 @@ jobs:
           }
           Write-Host "語言清單含 $($matched -join ', ')"
 
-      - name: 反安裝 MSI
+      - name: 反安裝 setup.exe
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
           $log = Join-Path $env:TEMP 'uninstall.log'
+          $uninstaller = Join-Path $env:JC_INSTALL_DIR 'unins000.exe'
+          if (-not (Test-Path $uninstaller)) { throw "找不到反安裝程式：$uninstaller" }
 
-          # TSF DLL 被載入時 msiexec 會把刪除排到重開機，或直接回 1603；
-          # 先停掉引擎與 explorer。runner 重開 explorer 不會影響後續步驟。
+          # TSF DLL 被載入時 Inno 會把刪除排到重開機，或留下檔案；先停掉引擎與
+          # explorer。runner 重開 explorer 不會影響後續步驟。
           Get-Process -Name 'jc-engine' -ErrorAction SilentlyContinue |
             Stop-Process -Force -ErrorAction SilentlyContinue
           Get-Process -Name 'explorer' -ErrorAction SilentlyContinue |
             Stop-Process -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 3
 
-          # ProductCode 每次 build 由 WiX 重新產生，先從解除安裝登錄取；
-          # 找不到再讀 MSI 的 Property 表。
-          $productCode = $null
-          foreach ($root in @(
-            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
-            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
-          )) {
-            foreach ($item in @(Get-ChildItem $root -ErrorAction SilentlyContinue)) {
-              $props = Get-ItemProperty -Path $item.PSPath -ErrorAction SilentlyContinue
-              if ($props.DisplayName -like 'jc 注音*') {
-                $productCode = $item.PSChildName
-                break
-              }
-            }
-            if ($productCode) { break }
-          }
-
-          if (-not $productCode) {
-            Write-Warning '解除安裝登錄找不到 jc 注音；改讀 MSI 的 Property 表。'
-            $msi = Get-ChildItem -Path 'dist\windows' -Filter '*.msi' -File |
-              Sort-Object Name -Descending | Select-Object -First 1
-            if (-not $msi) { throw '找不到 MSI，無法取得 ProductCode。' }
-            $installer = New-Object -ComObject WindowsInstaller.Installer
-            $db = $installer.GetType().InvokeMember(
-              'OpenDatabase', 'InvokeMethod', $null, $installer, @($msi.FullName, 0))
-            $view = $db.GetType().InvokeMember(
-              'OpenView', 'InvokeMethod', $null, $db,
-              @("SELECT Value FROM Property WHERE Property='ProductCode'"))
-            $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
-            $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
-            if ($record) {
-              $productCode = $record.GetType().InvokeMember(
-                'StringData', 'GetProperty', $null, $record, @(1))
-            }
-          }
-
-          if (-not $productCode) { throw '找不到 jc 注音的 ProductCode，無法反安裝。' }
-          if ($productCode -notmatch '^\{.*\}$') { $productCode = "{$productCode}" }
-          Write-Host "反安裝 ProductCode：$productCode"
-
-          $proc = Start-Process -FilePath msiexec.exe `
-            -ArgumentList "/x $productCode /qn /norestart /l*v `"$log`"" -PassThru
+          $proc = Start-Process -FilePath $uninstaller `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"" `
+            -PassThru
           if (-not $proc.WaitForExit(600000)) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            if (Test-Path $log) { Get-Content $log -Tail 40 | Write-Host }
-            throw 'msiexec 反安裝超過 10 分鐘；已強制中止，上面是 uninstall.log 最後 40 行。'
+            if (Test-Path $log) { Get-Content $log -Tail 60 | Write-Host }
+            throw 'unins000.exe 超過 10 分鐘；已強制中止，上面是 uninstall.log 最後 60 行。'
           }
 
           $code = $proc.ExitCode
-          if ($code -ne 0 -and $code -ne 3010) {
-            if (Test-Path $log) { Get-Content $log -Tail 40 | Write-Host }
-            if ($code -eq 1603) {
-              throw 'msiexec 反安裝回 1603；上面是 uninstall.log 最後 40 行。'
-            }
-            throw "msiexec 反安裝失敗（exit $code）；uninstall.log 最後 40 行已印在上面。"
+          if ($code -ne 0) {
+            if (Test-Path $log) { Get-Content $log -Tail 60 | Write-Host }
+            throw "unins000.exe 反安裝失敗（exit $code）；uninstall.log 最後 60 行已印在上面。"
           }
-          Write-Host "msiexec 反安裝完成（exit $code）"
+          Write-Host "unins000.exe 反安裝完成（exit $code）"
 
           # explorer 被停掉只是為了讓 DLL 可刪；重開它，讓 runner 回到原狀。
           Start-Process -FilePath explorer.exe -ErrorAction SilentlyContinue
@@ -936,9 +915,32 @@ jobs:
 
           if (Test-Path $env:JC_INSTALL_DIR) {
             Get-ChildItem $env:JC_INSTALL_DIR -Recurse | Select-Object -First 20 | Write-Host
-            throw "反安裝後 $env:JC_INSTALL_DIR 仍然存在。"
+            $left = @(Get-ChildItem $env:JC_INSTALL_DIR -Recurse -File -ErrorAction SilentlyContinue)
+            if ($left.Count -gt 0) {
+              throw "反安裝後 $env:JC_INSTALL_DIR 還有 $($left.Count) 個檔案。"
+            }
+            throw "反安裝後 $env:JC_INSTALL_DIR 仍然存在（空目錄）。"
           }
           Write-Host "$env:JC_INSTALL_DIR 已移除"
+
+          # Inno 的解除安裝項目由 AppId 管理；反安裝後不該還在「應用程式與功能」。
+          $uninstallRoots = @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+          )
+          foreach ($root in $uninstallRoots) {
+            foreach ($item in @(Get-ChildItem $root -ErrorAction SilentlyContinue)) {
+              $props = Get-ItemProperty -Path $item.PSPath -ErrorAction SilentlyContinue
+              if ($props.DisplayName -like 'jc 注音*') {
+                throw "反安裝後解除安裝登錄仍有 jc 注音：$($item.PSPath)"
+              }
+            }
+          }
+          Write-Host '解除安裝登錄已清空'
+
+          $runValue = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'jc-ime-engine' -ErrorAction SilentlyContinue).'jc-ime-engine'
+          if ($null -ne $runValue) { throw '反安裝後 Run 值 jc-ime-engine 仍在。' }
+          Write-Host 'Run 值 jc-ime-engine 已移除'
 
           # UnregisterTip 以 SYSTEM 身分移除 HKLM 的 profile；沒清掉會讓下一個
           # 版本升級時看到半套註冊。
@@ -1063,7 +1065,7 @@ jobs:
     name: publish（GitHub Release）
     # 只有帶 annotated tag 的 push main 會執行。needs 包含三個測試、兩個
     # build job 與 install-smoke；任一失敗就不發版，不必再查 CI run。
-    # 安裝 smoke 會實際安裝與反安裝 MSI，壞掉的安裝包不該發出去。
+    # 安裝 smoke 會實際安裝與反安裝 setup.exe，壞掉的安裝包不該發出去。
     if: github.event_name == 'push' && needs.check-tag.outputs.has_tag == 'true'
     needs: [check-tag, linux, windows, test-windows, build-windows, build-linux, install-smoke]
     runs-on: ubuntu-24.04
@@ -1077,7 +1079,7 @@ jobs:
       - name: 下載 Windows artifact
         uses: actions/download-artifact@v7
         with:
-          name: windows-msi-${{ needs.check-tag.outputs.version }}
+          name: windows-setup-${{ needs.check-tag.outputs.version }}
           path: dist/windows
 
       - name: 下載 Linux artifact
@@ -1091,13 +1093,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.check-tag.outputs.version }}
-          MSI_VERSION: ${{ needs.check-tag.outputs.msi_version }}
+          ISO_VERSION: ${{ needs.check-tag.outputs.iso_version }}
           SIGNED: ${{ needs.build-windows.outputs.signed }}
         run: |
           set -euo pipefail
 
           version="${RELEASE_VERSION}"
-          msi_version="${MSI_VERSION}"
+          iso_version="${ISO_VERSION}"
           prerelease_args=()
           if [[ "${version}" == *-* ]]; then
             prerelease_args=(--prerelease)
@@ -1136,28 +1138,28 @@ jobs:
 
           {
             printf '## 版本\n\n`%s`（%s）\n\n' "${version}" "${date_utc}"
-            if [[ "${msi_version}" != "${version}" ]]; then
-              printf '這是 pre-release。MSI 的 ProductVersion 只有 `%s`，\n' "${msi_version}"
-              printf '因此 Windows 的「應用程式與功能」不會顯示 `%s` 後綴。\n\n' "${version}"
+            if [[ "${iso_version}" != "${version}" ]]; then
+              printf '這是 pre-release。setup.exe 的顯示版本與檔名是 `%s`，\n' "${version}"
+              printf '檔案內嵌的 VersionInfoVersion 只有 `%s`（四段數字）。\n\n' "${iso_version}"
             fi
             printf '## 模型與資料版本\n\n`%s`（安裝包內 `data/manifest.json`，涵蓋詞典與模型）\n\n' "${data_version}"
             printf '## 變更摘要\n\n'
             cat "${changelog}"
             printf '\n## 下載\n\n'
             printf '| 平台 | 檔案 |\n|---|---|\n'
-            printf '| Windows x64 | `jc-ime-%s-x64.msi` |\n' "${version}"
+            printf '| Windows x64 | `jc-ime-%s-x64-setup.exe` |\n' "${version}"
             printf '| Linux x86_64 | `jc-ime-%s-linux-x86_64.tar.gz` |\n\n' "${version}"
             printf '每個檔案旁都附 `.sha256`，下載後請先核對。\n\n'
             printf '## 簽章\n\n'
             if [[ "${SIGNED}" == "true" ]]; then
-              printf 'Windows 執行檔與 MSI 已使用專案憑證簽章。\n\n'
+              printf 'Windows 執行檔與 setup.exe 已使用專案憑證簽章。\n\n'
             else
               printf '**未簽章**：本次沒有簽章憑證。Windows 可能顯示 SmartScreen 警告；\n'
-              printf '企業的 AppLocker／WDAC 白名單也會擋下未簽章 MSI。\n\n'
+              printf '企業的 AppLocker／WDAC 白名單也會擋下未簽章安裝程式。\n\n'
             fi
             printf '## 已知限制\n\n'
             printf -- '- Windows TIP 同時包含 x64 與 x86 兩份 DLL，共用同一個「jc 注音」項目；32 位元程式（例如舊版 Office）不需要手動切換。\n'
-            printf -- '- MSI 是 per-machine 安裝，需要系統管理員；只會把輸入法加進執行安裝的帳號。\n'
+            printf -- '- 安裝程式是 per-machine，需要系統管理員；只會把輸入法加進執行安裝的帳號。\n'
             printf -- '- 注音神經選字模型（Funmula `zh-select`）依授權不隨附，需另外下載。\n'
             printf -- '- Linux 版目前只有引擎、CLI 與設定程式，沒有桌面輸入法整合。\n'
             printf -- '- 設定變更後要重新啟動引擎才會生效。\n'
@@ -1168,8 +1170,8 @@ jobs:
           cat "${notes}"
 
           assets=(
-            "dist/windows/jc-ime-${version}-x64.msi"
-            "dist/windows/jc-ime-${version}-x64.msi.sha256"
+            "dist/windows/jc-ime-${version}-x64-setup.exe"
+            "dist/windows/jc-ime-${version}-x64-setup.exe.sha256"
             "dist/linux/jc-ime-${version}-linux-x86_64.tar.gz"
             "dist/linux/jc-ime-${version}-linux-x86_64.tar.gz.sha256"
           )
