@@ -4,6 +4,37 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.5 - 2026-11-23
+
+### 新增
+
+- Windows 安裝程式改用 Inno Setup（`jc-ime-<version>-x64-setup.exe`）。偵測到舊版
+  MSI 會先移除再安裝；不搬移舊設定與個人化資料，一律全新安裝。
+- `jc-tsf-smoke` 變成 12 項安裝診斷（doctor），`--json` 輸出供 CI 與腳本判讀，
+  每一項失敗都附修復指令。
+- CI 每次 push main 都建置 setup.exe，並在 Windows runner 真的安裝、跑 doctor、
+  反安裝；安裝器壞掉不必等發版才知道。
+- `legal/RUST-THIRD-PARTY-NOTICES.md`：617 個 Rust 相依的授權清單與全文，隨安裝包
+  散布，CI 每次比對是否與 `Cargo.lock` 一致。
+
+### 修正
+
+- Windows：輸入法會出現在語言清單，也能被選為作用中的輸入法。
+  - `InstallLayoutOrTip` 的字串改成官方格式 `0x0404:{CLSID}{PROFILE};`。原本少了
+    結尾分號、兩個 GUID 的順序也相反，msctf 回 TRUE 但什麼都沒寫。
+  - doctor 的語言清單檢查同時接受 Windows 11 的「每個輸入法一個值」與舊版
+    `InputMethodTips` 多字串。
+  - `machine-register` 的 profile 路徑改用八位 langid（`0x00000404`）；原本查
+    `0x0404`，每次都在最後一步回失敗。
+- Windows：私密欄位（密碼、信用卡等）不再寫進學習資料；`Key.private` 與內容守門
+  兩層都擋。
+- Windows：按鍵回呼 panic 不再穿過 COM 邊界，改成「這一鍵不處理」並重設組字
+  狀態，宿主程式不會跟著崩潰。
+- Windows：安裝器的機碼檢視改用 `HKLM64`／`HKLM32`，`user-install` 以原使用者
+  身分執行，靜默安裝不會再寫到 Administrator 的語言清單。
+- 日文詞庫改成零拷貝：私有匿名記憶體 483MB → 9.5MB，載入 1.16 秒，749 筆 golden
+  全部一致。
+
 ## 0.1.4 - 2026-11-23
 
 ### 修正
