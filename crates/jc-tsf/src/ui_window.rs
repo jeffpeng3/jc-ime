@@ -55,11 +55,11 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, GetWindowLongPtrW,
-    PostMessageW, RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow, UnregisterClassW,
-    GWLP_USERDATA, HWND_TOPMOST, MA_NOACTIVATE, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE,
-    SWP_NOOWNERZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
-    WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE,
-    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    IsWindowVisible, PostMessageW, RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    UnregisterClassW, GWLP_USERDATA, HWND_TOPMOST, MA_NOACTIVATE, SM_CXSCREEN, SM_CYSCREEN,
+    SWP_NOACTIVATE, SWP_NOOWNERZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WM_DESTROY, WM_DPICHANGED,
+    WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_PAINT, WNDCLASSW,
+    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows_core::{w, Interface, PCWSTR};
 
@@ -709,6 +709,19 @@ impl LocalWindow {
                 let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
             }
             self.visible = true;
+            // 排查用：0 寬或 visible=false 就代表問題在版面尺寸／視窗狀態，
+            // 不是「沒有呼叫到這裡」。只在第一次顯示時寫一行。
+            zlog!(
+                "ui: 候選窗 hwnd={:#x} layout={}x{} size={}x{} at=({}, {}) visible={}",
+                self.hwnd.0 as usize,
+                layout.width,
+                layout.height,
+                size.0,
+                size.1,
+                position.0,
+                position.1,
+                unsafe { IsWindowVisible(self.hwnd).as_bool() }
+            );
         }
         self.layout = Some(layout);
         Ok(())
