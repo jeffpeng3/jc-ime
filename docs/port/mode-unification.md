@@ -24,6 +24,19 @@
 `SessionConfig.mode` 欄位保留（設定檔相容），但只接受 `mixed`；`zh`／`en`／`ja` 讀進來
 一律映射成 `mixed`，並在 `settings.json` 載入時記一次 warning。
 
+## 中英切換的語意（比照微軟注音）
+
+切英文**不是重置組字**，只是「接下來打的鍵當哪種語言」：
+
+- 打 `ㄨㄛˇ` 出現「我」→ Shift 切英文 → 組字區還是「我」。
+- 接著打 `hello` → 同一段組字變成「我hello」。
+- `←` 可以回到「我」，候選窗作用在游標所在的那一段。
+- 再 Shift 切回中文，緩衝照樣保留。
+
+現在的 `toggle_english()` 走 `set_mode(Mode::En)`，而 `set_mode()` 會
+`clear_composition()`——實機症狀是「切英文，打到一半的字全部消失」。這一條要在
+`Mode::En` 移出 core 的階段一起改，見 `/tmp/opencode/task-toggle-keeps-buffer.md`。
+
 ## 分階段
 
 1. **測試先跑 Mixed**：把 `jc-core` 測試 helper 的 `Mode::Zh` 全部改成 `Mixed`，
