@@ -947,6 +947,7 @@ mod tests {
 
     #[test]
     fn native_fallback_rejects_password_readonly_disabled_and_unknown_controls() {
+        let _serial = crate::host_test_lock::serial();
         use windows::Win32::UI::Controls::EM_SETPASSWORDCHAR;
         use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
         use windows::Win32::UI::WindowsAndMessaging::*;

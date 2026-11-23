@@ -624,6 +624,7 @@ impl Drop for Caret {
 
 #[test]
 fn imm32_word_and_space_or_punctuation_arrive_in_order() {
+    let _serial = crate::host_test_lock::serial();
     let Some(pipe) = engine() else { return };
     plain_keyboard();
     let _caret = Caret::new();
@@ -656,6 +657,7 @@ fn imm32_word_and_space_or_punctuation_arrive_in_order() {
 
 #[test]
 fn imm32_arrow_after_a_word_only_confirms_it() {
+    let _serial = crate::host_test_lock::serial();
     let Some(pipe) = engine() else { return };
     plain_keyboard();
     let _caret = Caret::new();
@@ -1083,6 +1085,7 @@ fn imm32_focus_move_during_completion_keeps_the_text() {
 
 #[test]
 fn imm32_english_word_is_sent_when_ctrl_goes_down() {
+    let _serial = crate::host_test_lock::serial();
     // 英文補字的單字本來就在 Ctrl 按下時送出（english_key_policy 看 modifier_down），IMM32 程式裡 Ctrl+A 看得到單字。
     let Some(pipe) = engine() else { return };
     plain_keyboard();

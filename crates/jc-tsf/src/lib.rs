@@ -60,3 +60,8 @@ pub mod uielement;
 
 // T8a 的 host 測試模組宣告在 service.rs 末端：它們要注入 TextService 的私有 State，
 // 必須是 service 模組的子模組（見 service.rs 的 #[cfg(test)] #[path] mod 宣告）。
+
+// Windows host 測試共用一把序列化鎖：privacy 的 cache／epoch 是行程全域，focus 測試要建
+// 真正的訊息視窗，平行執行會互相干擾。
+#[cfg(all(test, windows))]
+mod host_test_lock;
