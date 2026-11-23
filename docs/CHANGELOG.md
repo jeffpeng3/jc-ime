@@ -4,6 +4,17 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.16 - 2026-11-24
+
+### 修正
+
+- **候選窗從來沒顯示過**：`parse()` 把 `navigating` 讀成 `candidates.navigating`，
+  但它是 snapshot 的兄弟欄位，所以永遠是 false，`present_in_edit` 的 `show`
+  條件永遠不成立。方向鍵、引擎、候選清單都是好的，只有這一行讀錯位置。
+  加上 `engine_state_reaches_snapshot_navigating_and_candidates` 鎖住整條轉換。
+- 補上候選窗的排查日誌：`present: navigating 但 show=false …` 與
+  `ui: candidates=… 但 show=false`，之後同類問題一行就能定位。
+
 ## 0.1.15 - 2026-11-24
 
 ### 修正

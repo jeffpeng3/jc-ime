@@ -940,6 +940,8 @@ fn parse(reply: &Value) -> Snapshot {
     }
     s.cursor_rune = j["cursor"]["rune"].as_u64().unwrap_or(0) as usize;
     s.cursor_utf16 = j["cursor"]["utf16"].as_u64().unwrap_or(0) as usize;
+    // `navigating` 是 snapshot 的兄弟欄位，不在 candidates 物件裡。
+    s.navigating = j["navigating"].as_bool().unwrap_or(false);
     if let Some(c) = j.get("candidates") {
         s.columns = c["columns"].as_u64().unwrap_or(0).min(10) as usize;
         s.candidate_kind = c["kind"].as_str().unwrap_or("").to_string();
@@ -2225,6 +2227,36 @@ mod tests {
     /// 0c 的 cancel 要翻成「按 Escape」，引擎才清得掉組字。
     ///
     /// 送原樣會回 UnknownOp，宿主每次終止組字都重試三次。
+    /// 引擎的 `state` 要能一路帶到 TIP 的 `Snapshot`：`navigating` 與候選清單。
+    ///
+    /// 這是候選窗顯示的唯一依據（`present_in_edit` 的 `show` 條件）；
+    /// 少了 `navigating` 就永遠不開窗，少了候選就是空窗。
+    #[test]
+    fn engine_state_reaches_snapshot_navigating_and_candidates() {
+        let wire = json!({
+            "op": "state",
+            "preedit": "台",
+            "cursor": 1,
+            "candidates": ["台", "抬", "臺"],
+            "details": [
+                {"reading": "ㄊㄞˊ", "source": "lexicon", "cost": 9469},
+                {"reading": "ㄊㄞˊ", "source": "lexicon", "cost": 12112},
+                {"reading": "ㄊㄞˊ", "source": "lexicon", "cost": 12133}
+            ],
+            "segments": [{"start": 0, "end": 1, "mode": "zhuyin", "script": "latin"}],
+            "cursor_rune": 1,
+            "navigating": true
+        });
+        let response: jc_proto::Response = serde_json::from_value(wire).expect("state 要能解析");
+        let reply = response_to_reply(&response);
+        let snapshot = parse(&reply);
+        assert!(snapshot.ok, "reply 要是 ok：{reply:?}");
+        assert!(snapshot.navigating, "navigating 要帶到 Snapshot");
+        assert!(snapshot.composing(), "有 preedit 就算組字中");
+        assert_eq!(snapshot.candidates.len(), 3, "候選要帶到 Snapshot");
+        assert_eq!(snapshot.candidates[0].1, "台");
+    }
+
     #[test]
     fn to_jc_request_maps_cancel_to_escape() {
         let envelope = json!({"op": "handle", "session": 1, "req": {"type": "cancel"}});

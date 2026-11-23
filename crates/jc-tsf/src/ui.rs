@@ -71,6 +71,15 @@ impl UiClient {
             .as_mut()
             .is_none_or(|elements| elements.present(&Candidates::from(message), document));
         if !draw || !message.show || message.candidates.is_empty() {
+            // 排查用：真的有候選卻沒顯示時記一次，分得出是 show=false 還是清單空。
+            if !draw {
+                crate::log::once("ui: draw=false（UI-less 宿主）");
+            } else if !message.show {
+                crate::log::once(&format!(
+                    "ui: candidates={} 但 show=false",
+                    message.candidates.len()
+                ));
+            }
             self.hide_window();
             return;
         }

@@ -753,6 +753,17 @@ impl TextService_Impl {
         } else {
             None
         };
+        // 排查用：引擎已進入選取（navigating）卻沒有顯示，把三個條件印出來。
+        // 只在這個異常組合寫一行，正常打字不會洗版。
+        if snapshot.navigating && !show {
+            zlog!(
+                "present: navigating 但 show=false composing={} cands={} suggestion={} reading={}",
+                snapshot.composing(),
+                snapshot.candidates.len(),
+                snapshot.suggestion.is_empty(),
+                reading.is_empty()
+            );
+        }
         let (target, revision) = {
             let mut st = self.state.borrow_mut();
             st.revision = st.revision.wrapping_add(1).max(1);
