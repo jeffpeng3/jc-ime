@@ -1761,6 +1761,12 @@ impl Session {
         if self.edit.is_some() {
             return self.preedit_string();
         }
+        // 注音路徑的組字區就是 `base`（轉換後的中文），候選窗沒開時 Enter
+        // 要送出看到的字，不能拿候選清單第一項的字面讀音。詞典成本高於未知
+        // 詞時，第一候選可能還是 `ㄨㄢ`，送出的字就會和畫面上不一致。
+        if self.in_zh_lane() && !self.candidate_window {
+            return self.preedit_string();
+        }
         if let Some(candidate) = self.candidates.get(self.highlighted) {
             return format!(
                 "{}{}",
@@ -1930,12 +1936,24 @@ impl Session {
         if let Some(options) = &self.config.rerank {
             Self::apply_rerank(&mut hypotheses, options);
         }
+        // 有詞典字時不要停在原始注音。未知詞邊的成本（預設 8）可能低於罕用
+        // 詞（機率 0 的詞成本 100000），`nbest` 會把讀音字面排第一；顯示與
+        // 送出要取第一條非字面的路徑，`ㄨㄢ` 才會是「彎」而不是 `ㄨㄢ`。
+        let dictionary_at = hypotheses.iter().position(|hypothesis| {
+            hypothesis.text != literal && hypothesis.text.chars().any(is_han)
+        });
         // Mixed 的純注音組字沿用混打管線的顯示：整段最佳路徑才是組字字串，
         // 候選清單再依學習與 rerank 排序。純注音模式仍然讓第一候選決定顯示，
         // 兩邊的舊測試各自鎖住原本行為。
         let mixed_lane = self.config.mode == Mode::Mixed && self.zh_lane;
         if !mixed_lane {
-            if let Some(best) = hypotheses.first() {
+            let index = dictionary_at.unwrap_or(0);
+            if let Some(best) = hypotheses.get(index) {
+                self.base = best.text.clone();
+                self.segments = Self::segments_of(&best.segments, Mode::Zh, Script::Bopomofo);
+            }
+        } else if self.base == literal {
+            if let Some(best) = dictionary_at.and_then(|index| hypotheses.get(index)) {
                 self.base = best.text.clone();
                 self.segments = Self::segments_of(&best.segments, Mode::Zh, Script::Bopomofo);
             }

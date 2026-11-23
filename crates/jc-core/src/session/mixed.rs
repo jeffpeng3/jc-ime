@@ -1422,7 +1422,22 @@ impl Session {
             Ok(lattice) => {
                 let decoder = Decoder::new(&self.lexicon, &self.ctx);
                 let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
-                decoder.conversion(&lattice, &segs, Mode::Zh).surface
+                let surface = decoder.conversion(&lattice, &segs, Mode::Zh).surface;
+                // 詞典詞的成本可能高於未知詞，最佳路徑會停在讀音字面。
+                // 有真字時改顯示那條路徑，`ㄨㄢ` 才會是「彎」。
+                let literal: String = units.concat();
+                if surface != literal {
+                    return surface;
+                }
+                let (hypotheses, _) =
+                    decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates().max(1));
+                hypotheses
+                    .into_iter()
+                    .find(|hypothesis| {
+                        hypothesis.text != literal && hypothesis.text.chars().any(is_han)
+                    })
+                    .map(|hypothesis| hypothesis.text)
+                    .unwrap_or(surface)
             }
             Err(_) => reading.to_string(),
         }
@@ -1912,6 +1927,42 @@ mod tests {
         assert_eq!(s.snapshot().preedit, "りしれ供さ小");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "りしれ供さ小");
+    }
+
+    /// 未完成的注音不能先轉成字；聲調或空白一聲才轉。
+    ///
+    /// 真實使用者的回報：`j`、`0` 停在 `ㄨㄢ`，空白補一聲後 preedit 與
+    /// commit 都要是「彎」。空白不可以變成字面空格，也不可以只開候選窗。
+    /// 詞典成本高於未知詞成本時仍然要選詞典的字，不能退回原始注音。
+    #[test]
+    fn test_mixed_untoned_zhuyin_converts_only_after_tone() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("彎", "ㄨㄢ", 100_000, 0));
+        lex.push(LexEntry::new("灣", "ㄨㄢ", 100_001, 0));
+        lex.push(LexEntry::new("台", "ㄊㄞˊ", 0, 0));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        let mut s = Session::new(config);
+
+        mixed_type(&mut s, "j0");
+        assert_eq!(s.snapshot().preedit, "ㄨㄢ", "沒有聲調鍵前只能顯示原始注音");
+        assert!(!s.snapshot().preedit.contains('彎'));
+
+        let snap = s.press(Key::new(KeyCode::Space, None, false));
+        assert_eq!(snap.preedit, "彎", "空白是一聲，要轉成字");
+        assert!(!s.candidate_window, "未完成注音補完時不開候選窗");
+        assert_eq!(s.commit(), "彎", "commit 也要是轉換後的字");
+
+        // 有聲調鍵的既有行為不變：`w96` 是 ㄊㄞˊ。
+        let mut config = SessionConfig::new(Mode::Mixed);
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("台", "ㄊㄞˊ", 0, 0));
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        let mut s = Session::new(config);
+        mixed_type(&mut s, "w96");
+        assert_eq!(s.snapshot().preedit, "台");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "台");
     }
 
     /// 有競爭者的詞典：多個 ㄍㄨㄥ 詞、`りしれえ` 這類也合法的日文前綴。
