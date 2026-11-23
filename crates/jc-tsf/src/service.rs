@@ -247,6 +247,8 @@ pub struct TextService {
     layout_missed: Cell<bool>,
     /// Activate/Deactivate 成對的 idempotent guard（jc 既有做法）。
     activated: Cell<bool>,
+    /// panic 之後 `state` 剛好被借用、重設做不完時留下旗標，下一次按鍵先補做。
+    needs_reset: Cell<bool>,
 }
 
 struct State {
@@ -394,6 +396,7 @@ impl TextService {
             applying: Cell::new(0),
             layout_missed: Cell::new(false),
             activated: Cell::new(false),
+            needs_reset: Cell::new(false),
         }
     }
 }
@@ -404,6 +407,83 @@ impl TextService {
 impl TextService_Impl {
     fn composition_sink(&self) -> ITfCompositionSink {
         self.to_interface()
+    }
+
+    /// 按鍵邊界：panic 時降級成「這個鍵沒處理」（`Ok(FALSE)`），並在降級前重設組字狀態。
+    ///
+    /// 只有四個按鍵方法用它；其他 COM 方法維持 `crate::guarded` 的 `E_FAIL`。
+    fn guarded_key<F>(
+        &self,
+        what: &str,
+        ctx: Option<&ITfContext>,
+        f: F,
+    ) -> windows_core::Result<BOOL>
+    where
+        F: FnOnce() -> windows_core::Result<BOOL>,
+    {
+        self.consume_needs_reset(ctx);
+        log::guarded_bool_with(what, || self.reset_after_panic(ctx), f)
+    }
+
+    /// 上一次 panic 沒能把狀態重設完（`state` 被借用）時，下一次按鍵先補做。
+    fn consume_needs_reset(&self, ctx: Option<&ITfContext>) {
+        if !self.needs_reset.replace(false) {
+            return;
+        }
+        log::log("panic 後重設：上一次未完成，這次按鍵先重設");
+        self.reset_after_panic(ctx);
+    }
+
+    /// panic 之後把組字狀態歸零：組字／preedit、pending commit、候選窗、edit session 參照。
+    ///
+    /// 重設本身不得 panic：`state` 借不到就留下 `needs_reset` 給下一次按鍵；途中出錯只記 log，
+    /// 同樣留下旗標再試一次。
+    fn reset_after_panic(&self, ctx: Option<&ITfContext>) {
+        let reset = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.reset_after_panic_inner(ctx)
+        }));
+        if reset.is_err() {
+            log::log("panic 後重設失敗，下一次按鍵再試");
+            self.needs_reset.set(true);
+        }
+    }
+
+    /// [`Self::reset_after_panic`] 的本體；每一段都用 `try_borrow_mut`，借不到就延後。
+    fn reset_after_panic_inner(&self, ctx: Option<&ITfContext>) {
+        if self.state.try_borrow_mut().is_err() {
+            self.needs_reset.set(true);
+            return;
+        }
+        // 先清掉守衛狀態，讓 finish 走正常路徑收掉文件裡的組字（panic 已經 unwind 出去，
+        // 相容層的呼叫不會再回來）。
+        if let Ok(mut st) = self.state.try_borrow_mut() {
+            st.completing = None;
+            st.pending_repost = None;
+        }
+        // 引擎端取消組字：未送出的 commit 丟掉，組字區與底線一併收掉。
+        // 沒有 context 或引擎沒回應時只剩下面幾行的外殼狀態重設。
+        self.finish(ctx, "cancel");
+        // 候選窗與版面通知（edit session 參照）。
+        self.forget_candidates();
+        let Ok(mut st) = self.state.try_borrow_mut() else {
+            self.needs_reset.set(true);
+            return;
+        };
+        st.composition = None;
+        st.composing = false;
+        st.left_from = None;
+        st.selection = None;
+        st.eaten.clear();
+        // 讓還在飛的非同步重查作廢。
+        st.revision = st.revision.wrapping_add(1).max(1);
+        // pending commit 與引擎端組字狀態：關掉 session，保留 IPC client。
+        st.session.reset();
+        // UI-less 宿主的候選清單。
+        st.ui.hide();
+        if let Some(window) = st.callback.as_ref() {
+            window.cancel_settle_focus();
+        }
+        log::log("panic 後已重設組字狀態");
     }
 
     /// 焦點內的最上層 context。
@@ -1825,7 +1905,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> windows_core::Result<BOOL> {
-        crate::guarded("OnTestKeyDown", || {
+        self.guarded_key("OnTestKeyDown", pic.as_ref(), || {
             let vk = wparam.0 as u32;
             zlog!(
                 "OnTestKeyDown 進入 vk={}({}) lparam={:#x}",
@@ -1906,7 +1986,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> windows_core::Result<BOOL> {
-        crate::guarded("OnTestKeyUp", || {
+        self.guarded_key("OnTestKeyUp", pic.as_ref(), || {
             {
                 let mut st = self.state.borrow_mut();
                 st.hotkey_tested.forget();
@@ -1935,7 +2015,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> windows_core::Result<BOOL> {
-        crate::guarded("OnKeyDown", || {
+        self.guarded_key("OnKeyDown", pic.as_ref(), || {
             let vk = wparam.0 as u32;
             zlog!(
                 "OnKeyDown 進入 vk={}({}) lparam={:#x}",
@@ -2100,7 +2180,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> windows_core::Result<BOOL> {
-        crate::guarded("OnKeyUp", || {
+        self.guarded_key("OnKeyUp", pic.as_ref(), || {
             {
                 let mut st = self.state.borrow_mut();
                 st.hotkey_tested.forget();
@@ -2307,6 +2387,57 @@ fn foreground_pid() -> u32 {
     let mut pid = 0;
     unsafe { GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid)) };
     pid
+}
+
+/// panic 降級與重設的單元測試；不需要宿主，也不碰引擎。
+#[cfg(all(test, windows))]
+mod panic_guard_tests {
+    use super::*;
+
+    /// 按鍵 panic 要回 `Ok(FALSE)`，而且組字狀態要歸零。
+    #[test]
+    fn key_panic_returns_false_and_resets() {
+        let service = ComObject::new(TextService::new());
+        {
+            let mut st = service.state.borrow_mut();
+            st.composing = true;
+            st.eaten.insert(0x41);
+            st.pending_repost = Some(PendingRepost {
+                vk: 0x41,
+                lparam: 0,
+                key_down_seen: false,
+            });
+        }
+        let r = service.guarded_key("OnKeyDown", None, || panic!("裝的"));
+        assert!(!r.unwrap().as_bool(), "panic 要回 Ok(FALSE)");
+        let st = service.state.borrow();
+        assert!(!st.composing, "重設後不能再組字");
+        assert!(st.composition.is_none(), "組字物件要清掉");
+        assert!(st.pending_repost.is_none(), "重排等待要清掉");
+        assert!(st.eaten.is_empty(), "吃掉記錄要清掉");
+    }
+
+    /// 沒 panic 時按鍵邊界原樣回傳，不會誤觸重設。
+    #[test]
+    fn key_without_panic_passes_value_through() {
+        let service = ComObject::new(TextService::new());
+        service.state.borrow_mut().composing = true;
+        let r = service.guarded_key("OnKeyDown", None, || Ok(true.into()));
+        assert!(r.unwrap().as_bool());
+        assert!(service.state.borrow().composing, "沒 panic 不能清掉組字");
+    }
+
+    /// `state` 被借用時重設只能留下旗標，由下一次按鍵消費。
+    #[test]
+    fn needs_reset_consumed_by_next_key() {
+        let service = ComObject::new(TextService::new());
+        let held = service.state.borrow_mut();
+        service.reset_after_panic(None);
+        assert!(service.needs_reset.get(), "借不到 state 要留下旗標");
+        drop(held);
+        service.consume_needs_reset(None);
+        assert!(!service.needs_reset.get(), "下一次按鍵要消費掉旗標");
+    }
 }
 
 // T8a host 測試：要注入 TextService 的私有 State 與假文件，必須是 service 的子模組。

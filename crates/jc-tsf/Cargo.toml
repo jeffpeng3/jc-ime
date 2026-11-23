@@ -10,6 +10,11 @@ description = "0c 架構移植的 Windows TSF 文字服務（COM 外殼、註冊
 # DLL 本體是 cdylib；rlib 讓 host test 與其他 crate 能引用型別。
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# 預設關閉：在 COM 邊界（含按鍵）注入一次 panic，驗證降級與重設。
+# 觸發方式：%LOCALAPPDATA%\jc-ime\panic.on 寫邊界名稱（子字串比對），炸完自動刪檔。
+panic-test = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
