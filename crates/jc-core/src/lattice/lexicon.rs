@@ -71,6 +71,14 @@ pub trait Lexicon {
     fn longest_word_units(&self) -> usize {
         0
     }
+
+    /// 同一個詞面所有讀音中最低的詞條成本。
+    ///
+    /// 建詞格時用來懲罰「不是該字最低成本」的單字讀音。實作不知道詞面索引
+    /// 時回傳 `None`，呼叫端就不加懲罰。
+    fn cheapest_reading_cost(&self, _surface: &str) -> Option<i32> {
+        None
+    }
 }
 
 /// `Arc<T>` 也是 `Lexicon`：讓呼叫端可以傳 `&self.lexicon`，不必到處寫 `&*`。
@@ -87,6 +95,10 @@ impl<T: Lexicon + ?Sized> Lexicon for std::sync::Arc<T> {
 
     fn longest_word_units(&self) -> usize {
         (**self).longest_word_units()
+    }
+
+    fn cheapest_reading_cost(&self, surface: &str) -> Option<i32> {
+        (**self).cheapest_reading_cost(surface)
     }
 }
 
@@ -137,6 +149,8 @@ pub struct InMemoryLexicon {
     all: Vec<LexEntry>,
     /// 第一個音節到詞條索引；[`Lexicon::prefix`] 只看同一首音節的詞條。
     by_first_unit: HashMap<String, Vec<usize>>,
+    /// 詞面到詞條索引；[`Lexicon::cheapest_reading_cost`] 只用這個索引。
+    by_surface: HashMap<String, Vec<usize>>,
     longest: usize,
 }
 
@@ -155,6 +169,10 @@ impl InMemoryLexicon {
             .push(entry.clone());
         self.by_first_unit
             .entry(first_unit(&entry.reading).to_string())
+            .or_default()
+            .push(self.all.len());
+        self.by_surface
+            .entry(entry.surface.clone())
             .or_default()
             .push(self.all.len());
         self.all.push(entry);
@@ -207,6 +225,12 @@ impl Lexicon for InMemoryLexicon {
 
     fn longest_word_units(&self) -> usize {
         self.longest
+    }
+
+    fn cheapest_reading_cost(&self, surface: &str) -> Option<i32> {
+        self.by_surface
+            .get(surface)
+            .and_then(|indices| indices.iter().map(|&index| self.all[index].cost).min())
     }
 }
 
@@ -359,6 +383,19 @@ mod tests {
         assert_eq!(unit_count("  "), 0);
         assert_eq!(unit_count("ㄊㄞˊ"), 1);
         assert_eq!(unit_count("ㄊㄞˊ  ㄅㄟˇ"), 2);
+    }
+
+    #[test]
+    fn cheapest_reading_cost_uses_all_readings_of_surface() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(entry("日", "ㄇㄧˋ", 20));
+        lex.push(entry("日", "ㄖˋ", 10));
+        lex.push(entry("日", "ㄖˋ", 15));
+        lex.push(entry("密", "ㄇㄧˋ", 5));
+
+        assert_eq!(lex.cheapest_reading_cost("日"), Some(10));
+        assert_eq!(lex.cheapest_reading_cost("密"), Some(5));
+        assert_eq!(lex.cheapest_reading_cost("不存在"), None);
     }
 
     #[test]

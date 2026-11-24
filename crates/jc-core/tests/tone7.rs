@@ -143,7 +143,7 @@ fn existing_zh_sequences_stay_stable() {
         assert_eq!(press(&mut session, keys), expected, "序列 {keys:?}");
     }
 
-    assert_sequence("au42k7", "日的");
+    assert_sequence("au42k7", "密的");
     assert_sequence("w96j0", "台ㄨㄢ");
     if keeps_unfinished_zhuyin() {
         assert_sequence("w96j0w96j0", "台ㄨㄢ台ㄨㄢ");

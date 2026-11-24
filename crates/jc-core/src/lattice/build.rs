@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use crate::candidate::CandidateSource;
-use crate::score::ScoreContext;
+use crate::score::{ScoreContext, NON_PRIMARY_READING_PENALTY};
 
 use super::candidate::Edge;
 use super::lexicon::{join_units, LexEntry, Lexicon, UNKNOWN_POS};
@@ -85,7 +85,7 @@ impl Lattice {
             for len in 1..=max_len {
                 let reading = join_units(&units[start..start + len]);
                 for entry in lexicon.lookup(&reading) {
-                    push_lexicon_edge(&mut edges, entry, start, len, &reading, ctx);
+                    push_lexicon_edge(&mut edges, lexicon, entry, start, len, &reading, ctx);
                 }
             }
             edges.push(unknown_edge(&units[start], start, ctx));
@@ -144,8 +144,13 @@ impl Lattice {
 }
 
 /// 把詞典詞條轉成一條邊；讀音與查詢不符時忽略。
-fn push_lexicon_edge(
+///
+/// 單一字元詞條如果還有成本更低的讀音，加上
+/// [`NON_PRIMARY_READING_PENALTY`]；詞典只保留罕用旗標，沒有主要讀音資訊，
+/// 這個比較只能靠同一詞面的所有讀音。多字詞有自己的詞條成本，不受影響。
+fn push_lexicon_edge<L: Lexicon + ?Sized>(
     edges: &mut Vec<Edge>,
+    lexicon: &L,
     entry: &LexEntry,
     start: usize,
     len: usize,
@@ -155,12 +160,21 @@ fn push_lexicon_edge(
     if entry.reading != reading {
         return;
     }
+    let mut cost = ctx.word_cost(entry.cost, len);
+    if len == 1
+        && entry.surface.chars().count() == 1
+        && lexicon
+            .cheapest_reading_cost(&entry.surface)
+            .is_some_and(|cheapest| entry.cost > cheapest)
+    {
+        cost = cost.saturating_add(NON_PRIMARY_READING_PENALTY);
+    }
     edges.push(Edge {
         start,
         end: start + len,
         surface: entry.surface.clone(),
         reading: entry.reading.clone(),
-        cost: ctx.word_cost(entry.cost, len),
+        cost,
         pos: entry.pos,
         source: CandidateSource::Lexicon,
     });
@@ -424,6 +438,52 @@ mod tests {
             let edges = a.edges_from(pos);
             assert!(edges.windows(2).all(|w| w[0].end <= w[1].end));
         }
+    }
+
+    #[test]
+    fn test_build_penalizes_non_minimum_reading_of_single_character() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(entry("日", "ㄇㄧˋ", 20, 1));
+        lex.push(entry("日", "ㄖˋ", 10, 1));
+        lex.push(entry("日常", "ㄖˋ ㄔㄤˊ", 5, 1));
+        let ctx = ScoreContext::default();
+
+        let lat = Lattice::build(&["ㄇㄧˋ"], &lex, &ctx).expect("建立詞格");
+        assert_eq!(
+            edge(&lat, 0, "日").cost,
+            20 + NON_PRIMARY_READING_PENALTY,
+            "非最低成本讀音要加固定懲罰"
+        );
+
+        let lat = Lattice::build(&["ㄖˋ"], &lex, &ctx).expect("建立詞格");
+        assert_eq!(edge(&lat, 0, "日").cost, 10, "最低成本讀音不受影響");
+
+        let lat = Lattice::build(&["ㄖˋ", "ㄔㄤˊ"], &lex, &ctx).expect("建立詞格");
+        assert_eq!(edge(&lat, 0, "日常").cost, 4, "多字詞不受讀音懲罰");
+    }
+
+    #[test]
+    fn test_build_does_not_penalize_without_surface_index() {
+        struct NoSurfaceIndex(Vec<LexEntry>);
+
+        impl Lexicon for NoSurfaceIndex {
+            fn lookup(&self, reading: &str) -> &[LexEntry] {
+                match self.0.iter().find(|e| e.reading == reading) {
+                    Some(entry) => std::slice::from_ref(entry),
+                    None => &[],
+                }
+            }
+
+            fn prefix(&self, _reading: &str) -> Vec<&LexEntry> {
+                Vec::new()
+            }
+        }
+
+        // 沒有 cheapest_reading_cost 的實作不能假設有詞面索引，維持原成本。
+        let lex = NoSurfaceIndex(vec![entry("日", "ㄇㄧˋ", 20, 1)]);
+        let ctx = ScoreContext::default();
+        let lat = Lattice::build(&["ㄇㄧˋ"], &lex, &ctx).expect("建立詞格");
+        assert_eq!(edge(&lat, 0, "日").cost, 20);
     }
 
     #[test]

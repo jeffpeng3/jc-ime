@@ -40,6 +40,13 @@ pub const MAX_WORD_UNITS: usize = 8;
 /// 每多一個音節折抵的單詞成本，用來實現長詞優先。
 pub const DEFAULT_LENGTH_BONUS: i32 = 1;
 
+/// 單字詞條的讀音不是該字最低成本時加上的固定成本。
+///
+/// 詞典保留 CNS11643 等來源的罕讀，卻沒有保留「主要／罕讀」旗標；同一個字
+/// 有更便宜的讀音時，把這個讀音往後排，避免 `ㄇㄧˋ` 選到「日」。
+/// 3000 足以讓「日」的 `ㄇㄧˋ` 落到 `秘` 之後，仍留在前 18 名候選內。
+pub const NON_PRIMARY_READING_PENALTY: i32 = 3000;
+
 /// 系統 bigram 與 unigram 的內插權重。
 ///
 /// 對應前身 `core/personal.DefaultParams().Mu`：0.7 表示 bigram 佔七成。
