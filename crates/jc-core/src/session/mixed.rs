@@ -87,9 +87,9 @@ fn ascii_letters(text: &str) -> bool {
 
 /// 連續小寫英文 run 超過這個長度就只規劃尾巴。
 ///
-/// 英文詞表窗口是 48 個字元，96 已遠超窗口，前段必定是字面英文；門檻
-/// 取在使用者回報「超過 100 個字開始變慢」之前。
-const LONG_LITERAL_RUN: usize = 96;
+/// 英文詞表窗口是 48 個字元，64 已超過窗口，前段必定是字面英文；門檻
+/// 取在使用者開始感覺變慢之前，第 65 鍵起就只重算尾巴。
+const LONG_LITERAL_RUN: usize = 64;
 /// 長 run 每次重新規劃的尾巴長度（rune）。
 const PLAN_TAIL_CHARS: usize = 64;
 /// 尾巴注音音節最多幾個按鍵。
