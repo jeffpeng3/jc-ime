@@ -14,20 +14,24 @@
 |---|---|---|
 | stdio 傳輸 | 已實作 | `crates/jc-engine/src/main.rs` |
 | Unix domain socket | 已實作，限 unix | 同上 |
-| Windows named pipe | 已實作，`--socket` 在 Windows 走 pipe | `crates/jc-engine/src/pipe_windows.rs` |
+| Windows named pipe | 已實作，`--socket` 或 `--supervise` 走 pipe | `crates/jc-engine/src/pipe_listener.rs` |
 | 長度前綴＋JSON 訊框 | 已實作，上限 1 MiB | `crates/jc-proto/src/frame.rs` |
 | 版本握手 | 已實作，精確比對 `3` | `crates/jc-engine/src/lib.rs` |
 | 按鍵／快照／提交／關機 | 已實作 | `jc-proto` 的 `Request`／`Response` |
 | 候選明細與分段 | 已實作，v3 新增；日文候選帶 `pos` | `State.details`、`State.segments` |
 | IME 開關 | 引擎沒有這個概念，由 wrapper 自己管 | 無 |
-| 設定 | 啟動時讀 `settings.json`；沒有執行期設定請求 | `crates/jc-engine/src/config.rs` |
+| 設定 | 啟動時讀 `settings.json`；`apply_settings` 只收下未套用 | `crates/jc-engine/src/config.rs`、`lib.rs` |
 | 主動通知 | **未實作**，只有請求／回應 | `crates/jc-engine/src/lib.rs` |
+| 並行連線 | 已實作，每條連線一個 worker thread | `crates/jc-engine/src/main.rs`、`pipe_listener.rs` |
+| `Ready.max_frame` | **未實作**，握手沒有通告上限 | `crates/jc-proto/src/lib.rs` 的 `Response::Ready` |
+| `Ready.features` | **部分**：`health` 的 `capabilities` 有旗標，`Ready` 沒有 | `crates/jc-engine/src/lib.rs` 的 `HealthInfo` |
+| `undo_learning`／`forget_word` | 核心有方法，協定沒有請求，**未實作** | `crates/jc-core/src/session/mod.rs`；`jc-proto` 無對應 `Request` |
 | client crate | `jc-windows` 已實作；`jc-linux`／`jc-mac` 是佔位 | `crates/jc-windows`、`crates/jc-linux`、`crates/jc-mac` |
 | 神經模型（注音選字） | 已接線，資料與模型存在時啟動即安裝 | `crates/jc-core/src/zh/select.rs` |
 | 神經模型（日文轉換） | 已接線，Jinen small 預設開啟，逾時回退統計 | `crates/jc-core/src/session/neural.rs` |
 | 神經模型（日文重排） | 程式在，但預設關閉，不建議使用 | `loader.rs` 的 `ja_rerank` |
-| 學習資料持久化 | 核心有檔案格式；引擎啟動尚未載入個人化檔案 | `jc-core::personal` |
-| Windows TSF wrapper | 已實作（x64），可安裝並用 `Win+Space` 選取 | `crates/jc-tsf` |
+| 學習資料持久化 | 已實作，啟動載入 `personal.json`，定期與關線時寫回 | `crates/jc-engine/src/main.rs`、`lib.rs` |
+| Windows TSF wrapper | 已實作（x64／x86 DLL），可安裝並用 `Win+Space` 選取 | `crates/jc-tsf` |
 
 ## 1. 生命週期
 
@@ -55,13 +59,16 @@ jc-engine --data <資料根目錄> [--mode zh|ja|mixed|en] \
 
 ```text
 <root>/build-zh/lexicon.bin        必要，缺了直接啟動失敗
-<root>/build-zh/lm.bin             選用
-<root>/build-zh-bigram/lm.bin      選用，存在時優先當 bigram 來源
+<root>/build-zh/manifest.json      詞典驗證用；`load_zh_bin_lexicon` 會讀
+<root>/build-zh-bigram/lm.bin      安裝版必要；存在時載入 bigram，缺檔以詞典-only 啟動
 <root>/packs/ja-lexicon-mozc-v2.pack   日文用；缺了退回 ja-src/lexicon/words.tsv
 <root>/models/                     選用；有就安裝注音選字與日文模型
 <root>/models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf
                                    選用；預設日文神經轉換
 ```
+
+舊的 unigram-only `build-zh/lm.bin` 已退役，引擎不讀也不再退回；`build-zh-bigram/lm.bin`
+缺席時只記 info，以詞典-only 啟動。
 
 日文 pack 與 curated 的 `ja-src/lexicon/words.tsv` 都沒有時，引擎啟動失敗。
 
@@ -70,7 +77,7 @@ jc-engine --data <資料根目錄> [--mode zh|ja|mixed|en] \
 timeout；握手完成前把狀態顯示成「初始化中」。Jinen 的載入與推論成本見
 `docs/port/jinen-default.md`。
 
-`jc-engine --version` 會印 `jc-engine 0.1.0-rc.1（協定 3）` 後結束。這段文字是給
+`jc-engine --version` 會印 `jc-engine <版本>（協定 3）` 後結束。這段文字是給
 人看的，不是穩定格式。wrapper 判斷版本一律以握手回應為準。
 
 ### 1.2 何時啟動
@@ -113,17 +120,20 @@ wrapper 要自己做：
 
 ### 1.5 多應用程式的現實
 
-`serve_socket` 與 named pipe 一次只服務一條連線：接受連線後一路處理到對方
-關閉，其他連線排在 backlog。也就是說：
+`serve_socket` 與 named pipe 接受多條連線：每條連線一個 worker thread，共用
+同一份 engine registry，但每個連線有自己的 session。因此：
 
-- 兩個應用程式同時各開一條連線，第二個會卡住，直到第一個關閉。
-- 沒有多工、沒有 per-connection thread、沒有 multiplex。
+- 兩個應用程式可以同時各開一條連線，不會互相卡住。
+- 同一條連線內的請求仍然序列處理；不同連線之間可以並行。
+- 組字狀態按 session 隔離，不會因為另一個應用程式打字而直接被覆蓋；但焦點
+  切換時仍要由 wrapper 收掉自己的組字，見 §5.7。
 
-**未實作**：並行連線。
+**已實作**：並行連線。
 
-因此共用引擎時，wrapper 端應該有一個 per-user broker，只維持一條連線，
-把各應用程式的請求排隊送出。組字狀態是引擎的，不是每個應用程式一份；
-焦點切換時一定要先收掉上一個應用程式的組字，見 §5.7。
+這不代表 wrapper 可以忽略 broker。共用引擎時，若要讓多個應用程式共用同一份
+組字狀態，還是應該由 per-user broker 排隊；如果每個應用程式各自一條 session，
+則要自己處理焦點切換與收尾。`Shutdown` 仍是全行程操作，不能讓單一應用程式
+隨意送出。
 
 ### 1.6 責任分界
 
@@ -157,11 +167,13 @@ Windows 的 `--socket` 一律取最後一段掛到 `\\.\pipe\`：
 | `/tmp/engine.sock` | `\\.\pipe\engine.sock` |
 | `\\otherhost\pipe\jc-engine` | `\\.\pipe\jc-engine`（不會連到遠端） |
 
-pipe 開 `PIPE_REJECT_REMOTE_CLIENTS`，一次一個 instance。Windows 分支的實際
-編譯與行為由 CI 的 `windows (msvc)` job 驗證。
+pipe 用 `PIPE_UNLIMITED_INSTANCES`，每條連線一個 instance；SDDL 只授權目前
+使用者與兩個 AppContainer SID。**目前沒有 `PIPE_REJECT_REMOTE_CLIENTS`**，
+文件不再宣稱有；這是待修的權限問題，見回報。Windows 分支的實際編譯與行為由
+CI 的 `windows (msvc)` job 驗證。
 
 `--supervise` 沒給 `--socket` 時，名稱由 `jc-windows::resolve_pipe_name` 決定，
-`jc-tsf`、監督者與子行程共用同一份規則。MSI 的 `EngineAutostart` 因此不帶
+`jc-tsf`、監督者與子行程共用同一份規則。安裝器的 Run 值因此不帶
 `--socket`，避免引擎拿到固定名稱而與 TIP 不同：
 
 | 順序 | 來源 | 值 |
@@ -195,7 +207,8 @@ SID 只取最後一段（RID），名稱只含 `[A-Za-z0-9-]`。同一台機器�
 - 正常結束會刪掉 socket 檔；被 SIGKILL 時會留下殘留檔，下次啟動自動清。
 - 沒有 chmod、沒有 peer credential 檢查。能連上 socket 的行程都能送
   `Shutdown`，所以目錄權限是唯一防線。
-- 一次一條連線，序列處理。斷線後可重連；重連要重新握手。
+- 同一條連線內序列處理；多條連線可並行，每條各有 session。斷線後可重連；
+  重連要重新握手，拿到新的 session。
 
 ### 2.4 訊框
 
@@ -216,7 +229,9 @@ SID 只取最後一段（RID），名稱只含 `[A-Za-z0-9-]`。同一台機器�
 不能假設一次 read 就是一個完整訊框。
 
 `--max-frame` 同時套用在讀與寫。送出的訊框超過對端上限就會被拒絕。
-沒有能力協商，也沒有在握手裡通告上限；保持預設值最安全。
+沒有能力協商，也沒有在握手裡通告上限；`Ready` 沒有 `max_frame`，保持預設值
+最安全。部分能力旗標可以送 `health`，從 `HealthInfo.capabilities` 讀取，但那
+不含訊框上限，而且不是所有能力都有對應旗標。
 
 ### 2.5 逾時與斷線
 
@@ -238,19 +253,22 @@ SID 只取最後一段（RID），名稱只含 `[A-Za-z0-9-]`。同一台機器�
 ```text
 wrapper                                   engine
    │  {"op":"hello","protocol":3,          │
-   │   "client":"jc-tsf/0.1.0-rc.1"}            │
+   │   "client":"jc-tsf/<version>"}       │
    │ ────────────────────────────────────▶ │
    │  {"op":"ready","protocol":3,          │
-   │   "engine":"jc-engine 0.1.0-rc.1"}         │
+   │   "engine":"jc-engine <版本>","session":1} │
    │ ◀──────────────────────────────────── │
 ```
 
 - 版本必須完全相同。`PROTOCOL_VERSION` 目前是 `3`。
 - 不同版本回 `{"op":"error","code":"version_mismatch",...}` 然後關線。
+- `Ready.session` 是這條連線的 session id；第一條連線是 1，舊引擎沒有這個
+  欄位時預設 1。`close` 要帶自己的 id。
 - 沒握手就送 `Key`／`Snapshot`／`Commit` 會回 `internal`，訊息是
   `尚未完成握手`。`Shutdown` 不檢查握手，見 §8.4。
 - `client` 是自由字串，建議 `<產品>/<版本>`，方便看日誌。
-- `Ready.engine` 只供顯示與診斷，不要解析它來判斷能力。
+- `Ready.engine` 只供顯示與診斷，不要解析它來判斷能力。`Ready` 沒有
+  `max_frame` 或 `features`；需要能力旗標時另外送 `health`。
 
 ### 3.2 版本不符怎麼辦
 
@@ -289,6 +307,7 @@ wrapper                                   engine
 | `text` | char 或 null | 這個鍵實際產生的字元；具名鍵是 `null` |
 | `shift` | bool | Shift 是否按著 |
 | `ctrl` | bool，可省略 | `false` 時不寫進 JSON |
+| `private` | bool，可省略 | 私有組字；`false` 時不寫進 JSON，不進學習 |
 
 **`code.value` 才是引擎真正讀的字元**。`Session::press` 對 `Char(ch)` 直接
 用 `ch`，不看 `text`。`text` 請填同一個字元，避免未來語意改變時出錯。
@@ -338,7 +357,7 @@ Shift+Tab 有兩種表示：`{"kind":"shift_tab"}` 配 `shift:true`，或
 
 ### 4.4 IME 開關
 
-引擎沒有開關請求，也沒有「目前是否啟用」的狀態。開關完全由 wrapper 管：
+引擎沒有可用的開關請求（`mode` 目前回 `unsupported`），也沒有「目前是否啟用」的狀態。開關完全由 wrapper 管：
 
 - 關閉時：一個按鍵都不送引擎，全部 pass-through；同時要把引擎裡殘留的
   組字收掉。
@@ -533,7 +552,7 @@ wrapper 必須在焦點離開時主動收尾，否則使用者在另一個應用
 
 - `candidates[0]` 是引擎的第一順位，依序往後畫，不要重排、不要過濾。
 - 一般轉換最多 5 項，由 `SessionConfig::max_candidates` 決定。
-- 符號選單與表情／顏文字選單可能超過一頁，每頁 10 項。
+- 符號選單與表情／顏文字選單可能超過一頁，每頁 9 項（核心 `CANDIDATE_PAGE_SIZE`）。
 - 沒有候選時 `candidates` 是空陣列，關掉候選窗。
 - 協定沒有「候選窗是否開啟」的旗標。實務上就用 `candidates` 非空當作
   顯示條件。
@@ -584,16 +603,15 @@ wrapper 可以用它決定候選窗的視覺強調，例如 `true` 時才畫選�
 `State.highlighted` 是目前的候選索引，0 時省略。畫高亮直接用這個值，不要
 自己推。
 
-Windows TSF 的候選窗已實作滑鼠點選：`SetSelection(nIndex)` 把頁內位置換成
-一個數字鍵（頁內位置 0–8 → `1`–`9`；10 項頁面時第 10 項 → `0`），送給引擎後
-由核心的 `select_by_digit` 選取並提交。點第 7 項只送一個鍵，不再模擬 6 次
-`Down` 加一次 `Space`。換算用 `nIndex % CANDIDATE_PAGE_SIZE`，頁面大小是核心
-常數，外殼不要寫死。
+協定沒有滑鼠事件。Windows TSF 候選窗已接滑鼠回呼，會把頁內索引送到 service
+並組成 `select` 請求，但 `jc-proto` 沒有 `select` op，引擎目前回 `unknown_op`。
+**狀態：部分實作**，TSF 的點選路徑還沒打通；修法是在協定加 `select` 請求，
+或由外殼改送數字鍵。
 
-數字鍵由核心換算成 `current_page * CANDIDATE_PAGE_SIZE + 頁內位置`，而
-`current_page` 來自 `highlighted`。只有同頁的索引可以只送數字鍵；點到別頁的
-項目要忽略並記 log，等下一輪 `State` 更新，否則會選到目前頁同位置的候選。
-`Finalize()` 在已送數字鍵時不補鍵，`Abort()` 送 `Escape`。
+核心的數字選字仍在：`select_by_digit` 會把 `1`–`9` 換成
+`current_page * CANDIDATE_PAGE_SIZE + 頁內位置`，頁面大小是 9，頁碼來自
+`highlighted`。只有同頁的索引可以只送數字鍵；點到別頁的項目要忽略並記 log，
+等下一輪 `State` 更新，否則會選到目前頁同位置的候選。
 
 其他 wrapper（Fcitx5、macOS）沒有滑鼠事件可用，只能照下列步驟轉成按鍵。用
 `highlighted` 當目前位置 `h`，點第 `k` 項時：
@@ -615,7 +633,9 @@ wrapper 看不到「候選窗已開」這個狀態，所以：
 - 要程式化選第 `n` 項（例如滑鼠點選），先確認候選非空、且索引在核心目前
   頁，再送對應數字鍵；換算見 §6.4。
 - `Shift+Delete`／`Shift+Backspace` 在候選窗開著時是「忘記這個候選」的
-  學習操作，不要對應到應用程式的刪除。
+  學習操作，不要對應到應用程式的刪除。核心已實作 `forget_candidate`；但引擎
+  `health` 目前沒有 `vocab_keys` 旗標，TSF 會把這兩個組合降級成一般
+  Delete／Backspace，實際上還不能用。**狀態：部分實作。**
 
 ## 7. 提交
 
@@ -680,9 +700,10 @@ Space 或數字選字時，引擎把結果放進待提交區並清空組字，�
 
 ### 7.4 Undo 的責任
 
-協定沒有 undo、沒有 `forget`、沒有「取消上一次提交」。`Session` 內有
-`undo_learning` 與 `forget_word`，但沒有對應的請求，**未實作**。個人化的
-rollback window 只在核心內部生效，不會透過協定撤銷已提交的文字。
+協定沒有 undo、沒有 `forget`、沒有「取消上一次提交」。`Session::undo_learning`
+與 `Session::forget_word` 已在核心實作，但沒有對應的 `Request`，**未實作**。
+個人化的 rollback window 只在核心內部生效，不會透過協定撤銷已提交的文字。
+唯一相關的請求是 `reset_personal`，它清空全部學習紀錄，不是單筆 undo。
 
 - 使用者按 Ctrl+Z 時，wrapper 直接把鍵送給應用程式，讓應用程式自己的
   undo 處理。
@@ -704,6 +725,7 @@ rollback window 只在核心內部生效，不會透過協定撤銷已提交的�
 | `bad_frame` | JSON 解不開、欄位錯、長度 0、資料截斷 | 關線重連；檢查 wrapper 的序列化 |
 | `frame_too_large` | 超過 `--max-frame` | 關線重連；確認兩邊上限一致 |
 | `unknown_op` | 不認得的 `op` | 不關線；修正 wrapper，不要重試 |
+| `unsupported` | 引擎認得這個 op，但尚未實作 | 不關線；改走已實作的請求 |
 | `internal` | 尚未握手，或引擎內部狀態不允許 | 先確認握手；仍發生就當 bug 記錄 |
 
 `bad_frame` 與 `frame_too_large` 發生後，引擎回完 `Error` 就關線，因為資料
@@ -740,12 +762,12 @@ Jinen 有內部 180 ms 逾時，會自動回退統計結果；注音選字的 OR
 ### 8.4 Shutdown 與安全
 
 - `Shutdown` 會設全行程結束旗標，回完最後一個回應就結束，退出碼 0。
-- `docs/proto.md` 寫「無回應」，目前實作會在關線前回一個 `State`。
-  以契約為準時 wrapper 不該依賴它；送完 `Shutdown` 就直接關連線並等子
-  行程結束。這項差異列在 §12。
+- 實作在關線前回一個 `State`；`docs/proto.md` 已同步成這個行為。wrapper 可以
+  讀完再關線，也可以送完直接關線並等子行程結束。
 - `Shutdown` 不檢查握手。任何能連上 socket／pipe 的行程都能關掉引擎。
-- socket 沒有認證，也沒有 ACL；pipe 用預設 DACL 並拒絕遠端。請把 socket
-  放在只有本人能進入的目錄。
+- socket 沒有認證，也沒有 ACL；pipe 用自訂 SDDL，只授權目前使用者與兩個
+  AppContainer SID，但沒有 `PIPE_REJECT_REMOTE_CLIENTS`。請把 socket 放在只有
+  本人能進入的目錄。
 
 ### 8.5 日誌
 
@@ -795,19 +817,20 @@ stdout。
 
 ## 10. client crate
 
-`jc-windows` 是 Windows named pipe 的 client，`jc-linux` 與 `jc-mac` 是佔位。
-三個 crate 都只依賴 `jc-proto`，訊框與版本常數沿用同一份實作。
+`jc-windows` 是跨平台的 local socket client：Windows 走 named pipe，Unix 走
+unix domain socket。`jc-linux` 與 `jc-mac` 是佔位。三個 crate 都只依賴
+`jc-proto`，訊框與版本常數沿用同一份實作。
 
 ### 10.1 介面
 
 | 項目 | 簽章 | 說明 |
 |---|---|---|
-| `Client::connect` | `(name, client_name, timeout) -> Result<Self, Error>` | 只在 `Client<NamedPipe>`；連 `\\.\pipe\<name>` 後握手 |
+| `Client::connect` | `(name, client_name, timeout) -> Result<Self, Error>` | `Client<LocalSocket>`；Windows 連 `\\.\pipe\<name>`，Unix 連 local socket 後握手 |
 | `Client::connect_with_retry` | `(name, client_name, timeout, attempts, backoff) -> Result<Self, Error>` | 啟動階段重連；`attempts` 為 0 視同 1 次 |
 | `Client::handshake` | `(stream, client_name, timeout) -> Result<Self, Error>` | 任意 `Read + Write` 串流；需 `Send + 'static` |
 | `Client::request` | `(&mut self, &Request, timeout) -> Result<Response, Error>` | 送一個請求等一個回應 |
 | `Client::is_closed` | `(&self) -> bool` | 送出 `Shutdown` 或讀到 EOF 後為真 |
-| `NamedPipe::connect` | `(name) -> Result<Self, Error>` | Windows named pipe 傳輸 |
+| `LocalSocket::connect` | `(name, wait) -> Result<Self, Error>` | named pipe 或 unix domain socket 傳輸 |
 | `Error` | `Io`、`Protocol`、`VersionMismatch`、`Timeout`、`Unsupported`、`BadFrame` | 呼叫端依類型處理 |
 
 ### 10.2 用法
@@ -819,7 +842,7 @@ use jc_windows::Client;
 
 let mut client = Client::connect_with_retry(
     "jc-engine",
-    "jc-tsf/0.1.0-rc.1",
+    "jc-tsf/<version>",
     Duration::from_secs(1),
     5,
     Duration::from_millis(500),
@@ -850,13 +873,13 @@ if let Response::State(state) = response {
 
 | crate | 狀態 | 傳輸 |
 |---|---|---|
-| `jc-windows` | 實作完成 | Windows named pipe（`CreateFileW`，`OPEN_EXISTING`） |
+| `jc-windows` | 實作完成 | Windows named pipe、Unix domain socket（`LocalSocket`） |
 | `jc-linux` | 佔位 | `connect`／`connect_with_retry`／`handshake` 回 `Unsupported` |
 | `jc-mac` | 佔位 | 同上 |
 
-非 Windows 平台上 `NamedPipe` 型別仍存在，`connect` 回 `Unsupported`，所以
-Linux CI 能編譯、能跑測試。佔位 crate 沒有 `todo!()`，所有入口都回明確的
-`Unsupported`。
+`jc-windows` 的 `LocalSocket` 用 `interprocess`：Windows 是 named pipe，Unix 是
+unix domain socket。`jc-linux`／`jc-mac` 的佔位 crate 沒有 `todo!()`，所有入口
+都回明確的 `Unsupported`。
 
 ## 11. 已知限制
 
@@ -864,26 +887,29 @@ Linux CI 能編譯、能跑測試。佔位 crate 沒有 `todo!()`，所有入口
 
 1. **沒有學習次數與來源權重**。`details` 有讀音、來源、成本、`learned` 與
    `pos`，但沒有次數、時間或來源權重。
-2. **協定沒有滑鼠事件**。TSF 候選窗已把點選轉成數字鍵；其他 wrapper 仍要
-   自己把點選與滾輪轉成 `Key`。
+2. **協定沒有滑鼠事件**。TSF 候選窗有滑鼠回呼，但 `select` op 還沒進
+   `jc-proto`，點選目前回 `unknown_op`；其他 wrapper 仍要自己把點選與滾輪
+   轉成 `Key`。
 3. **沒有候選窗開關旗標**。只能用 `candidates` 是否為空推測。
 4. **沒有選字即時提交**。Space／數字選字後要補一次 `Commit`，見 §7.2。
 5. **沒有主動通知**。學習完成、模型狀態、候選變更都不會推送。
-6. **一次一條連線**。多應用程式共用會排隊，沒有多工。
-7. **沒有執行期設定頻道**。簡繁轉換、Ctrl 標點、英文自動補完、輸入風格、
-   模糊音都只能在啟動時由 `settings.json` 決定；改了要重啟引擎。
+6. **一條連線內序列處理**。多條連線已可並行，每個 session 各自隔離；跨應用
+   程式共用時仍要由 wrapper 處理焦點與收尾。
+7. **沒有執行期設定套用**。`apply_settings` 只收下設定並回 `Health`，沒有
+   真的套用；簡繁轉換、Ctrl 標點、英文自動補完、輸入風格、模糊音都只能在
+   啟動時由 `settings.json` 決定，改了要重啟引擎。
 8. **模式切換只支援 En**。執行期可用 `Toggle` 在目前語言與 En 間切換；切到其他
    語言仍須重啟引擎。
-9. **引擎端沒有載入個人化檔案**。核心有 rollback、弱負向訊號與最短觸發
-   長度，但 `jc-engine` 啟動時不會讀取使用者學習檔。
+9. **`undo_learning`／`forget_word` 沒有協定入口**。核心方法已實作，但
+   wrapper 只能送 `reset_personal` 清空全部學習，不能單筆 undo。
 10. **日文 reranker 預設關閉**。重排由 Jinen small 取代，`ja_rerank` 只
     保留給實驗。
 11. **`--mode en` 的 Enter 不產生換行**，見 §7.3。
 12. **右文脈沒進 Jinen**。`max_context_chars.right` 欄位存在，但 prompt
     只送左文脈。
-13. **`ja_live` 尚未預設開啟**。逐字変換已接同一套 Jinen 門檻，預設仍走
-    一般轉換。
-14. **TSF 只建 x64**。32 位元程式不會載入這個輸入法；MSI 也還沒有簽章。
+13. **引擎、CLI 與設定程式只建 x64**。TSF DLL 有 x64 與 x86 兩份，共用同一個
+    CLSID；引擎是獨立行程，32 位元程式仍連得到。安裝器是 Inno Setup；
+    setup.exe 的簽章取決於建置時有沒有提供憑證。
 
 ## 12. 待補
 
@@ -894,19 +920,14 @@ Linux CI 能編譯、能跑測試。佔位 crate 沒有 `todo!()`，所有入口
 | 1 | 選字後回 `State` 而不是 `Committed` | 必須補送 `Commit`，否則掉字 | Space／數字選字直接回 `Committed`，或加 `pending: true` |
 | 2 | 沒有候選窗開關旗標 | 數字鍵與 Space 的語意無法預測 | 加 `candidate_window: bool` |
 | 3 | 沒有「這個鍵被吃掉」的回應 | pass-through 只能靠 `preedit` 猜 | 加 `handled: bool` 或 `consumed` |
-| 4 | `Shutdown` 實際會回 `State`，`docs/proto.md` 寫無回應 | 文件與實作不一致 | 更新 `proto.md`，或改成真的不回 |
-| 5 | `Shutdown` 不檢查握手 | 任何本機行程都能關引擎 | 要求先 `Hello`，或加權限檢查 |
-| 6 | `docs/proto.md` 說 Esc 後 `preedit` 為空 | 候選窗開著時 Esc 只關窗 | 文件補上 Esc 的三段優先序 |
-| 7 | `docs/proto.md` 說每個 Key 都回 `State` | Enter 回 `Committed`，錯誤回 `Error` | 文件補上回應矩陣 |
-| 8 | 沒有學習次數與來源權重 | 候選窗無法顯示「常用」或信心 | v4 加欄位，保持舊 wrapper 可解析 |
-| 9 | `Ready` 沒有通告 `max_frame` 與能力 | wrapper 只能猜 | 加 `max_frame`，之後再加 `features` |
-| 10 | `Toggle` 只能在目前語言與 En 間切換 | 切到其他語言仍要重啟引擎 | 加完整的 `set_mode` 請求 |
-| 11 | 沒有執行期設定請求 | 設定改了要重啟引擎 | 加 `configure` 請求，或明確寫成啟動時設定 |
-| 12 | 沒有 undo／forget | 無法撤銷學習或提交 | 加 `undo`／`forget` |
-| 13 | 沒有焦點事件 | 共用引擎時組字會跨應用程式殘留 | 加 `focus_lost`，或由 wrapper 保證送 Esc |
-| 14 | 多連線序列處理 | 第二個應用程式會卡住 | per-connection 執行緒或 broker 契約 |
-| 15 | 學習資料不落盤到引擎 | 重啟就忘 | 引擎啟動時載入使用者學習檔 |
-| 16 | 沒有滑鼠事件 | 點選與滾輪只能轉鍵 | 加指標事件，或明確寫成 wrapper 責任 |
+| 4 | `Shutdown` 不檢查握手 | 任何本機行程都能關引擎 | 要求先 `Hello`，或加權限檢查 |
+| 5 | 沒有學習次數與來源權重 | 候選窗無法顯示「常用」或信心 | v4 加欄位，保持舊 wrapper 可解析 |
+| 6 | `Ready` 沒有通告 `max_frame` 與完整能力 | wrapper 只能猜；能力要另外送 `health` | 加 `max_frame`，`features` 可先沿用 `HealthInfo.capabilities` |
+| 7 | `Toggle` 只能在目前語言與 En 間切換 | 切到其他語言仍要重啟引擎 | 加完整的 `set_mode` 請求 |
+| 8 | `apply_settings` 只收下設定，沒有套用 | 設定改了要重啟引擎 | 完成執行期套用，或明確寫成啟動時設定 |
+| 9 | 沒有 undo／forget 請求 | 無法撤銷單筆學習或提交 | 加 `undo`／`forget` |
+| 10 | 沒有焦點事件 | 共用引擎時組字會跨應用程式殘留 | 加 `focus_lost`，或由 wrapper 保證送 Esc |
+| 11 | 沒有滑鼠事件，也沒有 `select` op | TSF 點選回 `unknown_op`，其他 wrapper 只能轉鍵 | 加指標事件或 `select` 請求 |
 
 第 1、2 項對 wrapper 的影響最大。在這兩項補上之前，候選窗只能做
 「顯示字串、上下鍵選、Space 確定、再補 Commit」這一條最保守的路徑。
@@ -917,8 +938,8 @@ Linux CI 能編譯、能跑測試。佔位 crate 沒有 `todo!()`，所有入口
 `--allow-empty-data` 就能重現。
 
 ```text
-→ [len]"{"op":"hello","protocol":3,"client":"jc-tsf/0.1.0-rc.1"}"
-← [len]"{"op":"ready","protocol":3,"engine":"jc-engine 0.1.0-rc.1"}"
+→ [len]"{"op":"hello","protocol":3,"client":"jc-tsf/<version>"}"
+← [len]"{"op":"ready","protocol":3,"engine":"jc-engine <version>","session":1}"
 
 → [len]"{"op":"key","key":{"code":{"kind":"char","value":"ㄇ"},"text":"ㄇ","shift":false}}"
 ← [len]"{"op":"state","preedit":"ㄇ","cursor":1,"candidates":[],"cursor_rune":1}"
@@ -940,7 +961,7 @@ Linux CI 能編譯、能跑測試。佔位 crate 沒有 `todo!()`，所有入口
 
 → [len]"{"op":"shutdown"}"
 ← [len]"{"op":"state","preedit":"","cursor":0,"candidates":[]}"
-   （引擎隨後結束；契約文件寫無回應，見 §12）
+   （引擎回完 State 後結束）
 ```
 
 有載入注音資料時，依序送 `j`、`i`、`3`，`candidates[0]` 會是 `我`；
@@ -959,7 +980,7 @@ Linux CI 能編譯、能跑測試。佔位 crate 沒有 `todo!()`，所有入口
 | 訊框編解碼、上限 | `crates/jc-proto/src/frame.rs` |
 | 讀寫完整訊息 | `crates/jc-proto/src/message.rs` |
 | 引擎命令列、傳輸 | `crates/jc-engine/src/main.rs` |
-| Windows named pipe server | `crates/jc-engine/src/pipe_windows.rs` |
+| Windows named pipe server | `crates/jc-engine/src/pipe_listener.rs` |
 | 握手、請求分派、連線迴圈 | `crates/jc-engine/src/lib.rs` |
 | 資料載入與模型安裝 | `crates/jc-engine/src/loader.rs` |
 | 按鍵型別 | `crates/jc-core/src/key.rs` |

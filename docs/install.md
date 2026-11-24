@@ -43,8 +43,10 @@ jc-ime-0.1.0-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\
    `machine-register` 結束碼，再看 `%TEMP%\jc-ime-install.log` 的註冊細節。
    32 位元程式因此看得到同一項「jc 注音」。
 4. 寫入引擎開機啟動：`HKLM\Software\Microsoft\Windows\CurrentVersion\Run\jc-ime-engine`。
-   Run 值用 PowerShell 從目前使用者的 SID 尾段組出 `--socket jc-ime-<rid>`，並帶
-   `--personal-prefix personal`。
+   Run 值直接執行 `jc-engine.exe --supervise`，並帶 `--data`、`--settings`、
+   `--personal-dir` 與 `--personal-prefix personal`；**不帶** `--socket`，pipe
+   名稱由引擎與 TIP 共用的 `jc_windows::resolve_pipe_name()` 從目前使用者 SID
+   推出。安裝完成時也會以 `runasoriginaluser` 先啟動一次，不必等下次登入。
 5. 以 `runasoriginaluser` 執行 `user-install`，把單一「jc 注音」加進你的語言清單；
    再執行 `user-cleanup-legacy` 清掉舊語言清單項目。不改你的預設輸入法。
 6. 建立開始功能表的「jc 注音設定」與「jc 注音授權」兩個捷徑。
@@ -58,21 +60,48 @@ jc-ime-0.1.0-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\
 
 1. 按 `Win+Space`，清單裡應該出現「jc 注音」。選它可以打注音。打字時單按左或
    右 Shift（不搭配其他鍵）會切到純英文，再按一次回到原本的中文或日文模式。
-2. 引擎在**下次登入**時由 Run 項目啟動。不想登出的人可以手動跑一次：
+2. 安裝器會在完成時先啟動引擎；之後每次登入由 Run 項目再啟動。不想重新登入
+   的人可以手動跑一次：
 
    ```bat
-   "%ProgramFiles%\jc-ime\jc-engine.exe" --data "%ProgramData%\jc-ime\data" ^
-     --settings "%LOCALAPPDATA%\jc-ime\settings.json"
+   "%ProgramFiles%\jc-ime\jc-engine.exe" --supervise ^
+     --data "%ProgramData%\jc-ime\data" ^
+     --settings "%LOCALAPPDATA%\jc-ime\settings.json" ^
+     --personal-dir "%LOCALAPPDATA%\jc-ime"
    ```
 
+   `--supervise` 不能省：直接伺服模式沒給 `--socket` 會走 stdio，TIP 連不上。
    不要手動加 `--socket`：引擎會用目前使用者的 SID 尾段推出 `jc-ime-<rid>`，
    與 TIP 相同。只有在 `JC_IME_PIPE` 環境變數或
    `HKCU\Software\jc-ime\EnginePipe` 同時設成同一個自訂名稱時，才能兩邊都指定。
 
-   引擎沒跑時，`jc 注音` 仍然可以選取，但按鍵會直接放行，看起來像「打了沒反應」。
+   引擎沒跑時，`jc 注音` 仍然可以選取，TIP 的第一個按鍵會嘗試啟動引擎；真的
+   起不來時按鍵會直接放行，看起來像「打了沒反應」。
 3. 設定程式在「開始功能表 → jc 注音 → jc 注音設定」。修改後要重新啟動引擎
    （登出再登入，或從工作管理員結束 `jc-engine.exe` 後再跑上面的指令）才會生效；
    引擎目前不監看 `settings.json`。
+
+### 安裝診斷（doctor）
+
+`jc-tsf-smoke.exe` 就是 doctor：免管理員，載入 `jc-tsf.dll` 後跑 12 項檢查，
+涵蓋 DLL、COM、TSF 啟動、引擎 pipe、註冊機碼、使用者語言清單與引擎健康狀態。
+
+```bat
+"%ProgramFiles%\jc-ime\jc-tsf-smoke.exe"
+"%ProgramFiles%\jc-ime\jc-tsf-smoke.exe" --json > "%TEMP%\smoke.json"
+```
+
+- `--json` 時 stdout 只有一個 `jc-ime-doctor/1` JSON 物件，人類可讀的診斷行
+  改走 stderr；要留下完整紀錄就自己重導：
+  `jc-tsf-smoke.exe --json > "%TEMP%\smoke.json" 2> "%TEMP%\smoke.err.log"`。
+- 結束碼：`0` 全部通過或只有警告、`1` 至少一項 `[FAIL]`、`2` 參數錯誤。
+- 12 項的意義與每個失敗的修復指令見
+  [`port/tsf-smoke.md`](port/tsf-smoke.md)。
+
+**目前沒有 `%LOCALAPPDATA%\jc-ime\doctor\` 這個 log 目錄。** doctor 不會寫檔，
+也不會自動建立目錄；上面的 `%TEMP%` 路徑是 CI 與手動重導用的，不是程式內建。
+TSF 自己的 log 仍在 `%LOCALAPPDATA%\jc-ime\tsf.log`，只有設 `JC_TSF_LOG=1`
+才會寫。
 
 ### 看不到「jc 注音」
 
@@ -111,6 +140,7 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%ProgramFiles%\jc-ime\LICENSE` | 本專案 AGPL-3.0-only 全文 |
 | `%ProgramFiles%\jc-ime\NOTICE` | 專案 NOTICE（本專案與隨附第三方元件的關係） |
 | `%ProgramFiles%\jc-ime\legal\THIRD-PARTY-NOTICES.md` | 逐來源的授權、版本與署名 |
+| `%ProgramFiles%\jc-ime\legal\RUST-THIRD-PARTY-NOTICES.md` | Rust crate 的第三方授權清單 |
 | `%ProgramFiles%\jc-ime\legal\licenses\` | 授權全文 17 份：Mozc、UniDic、Apache-2.0、CC-BY-4.0、CC-BY-SA-3.0／4.0、MIT、ESDB-SCOWL 等 |
 | `%ProgramData%\jc-ime\data\manifest.json` | 資料索引（版本、大小、SHA-256、授權） |
 | `%ProgramData%\jc-ime\data\packs\ja-lexicon-mozc-v2.pack` | Mozc 日文詞典 |
@@ -121,8 +151,9 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%ProgramData%\jc-ime\data\english\words.bin` | 英文詞表 |
 | `%ProgramData%\jc-ime\data\models\external\jinen-v2-small\jinen-v2-small-Q5_K_M.gguf` | 日文神經模型 |
 | `%LOCALAPPDATA%\jc-ime\settings.json` | 使用者設定；第一次開啟設定程式就以預設值建立，可立即修改，安裝器不覆蓋既有檔 |
-| `%LOCALAPPDATA%\jc-ime\personal.json` | 個人化資料（引擎之後才會寫） |
-| `%LOCALAPPDATA%\jc-ime\tsf.log` | 只有 `JC_TSF_LOG=1` 時才寫 |
+| `%LOCALAPPDATA%\jc-ime\personal.json` | 個人化資料；引擎啟動時載入，學習後原子寫回 |
+| `%LOCALAPPDATA%\jc-ime\supervisor.log` | `--supervise` 的環狀 log；預設位置，可用 `--supervisor-log` 改 |
+| `%LOCALAPPDATA%\jc-ime\tsf.log` | TSF 診斷 log；只有 `JC_TSF_LOG=1` 時才寫 |
 
 注音產品只帶 bigram 語言模型：`build-zh-bigram\lm.bin` 是必要資料。舊的
 unigram-only `build-zh\lm.bin` 已退役，安裝包不提供，引擎也不再退回該檔；
@@ -131,8 +162,8 @@ unigram-only `build-zh\lm.bin` 已退役，安裝包不提供，引擎也不再�
 
 ### 資料包產生方式
 
-安裝器吃的資料包由 `scripts/build-data-bundle.sh` 從資料根目錄重建，不要
-手動挑檔：
+安裝器與離線資料包都吃 `jc-data` catalog 的 `shipped: true` 清單，不要手動挑檔。
+離線包由 `scripts/build-data-bundle.sh` 從資料根目錄重建：
 
 ```sh
 scripts/build-data-bundle.sh /mnt/work/jc/jc-ime-data \
@@ -168,7 +199,7 @@ Funmula 的 `zh-select` 依 `legal\licenses\MIT-Funmula.txt` 可散布，安裝�
 
 ### 授權文件位置
 
-授權文件共 20 份：`LICENSE` 與 `NOTICE` 在安裝目錄根，其餘在
+授權文件共 21 份：`LICENSE` 與 `NOTICE` 在安裝目錄根，其餘 19 份在
 `%ProgramFiles%\jc-ime\legal\`，安裝後可直接用檔案總管或記事本開啟：
 
 | 路徑 | 內容 |
@@ -176,7 +207,8 @@ Funmula 的 `zh-select` 依 `legal\licenses\MIT-Funmula.txt` 可散布，安裝�
 | `LICENSE` | AGPL-3.0-only 全文 |
 | `NOTICE` | 專案 NOTICE |
 | `legal\THIRD-PARTY-NOTICES.md` | 第三方逐來源聲明，含 Mozc、UniDic、注音資料、Jinen 模型與 GPUI |
-| `legal\licenses\` | 17 份授權全文與資料來源 notice |
+| `legal\RUST-THIRD-PARTY-NOTICES.md` | Rust crate 的第三方授權清單 |
+| `legal\licenses\` | 17 份授權全文與資料來源 notice（含 `README.md`） |
 
 「開始功能表 → jc 注音 → jc 注音授權」會用記事本開啟
 `legal\THIRD-PARTY-NOTICES.md`。捷徑透過 `jc-tip-register.exe legal` 組合路徑，
@@ -218,8 +250,8 @@ profile 註冊，也不呼叫 `ILOT_UNINSTALL`。反安裝時**不**呼叫 `ILOT
 "%ProgramFiles%\jc-ime\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\uninstall.log
 ```
 
-反安裝不會刪除 `%LOCALAPPDATA%\jc-ime`（settings.json、personal.json、tsf.log）。
-要清使用者資料，以該使用者身分執行：
+反安裝不會刪除 `%LOCALAPPDATA%\jc-ime`（settings.json、personal.json、
+supervisor.log、tsf.log）。要清使用者資料，以該使用者身分執行：
 
 ```bat
 "%ProgramFiles%\jc-ime\jc-tip-register.exe" user-uninstall 0
@@ -334,7 +366,7 @@ Linux 只能做 `.iss`、payload 與 manifest 的靜態一致性檢查，下面�
 10. 32 位元應用程式（例如舊版 Office）與 64 位元應用程式使用**同一個**「jc 注音」
     項目都能輸入；`reg query ... /reg:32` 與 `/reg:64` 分別指到 `jc-tsf-x86.dll` 與
     `jc-tsf.dll`（完整指令見 `docs/port/x86-tip.md`）。
-11. 安裝目錄的 `LICENSE`、`NOTICE` 與 `legal\` 底下 18 份授權文件是否齊全（共 20
+11. 安裝目錄的 `LICENSE`、`NOTICE` 與 `legal\` 底下 19 份授權文件是否齊全（共 21
     份）、「jc 注音授權」捷徑是否真的用記事本開啟 `THIRD-PARTY-NOTICES.md`，以及
     反安裝後 `legal\` 目錄與兩份根目錄授權檔是否消失。
 12. 單按左／右 Shift 從中文或日文切到純英文，再按一次回到原本模式；
@@ -349,11 +381,14 @@ Linux 只能做 `.iss`、payload 與 manifest 的靜態一致性檢查，下面�
 - 只提供 x64 的引擎、CLI 與設定程式。TSF DLL 只有 x64 與 x86 兩份（共用同一個
   CLSID `{2F6B41D8-...}`，舊 CLSID 已移除），引擎本身是獨立行程，32 位元程式
   一樣連得到。
-- 引擎啟動靠 `HKLM\...\Run`，不是服務，也沒有監督程式。多人同時登入時每個工作階段
-  各有一個 `jc-engine.exe`；pipe 名稱含 SID 尾段，不同使用者各自連到自己的引擎。
-  同一使用者開多個 RDP 工作階段仍共用同一個名稱，client 會連到其中一個實例。
+- 引擎啟動靠 `HKLM\...\Run` 與安裝完成時的啟動，不是服務；`--supervise` 會用
+  Local mutex 保證單一實例並在子行程結束後重啟。多人同時登入時每個工作階段
+  各有一個 `jc-engine.exe`；pipe 名稱含 SID 尾段，不同使用者各自連到自己的
+  引擎。同一使用者開多個 RDP 工作階段仍共用同一個名稱，client 會連到其中一個
+  實例。
 - 語言清單只對執行安裝與反安裝的帳號生效；由 SYSTEM 或部署工具代裝時，使用者的
   `HKCU` 不會被加到。
 - 設定變更後需要重啟引擎。
 - 注音神經選字模型（Funmula `zh-select`）的 Q8_0 GGUF 隨安裝包散布；原始 ONNX 不含。
-- 沒有候選窗自繪、沒有 `ITfDisplayAttributeProvider`；這些屬於其他任務或後續版本。
+- 候選窗已由 TSF DLL 內的 D2D／DComp 自繪，組字底線用
+  `ITfDisplayAttributeProvider`；Fcitx5／macOS 外殼仍要自己畫。
