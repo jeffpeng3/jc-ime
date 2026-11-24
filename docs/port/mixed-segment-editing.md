@@ -29,6 +29,29 @@ Mixed 的顯示、送出與片段都以同一條管線為準：`crate::mixed::pl
 - 尾巴連續的注音 plan 才是「目前的中文片段」，中文候選不會跨過英文或標點去做
   整句猜測。
 
+## 未完成的注音不轉換
+
+沒有聲調鍵、也還沒按空白的注音音節，一律顯示原始注音，不轉成字。這條規則在
+純注音路徑與混打路徑都成立，尾巴與中間的音節都一樣；只有下列情況才轉換：
+
+- 打了聲調鍵（`3`／`4`／`6`／`7`）
+- 按了空白（空白是一聲；沒有未完成音節時才是字面空格）
+- 使用者從候選窗明確選字
+
+實例（真實詞典，`ㄍㄨ` 有「家」、`ㄍㄨㄥ` 有「供」）：
+
+| 按鍵 | 顯示 | 說明 |
+|---|---|---|
+| `saej` | `さえj` 或 `さㄍㄨ` | `j` 之後停在原始按鍵／注音，沒有漢字 |
+| `saej/` | `さㄍㄨㄥ` | `/` 只是韻母鍵，`ㄍㄨㄥ` 還沒完成 |
+| `saej/ ` | `さ供` | 空白是一聲，這時才轉成詞典的字 |
+| `w96j0` | `台ㄨㄢ` | 前段 `ㄊㄞˊ` 已完成照常轉字，尾巴 `ㄨㄢ` 留注音 |
+| `j0w96` | `ㄨㄢ台` | 中間的 `ㄨㄢ` 未完成，一樣不轉字 |
+
+實作上 `crate::mixed::Plan` 為每個注音音節記錄 `zh_done`：切分時看到聲調鍵或
+空白一聲就標成完成。顯示與送出都只把連續完成的音節交給詞典轉換，未完成的音節
+直接輸出讀音；候選清單仍照常產生，不受影響。
+
 ## 刪除規則
 
 | 按鍵 | 行為 | 理由 |
@@ -97,6 +120,9 @@ Mixed 沒有音節格，游標改用**片段邊界索引** `mixed_cursor`：
 | `test_mixed_delete_forward_removes_segment_after_cursor` | 游標在英文片段前按 Delete 只刪該段。 |
 | `test_mixed_candidates_open_on_down_and_space` | `w96` 後 `candidates` 非空；↓ 開窗並 `navigating`，空白開窗不插空白。 |
 | `test_mixed_selects_zh_candidate_in_place` | ↓ 後用數字選「颱」，只換結尾注音片段。 |
+| `test_mixed_unfinished_zhuyin_stays_bopomofo` | `saej`、`saej/` 停在原始注音；空白後才是「さ供」。 |
+| `test_mixed_unfinished_zhuyin_with_ja_decoder` | 載入日文解碼器時 `j` 停在 `さえj`，`/` 後仍是 `さㄍㄨㄥ`。 |
+| `test_mixed_unfinished_zhuyin_in_middle_stays_bopomofo` | `w96j0` 是 `台ㄨㄢ`、`j0w96` 是 `ㄨㄢ台`，中間與尾巴都不提早轉字。 |
 
 既有測試沒有放寬；`test_incremental_matches_router` 仍要求工作階段與
 `Router::convert` 對同一串按鍵逐段一致。

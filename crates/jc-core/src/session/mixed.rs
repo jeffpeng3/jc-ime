@@ -1339,16 +1339,10 @@ impl Session {
                         }
                     }
                     Mode::Zh => {
-                        let reading = match &plan.zh {
-                            Some(reading) => {
-                                crate::mixed_latin::toned_syllables(reading, &self.lexicon)
-                                    .join(" ")
-                            }
-                            None => literal.to_string(),
-                        };
+                        let (reading, surface) = self.zh_plan_surface(plan, literal);
                         let units = reading.split_whitespace().count();
                         RenderedPiece {
-                            surface: self.decode_reading(&reading),
+                            surface,
                             mode: Mode::Zh,
                             reading,
                             units,
@@ -1363,6 +1357,49 @@ impl Session {
                 }
             })
             .collect()
+    }
+
+    /// 把一個注音片段轉成（讀音, 顯示字面）。
+    ///
+    /// 沒有聲調鍵、也還沒按空白的音節還沒完成，照原始注音顯示；已完成的
+    /// 連續音節照詞典一起轉換，尾巴與中間的未完成音節都不提早變成字。
+    fn zh_plan_surface(&self, plan: &crate::mixed::Plan, literal: &str) -> (String, String) {
+        let Some(reading) = plan.zh.as_deref() else {
+            let reading = literal.to_string();
+            let surface = self.decode_reading(&reading);
+            return (reading, surface);
+        };
+        let mut surface = String::new();
+        let mut out_reading: Vec<String> = Vec::new();
+        let mut group: Vec<&str> = Vec::new();
+        for (index, syllable) in reading.split_whitespace().enumerate() {
+            if plan.zh_completed(index) {
+                group.push(syllable);
+                continue;
+            }
+            self.flush_zh_group(&mut group, &mut surface, &mut out_reading);
+            surface.push_str(syllable);
+            out_reading.push(syllable.to_string());
+        }
+        self.flush_zh_group(&mut group, &mut surface, &mut out_reading);
+        (out_reading.join(" "), surface)
+    }
+
+    /// 轉換一整段已完成的注音音節並寫進顯示字面。
+    fn flush_zh_group(
+        &self,
+        group: &mut Vec<&str>,
+        surface: &mut String,
+        out_reading: &mut Vec<String>,
+    ) {
+        if group.is_empty() {
+            return;
+        }
+        let reading = group.join(" ");
+        let toned = crate::mixed_latin::toned_syllables(&reading, &self.lexicon);
+        surface.push_str(&self.decode_reading(&toned.join(" ")));
+        out_reading.extend(toned);
+        group.clear();
     }
 
     /// 把切分結果寫進 `base`、`segments` 與 [`Composition`]。
@@ -2010,8 +2047,8 @@ mod tests {
         }
         assert_eq!(
             s.snapshot().preedit,
-            "りしれ供",
-            "`rishiree` 不能整段留在日文：e 要還給 ej/"
+            "りしれㄍㄨㄥ",
+            "`rishiree` 不能整段留在日文：e 要還給 ej/；沒有聲調鍵的 ㄍㄨㄥ 不提早轉字"
         );
         s.press(Key::new(KeyCode::Space, None, false));
         assert_eq!(s.snapshot().preedit, "りしれ供", "空白是一聲，不是分隔字面");
@@ -2074,6 +2111,110 @@ mod tests {
                 (Mode::En, "small".to_string()),
             ],
             "批次規劃是 rishire｜ej/ ｜sa｜small"
+        );
+    }
+
+    /// 混打路徑的未完成注音不能提早轉字。
+    ///
+    /// 真實使用者的回報：`saej/` 應該停在 `さㄍㄨㄥ`，不是 `さ供`。尾巴與
+    /// 中間的注音音節都一樣，只有聲調鍵或空白一聲才轉成字。
+    #[test]
+    fn test_mixed_unfinished_zhuyin_stays_bopomofo() {
+        fn session() -> Session {
+            let mut lex = InMemoryLexicon::new();
+            lex.push(LexEntry::new("家", "ㄍㄨ", 0, 0));
+            lex.push(LexEntry::new("供", "ㄍㄨㄥ", 0, 0));
+            let mut config = SessionConfig::new(Mode::Mixed);
+            config.zh_lexicon = Some(std::sync::Arc::new(lex));
+            Session::new(config)
+        }
+
+        let mut s = session();
+        mixed_type(&mut s, "saej");
+        assert_eq!(
+            s.snapshot().preedit,
+            "さㄍㄨ",
+            "沒有聲調鍵的 ㄍㄨ 要留在注音"
+        );
+
+        let mut s = session();
+        mixed_type(&mut s, "saej/");
+        assert_eq!(
+            s.snapshot().preedit,
+            "さㄍㄨㄥ",
+            "尾巴的 ㄍㄨㄥ 還沒完成，不能變成供"
+        );
+        assert_ne!(s.snapshot().preedit, "さ供");
+        assert_eq!(s.commit(), "さㄍㄨㄥ", "空白前送出也不能提早轉字");
+
+        let mut s = session();
+        mixed_type(&mut s, "saej/");
+        s.press(Key::new(KeyCode::Space, None, false));
+        assert_eq!(s.snapshot().preedit, "さ供", "空白當一聲後才轉成詞典的字");
+    }
+
+    /// 真實引擎會載入日文解碼器：`saej` 可能停在 `さえj`，一樣不能先變漢字。
+    ///
+    /// 不論 `j` 之後停在原始羅馬字或混打重算的 `さㄍㄨ`，重點是 `/` 之後仍
+    /// 是原始注音，只有空白才轉成「供」。
+    #[test]
+    fn test_mixed_unfinished_zhuyin_with_ja_decoder() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("家", "ㄍㄨ", 0, 0));
+        lex.push(LexEntry::new("供", "ㄍㄨㄥ", 0, 0));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        config.ja = Some(test_ja_decoder());
+        let mut s = Session::new(config);
+
+        mixed_type(&mut s, "saej");
+        let preedit = s.snapshot().preedit;
+        assert!(
+            preedit == "さえj" || preedit == "さㄍㄨ",
+            "j 之後只能停在原始按鍵或注音：{preedit:?}"
+        );
+        assert!(
+            !preedit.contains('家') && !preedit.contains('供'),
+            "還沒按聲調或空白就變成漢字：{preedit:?}"
+        );
+
+        mixed_type(&mut s, "/");
+        assert_eq!(
+            s.snapshot().preedit,
+            "さㄍㄨㄥ",
+            "/ 只是韻母鍵，不能提早轉成供"
+        );
+
+        mixed_type(&mut s, " ");
+        assert_eq!(s.snapshot().preedit, "さ供", "空白一聲才轉字");
+    }
+
+    /// 中間與尾巴的未完成注音都不轉字，已完成的前段仍照常轉換。
+    #[test]
+    fn test_mixed_unfinished_zhuyin_in_middle_stays_bopomofo() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("台", "ㄊㄞˊ", 0, 0));
+        lex.push(LexEntry::new("彎", "ㄨㄢ", 0, 0));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        let mut s = Session::new(config);
+
+        mixed_type(&mut s, "w96j0");
+        assert_eq!(s.snapshot().preedit, "台ㄨㄢ", "完成的前段照常轉字");
+
+        let mut s = Session::new({
+            let mut lex = InMemoryLexicon::new();
+            lex.push(LexEntry::new("台", "ㄊㄞˊ", 0, 0));
+            lex.push(LexEntry::new("彎", "ㄨㄢ", 0, 0));
+            let mut config = SessionConfig::new(Mode::Mixed);
+            config.zh_lexicon = Some(std::sync::Arc::new(lex));
+            config
+        });
+        mixed_type(&mut s, "j0w96");
+        assert_eq!(
+            s.snapshot().preedit,
+            "ㄨㄢ台",
+            "中間的 ㄨㄢ 沒有聲調，也不能先轉成彎"
         );
     }
 

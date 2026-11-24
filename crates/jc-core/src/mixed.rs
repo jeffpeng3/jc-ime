@@ -1809,6 +1809,8 @@ struct Atom {
     kana: Option<String>,
     /// 注音已還原的音節（以空白分隔）；只有切分器產生的片段才有值。
     zh: Option<String>,
+    /// 每個注音音節是否已完成：打了聲調鍵，或空白當一聲。
+    zh_done: Vec<bool>,
     /// かな照原樣輸出，不送かな漢字変換。
     verbatim: bool,
     /// 全小寫 ASCII 字母（片語合併用）。
@@ -1828,6 +1830,17 @@ pub(crate) struct Plan {
     pub(crate) verbatim: bool,
     /// 切分器已還原的注音音節（以空白分隔）。
     pub(crate) zh: Option<String>,
+    /// 每個注音音節是否已完成：打了聲調鍵，或空白當一聲。
+    pub(crate) zh_done: Vec<bool>,
+}
+
+impl Plan {
+    /// 第 `index` 個注音音節是否已完成。
+    ///
+    /// 沒有完成資訊的片段（直接輸入的注音符號）視為已完成，維持原本行為。
+    pub(crate) fn zh_completed(&self, index: usize) -> bool {
+        self.zh_done.get(index).copied().unwrap_or(true)
+    }
 }
 
 /// 混合輸入的路由器。
@@ -1975,12 +1988,15 @@ impl<'a> Router<'a> {
         match plan.mode {
             Mode::Zh => match &self.zh {
                 Some(route) => {
-                    let syllables = match &plan.zh {
-                        Some(reading) => {
-                            crate::mixed_latin::toned_syllables(reading, route.lexicon)
+                    if let Some(reading) = &plan.zh {
+                        let syllables: Vec<String> =
+                            reading.split_whitespace().map(str::to_string).collect();
+                        if syllables.is_empty() {
+                            return Ok((literal.to_string(), 0));
                         }
-                        None => zhuyin_syllables(literal),
-                    };
+                        return convert_zh_syllables(plan, &syllables, route);
+                    }
+                    let syllables = zhuyin_syllables(literal);
                     if syllables.is_empty() {
                         return Ok((literal.to_string(), 0));
                     }
@@ -2030,6 +2046,49 @@ impl<'a> Router<'a> {
         let split_lex = &adapter as &dyn crate::mixed_latin::SplitLexicon;
         plan_input(input, lookup, &cfg, Some(split_lex))
     }
+}
+
+/// 轉換一個注音片段：未完成的音節照原始注音輸出，已完成的音節才轉成字。
+fn convert_zh_syllables(
+    plan: &Plan,
+    syllables: &[String],
+    route: &ZhRoute<'_>,
+) -> Result<(String, i32), MixedError> {
+    let mut surface = String::new();
+    let mut cost = 0i32;
+    let mut group: Vec<&str> = Vec::new();
+    for (index, syllable) in syllables.iter().enumerate() {
+        if plan.zh_completed(index) {
+            group.push(syllable);
+            continue;
+        }
+        convert_zh_group(&mut group, &mut surface, &mut cost, route)?;
+        surface.push_str(syllable);
+    }
+    convert_zh_group(&mut group, &mut surface, &mut cost, route)?;
+    Ok((surface, cost))
+}
+
+/// 轉換一整段已完成的注音音節。
+fn convert_zh_group(
+    group: &mut Vec<&str>,
+    surface: &mut String,
+    cost: &mut i32,
+    route: &ZhRoute<'_>,
+) -> Result<(), MixedError> {
+    if group.is_empty() {
+        return Ok(());
+    }
+    let reading = group.join(" ");
+    let syllables = crate::mixed_latin::toned_syllables(&reading, route.lexicon);
+    let lattice = ZhLattice::build(&syllables, route.lexicon, route.ctx)?;
+    let decoder = Decoder::new(route.lexicon, route.ctx);
+    let (segs, group_cost) = decoder.best(&lattice, &Locks::new(), false);
+    let conversion = decoder.conversion(&lattice, &segs, Mode::Zh);
+    surface.push_str(&conversion.surface);
+    *cost = cost.saturating_add(group_cost);
+    group.clear();
+    Ok(())
 }
 
 /// 唯一的管線：tokenize（R1、R2、R3）→ 每個 run 的 DP（R4）→ 後處理（R5）。
@@ -2359,6 +2418,7 @@ fn build_atoms(
                 kind: AtomKind::Zhuyin,
                 kana: None,
                 zh: None,
+                zh_done: Vec::new(),
                 verbatim: false,
                 plain_lower: false,
             });
@@ -2393,6 +2453,7 @@ fn build_atoms(
                     kind,
                     kana: None,
                     zh: None,
+                    zh_done: Vec::new(),
                     verbatim: false,
                     plain_lower: false,
                 });
@@ -2442,6 +2503,7 @@ fn build_atoms(
             kind: AtomKind::Symbol,
             kana: None,
             zh: None,
+            zh_done: Vec::new(),
             verbatim: false,
             plain_lower: false,
         });
@@ -2607,6 +2669,7 @@ fn symbol_atom(start: usize, end: usize) -> Atom {
         kind: AtomKind::Symbol,
         kana: None,
         zh: None,
+        zh_done: Vec::new(),
         verbatim: false,
         plain_lower: false,
     }
@@ -2723,10 +2786,64 @@ fn push_split_pieces(
             kind: AtomKind::Word,
             kana: (lang == crate::mixed_latin::SplitLang::Ja).then(|| piece.reading.clone()),
             zh: (lang == crate::mixed_latin::SplitLang::Zh).then(|| piece.reading.clone()),
+            zh_done: if lang == crate::mixed_latin::SplitLang::Zh {
+                zh_piece_completion(piece.text(text), &piece.reading)
+            } else {
+                Vec::new()
+            },
             verbatim: false,
             plain_lower: lang == crate::mixed_latin::SplitLang::En
                 || is_plain_lower(piece.text(text)),
         });
+    }
+}
+
+/// 一個注音片段內每個音節是否已完成：結尾是聲調鍵，或空白當一聲。
+///
+/// DP 會把相鄰音節併成一個片段，這裡照大千鍵盤的類別順序切回音節。類別回到
+/// 開頭時開始下一個音節；回傳長度與讀音音節數對不上時，交給呼叫端保留原行為。
+fn zh_piece_completion(text: &str, reading: &str) -> Vec<bool> {
+    let keyboard = Keyboard::standard();
+    let mut out = Vec::new();
+    let mut last = Class::None;
+    let mut start = 0usize;
+    for (i, ch) in text.char_indices() {
+        if ch.is_whitespace() {
+            if start < i {
+                out.push(true);
+            }
+            start = i + ch.len_utf8();
+            last = Class::None;
+            continue;
+        }
+        let Some(symbol) = keyboard.symbol(ch) else {
+            return vec![true; reading.split_whitespace().count()];
+        };
+        let class = class_of(symbol);
+        if class == Class::Tone {
+            if start < i {
+                out.push(true);
+            }
+            start = i + ch.len_utf8();
+            last = Class::None;
+            continue;
+        }
+        if class == Class::None {
+            return vec![true; reading.split_whitespace().count()];
+        }
+        if class <= last && start < i {
+            out.push(false);
+            start = i;
+        }
+        last = class;
+    }
+    if start < text.len() {
+        out.push(false);
+    }
+    if out.len() == reading.split_whitespace().count() {
+        out
+    } else {
+        vec![true; reading.split_whitespace().count()]
     }
 }
 
@@ -2783,6 +2900,7 @@ fn push_literal_piece(
             kind: AtomKind::Word,
             kana: Some(kana),
             zh: None,
+            zh_done: Vec::new(),
             verbatim: false,
             plain_lower,
         });
@@ -2800,6 +2918,7 @@ fn push_literal_piece(
             kind: AtomKind::Word,
             kana: Some(kana),
             zh: None,
+            zh_done: Vec::new(),
             verbatim: false,
             plain_lower: is_plain_lower(prefix),
         });
@@ -2816,6 +2935,7 @@ fn push_literal_piece(
             kind: AtomKind::Word,
             kana: None,
             zh: None,
+            zh_done: Vec::new(),
             verbatim: false,
             plain_lower: false,
         });
@@ -2841,6 +2961,7 @@ fn latin_literal_atom(start: usize, end: usize, text: &str) -> Atom {
         kind: AtomKind::Word,
         kana: None,
         zh: None,
+        zh_done: Vec::new(),
         verbatim: false,
         plain_lower: is_plain_lower(text),
     }
@@ -3112,6 +3233,7 @@ fn merge_atoms(atoms: &[Atom], input: &str) -> Vec<Plan> {
                                 }
                                 None => last.zh = Some(reading.clone()),
                             }
+                            last.zh_done.extend(atom.zh_done.iter().copied());
                         }
                     }
                     AtomKind::Zhuyin | AtomKind::Symbol => {}
@@ -3130,6 +3252,7 @@ fn merge_atoms(atoms: &[Atom], input: &str) -> Vec<Plan> {
             kana_ok: true,
             verbatim: atom.verbatim,
             zh: None,
+            zh_done: Vec::new(),
         };
         match atom.kind {
             AtomKind::Kana => plan.kana = input[atom.start..atom.end].to_string(),
@@ -3137,7 +3260,12 @@ fn merge_atoms(atoms: &[Atom], input: &str) -> Vec<Plan> {
                 Some(kana) => plan.kana = kana.clone(),
                 None => plan.kana_ok = false,
             },
-            AtomKind::Word if mode == Mode::Zh => plan.zh = atom.zh.clone(),
+            AtomKind::Word if mode == Mode::Zh => {
+                if atom.zh.is_some() {
+                    plan.zh = atom.zh.clone();
+                    plan.zh_done.extend(atom.zh_done.iter().copied());
+                }
+            }
             AtomKind::Word | AtomKind::Zhuyin | AtomKind::Symbol => {}
             AtomKind::Han => plan.kana_ok = false,
         }
@@ -4298,18 +4426,20 @@ mod tests {
         let e = English::new(Some(dict));
         let r = Router::new().with_zh(&lex, &ctx).with_english(&e);
         // 任務書的九個案例。大千鍵盤 `m` 是 ㄩ，不是 ㄇ，因此 `m ` 的實際
-        // 輸出是 淤；`lo y` 依 R2 是 ㄠ ㄟ ㄗ（凹欸資），不是 ㄠ ㄗ。
+        // 輸出是 淤；`lo y` 依 R2 是 ㄠ ㄟ ㄗ，不是 ㄠ ㄗ。沒有聲調鍵也沒
+        // 接空白的音節不轉字：ㄠ、ㄗ 留在注音，只有空白當一聲的 ㄟ 轉成
+        // 「欸」；`1ohk ` 的 ㄅㄟ 也一樣留在注音。
         for (input, want) in [
             ("5k42. g4n0 vul3", "這都是三小"),
             ("hello.", "hello."),
             ("hello world", "hello world"),
             ("abc。def", "abc。def"),
             ("m ", "淤"),
-            ("1ohk ", "杯測"),
+            ("1ohk ", "ㄅㄟ測"),
             ("code", "code"),
             ("ABC", "ABC"),
             ("ＡＢＣ", "ＡＢＣ"),
-            ("lo y", "凹欸資"),
+            ("lo y", "ㄠ欸ㄗ"),
         ] {
             let got = r.convert(input).expect("轉換");
             assert_eq!(got.surface, want, "{input:?}");
