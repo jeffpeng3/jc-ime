@@ -13,7 +13,10 @@
 
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{
+    GetLastError, SetLastError, ERROR_SUCCESS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT,
+    WPARAM,
+};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
 };
@@ -40,6 +43,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
     DWRITE_WORD_WRAPPING_NO_WRAP,
 };
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
 };
@@ -55,11 +59,12 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, GetWindowLongPtrW,
-    IsWindowVisible, PostMessageW, RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    UnregisterClassW, GWLP_USERDATA, HWND_TOPMOST, MA_NOACTIVATE, SM_CXSCREEN, SM_CYSCREEN,
-    SWP_NOACTIVATE, SWP_NOOWNERZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WM_DESTROY, WM_DPICHANGED,
-    WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_PAINT, WNDCLASSW,
-    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    GetWindowRect, IsWindowVisible, PostMessageW, RegisterClassW, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, UnregisterClassW, GWLP_USERDATA, HWND_TOPMOST, MA_NOACTIVATE, SM_CXSCREEN,
+    SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WM_DESTROY,
+    WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_PAINT,
+    WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 use windows_core::{w, Interface, PCWSTR};
 
@@ -72,6 +77,9 @@ use crate::ui::{UiMessage, WM_SELECT_CANDIDATE};
 const CLASS_NAME: PCWSTR = w!("jcCandidateUiWindow");
 /// 候選窗與插入點的距離（DIP）。
 const GAP_DIP: f32 = 4.0;
+/// `DXGI_STATUS_OCCLUDED`：Present 成功但 DWM 目前沒合成這個視窗。
+/// windows-rs 沒有匯出這個 status 常數，值取自 `dxgi.h`。
+const DXGI_STATUS_OCCLUDED: i32 = 0x087A_0001u32 as i32;
 
 // 32-bit 的 `SetWindowLongPtrW`／`GetWindowLongPtrW` 在 windows-rs 收 `i32`，
 // 64-bit 收 `isize`；差異只留在這兩個小函式裡。
@@ -188,12 +196,12 @@ fn create_device() -> windows_core::Result<ID3D11Device> {
 /// 由呼叫端把整個 `Graphics` 丟掉，下一個按鍵再重建。
 struct Graphics {
     /// 只為了持有參照：visual 的內容是這條 swap chain，這裡不能讓它被釋放。
-    _swap: IDXGISwapChain1,
+    swap: IDXGISwapChain1,
     swap_base: IDXGISwapChain,
     d2d: ID2D1DeviceContext,
     rt: ID2D1RenderTarget,
     /// 同上：visual／target 由 `comp` 管理，參照要留到視窗銷毀。
-    _comp: IDCompositionDevice,
+    comp: IDCompositionDevice,
     write: IDWriteFactory,
     format_text: IDWriteTextFormat,
     format_key: IDWriteTextFormat,
@@ -264,11 +272,11 @@ impl Graphics {
             let brush_highlight = rt.CreateSolidColorBrush(&palette.highlight, None)?;
             let brush_highlight_text = rt.CreateSolidColorBrush(&palette.highlight_text, None)?;
             Ok(Graphics {
-                _swap: swap,
+                swap,
                 swap_base,
                 d2d,
                 rt,
-                _comp: comp,
+                comp,
                 write,
                 format_text,
                 format_key,
@@ -328,6 +336,17 @@ impl Graphics {
         }
     }
 
+    /// 把目前的 visual 樹送給 DWM。顯示順序改變後要再送一次，不能吞掉錯誤。
+    fn commit(&self) -> windows_core::Result<()> {
+        unsafe { self.comp.Commit() }
+    }
+
+    /// swap chain 目前的緩衝尺寸；診斷用，取不到時回 `None`。
+    fn swap_size(&self) -> Option<(u32, u32)> {
+        let desc = unsafe { self.swap.GetDesc1() }.ok()?;
+        Some((desc.Width, desc.Height))
+    }
+
     /// 把 swap chain 對齊視窗大小；bitmap 的 DPI 設成監視器 DPI，之後畫圖都用 DIP。
     fn resize(&mut self, width: u32, height: u32, dpi: u32) -> windows_core::Result<()> {
         let width = width.max(1);
@@ -372,7 +391,11 @@ impl Graphics {
         Ok(())
     }
 
-    fn draw(&mut self, layout: &Layout) -> windows_core::Result<()> {
+    /// 畫完後送出一帧，回傳 `Present` 的原始 `HRESULT`。
+    ///
+    /// `Present` 的成功碼不只 `S_OK`：`DXGI_STATUS_OCCLUDED` 也是成功，代表 DWM
+    /// 現在沒合成這個視窗；呼叫端要記錄下來，下一個按鍵再重畫重送。
+    fn draw(&mut self, layout: &Layout) -> windows_core::Result<windows_core::HRESULT> {
         unsafe {
             self.d2d.BeginDraw();
             let full = D2D_RECT_F {
@@ -431,8 +454,7 @@ impl Graphics {
             self.d2d.EndDraw(None, None)?;
         }
         // 不等垂直同步：候選窗晚一帧上屏沒有關係，按鍵路徑不能卡住。
-        unsafe { self.swap_base.Present(0, DXGI_PRESENT(0)) }.ok()?;
-        Ok(())
+        Ok(unsafe { self.swap_base.Present(0, DXGI_PRESENT(0)) })
     }
 
     fn draw_text(
@@ -557,6 +579,8 @@ pub struct LocalWindow {
     dpi: u32,
     /// 初始化失敗：本次 Activate 內不再嘗試，避免每個鍵都撞一次 GPU。
     failed: bool,
+    /// 上一次 `Present` 回 `DXGI_STATUS_OCCLUDED`：下一個按鍵要照常重畫重送。
+    occluded: bool,
     /// `SetWindowPos` 可能同步送來 `WM_DPICHANGED`；重入時直接忽略，避免遞迴。
     updating: bool,
 }
@@ -597,6 +621,7 @@ impl LocalWindow {
                 dark: false,
                 dpi: BASE_DPI,
                 failed: false,
+                occluded: false,
                 updating: false,
             });
             // Box 的內容不會再搬動，USERDATA 指向穩定的位址。
@@ -643,7 +668,10 @@ impl LocalWindow {
                 Ok(graphics) => self.graphics = Some(graphics),
                 Err(error) => {
                     self.failed = true;
-                    zlog!("ui: 候選窗 Direct2D 初始化失敗，改為不顯示（{error}）");
+                    zlog!(
+                        "ui: 候選窗 Direct2D 初始化失敗，改為不顯示（hr={:#010x} {error}）",
+                        error.code().0 as u32
+                    );
                     self.hide();
                     return Ok(());
                 }
@@ -658,35 +686,51 @@ impl LocalWindow {
             self.build(&content, dpi, caret, work, px_from_dip(GAP_DIP, dpi));
 
         // 先把視窗移到插入點所在的監視器，再問那個監視器的 DPI；換監視器時版面要重算。
-        unsafe {
-            SetWindowPos(
-                self.hwnd,
-                Some(HWND_TOPMOST),
-                position.0,
-                position.1,
-                size.0,
-                size.1,
-                SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-            )?;
+        // 定位一定要在 ShowWindow 之前完成，免得先出現在舊位置。
+        if !self.place(size, position) {
+            self.hide();
+            return Ok(());
         }
         let moved_dpi = self.dpi();
         if moved_dpi != dpi {
             dpi = moved_dpi;
             (layout, size, position) =
                 self.build(&content, dpi, caret, work, px_from_dip(GAP_DIP, dpi));
-            unsafe {
-                SetWindowPos(
-                    self.hwnd,
-                    Some(HWND_TOPMOST),
-                    position.0,
-                    position.1,
-                    size.0,
-                    size.1,
-                    SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-                )?;
+            if !self.place(size, position) {
+                self.hide();
+                return Ok(());
             }
         }
         self.dpi = dpi;
+
+        // 先顯示、再送第一帧。`WS_EX_NOREDIRECTIONBITMAP` 的視窗沒有 GDI 轉向表面，
+        // 畫面只來自 DirectComposition；flip-model 的 composition swap chain 在視窗
+        // 還藏著時送出的第一個 `Present` 不會被 DWM 合成，之後才 ShowWindow 就只剩
+        // 空白。定位完成後立刻顯示，第一帧才會真的上屏。
+        let first_show = !self.visible;
+        if first_show {
+            unsafe { SetLastError(ERROR_SUCCESS) };
+            let previously_visible = unsafe { ShowWindow(self.hwnd, SW_SHOWNOACTIVATE) };
+            let last_error = unsafe { GetLastError() };
+            if last_error.0 != 0 {
+                zlog!(
+                    "ui: 候選窗 ShowWindow 失敗 hwnd={:#x} prev_visible={} GetLastError={:#010x}",
+                    self.hwnd.0 as usize,
+                    previously_visible.as_bool(),
+                    last_error.0
+                );
+            }
+            self.visible = true;
+            // 建立 Graphics 時視窗還藏著，那次 Commit 可能沒被 DWM 採用；顯示後補一次。
+            if let Some(graphics) = self.graphics.as_ref() {
+                if let Err(error) = graphics.commit() {
+                    zlog!(
+                        "ui: 候選窗 Commit 失敗（顯示後）hr={:#010x}",
+                        error.code().0 as u32
+                    );
+                }
+            }
+        }
 
         let dark = self.dark;
         let frame = {
@@ -696,23 +740,62 @@ impl LocalWindow {
                 .and_then(|()| graphics.set_theme(dark))
                 .and_then(|()| graphics.draw(&layout))
         };
-        if let Err(error) = frame {
-            // 裝置遺失之類的執行期錯誤：收起、丟掉資源，下一個按鍵重建。
-            zlog!("ui: 候選窗繪製失敗，改為不顯示（{error}）");
+        let present = match frame {
+            Ok(present) => present,
+            Err(error) => {
+                // 裝置遺失之類的執行期錯誤：收起、丟掉資源，下一個按鍵重建。
+                zlog!(
+                    "ui: 候選窗繪製失敗，改為不顯示（hr={:#010x} {error}）",
+                    error.code().0 as u32
+                );
+                self.graphics = None;
+                self.layout = None;
+                self.occluded = false;
+                self.hide();
+                return Ok(());
+            }
+        };
+        // `DXGI_STATUS_OCCLUDED` 是成功碼，但畫面沒有上屏。記下狀態，下一個按鍵照常
+        // 走完整流程重畫重送；不另外排程、不重試、不等待。
+        let occluded = present.0 == DXGI_STATUS_OCCLUDED;
+        let was_occluded = std::mem::replace(&mut self.occluded, occluded);
+        if present.is_err() {
+            zlog!(
+                "ui: 候選窗 Present 失敗 hr={:#010x}，改為不顯示",
+                present.0 as u32
+            );
             self.graphics = None;
             self.layout = None;
+            self.occluded = false;
             self.hide();
             return Ok(());
         }
-        if !self.visible {
-            unsafe {
-                let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-            }
-            self.visible = true;
+        if occluded {
+            zlog!(
+                "ui: 候選窗 Present 被遮蔽（DXGI_STATUS_OCCLUDED）occluded_prev={was_occluded}，下一個按鍵重送"
+            );
+        }
+        if first_show {
             // 排查用：0 寬或 visible=false 就代表問題在版面尺寸／視窗狀態，
             // 不是「沒有呼叫到這裡」。只在第一次顯示時寫一行。
+            let mut rect = RECT::default();
+            let got_rect = unsafe { GetWindowRect(self.hwnd, &mut rect) }.is_ok();
+            let mut cloaked: u32 = 0;
+            let cloaked_result = unsafe {
+                DwmGetWindowAttribute(
+                    self.hwnd,
+                    DWMWA_CLOAKED,
+                    &mut cloaked as *mut u32 as *mut c_void,
+                    std::mem::size_of::<u32>() as u32,
+                )
+            };
+            let (swap_width, swap_height) = self
+                .graphics
+                .as_ref()
+                .and_then(|graphics| graphics.swap_size())
+                .unwrap_or((0, 0));
             zlog!(
-                "ui: 候選窗 hwnd={:#x} layout={}x{} size={}x{} at=({}, {}) visible={}",
+                "ui: 候選窗 hwnd={:#x} layout={}x{} size={}x{} at=({}, {}) visible={} rect=({}, {}, {}, {}) cloaked={:#x} cloaked_hr={:#010x} swap={}x{} present={:#010x}",
                 self.hwnd.0 as usize,
                 layout.width,
                 layout.height,
@@ -720,11 +803,54 @@ impl LocalWindow {
                 size.1,
                 position.0,
                 position.1,
-                unsafe { IsWindowVisible(self.hwnd).as_bool() }
+                unsafe { IsWindowVisible(self.hwnd).as_bool() },
+                if got_rect { rect.left } else { 0 },
+                if got_rect { rect.top } else { 0 },
+                if got_rect { rect.right } else { 0 },
+                if got_rect { rect.bottom } else { 0 },
+                cloaked,
+                cloaked_result
+                    .map(|()| 0u32)
+                    .unwrap_or_else(|error| error.code().0 as u32),
+                swap_width,
+                swap_height,
+                present.0 as u32
             );
         }
         self.layout = Some(layout);
         Ok(())
+    }
+
+    /// 定位並調整大小；失敗時記一行 `HRESULT`／`GetLastError` 並回 `false`。
+    fn place(&self, size: (i32, i32), position: (i32, i32)) -> bool {
+        unsafe { SetLastError(ERROR_SUCCESS) };
+        let placed = unsafe {
+            SetWindowPos(
+                self.hwnd,
+                Some(HWND_TOPMOST),
+                position.0,
+                position.1,
+                size.0,
+                size.1,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            )
+        };
+        match placed {
+            Ok(()) => true,
+            Err(error) => {
+                let last_error = unsafe { GetLastError() };
+                zlog!(
+                    "ui: 候選窗 SetWindowPos 失敗 at=({}, {}) size={}x{} hr={:#010x} GetLastError={:#010x}",
+                    position.0,
+                    position.1,
+                    size.0,
+                    size.1,
+                    error.code().0 as u32,
+                    last_error.0
+                );
+                false
+            }
+        }
     }
 
     fn build(

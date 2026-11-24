@@ -42,6 +42,8 @@ windows = { version = "0.62", features = [
   "Win32_Graphics_Direct3D11",
   "Win32_Graphics_DirectComposition",
   "Win32_Graphics_DirectWrite",
+  # ui_window.rs 的 DwmGetWindowAttribute（DWMWA_CLOAKED）診斷。
+  "Win32_Graphics_Dwm",
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Dxgi_Common",
   "Win32_Security",
