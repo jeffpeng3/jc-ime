@@ -14,8 +14,9 @@
 //!   `programs_dir`）依重做計畫捨棄，改由 adapter 用 [`Client::set_engine_command`]
 //!   注入已解析好的引擎執行檔與 argv。
 //!
-//! 每次 I/O 都用 overlapped 加逾時：server 卡住時放棄連線並讓外殼放行按鍵，
-//! 不得卡住宿主。
+//! 每次 I/O 都用 overlapped 加逾時：單次逾時只代表這一小段時間沒有進展，
+//! 先確認另一端是否還活著；對方還活著就繼續等，整體預算用完才放棄並讓外殼
+//! 放行按鍵，不得卡住宿主。
 
 use std::env;
 use std::ffi::c_void;
@@ -43,10 +44,14 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
+use crate::ipc_retry::{self, Step};
 use crate::log::zlog;
 
-/// 每次 I/O 的逾時。
+/// 單次 I/O 的逾時：只代表「這一小段時間沒有進展」，不代表對方死了。
 pub const IO_TIMEOUT_MS: u32 = 1000;
+/// 一個請求的整體預算：單次 I/O 逾時後若對方還活著，就在同一個請求上繼續等，
+/// 直到這個期限才放棄。open／health 仍只用 [`IO_TIMEOUT_MS`]。
+pub const HANDLE_TIMEOUT_MS: u32 = 10_000;
 /// 啟動 server 後等待管道出現的時間。
 pub const SPAWN_WAIT_MS: u32 = 5000;
 /// 兩次啟動之間至少隔這麼久：server 反覆死掉時不會每鍵都啟動一次、也不會每鍵都等 5 秒。
@@ -190,6 +195,9 @@ pub struct Client {
     may_start: bool,
     /// spawn 用的執行檔與 argv；`None` 代表只連已在執行的引擎。
     engine: Option<EngineCommand>,
+    /// 上一次請求失敗是不是對方已關閉（引擎重啟），而不是單次逾時。
+    /// session 依這個值決定保留或丟棄重播紀錄。
+    failure_peer_closed: bool,
 }
 
 impl Drop for Client {
@@ -240,6 +248,7 @@ impl Client {
             closing_writer: false,
             may_start: false,
             engine: None,
+            failure_peer_closed: false,
         }
     }
 
@@ -297,9 +306,20 @@ impl Client {
         unsafe { PeekNamedPipe(h, None, 0, None, None, None) }.is_err()
     }
 
-    /// I/O 失敗後關掉連線；另一端已經關掉時記下引擎正在重啟。
-    fn close_after_failure(&mut self) {
-        if self.peer_closed() {
+    /// 上一次請求失敗是不是對方已關閉（引擎重啟）。只有這種失敗要保留重播。
+    pub fn failed_peer_closed(&self) -> bool {
+        self.failure_peer_closed
+    }
+
+    /// 逾時或 I/O 失敗後放手：對方關掉才記成重啟，還活著就只是這次請求失敗。
+    fn give_up(&mut self, op: &str, started: Instant, what: &str) {
+        let closed = self.peer_closed();
+        self.failure_peer_closed = closed;
+        zlog!(
+            "call: {what}失敗 op={op} 已等待={}ms peer_closed={closed}，放棄",
+            started.elapsed().as_millis()
+        );
+        if closed {
             self.expect_restart();
         }
         self.close();
@@ -510,31 +530,45 @@ impl Client {
         if !self.connect() {
             return None;
         }
-        let bytes = frame(envelope)?;
+        let Some(bytes) = frame(envelope) else {
+            // 本機編碼失敗，不是對方關線；讓 session 走「傳輸失敗」而不是重啟。
+            self.failure_peer_closed = false;
+            return None;
+        };
         let h = self.handle?;
-        if !write_all(h, &bytes, IO_TIMEOUT_MS) {
-            zlog!("call: 寫入失敗，斷線");
-            self.close_after_failure();
+        let op = envelope["op"].as_str().unwrap_or("?");
+        // open（hello）與 health 是探測性質：維持原本 1 秒，不讓 TIP 載入或選單卡住。
+        let budget = if matches!(op, "hello" | "health") {
+            IO_TIMEOUT_MS
+        } else {
+            HANDLE_TIMEOUT_MS
+        };
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(budget as u64);
+        let peer_alive = || !self.peer_closed();
+        if !write_all_until(h, &bytes, deadline, &peer_alive) {
+            self.give_up(op, started, "寫入");
             return None;
         }
         let mut hdr = [0u8; 4];
-        if !read_all(h, &mut hdr, IO_TIMEOUT_MS) {
-            zlog!("call: 讀取失敗，斷線");
-            self.close_after_failure();
+        if !read_all_until(h, &mut hdr, deadline, &peer_alive) {
+            self.give_up(op, started, "讀取");
             return None;
         }
         let n = u32::from_le_bytes(hdr);
         if n > MAX_FRAME {
+            self.failure_peer_closed = false;
             self.close();
             return None;
         }
         let mut buf = vec![0u8; n as usize];
-        if !read_all(h, &mut buf, IO_TIMEOUT_MS) {
-            self.close_after_failure();
+        if !read_all_until(h, &mut buf, deadline, &peer_alive) {
+            self.give_up(op, started, "讀取");
             return None;
         }
         match serde_json::from_slice::<Value>(&buf) {
             Ok(v) => {
+                self.failure_peer_closed = false;
                 if v["ok"].as_bool() == Some(false) && v["error"].as_str() == Some("引擎正在切換")
                 {
                     // 此回覆表示請求完全未執行，重試不會重複提交。只設定一次期限。
@@ -547,6 +581,7 @@ impl Client {
                 Some(v)
             }
             Err(_) => {
+                self.failure_peer_closed = false;
                 self.close();
                 None
             }
@@ -554,14 +589,24 @@ impl Client {
     }
 }
 
-/// 一次 overlapped I/O：回傳完成的位元組數；逾時或錯誤回傳 None。
+/// 一次 overlapped I/O 的結果。逾時與錯誤要分開：逾時還有機會在同一請求上繼續等。
+enum Io {
+    Done(u32),
+    Timeout,
+    Error,
+}
+
+/// 一次 overlapped I/O：回傳完成的位元組數、逾時或錯誤。
 fn overlapped(
     h: HANDLE,
-    timeout_ms: u32,
+    timeout: Duration,
     op: impl FnOnce(*mut OVERLAPPED) -> windows::core::Result<()>,
-) -> Option<u32> {
+) -> Io {
     unsafe {
-        let event = CreateEventW(None, true, false, PCWSTR::null()).ok()?;
+        let event = match CreateEventW(None, true, false, PCWSTR::null()) {
+            Ok(event) => event,
+            Err(_) => return Io::Error,
+        };
         let mut ov = OVERLAPPED {
             hEvent: event,
             ..Default::default()
@@ -569,54 +614,90 @@ fn overlapped(
         let started = op(&mut ov);
         let mut done = 0u32;
         let result = match started {
-            Ok(()) => GetOverlappedResult(h, &ov, &mut done, false)
-                .ok()
-                .map(|_| done),
+            Ok(()) => match GetOverlappedResult(h, &ov, &mut done, false) {
+                Ok(()) => Io::Done(done),
+                Err(_) => Io::Error,
+            },
             Err(_) if GetLastError() == ERROR_IO_PENDING => {
-                if WaitForSingleObject(event, timeout_ms) == WAIT_OBJECT_0 {
-                    GetOverlappedResult(h, &ov, &mut done, false)
-                        .ok()
-                        .map(|_| done)
+                if WaitForSingleObject(event, timeout.as_millis() as u32) == WAIT_OBJECT_0 {
+                    match GetOverlappedResult(h, &ov, &mut done, false) {
+                        Ok(()) => Io::Done(done),
+                        Err(_) => Io::Error,
+                    }
                 } else {
+                    // 取消後再收一次結果：若在逾時與取消之間剛好完成，已完成的部分不能丟。
                     let _ = CancelIoEx(h, Some(&ov));
-                    let _ = GetOverlappedResult(h, &ov, &mut done, true);
-                    None
+                    match GetOverlappedResult(h, &ov, &mut done, true) {
+                        Ok(()) => Io::Done(done),
+                        Err(_) => Io::Timeout,
+                    }
                 }
             }
-            Err(_) => None,
+            Err(_) => Io::Error,
         };
         let _ = CloseHandle(event);
         result
     }
 }
 
-/// 把整個緩衝寫完，每次 overlapped 都有逾時。
-pub fn write_all(h: HANDLE, mut data: &[u8], timeout_ms: u32) -> bool {
+/// 在整體期限內寫完；單次逾時後只要對方還活著就重試同一個請求。
+pub fn write_all_until(
+    h: HANDLE,
+    mut data: &[u8],
+    deadline: Instant,
+    peer_alive: &dyn Fn() -> bool,
+) -> bool {
     while !data.is_empty() {
         let chunk = data;
-        let n = overlapped(h, timeout_ms, |ov| unsafe {
-            WriteFile(h, Some(chunk), None, Some(ov))
-        });
-        match n {
-            Some(n) if n > 0 => data = &data[n as usize..],
-            _ => return false,
+        let Some(n) = ipc_retry::run(
+            deadline,
+            Duration::from_millis(IO_TIMEOUT_MS as u64),
+            peer_alive,
+            |wait| match overlapped(h, wait, |ov| unsafe {
+                WriteFile(h, Some(chunk), None, Some(ov))
+            }) {
+                Io::Done(n) => Step::Done(n),
+                Io::Timeout => Step::Timeout,
+                Io::Error => Step::Failed,
+            },
+        ) else {
+            return false;
+        };
+        if n == 0 {
+            return false;
         }
+        data = &data[n as usize..];
     }
     true
 }
 
-fn read_all(h: HANDLE, mut buf: &mut [u8], timeout_ms: u32) -> bool {
+/// 在整體期限內讀滿；單次逾時後只要對方還活著就重試同一個請求。
+fn read_all_until(
+    h: HANDLE,
+    mut buf: &mut [u8],
+    deadline: Instant,
+    peer_alive: &dyn Fn() -> bool,
+) -> bool {
     while !buf.is_empty() {
-        let n = {
-            let chunk: &mut [u8] = buf;
-            overlapped(h, timeout_ms, |ov| unsafe {
+        let chunk: &mut [u8] = buf;
+        let Some(n) = ipc_retry::run(
+            deadline,
+            Duration::from_millis(IO_TIMEOUT_MS as u64),
+            peer_alive,
+            |wait| match overlapped(h, wait, |ov| unsafe {
                 ReadFile(h, Some(chunk), None, Some(ov))
-            })
+            }) {
+                Io::Done(n) => Step::Done(n),
+                Io::Timeout => Step::Timeout,
+                Io::Error => Step::Failed,
+            },
+        ) else {
+            return false;
         };
-        match n {
-            Some(n) if n > 0 => buf = &mut buf[n as usize..],
-            _ => return false,
+        if n == 0 {
+            return false;
         }
+        buf = &mut buf[n as usize..];
     }
     true
 }

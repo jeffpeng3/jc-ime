@@ -89,4 +89,9 @@ impl Transport for PipeTransport {
     fn alive(&mut self) -> bool {
         self.client.alive()
     }
+
+    /// 逾時（對方還活著）與關線（引擎重啟）要分開：session 只在前者丟棄重播。
+    fn failed_peer_closed(&self) -> bool {
+        self.client.failed_peer_closed()
+    }
 }

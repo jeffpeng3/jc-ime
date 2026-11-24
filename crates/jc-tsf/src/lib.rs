@@ -10,6 +10,10 @@
 
 pub mod session;
 
+/// 逾時重試政策：單次 I/O 逾時與整體期限分開（Linux 也編、也測）。
+#[cfg(any(windows, test))]
+pub(crate) mod ipc_retry;
+
 /// 候選窗的純版面（Linux 也編、也測）。
 pub mod candidate_layout;
 

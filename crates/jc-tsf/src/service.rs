@@ -1707,10 +1707,12 @@ impl TextService_Impl {
     }
 
     fn end_word_with(&self, ctx: Option<&ITfContext>, vk: u32, key: &str, typed: String) -> bool {
-        let shown = self.state.borrow().session.english_state.text();
         let mut snapshot = self.state.borrow_mut().session.key(key);
         if !snapshot.ok {
-            return self.type_text(ctx, vk, shown + &typed);
+            // 傳輸失敗：組字還留在文件上，不能把它當字面提交。下一次連上以
+            // snapshot 對齊，對不上時 edit session 會結束組字且不寫入文字。
+            zlog!("英文 WordEnd 傳輸失敗：保留組字，等 snapshot 對齊");
+            return false;
         }
         if !snapshot.handled {
             snapshot.commit.push_str(&typed);

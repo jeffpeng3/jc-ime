@@ -45,6 +45,9 @@ pub const DEFAULT_PERSONAL_PREFIX: &str = "personal";
 /// 活動中週期寫回的間隔。避免打字途中崩潰遺失尚未 Close 的學習。
 const PERSONAL_FLUSH_INTERVAL: Duration = Duration::from_secs(30);
 
+/// 超過這個耗時就記一行慢請求；正常的按鍵不寫 log，避免洗版。
+const SLOW_REQUEST: Duration = Duration::from_millis(200);
+
 /// 中斷一條連線的回呼。drain／shutdown 時由 watcher 跨連線廣播。
 ///
 /// Unix 端呼叫 `shutdown(fd, SHUT_RDWR)`，Windows 端呼叫 `CancelIoEx`，
@@ -483,6 +486,15 @@ impl Engine {
     /// drain 是否已完成存檔並斷開所有連線；accept 迴圈據此結束。
     pub fn is_drain_done(&self) -> bool {
         lock(&self.shared).drain_done
+    }
+
+    /// 這條連線目前的 session id；還沒握手時為 0。慢請求 log 用。
+    pub fn current_session(&self) -> u64 {
+        lock(&self.shared)
+            .current
+            .get(&self.conn)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// 清除單一連線的握手狀態並重置它目前的 session。
@@ -953,6 +965,46 @@ fn state(snapshot: Snapshot) -> Response {
     Response::state(snapshot)
 }
 
+/// 請求的 op 名稱，慢請求 log 用。
+fn request_op(request: &Request) -> &'static str {
+    match request {
+        Request::Hello { .. } => "hello",
+        Request::Key { .. } => "key",
+        Request::Toggle => "toggle",
+        Request::Snapshot => "snapshot",
+        Request::Commit => "commit",
+        Request::Shutdown => "shutdown",
+        Request::Ping => "ping",
+        Request::Health => "health",
+        Request::ApplySettings { .. } => "apply_settings",
+        Request::Drain => "drain",
+        Request::Vocab { .. } => "vocab",
+        Request::ResetPersonal => "reset_personal",
+        Request::Close { .. } => "close",
+        Request::Context { .. } => "context",
+        Request::Mode { .. } => "mode",
+        Request::CapsLock { .. } => "caps_lock",
+        Request::OutputSimplified { .. } => "output_simplified",
+        Request::Unknown => "unknown",
+    }
+}
+
+/// 請求的線路長度（JSON 位元組），慢請求 log 用。只計數，不配置緩衝。
+fn request_input_len(request: &Request) -> usize {
+    struct Count(usize);
+    impl Write for Count {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, request).map_or(0, |()| count.0)
+}
+
 /// 服務一條連線直到 EOF、`Shutdown`、drain 或協定錯誤。
 pub fn serve<R: Read, W: Write>(
     engine: &mut Engine,
@@ -964,7 +1016,18 @@ pub fn serve<R: Read, W: Write>(
         match read_message::<_, Request>(input, max_frame) {
             Ok(None) => return Ok(()),
             Ok(Some(request)) => {
+                let op = request_op(&request);
+                let input_len = request_input_len(&request);
+                let started = Instant::now();
                 let response = engine.handle(request);
+                let elapsed = started.elapsed();
+                if elapsed > SLOW_REQUEST {
+                    log::warn!(
+                        "慢請求 op={op} session={} 耗時={}ms 輸入長度={input_len}",
+                        engine.current_session(),
+                        elapsed.as_millis()
+                    );
+                }
                 write_message(output, &response, max_frame)?;
                 if engine.is_closing() {
                     return Ok(());

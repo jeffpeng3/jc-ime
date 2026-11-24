@@ -612,6 +612,13 @@ pub trait Transport {
     fn close(&mut self);
     /// 不送請求，只看對端是否還活著。
     fn alive(&mut self) -> bool;
+    /// 上一次 `request` 失敗是不是對端關閉（引擎重啟），而不是單次逾時／I/O 失敗。
+    ///
+    /// 逾時只丟棄重播紀錄，重連後用 snapshot 對齊；對端關閉才保留重播。
+    /// 沒有連線資訊的 transport 沿用舊行為，當成重啟。
+    fn failed_peer_closed(&self) -> bool {
+        true
+    }
     /// 測試用：模擬對端關掉連線。
     fn disconnect_for_test(&mut self) {
         self.close();
@@ -644,6 +651,8 @@ pub struct Client {
     generation: u32,
     restart_until: Option<Instant>,
     closing_writer: bool,
+    /// 上一次請求是逾時／I/O 失敗（對端還活著），不是引擎重啟。
+    transport_failure: bool,
 }
 
 impl Default for Client {
@@ -665,6 +674,7 @@ impl Client {
             generation: 0,
             restart_until: None,
             closing_writer: false,
+            transport_failure: false,
         }
     }
 
@@ -709,12 +719,9 @@ impl Client {
         }
     }
 
-    /// I/O 失敗後：對端關掉才當成重啟。
-    fn close_after_failure(&mut self) {
-        if !self.transport.alive() {
-            self.expect_restart();
-        }
-        self.close();
+    /// 上一次請求失敗是逾時／I/O 失敗（對端還活著），不是重啟。
+    pub fn take_transport_failure(&mut self) -> bool {
+        std::mem::take(&mut self.transport_failure)
     }
 
     /// 目前是否持有連線。
@@ -774,9 +781,16 @@ impl Client {
         }
         let request = to_jc_request(envelope);
         let Some(raw) = self.transport.request(&request) else {
-            self.close_after_failure();
+            if self.transport.failed_peer_closed() {
+                self.expect_restart();
+            } else {
+                // 引擎還活著、只是這次沒在預算內回：不要把重播紀錄帶到下一個 session。
+                self.transport_failure = true;
+            }
+            self.close();
             return None;
         };
+        self.transport_failure = false;
         let reply = match serde_json::from_value::<Response>(raw.clone()) {
             Ok(response) => response_to_reply(&response),
             Err(_) => raw, // T3 之前的 health／close 等擴充 op
@@ -988,6 +1002,8 @@ pub struct Session {
     down: bool,
     log: Vec<Value>,
     cleared: Option<(Vec<Value>, bool)>,
+    /// 傳輸失敗後，下一次連上先送 display 對齊引擎目前的組字，不重播按鍵。
+    align_pending: bool,
     toggled: bool,
     context_enabled: bool,
     pending_context: Option<(u64, String)>,
@@ -1038,6 +1054,7 @@ impl Session {
             down: false,
             log: Vec::new(),
             cleared: None,
+            align_pending: false,
             toggled: false,
             context_enabled: std::env::var("ZUIN_DOCUMENT_CONTEXT").as_deref() != Ok("0"),
             pending_context: None,
@@ -1471,6 +1488,48 @@ impl Session {
                 return false;
             }
         }
+        if self.align_pending {
+            // 上次是逾時而不是重啟：引擎可能已經處理過那個請求，重播會重複輸入。
+            // 只問目前組字，讓外殼狀態與引擎一致；對不上時下一鍵的 snapshot 會收掉組字。
+            let reply = self
+                .client
+                .call(&json!({"op": "handle", "session": self.id, "req": {"type": "display"}}));
+            let Some(reply) = reply else {
+                self.id = 0;
+                return false;
+            };
+            if reply["ok"].as_bool().unwrap_or(false) {
+                let snapshot = parse(&reply);
+                if snapshot.ok {
+                    zlog!(
+                        "對齊：重連後 snapshot preedit={} candidates={}",
+                        snapshot.text(),
+                        snapshot.candidates.len()
+                    );
+                    self.english_state = snapshot;
+                }
+            }
+            self.align_pending = false;
+            self.pending_context = None;
+        }
+        true
+    }
+
+    /// 傳輸失敗（引擎還活著）：丟棄重播紀錄，下一次連上改用 snapshot 對齊。
+    fn note_transport_failure(&mut self) -> bool {
+        if !self.client.take_transport_failure() {
+            return false;
+        }
+        if !self.log.is_empty() {
+            zlog!(
+                "傳輸失敗：丟棄 {} 筆重播紀錄，改用 snapshot 對齊",
+                self.log.len()
+            );
+        }
+        self.log.clear();
+        self.cleared = None;
+        self.pending_context = None;
+        self.align_pending = true;
         true
     }
 
@@ -1524,6 +1583,11 @@ impl Session {
                 std::thread::sleep(Duration::from_millis(20));
             }
             if !self.client.connect() || !self.ensure_open() {
+                // 引擎還活著只是這次沒回：不要在同一個按鍵上重試到整體期限，
+                // 直接放行，下一次按鍵重連後用 snapshot 對齊。
+                if self.note_transport_failure() {
+                    break;
+                }
                 continue;
             }
             if !self.vocab_keys {
@@ -1540,6 +1604,9 @@ impl Session {
                 .call(&json!({"op": "handle", "session": self.id, "req": request}));
             let Some(reply) = reply else {
                 zlog!("handle op={} 引擎沒有回應 attempt={}", kind, attempts);
+                if self.note_transport_failure() {
+                    break;
+                }
                 continue;
             };
             if !reply["ok"].as_bool().unwrap_or(false) {
@@ -1632,6 +1699,7 @@ impl Session {
     pub fn reset(&mut self) {
         self.log.clear();
         self.cleared = None;
+        self.align_pending = false;
         self.toggled = false;
         self.english_state = Snapshot::default();
         self.pending_context = None;
@@ -2336,6 +2404,10 @@ mod tests {
         connected: bool,
         down: bool,
         hang: bool,
+        /// 下一次請求失敗時模擬「對端還活著、只是慢」的逾時，不是關線。
+        timeout: bool,
+        /// 接下來幾個請求直接不回應。
+        fail_left: usize,
         reject_left: usize,
         keys: Vec<String>,
         requests: Vec<Value>,
@@ -2361,6 +2433,8 @@ mod tests {
                 connected: false,
                 down: false,
                 hang: false,
+                timeout: false,
+                fail_left: 0,
                 reject_left: 0,
                 keys: Vec::new(),
                 requests: Vec::new(),
@@ -2413,6 +2487,11 @@ mod tests {
             let st = self.state.lock().unwrap();
             st.connected && !st.down
         }
+        fn failed_peer_closed(&self) -> bool {
+            let st = self.state.lock().unwrap();
+            // hang／timeout 模擬對方還活著只是慢；其餘失敗照舊當成關線。
+            !(st.hang || st.timeout)
+        }
     }
 
     /// hello 與 health 共用的 info：開始時英文的引擎要同時回報 start_mode／initial_mode。
@@ -2431,6 +2510,10 @@ mod tests {
     /// 小型假引擎：注音按鍵序列對到具體組字字串，其餘照 0c 的 reply 形狀回。
     fn toy_response(request: &Value, st: &mut MockState) -> Option<Value> {
         if st.hang {
+            return None;
+        }
+        if st.fail_left > 0 {
+            st.fail_left -= 1;
             return None;
         }
         if let Some(error) = st.info["error"].as_str() {
@@ -3185,6 +3268,68 @@ mod tests {
             "逾時不記成重啟：{:?}",
             start.elapsed()
         );
+    }
+
+    #[test]
+    fn transport_timeout_aligns_with_snapshot_instead_of_replaying() {
+        let (mut s, st) = toy_session();
+        for k in ["s", "u", "3"] {
+            assert!(s.key(k).handled, "{k}");
+        }
+        assert_eq!(s.log.len(), 3);
+        {
+            let mut state = st.lock().unwrap();
+            state.fail_left = 1;
+            state.timeout = true;
+        }
+        let failed = s.key("c");
+        assert!(!failed.ok, "這次請求要失敗");
+        assert!(
+            failed.commit.is_empty() && failed.text().is_empty(),
+            "傳輸失敗不得提交或保留組字：{failed:?}"
+        );
+        assert!(s.log.is_empty(), "逾時後不得保留重播按鍵");
+        {
+            let mut state = st.lock().unwrap();
+            state.timeout = false;
+            state.requests.clear();
+        }
+        let snap = s.key("c");
+        assert!(snap.ok && snap.reconnected, "{snap:?}");
+        assert_eq!(snap.text(), "ㄏ", "重連後只送這次的鍵");
+        let requests = st.lock().unwrap().requests.clone();
+        let ops: Vec<&str> = requests
+            .iter()
+            .filter_map(|request| request["op"].as_str())
+            .collect();
+        assert_eq!(ops.first(), Some(&"hello"));
+        assert!(
+            ops.contains(&"snapshot"),
+            "重連後先送 display 對齊：{ops:?}"
+        );
+        let keys = st.lock().unwrap().keys.clone();
+        assert_eq!(
+            keys,
+            vec!["c".to_string()],
+            "不得重播逾時前的按鍵：{keys:?}"
+        );
+    }
+
+    #[test]
+    fn peer_closed_keeps_the_replay_log() {
+        let (mut s, st) = toy_session();
+        for k in ["s", "u", "3"] {
+            assert!(s.key(k).handled, "{k}");
+        }
+        {
+            let mut state = st.lock().unwrap();
+            state.fail_left = 1;
+            state.timeout = false;
+        }
+        let snap = s.key("c");
+        assert!(snap.ok && snap.reconnected, "{snap:?}");
+        assert_eq!(snap.text(), "你ㄏ", "引擎重啟才重播組字");
+        assert!(!s.client.restart_pending(), "接上新引擎就不再等");
     }
 
     #[test]
