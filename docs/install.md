@@ -129,6 +129,38 @@ unigram-only `build-zh\lm.bin` 已退役，安裝包不提供，引擎也不再�
 `lm.bin` 本身若沒有 bigram，載入時會直接報錯。缺少 bigram 檔時引擎仍可
 以詞典-only 啟動，只記 info，不視為安裝失敗。
 
+### 資料包產生方式
+
+安裝器吃的資料包由 `scripts/build-data-bundle.sh` 從資料根目錄重建，不要
+手動挑檔：
+
+```sh
+scripts/build-data-bundle.sh /mnt/work/jc/jc-ime-data \
+  /tmp/opencode/jc-ime-data-0125.tar.zst
+```
+
+腳本會依 `jc-data` catalog 的 `shipped: true` 產生根 `manifest.json`（路徑、
+大小、SHA-256、角色、授權），把檔案放進暫存目錄後用 `tar --zstd` 打包，並
+輸出 `<檔名>.sha256`。同一份資料與 `SOURCE_DATE_EPOCH` 會得到相同的
+manifest 時間與 tar mtime。
+
+必要檔案：
+
+| 路徑 | 用途 |
+|---|---|
+| `build-zh/lexicon.bin` | 注音詞典 |
+| `build-zh/manifest.json` | 詞典的 size／SHA-256 驗證；`load_zh_bin_lexicon` 會讀 |
+| `build-zh-bigram/lm.bin` | bigram 語言模型；`ZhLm::open` 只驗檔內 magic、版本、CRC32 與版面，不需要同目錄 manifest |
+| `english/words.bin`、`english/manifest.json`、`english/NOTICE.txt` | 英文詞表；三者缺一就退回內建原型 |
+| `packs/ja-lexicon-mozc-v2.pack` | 日文詞典 |
+| `models/manifest.json`、`models/zh-select/*` | zh-select 模型集合與 runtime manifest |
+| `models/external/jinen-v2-small/*.gguf`、`models/quant/jinen-v2-xsmall/tokenizer.json` | 日文神經模型與 tokenizer |
+
+資料包不含 `build-zh/lm.bin`，也不含 `build-zh-bigram/manifest.json`：前者已
+退役，後者不是 loader 驗證路徑的一部分。根 `manifest.json` 會列出實際收進
+資料包的檔案，引擎啟動時用 `check_data_manifest` 做存在與大小檢查。
+
+
 Funmula 的 `zh-select` 依 `legal\licenses\MIT-Funmula.txt` 可散布，安裝包從 ONNX 轉好
 `model.q8_0.gguf`（33.9 MiB）後隨附，並帶 `vocab.json` 與兩份 model manifest。catalog
 不再有下載項，`zh-punct` 已於 2026-11-21 移除。引擎第一次啟動直接載入 GGUF，沒有
