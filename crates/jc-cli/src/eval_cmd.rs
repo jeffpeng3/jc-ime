@@ -105,11 +105,8 @@ pub fn zh_golden(options: GoldenOptions, out: &mut dyn Write) -> Result<(), CliE
     let mut failures = Vec::new();
 
     for case in suite.cases() {
-        let mode = if case.options.mixed_input {
-            Mode::Mixed
-        } else {
-            Mode::Zh
-        };
+        // 混打已是唯一模式；舊案例的 mixed_input=false 也走 Mixed。
+        let mode = Mode::Mixed;
         let mut config = data::zh_session_config(mode, &resources);
         let paging = case.actions.iter().any(|action| {
             action

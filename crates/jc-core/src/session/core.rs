@@ -250,11 +250,7 @@ impl Session {
         // 符號與表情選單：注音沒有未完成的音節時，反引號與等號直接開選單。
         // 純注音與 Mixed 共用同一條路徑；microsoft 風格的反引號前導已在
         // `style_key` 先處理。
-        if self.menu.is_none()
-            && self.zh.pending().is_empty()
-            && self.ascii.pending().is_empty()
-            && matches!(self.config.mode, Mode::Zh | Mode::Mixed)
-        {
+        if self.menu.is_none() && self.zh.pending().is_empty() && self.ascii.pending().is_empty() {
             if ch == '`' {
                 self.open_menu(MenuKind::Symbols, 0);
                 return;
@@ -276,9 +272,8 @@ impl Session {
             }
             return;
         }
-        match self.config.mode {
-            Mode::Zh => self.press_zh_char(ch),
-            Mode::Mixed => {
+        {
+            {
                 self.mixed_cursor = Self::MIXED_CURSOR_END;
                 // 純注音組字走注音狀態機，與舊的純注音模式一致；按鍵打不成
                 // 注音時整段交回混打管線。
@@ -294,6 +289,11 @@ impl Session {
                     self.zh_lane = true;
                     self.zh_pending_keys.clear();
                     self.press_zh_char(ch);
+                    return;
+                }
+                // 直接送來的漢字照字面留下，不當成英數按鍵推斷。
+                if is_han(ch) {
+                    self.push_literal(&ch.to_string());
                     return;
                 }
                 // 沒在組字時的鍵盤標點照注音的標點表打全形；注音鍵本身已在
@@ -348,6 +348,10 @@ impl Session {
             return false;
         }
         // 孤立的聲調鍵已在 `segments_press` 當成數字處理，不會走到這裡。
+        // 直接送來的注音符號（非鍵盤字母）也走注音路徑。
+        if crate::zh::syllable::class_of(ch) != crate::zh::syllable::Class::None {
+            return crate::zh::syllable::class_of(ch) != crate::zh::syllable::Class::Tone;
+        }
         self.zh.keyboard().symbol(ch).is_some_and(|symbol| {
             crate::zh::syllable::class_of(symbol) != crate::zh::syllable::Class::Tone
         })
@@ -361,6 +365,9 @@ impl Session {
     fn mixed_zh_lane_continues(&self, ch: char) -> bool {
         if self.in_ja_lane() {
             return false;
+        }
+        if crate::zh::syllable::class_of(ch) != crate::zh::syllable::Class::None {
+            return true;
         }
         let Some(symbol) = self.zh.keyboard().symbol(ch) else {
             // 大寫字母、全形字母與其他非注音字元代表這段已經離開注音；
@@ -623,7 +630,6 @@ impl Session {
                 self.mixed_cursor = Self::MIXED_CURSOR_END;
                 self.ascii.space(&self.lexicon);
             }
-            _ => {}
         }
     }
 
@@ -790,16 +796,11 @@ impl Session {
             self.leave_empty_japanese_run();
             return;
         }
-        match self.config.mode {
-            Mode::Zh => self.backspace_zh(),
-            Mode::Mixed => {
-                if self.zh_lane {
-                    self.backspace_zh();
-                } else if !self.backspace_mixed() && !self.literal.is_empty() {
-                    // 孤立聲調鍵先留在字面；沒有混打按鍵可退時退回那一個字面。
-                    self.literal.pop();
-                }
-            }
+        if self.zh_lane {
+            self.backspace_zh();
+        } else if !self.backspace_mixed() && !self.literal.is_empty() {
+            // 孤立聲調鍵先留在字面；沒有混打按鍵可退時退回那一個字面。
+            self.literal.pop();
         }
     }
 
@@ -882,12 +883,8 @@ impl Session {
 
     /// 下鍵：第一次開候選窗並進入選取模式，之後往下換一項。
     pub(super) fn down(&mut self) {
-        // 純注音模式還沒完成時先把目前的音節補完，再判斷候選。Mixed 不補：
-        // 外殼送來 Down 只是為了避開數字選字，後面的聲調鍵仍要完成原本的音節。
-        if self.config.mode == Mode::Zh && !self.zh.pending().is_empty() && self.complete_pending()
-        {
-            self.rebuild();
-        }
+        // 外殼送來 Down 只是為了避開數字選字，後面的聲調鍵仍要完成原本的音節；
+        // 這裡不補完未完成的注音。
         self.narrow_mixed_zh_candidates();
         if self.candidates.is_empty() {
             return;
@@ -1436,16 +1433,8 @@ impl Session {
             self.learn_ja_candidate(index);
             return;
         }
-        match self.config.mode {
-            Mode::Zh => {
-                self.note_learning_event();
-                self.learn_zh_candidate(index);
-            }
-            Mode::Mixed => {
-                self.note_learning_event();
-                self.learn_mixed_languages();
-            }
-        }
+        self.note_learning_event();
+        self.learn_mixed_languages();
     }
 
     /// 推進時間並定期清理個人資料；上限與衰減沿用 `personal::prune`。
@@ -1856,17 +1845,10 @@ impl Session {
         self.literal_offset = 0;
         if self.in_ja_lane() {
             self.rebuild_ja();
+        } else if self.zh_lane {
+            self.rebuild_zh();
         } else {
-            match self.config.mode {
-                Mode::Zh => self.rebuild_zh(),
-                Mode::Mixed => {
-                    if self.zh_lane {
-                        self.rebuild_zh();
-                    } else {
-                        self.rebuild_mixed();
-                    }
-                }
-            }
+            self.rebuild_mixed();
         }
         if self.highlighted >= self.candidates.len() {
             self.highlighted = 0;

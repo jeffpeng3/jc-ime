@@ -408,7 +408,6 @@ impl Session {
     fn halfwidth_shift_active(&self, ch: char) -> bool {
         self.style.shift_symbol_halfwidth
             && !self.full_width
-            && matches!(self.config.mode, Mode::Zh | Mode::Mixed)
             && SHIFTED_SYMBOLS.contains(ch)
             && !(self.style.rules.punctuation == "microsoft" && microsoft_raw_punctuation(ch))
             && self.zh.keyboard().punct(ch).is_some()
@@ -509,10 +508,7 @@ impl Session {
             return true;
         }
         // 微軟風格：反引號是標點前導，不開符號選單。
-        if matches!(self.config.mode, Mode::Zh | Mode::Mixed)
-            && self.style.rules.punctuation == "microsoft"
-            && key.code == KeyCode::Char('`')
-        {
+        if self.style.rules.punctuation == "microsoft" && key.code == KeyCode::Char('`') {
             self.insert_style_literal("`");
             self.symbol_prefix = true;
             return true;

@@ -426,7 +426,7 @@ impl Engine {
         let id = lock(&self.shared).current.get(&self.conn).copied();
         match id.and_then(|id| self.local.sessions.get(&id)) {
             Some(session) => session.mode(),
-            None => Mode::Zh,
+            None => Mode::Mixed,
         }
     }
 

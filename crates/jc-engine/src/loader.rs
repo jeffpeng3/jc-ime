@@ -772,7 +772,7 @@ impl EngineData {
         let mut config = config.clone();
         // 預熱固定跑注音路徑；設定是日文或英文時也一樣，第一鍵的注音成本
         // 不分模式都存在。
-        config.mode = Mode::Zh;
+        config.mode = Mode::Mixed;
 
         let model = jc_core::zh::select::installed();
         jc_core::zh::select::clear();
@@ -1171,7 +1171,7 @@ mod tests {
             "有 build-zh-bigram/lm.bin 時應接上 bigram"
         );
         assert!(data.zhconv.is_some(), "資料根目錄的 opencc/ 應載入 tw2s");
-        assert!(data.session_config(Mode::Zh).simplified.is_some());
+        assert!(data.session_config(Mode::Mixed).simplified.is_some());
         let english = data
             .session_config(Mode::Mixed)
             .english

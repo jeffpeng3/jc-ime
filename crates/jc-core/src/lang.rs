@@ -6,8 +6,6 @@
 /// 分段器逐段判定語言。純注音、純日文與純英文不再各自是一種輸入模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
-    /// 注音（台灣繁體中文）。
-    Zh,
     /// 中英日混打。
     Mixed,
 }
@@ -20,7 +18,7 @@ impl Mode {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "mixed" | "en" | "english" => Some(Mode::Mixed),
-            "zh" | "zhuyin" => Some(Mode::Zh),
+            "zh" | "zhuyin" => Some(Mode::Mixed),
             "ja" | "japanese" => Some(Mode::Mixed),
             _ => None,
         }
@@ -59,7 +57,7 @@ mod tests {
     #[test]
     fn legacy_mode_names_all_map_to_mixed() {
         assert_eq!(Mode::parse("en"), Some(Mode::Mixed));
-        assert_eq!(Mode::parse("zh"), Some(Mode::Zh));
+        assert_eq!(Mode::parse("zh"), Some(Mode::Mixed));
         assert_eq!(Mode::parse("ja"), Some(Mode::Mixed));
         assert_eq!(Mode::parse("mixed"), Some(Mode::Mixed));
         assert_eq!(Mode::parse("klingon"), None);

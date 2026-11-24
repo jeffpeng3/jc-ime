@@ -617,7 +617,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
 /// 解析 `--mode`；`en` 併入混打，舊值仍可解析。
 fn parse_mode(value: &str) -> Result<Mode, String> {
     match value {
-        "zh" => Ok(Mode::Zh),
+        "zh" => Ok(Mode::Mixed),
         "ja" => Ok(Mode::Mixed),
         "mixed" | "en" => Ok(Mode::Mixed),
         other => Err(format!("--mode 只接受 zh、ja、mixed、en，收到 {other}")),

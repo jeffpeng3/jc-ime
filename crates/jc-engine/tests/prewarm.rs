@@ -31,7 +31,7 @@ fn prewarm_warms_first_key_and_keeps_select_model() {
         return;
     };
     let data = load_engine_data(&root).expect("載入資料");
-    let mut config = data.session_config(Mode::Zh);
+    let mut config = data.session_config(Mode::Mixed);
     // 對齊引擎 `EffectiveSettings` 的預設候選數；候選越多，select 第一次
     // 推論越接近實機。
     config.max_candidates = jc_core::session::DEFAULT_MAX_CANDIDATES;

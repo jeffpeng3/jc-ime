@@ -349,7 +349,7 @@ mod tests {
     use crate::decode::Seg;
 
     fn session_with_base(base: &str) -> Session {
-        let mut session = Session::new(SessionConfig::new(crate::lang::Mode::Zh));
+        let mut session = Session::new(SessionConfig::new(crate::lang::Mode::Mixed));
         session.base = base.to_string();
         session
     }

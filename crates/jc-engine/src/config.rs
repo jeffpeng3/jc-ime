@@ -28,7 +28,6 @@ pub fn platform_goos() -> &'static str {
 /// 模式轉成命令列與 JSON 使用的代號。
 pub fn mode_str(mode: Mode) -> &'static str {
     match mode {
-        Mode::Zh => "zh",
         Mode::Mixed => "mixed",
     }
 }

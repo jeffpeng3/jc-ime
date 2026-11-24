@@ -186,7 +186,7 @@ pub struct RerankOptions {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            mode: Mode::Zh,
+            mode: Mode::Mixed,
             ja_only: false,
             max_candidates: DEFAULT_MAX_CANDIDATES,
             zh_lexicon: None,
@@ -340,9 +340,8 @@ pub struct Session {
     pub(super) ascii: AsciiInput,
     /// 這次組字是否走純注音路徑。
     ///
-    /// `Mode::Mixed` 從第一個注音鍵開始先走注音狀態機；遇到打不成注音的
-    /// 英數按鍵時整段交回混打管線（`ascii`）。`Mode::Zh` 一律是 `false`，
-    /// 由 [`Session::in_zh_lane`] 一併視為注音路徑。
+    /// 混打從第一個注音鍵開始先走注音狀態機；遇到打不成注音的英數按鍵時
+    /// 整段交回混打管線（`ascii`）。
     pub(super) zh_lane: bool,
     /// 注音路徑目前尚未完成音節的原始按鍵。
     ///
@@ -537,11 +536,10 @@ impl Session {
 
     /// 目前組字是否走注音路徑。
     ///
-    /// `Mode::Zh` 一律是注音；`Mode::Mixed` 從純注音按鍵開始的這次組字也走
-    /// 同一條路徑，才會有一致的候選、游標、鎖定與聲調閘門。混打片段仍在
-    /// [`AsciiInput`] 管線裡。
+    /// 從純注音按鍵開始的這次組字走注音路徑，才會有一致的候選、游標、
+    /// 鎖定與聲調閘門。混打片段仍在 [`AsciiInput`] 管線裡。
     pub(super) fn in_zh_lane(&self) -> bool {
-        self.config.mode == Mode::Zh || (self.config.mode == Mode::Mixed && self.zh_lane)
+        self.zh_lane
     }
 
     /// 目前組字是否走日文羅馬字路徑。
