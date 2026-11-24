@@ -95,6 +95,8 @@ pub(super) const MAX_LEFT_CONTEXT_UNITS: usize = 128;
 pub struct SessionConfig {
     /// 主要輸入模式。
     pub mode: Mode,
+    /// 混合模式但只走羅馬字：原本的手動日文入口，現在不再切換輸入模式。
+    pub ja_only: bool,
     /// 一次轉換保留幾個候選。
     pub max_candidates: usize,
     /// 注音詞典；`None` 時注音只做原樣輸出。
@@ -185,6 +187,7 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             mode: Mode::Zh,
+            ja_only: false,
             max_candidates: DEFAULT_MAX_CANDIDATES,
             zh_lexicon: None,
             zh_ctx: None,
@@ -357,7 +360,7 @@ pub struct Session {
     pub(super) zh_run_breaks: Vec<usize>,
     /// 混合模式依按鍵推斷出來的日文片段。
     ///
-    /// 有值時 [`Session::config`] 的 `mode` 暫時是 [`Mode::Ja`]，送出或取消後
+    /// 有值時 [`Session::config`] 的 `mode` 暫時是 `Mixed` 但只走羅馬字（`ja_only`），送出或取消後
     /// 回到原本的模式（對照 `ja_mixed.go` 的 `japaneseRun`）。
     pub(super) ja_run: bool,
     /// 日文推斷從混合模式接手時吃掉的原始羅馬字按鍵。
@@ -366,8 +369,6 @@ pub struct Session {
     /// 的かな：`rishiree` 會顯示成 `りしれえ`，但批次規劃會把 `e` 留給後面的
     /// 注音（`rishire`＋`ej/`）。
     pub(super) ja_run_keys: String,
-    /// 日文推斷前的模式；結束日文片段時還原。
-    pub(super) ja_prev_mode: Mode,
     /// 目前開啟的候選選單。
     pub(super) menu: Option<Menu>,
     /// 表情分頁的最後選擇；下次開選單時沿用。
@@ -489,7 +490,6 @@ impl Session {
             zh_run_breaks: Vec::new(),
             ja_run: false,
             ja_run_keys: String::new(),
-            ja_prev_mode: Mode::Mixed,
             menu: None,
             palette_tab: 0,
             symbol_recent: Vec::new(),
@@ -542,6 +542,14 @@ impl Session {
     /// [`AsciiInput`] 管線裡。
     pub(super) fn in_zh_lane(&self) -> bool {
         self.config.mode == Mode::Zh || (self.config.mode == Mode::Mixed && self.zh_lane)
+    }
+
+    /// 目前組字是否走日文羅馬字路徑。
+    ///
+    /// `ja_run` 是混打自動推斷的日文片段；`ja_only` 是「Mixed 但只走羅馬字」
+    /// 的手動入口。兩者共用同一條日文轉換路徑，不再切換輸入模式。
+    pub(super) fn in_ja_lane(&self) -> bool {
+        self.ja_run || self.config.ja_only
     }
 
     /// 目前是否把送出的文字轉成簡體。
@@ -657,6 +665,7 @@ impl Session {
                         } else {
                             let accepted = self.config.mode == Mode::Mixed
                                 && !self.in_zh_lane()
+                                && !self.in_ja_lane()
                                 && self.config.english_autocomplete
                                 && self.ascii.accept_suggestion();
                             if !accepted && !self.accept_suggestion() {
@@ -801,7 +810,7 @@ impl Session {
         if !private {
             self.remember_selection();
         }
-        if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
             self.ascii.flush();
         }
         let text = self.output_text(self.finalize(self.current_text()));
@@ -909,7 +918,7 @@ impl Session {
 
     /// 游標所在日文片段的索引與讀音範圍。
     fn ja_active_span(&self) -> Option<(usize, crate::ja::decode::JaSpan)> {
-        if self.config.mode != Mode::Ja {
+        if !self.in_ja_lane() {
             return None;
         }
         let index = self.active_segment()?;
@@ -2304,8 +2313,9 @@ mod tests {
             split: crate::ja::lexicon::Split::C,
         };
         let decoder = Arc::new(JaDecoder::new(Arc::new(LiveTestSource(vec![entry]))));
-        let mut session_config = SessionConfig::new(Mode::Ja);
+        let mut session_config = SessionConfig::new(Mode::Mixed);
         session_config.ja = Some(decoder);
+        session_config.ja_only = true;
         session_config.ja_live = config;
         Session::new(session_config)
     }
@@ -2343,8 +2353,9 @@ mod tests {
             ja_entry("です", "です", 500),
             ja_entry("ね", "ね", 500),
         ]);
-        let mut config = SessionConfig::new(Mode::Ja);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_only = true;
         config.ja_live = live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
@@ -2386,8 +2397,9 @@ mod tests {
             ja_entry("東京", "とうきょう", 1_000),
             ja_entry("に", "に", 500),
         ]);
-        let mut config = SessionConfig::new(Mode::Ja);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_only = true;
         config.ja_live = live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
@@ -2419,8 +2431,9 @@ mod tests {
             ja_entry("東京", "とうきょう", 1_000),
             ja_entry("に", "に", 500),
         ]);
-        let mut config = SessionConfig::new(Mode::Ja);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_only = true;
         config.ja_live = live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
@@ -2445,8 +2458,9 @@ mod tests {
             ja_entry("東京", "とうきょう", 1_000),
             ja_entry("とうきょう", "とうきょう", 2_000),
         ]);
-        let mut config = SessionConfig::new(Mode::Ja);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_only = true;
         config.ja_live = live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
@@ -2514,8 +2528,9 @@ mod tests {
             ja_entry("東京", "とうきょう", 1_000),
             ja_entry("東京都", "とうきょうと", 100),
         ]);
-        let mut config = SessionConfig::new(Mode::Ja);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_only = true;
         config.ja_live = live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
@@ -2534,8 +2549,9 @@ mod tests {
     #[test]
     fn test_ja_live_candidates_dedup_hiragana() {
         let source = LiveTestSource(vec![ja_entry("とうきょう", "とうきょう", 1_000)]);
-        let mut config = SessionConfig::new(Mode::Ja);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_only = true;
         config.ja_live = live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
@@ -2608,8 +2624,9 @@ mod tests {
             ja_entry("京", "きょう", 1_400),
             ja_entry("きょう", "きょう", 3_000),
         ]);
-        let mut config = SessionConfig::new(Mode::Ja);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_only = true;
         config.learning = learning;
         Session::new(config)
     }
@@ -2770,8 +2787,9 @@ mod tests {
             ja_entry("郷", "きょう", 3_400),
             ja_entry("協", "きょう", 3_500),
         ]);
-        let mut config = SessionConfig::new(Mode::Ja);
+        let mut config = SessionConfig::new(Mode::Mixed);
         config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_only = true;
         config.ja_neural = neural::NeuralConfig {
             timeout_ms,
             runtime,

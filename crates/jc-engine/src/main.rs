@@ -618,7 +618,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
 fn parse_mode(value: &str) -> Result<Mode, String> {
     match value {
         "zh" => Ok(Mode::Zh),
-        "ja" => Ok(Mode::Ja),
+        "ja" => Ok(Mode::Mixed),
         "mixed" | "en" => Ok(Mode::Mixed),
         other => Err(format!("--mode 只接受 zh、ja、mixed、en，收到 {other}")),
     }
@@ -842,7 +842,7 @@ mod tests {
             panic!("應該解析成功");
         };
         assert_eq!(options.data, Some(PathBuf::from("/data/root")));
-        assert_eq!(options.input, Some(Mode::Ja));
+        assert_eq!(options.input, Some(Mode::Mixed));
     }
 
     #[test]
@@ -949,7 +949,7 @@ mod tests {
                 "--data",
                 "/data",
                 "--mode",
-                "ja",
+                "mixed",
                 "--neural",
                 "off",
                 "--allow-empty-data",

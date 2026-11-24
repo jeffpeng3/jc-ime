@@ -29,7 +29,6 @@ pub fn platform_goos() -> &'static str {
 pub fn mode_str(mode: Mode) -> &'static str {
     match mode {
         Mode::Zh => "zh",
-        Mode::Ja => "ja",
         Mode::Mixed => "mixed",
     }
 }
@@ -111,6 +110,8 @@ pub struct EffectiveSettings {
     /// 啟動時的輸入模式。
     #[serde(serialize_with = "serialize_mode")]
     pub mode: Mode,
+    /// 混合模式但只走羅馬字；舊設定 `primary_language=ja` 的等價入口。
+    pub ja_only: bool,
     /// 一次轉換保留幾個候選。
     pub max_candidates: usize,
     /// 選字方式：`neural` 或 `statistical`（已套用 `--neural` 與
@@ -189,6 +190,7 @@ pub fn effective(settings: &Settings, overrides: &Overrides, goos: &str) -> Effe
     let punct_mark = settings.punctuation.then_some('，');
     EffectiveSettings {
         mode,
+        ja_only: settings.japanese(),
         max_candidates: DEFAULT_MAX_CANDIDATES,
         selection: if neural {
             settings::NEURAL
@@ -230,12 +232,8 @@ pub fn effective(settings: &Settings, overrides: &Overrides, goos: &str) -> Effe
 ///
 /// 混打開關已移除：日文主要語言進 `Ja`，其餘中文使用者一律進 `Mixed`，
 /// 不再有純注音 `Zh` 的啟動模式。CLI `--mode` 一律優先。
-fn mode_from_settings(settings: &Settings) -> Mode {
-    if settings.japanese() {
-        Mode::Ja
-    } else {
-        Mode::Mixed
-    }
+fn mode_from_settings(_settings: &Settings) -> Mode {
+    Mode::Mixed
 }
 
 /// 設定檔裡啟用（非 `off`）的模糊音配對。
@@ -259,6 +257,7 @@ fn fuzzy_pairs(settings: &Settings) -> Vec<(char, char)> {
 /// 決定的欄位。`--max-frame` 是協定層參數，不在 [`SessionConfig`] 裡。
 pub fn session_config(mut base: SessionConfig, effective: &EffectiveSettings) -> SessionConfig {
     base.mode = effective.mode;
+    base.ja_only = effective.ja_only;
     base.max_candidates = effective.max_candidates;
     base.english_autocomplete = effective.english_autocomplete;
     base.cjk_latin_space = effective.cjk_latin_space;
@@ -531,11 +530,11 @@ mod tests {
             r#"{"selection": "statistical", "start_mode": "english", "mixed_input": false}"#,
         );
         let overrides = Overrides {
-            mode: Some(Mode::Ja),
+            mode: Some(Mode::Mixed),
             neural: Some(true),
         };
         let effective = effective(&settings, &overrides, "linux");
-        assert_eq!(effective.mode, Mode::Ja);
+        assert_eq!(effective.mode, Mode::Mixed);
         assert!(effective.neural, "--neural on 蓋過 statistical");
         assert_eq!(effective.selection, "neural");
         assert_eq!(effective.ja_neural_mode, "auto");
@@ -595,9 +594,8 @@ mod tests {
             assert!(config.style.mixed_input, "{body}");
         }
         let ja = parsed(r#"{"primary_language":"ja","mixed_input":false}"#);
-        assert_eq!(
-            effective(&ja, &Overrides::default(), "windows").mode,
-            Mode::Ja
-        );
+        let ja = effective(&ja, &Overrides::default(), "windows");
+        assert_eq!(ja.mode, Mode::Mixed);
+        assert!(ja.ja_only, "日文主要語言改成 Mixed 但只走羅馬字");
     }
 }

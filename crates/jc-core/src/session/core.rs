@@ -264,21 +264,20 @@ impl Session {
                 return;
             }
         }
+        // 混打推斷出來的日文片段：羅馬字接不上的按鍵（數字、標點）結束推斷，
+        // 把原始羅馬字按鍵交回混打重算，這個鍵也一起送。
+        if self.in_ja_lane() {
+            let event = self.romaji.press(Key::char(ch, false));
+            if event == crate::ja::input::RomajiEvent::Rejected {
+                self.leave_ja_run_for_mixed(ch);
+            } else {
+                // 留下原始按鍵，退回混打時用同一串按鍵重算切分。
+                self.ja_run_keys.push(ch);
+            }
+            return;
+        }
         match self.config.mode {
             Mode::Zh => self.press_zh_char(ch),
-            Mode::Ja => {
-                let event = self.romaji.press(Key::char(ch, false));
-                // 混打推斷出來的日文片段遇到羅馬字接不上的按鍵（數字、標點）
-                // 時結束推斷，把原始羅馬字按鍵交回混打重算，這個鍵也一起送。
-                if self.ja_run {
-                    if event == crate::ja::input::RomajiEvent::Rejected {
-                        self.leave_ja_run_for_mixed(ch);
-                    } else {
-                        // 留下原始按鍵，退回混打時用同一串按鍵重算切分。
-                        self.ja_run_keys.push(ch);
-                    }
-                }
-            }
             Mode::Mixed => {
                 self.mixed_cursor = Self::MIXED_CURSOR_END;
                 // 純注音組字走注音狀態機，與舊的純注音模式一致；按鍵打不成
@@ -345,7 +344,7 @@ impl Session {
 
     /// Mixed 從空白開始打注音鍵時，這次組字走注音路徑。
     fn mixed_zh_lane_starts(&self, ch: char) -> bool {
-        if self.ja_run || !self.ascii.is_empty() || !self.syllables.is_empty() {
+        if self.in_ja_lane() || !self.ascii.is_empty() || !self.syllables.is_empty() {
             return false;
         }
         // 孤立的聲調鍵已在 `segments_press` 當成數字處理，不會走到這裡。
@@ -360,7 +359,7 @@ impl Session {
     /// 音節出現同類別重複（`hel` 的兩個聲母）或剛好是英文詞時，代表使用者
     /// 在打英文，整段交回混打管線。
     fn mixed_zh_lane_continues(&self, ch: char) -> bool {
-        if self.ja_run {
+        if self.in_ja_lane() {
             return false;
         }
         let Some(symbol) = self.zh.keyboard().symbol(ch) else {
@@ -466,7 +465,11 @@ impl Session {
         // 混合模式的候選是英文補完、拼字建議或已完成的注音詞；英文候選
         // 取代待定按鍵，注音候選換掉結尾的注音片段。純注音路徑（含 Mixed
         // 的 zh_lane）與選單照注音的通用路徑處理。
-        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && self.menu.is_none() {
+        if self.config.mode == Mode::Mixed
+            && !self.in_zh_lane()
+            && !self.in_ja_lane()
+            && self.menu.is_none()
+        {
             let raw = self.ascii.pending().to_string();
             if !raw.is_empty() && self.ascii.accept(&candidate.surface) {
                 self.learn_english_choice(&raw, &candidate.surface);
@@ -570,18 +573,19 @@ impl Session {
                 return;
             }
         }
-        match self.config.mode {
-            Mode::Ja if self.live.is_some() => {
-                if self.candidate_window {
-                    if self.navigating && !self.candidates.is_empty() {
-                        self.move_highlight(1);
-                    } else {
-                        self.navigating = true;
-                    }
+        if self.in_ja_lane() && self.live.is_some() {
+            if self.candidate_window {
+                if self.navigating && !self.candidates.is_empty() {
+                    self.move_highlight(1);
                 } else {
-                    self.open_ja_candidates();
+                    self.navigating = true;
                 }
+            } else {
+                self.open_ja_candidates();
             }
+            return;
+        }
+        match self.config.mode {
             // 混合模式的中文音節已完成：先把殘留的注音補完，再把空白當成
             // 開候選窗，而不是插入空白。英文待定按鍵仍走 `ascii.space`。
             Mode::Mixed
@@ -780,15 +784,14 @@ impl Session {
         self.keep_candidates = false;
         self.edit = None;
         self.highlighted = 0;
+        if self.in_ja_lane() {
+            self.romaji.backspace();
+            self.sync_ja_run_keys();
+            self.leave_empty_japanese_run();
+            return;
+        }
         match self.config.mode {
             Mode::Zh => self.backspace_zh(),
-            Mode::Ja => {
-                self.romaji.backspace();
-                if self.ja_run {
-                    self.sync_ja_run_keys();
-                }
-                self.leave_empty_japanese_run();
-            }
             Mode::Mixed => {
                 if self.zh_lane {
                     self.backspace_zh();
@@ -857,7 +860,7 @@ impl Session {
     pub(super) fn delete_forward(&mut self) {
         self.keep_candidates = false;
         self.edit = None;
-        if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
             self.candidate_window = false;
             self.navigating = false;
             self.highlighted = 0;
@@ -1022,7 +1025,10 @@ impl Session {
         if self.menu.is_some() || self.candidate_window || self.accepted_completion.is_some() {
             return None;
         }
-        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && self.config.english_autocomplete
+        if self.config.mode == Mode::Mixed
+            && !self.in_zh_lane()
+            && !self.in_ja_lane()
+            && self.config.english_autocomplete
         {
             if let Some(text) = self.ascii.suggestion() {
                 let rest = text.strip_prefix(self.ascii.pending()).unwrap_or(&text);
@@ -1089,7 +1095,7 @@ impl Session {
             self.rebuild();
         }
         // 延遲整句模式：還在假名就同步轉換一次再提交，不默默送出假名。
-        if self.config.mode == Mode::Ja {
+        if self.in_ja_lane() {
             let pending = self
                 .live_plan
                 .as_ref()
@@ -1107,7 +1113,7 @@ impl Session {
             }
         }
         // 日文逐字変換：Enter 先把游標所在片段的候選套上去，不送出整段。
-        if self.config.mode == Mode::Ja
+        if self.in_ja_lane()
             && self.candidate_window
             && !self.candidates.is_empty()
             && self.apply_ja_candidate(self.highlighted)
@@ -1123,7 +1129,7 @@ impl Session {
         {
             return;
         }
-        if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
             self.ascii.flush();
             self.trim_mixed_candidate_space();
         }
@@ -1338,10 +1344,10 @@ impl Session {
     /// 組字游標；進入選取模式後才在候選間移動。游標移動後，候選清單改成
     /// 游標所在片段的候選。
     pub(super) fn navigate(&mut self, delta: isize) {
-        if self.config.mode == Mode::Ja && self.live.is_some() && self.move_ja_cursor(delta) {
+        if self.in_ja_lane() && self.live.is_some() && self.move_ja_cursor(delta) {
             return;
         }
-        if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
             if self.candidate_window && self.navigating && !self.candidates.is_empty() {
                 // 已經進入明確的選取模式時，左右鍵仍然換候選。
                 self.move_highlight(delta);
@@ -1425,14 +1431,15 @@ impl Session {
             }
             return;
         }
+        if self.in_ja_lane() {
+            self.note_learning_event();
+            self.learn_ja_candidate(index);
+            return;
+        }
         match self.config.mode {
             Mode::Zh => {
                 self.note_learning_event();
                 self.learn_zh_candidate(index);
-            }
-            Mode::Ja => {
-                self.note_learning_event();
-                self.learn_ja_candidate(index);
             }
             Mode::Mixed => {
                 self.note_learning_event();
@@ -1667,10 +1674,7 @@ impl Session {
     }
 
     pub(super) fn clear_composition(&mut self) {
-        if self.ja_run {
-            self.config.mode = self.ja_prev_mode;
-            self.ja_run = false;
-        }
+        self.ja_run = false;
         self.ja_run_keys.clear();
         self.zh.reset();
         self.zh_lane = false;
@@ -1718,7 +1722,7 @@ impl Session {
                 return self.compose_literal(&candidate.surface);
             }
         }
-        if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
             // 混打的字面標點、選單插入與前導符號記在 `literal`，要一起送出。
             return self.insert_literal(&self.mixed_surface());
         }
@@ -1771,7 +1775,11 @@ impl Session {
             (Some(text), _) => text.as_str(),
             // 混合模式的候選只取代待定英數按鍵，`base` 已含前面的中文片段；
             // 直接拿候選當整個組字字串會把中文吃掉。純注音路徑照注音處理。
-            (None, _) if self.config.mode == Mode::Mixed && !self.in_zh_lane() => &self.base,
+            (None, _)
+                if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() =>
+            {
+                &self.base
+            }
             (None, Some(candidate)) => candidate.surface.as_str(),
             (None, None) => &self.base,
         }
@@ -1837,7 +1845,7 @@ impl Session {
         // 日文逐字変換的純重畫（游標移動、開候選窗）讀音沒變，保留候選
         // 清單；讀音一變就清掉，交給 `apply_live_plan` 重建。
         // 真正轉換時候選會整份換掉。
-        let keep_ja_candidates = self.config.mode == Mode::Ja && self.live.is_some() && {
+        let keep_ja_candidates = self.in_ja_lane() && self.live.is_some() && {
             let reading: String = self.romaji.units().iter().map(Unit::as_str).collect();
             reading == self.composition.reading(crate::composition::Lang::Ja)
         };
@@ -1846,14 +1854,17 @@ impl Session {
         }
         self.segments.clear();
         self.literal_offset = 0;
-        match self.config.mode {
-            Mode::Zh => self.rebuild_zh(),
-            Mode::Ja => self.rebuild_ja(),
-            Mode::Mixed => {
-                if self.zh_lane {
-                    self.rebuild_zh();
-                } else {
-                    self.rebuild_mixed();
+        if self.in_ja_lane() {
+            self.rebuild_ja();
+        } else {
+            match self.config.mode {
+                Mode::Zh => self.rebuild_zh(),
+                Mode::Mixed => {
+                    if self.zh_lane {
+                        self.rebuild_zh();
+                    } else {
+                        self.rebuild_mixed();
+                    }
                 }
             }
         }

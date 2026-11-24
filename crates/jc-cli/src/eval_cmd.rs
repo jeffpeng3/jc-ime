@@ -1098,7 +1098,8 @@ fn run_fuzzy_ja(
     };
 
     let mut session = Session::new(jc_core::session::SessionConfig {
-        mode: Mode::Ja,
+        mode: Mode::Mixed,
+        ja_only: true,
         max_candidates: FUZZY_TOP_N,
         ja: Some(Arc::clone(decoder)),
         ..jc_core::session::SessionConfig::default()

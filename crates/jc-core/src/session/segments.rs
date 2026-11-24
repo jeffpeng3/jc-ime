@@ -101,7 +101,7 @@ impl Session {
     /// 組字游標在顯示字串中的 UTF-8 位元組位置。
     pub(super) fn cursor_byte(&self) -> usize {
         let text = self.base_with_highlight();
-        if self.config.mode == Mode::Ja {
+        if self.in_ja_lane() {
             return self.ja_cursor.min(text.len());
         }
         if self.in_zh_lane() {
@@ -315,12 +315,8 @@ impl Session {
     ///
     /// 回傳 `true` 表示這一鍵已經處理完；`false` 表示仍要交給一般按鍵路徑。
     pub(super) fn segments_press(&mut self, key: &Key) -> bool {
-        if !matches!(self.config.mode, Mode::Zh | Mode::Mixed) {
-            self.pending_tone = None;
-            return false;
-        }
         // 混打已經有英數待定按鍵時，聲調鍵是那個詞的一部分，不是孤立聲調。
-        if self.config.mode == Mode::Mixed && !self.ascii.is_empty() {
+        if !self.ascii.is_empty() {
             self.pending_tone = None;
             return false;
         }

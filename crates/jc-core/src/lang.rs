@@ -8,8 +8,6 @@
 pub enum Mode {
     /// 注音（台灣繁體中文）。
     Zh,
-    /// 日文（羅馬字輸入）。
-    Ja,
     /// 中英日混打。
     Mixed,
 }
@@ -23,7 +21,7 @@ impl Mode {
         match value {
             "mixed" | "en" | "english" => Some(Mode::Mixed),
             "zh" | "zhuyin" => Some(Mode::Zh),
-            "ja" | "japanese" => Some(Mode::Ja),
+            "ja" | "japanese" => Some(Mode::Mixed),
             _ => None,
         }
     }
@@ -62,7 +60,7 @@ mod tests {
     fn legacy_mode_names_all_map_to_mixed() {
         assert_eq!(Mode::parse("en"), Some(Mode::Mixed));
         assert_eq!(Mode::parse("zh"), Some(Mode::Zh));
-        assert_eq!(Mode::parse("ja"), Some(Mode::Ja));
+        assert_eq!(Mode::parse("ja"), Some(Mode::Mixed));
         assert_eq!(Mode::parse("mixed"), Some(Mode::Mixed));
         assert_eq!(Mode::parse("klingon"), None);
     }

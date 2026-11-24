@@ -829,11 +829,7 @@ impl Session {
     /// 組不成注音、不是英文詞或英文詞前綴，且能完整組成合法羅馬字；符合時
     /// 整段交給日文路徑，送出或取消後回到原本的模式。
     pub(super) fn try_japanese_run(&mut self) -> bool {
-        if self.ja_run
-            || self.config.mode != Mode::Mixed
-            || self.config.ja.is_none()
-            || !self.ascii.pieces().is_empty()
-        {
+        if self.ja_run || self.config.ja.is_none() || !self.ascii.pieces().is_empty() {
             return false;
         }
         let raw = self.ascii.pending().to_string();
@@ -867,8 +863,6 @@ impl Session {
         for ch in raw.chars() {
             self.romaji.press(Key::char(ch, false));
         }
-        self.ja_prev_mode = self.config.mode;
-        self.config.mode = Mode::Ja;
         self.ja_run = true;
         true
     }
@@ -881,7 +875,6 @@ impl Session {
         if !self.romaji.units().is_empty() || !self.romaji.pending().is_empty() {
             return;
         }
-        self.config.mode = self.ja_prev_mode;
         self.ja_run = false;
         self.ja_run_keys.clear();
     }
@@ -1122,7 +1115,7 @@ impl Session {
     /// `e` 還給 `ej/`，得到 `りしれ`＋`供`。`watashiwaw96j0` 也走同一條路徑，
     /// 前面的 `watashiwa` 仍切成日文，`w96` 接成注音。
     pub(super) fn leave_ja_run_for_mixed(&mut self, ch: char) -> bool {
-        if !self.ja_run || self.config.mode != Mode::Ja {
+        if !self.ja_run {
             return false;
         }
         let keys = std::mem::take(&mut self.ja_run_keys);
@@ -1131,7 +1124,6 @@ impl Session {
             live.reset();
         }
         self.ja_run = false;
-        self.config.mode = self.ja_prev_mode;
         self.ja_cursor = 0;
         self.ascii.replay(&keys, &self.lexicon);
         if !self.ascii.tone(ch, &self.lexicon) {
@@ -1904,8 +1896,8 @@ mod tests {
         let mut s = Session::new({
             let mut config = SessionConfig::new(Mode::Mixed);
             let entry = crate::ja::lexicon::JaEntry {
-                surface: "今日".into(),
-                reading: "きょう".into(),
+                surface: "私".into(),
+                reading: "わたし".into(),
                 pos: "名詞,普通名詞,一般,*".into(),
                 conj_type: "*".into(),
                 conj_form: "*".into(),
@@ -1917,15 +1909,15 @@ mod tests {
             ))));
             config
         });
-        for ch in "kyou".chars() {
+        for ch in "watashi".chars() {
             s.press(Key::char(ch, false));
         }
         // 日文片段沿用延遲整句：停頓後才顯示轉換結果。
         s.ja_live_idle();
-        assert_eq!(s.mode(), Mode::Ja);
-        assert_eq!(s.snapshot().preedit, "今日");
+        assert_eq!(s.mode(), Mode::Mixed, "日文片段不再切換輸入模式");
+        assert_eq!(s.snapshot().preedit, "私");
         s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(s.commit(), "今日");
+        assert_eq!(s.commit(), "私");
         assert_eq!(s.mode(), Mode::Mixed);
     }
 
