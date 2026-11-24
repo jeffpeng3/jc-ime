@@ -407,6 +407,89 @@ mod tests {
         assert_eq!(spans, [(0, 1), (1, 2), (2, 3), (3, 4)]);
     }
 
+    /// 每個片段都必須落在顯示字串的 rune 邊界，且不超出長度。
+    fn assert_spans_are_valid(session: &Session) {
+        let text = session.composition().text();
+        let runes = crate::output::rune_len(text);
+        let mut previous_end = 0;
+        for segment in session.composition().segments() {
+            let span = &segment.span;
+            assert!(
+                span.start <= previous_end && span.end <= runes,
+                "片段 {span:?} 必須依序且不超出 {runes} 個 rune：{text:?}"
+            );
+            let start_byte = text
+                .char_indices()
+                .nth(span.start)
+                .map(|(byte, _)| byte)
+                .unwrap_or(text.len());
+            let end_byte = text
+                .char_indices()
+                .nth(span.end)
+                .map(|(byte, _)| byte)
+                .unwrap_or(text.len());
+            assert!(
+                text.is_char_boundary(start_byte) && text.is_char_boundary(end_byte),
+                "片段 {span:?} 的位元組邊界不在字元邊界上：{text:?}"
+            );
+            previous_end = span.end;
+        }
+    }
+
+    #[test]
+    fn sync_composition_zh_keeps_offset_inside_zhuyin_i_on_rune_boundary() {
+        // `segs` 每個顯示詞 3 bytes；`base` 退回注音後，累加位元組位移 9
+        // 會落在「ㄧ」（8..11）中間。舊碼的 `&base[..9]` 會直接 panic。
+        let mut session = session_with_base("ㄕㄣˊㄧ");
+        let readings = [
+            "ㄕㄣˊ".to_string(),
+            "ㄇㄧˋ".to_string(),
+            "ㄉㄜ˙".to_string(),
+        ];
+        let segs = [
+            Seg::new("神", 0, 1),
+            Seg::new("秘", 1, 2),
+            Seg::new("的", 2, 3),
+        ];
+        session.sync_composition_zh(&readings, &segs);
+
+        assert_spans_are_valid(&session);
+        let spans: Vec<_> = session
+            .composition()
+            .segments()
+            .iter()
+            .map(|segment| segment.span.clone())
+            .collect();
+        assert_eq!(spans, [0..1, 1..2, 2..3]);
+    }
+
+    #[test]
+    fn sync_composition_zh_keeps_offset_inside_hanzi_on_rune_boundary() {
+        // 同上，但 `base` 是注音加漢字「ㄕㄣˊ秘」；位元組位移 9 落在
+        // 漢字「秘」（8..11）中間，舊碼照樣在切片時 panic。
+        let mut session = session_with_base("ㄕㄣˊ秘");
+        let readings = [
+            "ㄕㄣˊ".to_string(),
+            "ㄇㄧˋ".to_string(),
+            "ㄉㄜ˙".to_string(),
+        ];
+        let segs = [
+            Seg::new("神", 0, 1),
+            Seg::new("秘", 1, 2),
+            Seg::new("的", 2, 3),
+        ];
+        session.sync_composition_zh(&readings, &segs);
+
+        assert_spans_are_valid(&session);
+        let spans: Vec<_> = session
+            .composition()
+            .segments()
+            .iter()
+            .map(|segment| segment.span.clone())
+            .collect();
+        assert_eq!(spans, [0..1, 1..2, 2..3]);
+    }
+
     #[test]
     fn sync_composition_zh_clamps_segments_longer_than_base() {
         let mut session = session_with_base("神");
