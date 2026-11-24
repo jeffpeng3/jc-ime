@@ -139,7 +139,7 @@ pub fn run(opts: &CorpusOptions, out: &mut dyn Write) -> Result<(), CliError> {
     let dir = data::testdata_dir(opts.source.clone())?;
     let root = data::data_root(&dir);
     let resources = {
-        let bin = root.join("build-zh");
+        let bin = root.join("build-zh-bigram");
         if bin.join("manifest.json").is_file() {
             data::load_zh_bin_resources(&bin)?
         } else {

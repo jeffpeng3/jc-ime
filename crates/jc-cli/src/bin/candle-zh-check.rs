@@ -32,7 +32,7 @@ const DEFAULT_MODEL_DIR: &str = "/mnt/work/jc/jc-ime-data/models/zh-select";
 /// 預設 dev 題庫（fuzzy 注音題）。
 const DEFAULT_DEV: &str = "/mnt/work/jc/jc-ime-data/0c-testdata/fuzzy/fuzzy-input.json";
 /// 預設注音詞庫。
-const DEFAULT_DATA: &str = "/mnt/work/jc/jc-ime-data/build-zh";
+const DEFAULT_DATA: &str = "/mnt/work/jc/jc-ime-data/build-zh-bigram";
 /// 排序一致率下限。
 const MIN_RANK_AGREEMENT: f64 = 0.98;
 /// 單次推論 p50 上限，毫秒。

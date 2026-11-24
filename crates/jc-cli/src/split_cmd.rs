@@ -31,7 +31,7 @@ pub fn run(
     let resources = match data_dir {
         Some(path) => data::load_zh_bin_resources(&path)?,
         None => {
-            let bin = root.join("build-zh");
+            let bin = root.join("build-zh-bigram");
             if bin.join("manifest.json").is_file() {
                 data::load_zh_bin_resources(&bin)?
             } else {

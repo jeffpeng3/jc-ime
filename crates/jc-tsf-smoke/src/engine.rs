@@ -99,6 +99,16 @@ impl Probe {
         Ok(text)
     }
 
+    /// `Health` 回報是否載入 bigram；沒有 health 或引擎太舊時是 `None`。
+    pub fn has_bigram(&self) -> Option<bool> {
+        match self {
+            Self::Connected(EngineInfo {
+                health: Ok(health), ..
+            }) => health.capabilities.get("has_bigram").copied(),
+            _ => None,
+        }
+    }
+
     /// `Health` 回報的英文詞數；沒有 health 或引擎太舊時是 `None`。
     pub fn english_words(&self) -> Option<usize> {
         match self {

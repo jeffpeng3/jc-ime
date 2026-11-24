@@ -142,8 +142,8 @@ Source: "{#PayloadDir}\legal\licenses\ZH-DATA-NOTICE.txt"; DestDir: "{app}\legal
 Source: "{#PayloadDir}\data\manifest.json"; DestDir: "{commonappdata}\jc-ime\data"; Flags: ignoreversion
 Source: "{#PayloadDir}\data\packs\ja-lexicon-mozc-v2.pack"; DestDir: "{commonappdata}\jc-ime\data\packs"; Flags: ignoreversion
 Source: "{#PayloadDir}\data\build-zh\lexicon.bin"; DestDir: "{commonappdata}\jc-ime\data\build-zh"; Flags: ignoreversion
-Source: "{#PayloadDir}\data\build-zh\lm.bin"; DestDir: "{commonappdata}\jc-ime\data\build-zh"; Flags: ignoreversion
 Source: "{#PayloadDir}\data\build-zh\manifest.json"; DestDir: "{commonappdata}\jc-ime\data\build-zh"; Flags: ignoreversion
+Source: "{#PayloadDir}\data\build-zh-bigram\lm.bin"; DestDir: "{commonappdata}\jc-ime\data\build-zh-bigram"; Flags: ignoreversion
 Source: "{#PayloadDir}\data\english\words.bin"; DestDir: "{commonappdata}\jc-ime\data\english"; Flags: ignoreversion
 Source: "{#PayloadDir}\data\english\manifest.json"; DestDir: "{commonappdata}\jc-ime\data\english"; Flags: ignoreversion
 Source: "{#PayloadDir}\data\english\NOTICE.txt"; DestDir: "{commonappdata}\jc-ime\data\english"; Flags: ignoreversion

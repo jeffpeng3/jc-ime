@@ -1,7 +1,12 @@
 # bigram-data：找回注音 bigram 並重建詞典
 
 用新酷音 `chewing-v4` 的 `bigram_p50.arpa` 補回注音 bigram，重建到
-`/mnt/work/jc/jc-ime-data/build-zh-bigram/`，`build-zh/` 保持不動。
+`/mnt/work/jc/jc-ime-data/build-zh-bigram/`。
+
+> **現況（2026-11-25）**：產品只支援 bigram 資料包。`lm.bin` 必須包含
+> bigram，`build-zh-bigram/lm.bin` 是必要資料；unigram-only 的
+> `build-zh/lm.bin` 已退役，載入器不再退回該檔。`uni()` 保留給 bigram
+> 內插使用。
 
 ## 資料來源
 
@@ -48,18 +53,20 @@ CGO_ENABLED=0 go run ./cmd/0c-compile \
 
 ## golden 比較
 
-`jc-cli eval zh-golden` 只吃 `0c-testdata/golden/zh/data/lexicon.tsv` 與
-`lm.tsv` 這份凍結 baseline，沒有 `--data` 參數；`crates/jc-cli/src/data.rs`
-的 `load_zh_resources` 也不讀 `lexicon.bin`／`lm.bin`。因此新資料包無法接進
-目前的 Rust golden，兩次執行結果必然相同：
+`jc-cli eval zh-golden` 可以用 `--data` 指定二進位資料包。以只帶 bigram 的
+資料為基準：
 
-| 版本 | 通過數 |
+```sh
+jc-cli eval zh-golden --testdata /mnt/work/jc/jc-ime-data/0c-testdata \
+  --data /mnt/work/jc/jc-ime-data/build-zh-bigram --select-model off --stats
+```
+
+| 版本 | top1 |
 |---|---|
-| 舊（`build-zh`） | 27/45 |
-| 新（`build-zh-bigram`） | 27/45（同一份凍結 baseline，未載入新資料包） |
+| `build-zh-bigram`（唯一支援的資料包） | 31/45（68.9%） |
 
-要真正比對 bigram 對 Rust 解碼的影響，得先等 `jc-data` 支援注音 pack 載入
-（見 `docs/port/j2-ja-lexicon.md` 的待辦）。
+unigram-only 的 `build-zh` 不再作為比較基準；它的 `lm.bin` 會被
+`Lm::open` 拒絕。
 
 替代驗證：用 ref 的 Go 引擎載入兩個資料包，跑同一組按鍵
 （`su3cl3`、`ji394su3`、`a86qi6`），commit 結果都是「你好」「我愛你」「麻婆」，

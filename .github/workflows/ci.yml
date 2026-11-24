@@ -923,6 +923,13 @@ jobs:
             Write-Host "$path 存在"
           }
 
+          # 產品只帶 bigram 語言模型；缺這個檔，引擎會退回詞典-only。
+          $bigram = Join-Path $env:ProgramData 'jc-ime\data\build-zh-bigram\lm.bin'
+          if (-not (Test-Path $bigram)) {
+            throw "安裝後找不到 bigram 語言模型：$bigram"
+          }
+          Write-Host "$bigram 存在"
+
       # jc-tsf-smoke 現在是安裝診斷工具：--json 輸出 jc-ime-doctor/1，
       # 內含 12 項檢查。除了結束碼，還要求關鍵項目的 status 不是 fail。
       # 安裝器最後一步會用原使用者身分啟動引擎（[Run] 的 jc-engine.exe）。
@@ -999,13 +1006,15 @@ jobs:
           }
 
           # 這幾項是這次幾輪 bug 的根因，必須明確是 pass 或 warn（skip 不接受）。
+          # engine.detail 會額外驗 health 的 has_bigram=true；bigram 缺席時是 fail。
           $required = @(
             'install.files',
             'registry.tip',
             'profile.machine',
             'profile.user',
             'profile.language_list',
-            'engine.pipe'
+            'engine.pipe',
+            'engine.detail'
           )
           foreach ($id in $required) {
             $item = $report.checks | Where-Object { $_.id -eq $id } | Select-Object -First 1

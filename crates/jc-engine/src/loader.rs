@@ -88,7 +88,7 @@ pub struct ZhResources {
     pub lexicon: Arc<InMemoryLexicon>,
     /// 成本設定（含 bigram 內插權重）。
     pub ctx: ScoreContext,
-    /// bigram 語言模型；`None` 表示只有詞典的 unigram 成本。
+    /// bigram 語言模型；`None` 表示只有詞典（缺少 bigram 資料）。
     pub lm: Option<Arc<ZhLm>>,
 }
 
@@ -159,37 +159,66 @@ fn load_zh_tsv_resources(data_dir: &Path, bigram: Option<ZhLm>) -> Result<ZhReso
 }
 
 /// 載入注音二進位資料包（`lexicon.bin`、`lm.bin`、`manifest.json`）。
+///
+/// `lm.bin` 必須包含 bigram；unigram-only 的舊資料包會被拒絕。
 pub fn load_zh_bin_resources(data_dir: &Path) -> Result<ZhResources, LoadError> {
     load_zh_bin_resources_with_lm(data_dir, None)
 }
 
 /// 載入注音二進位資料包，`lm_path` 可覆寫資料包內的 `lm.bin`。
+///
+/// 未指定 `lm_path` 時讀 `data_dir/lm.bin`；檔案不存在則只載入詞典
+/// （`lm = None`）。存在的語言模型一定要有 bigram。
 pub fn load_zh_bin_resources_with_lm(
     data_dir: &Path,
     lm_path: Option<&Path>,
 ) -> Result<ZhResources, LoadError> {
-    let bundle =
-        jc_data::zh::Bundle::open(data_dir).map_err(|err| LoadError::read(data_dir, err))?;
     let lm = match lm_path {
-        Some(path) => ZhLm::open(path).map_err(|err| LoadError::read(path, err))?,
-        None => ZhLm::from_lm(bundle.lm),
+        Some(path) => Some(ZhLm::open(path).map_err(|err| LoadError::read(path, err))?),
+        None => {
+            let path = data_dir.join("lm.bin");
+            if path.is_file() {
+                Some(ZhLm::open(&path).map_err(|err| LoadError::read(&path, err))?)
+            } else {
+                None
+            }
+        }
     };
+    load_zh_bin_lexicon(data_dir, lm)
+}
+
+/// 只載入注音二進位詞典，不接語言模型。
+///
+/// `build-zh-bigram/lm.bin` 缺席時，引擎走這條路徑維持詞典-only。
+pub fn load_zh_bin_lexicon_resources(data_dir: &Path) -> Result<ZhResources, LoadError> {
+    load_zh_bin_lexicon(data_dir, None)
+}
+
+fn load_zh_bin_lexicon(data_dir: &Path, lm: Option<ZhLm>) -> Result<ZhResources, LoadError> {
+    let manifest =
+        jc_data::zh::Manifest::load(data_dir).map_err(|err| LoadError::read(data_dir, err))?;
+    let lexicon_info = manifest.file("lexicon.bin").ok_or_else(|| {
+        LoadError::new(format!(
+            "{} 的 manifest 缺少 lexicon.bin",
+            data_dir.display()
+        ))
+    })?;
+    let lexicon_bin = data_dir.join("lexicon.bin");
+    let source = jc_data::zh::Lexicon::open_verified(&lexicon_bin, lexicon_info)
+        .map_err(|err| LoadError::read(&lexicon_bin, err))?;
     let mut lexicon = InMemoryLexicon::new();
-    for view in bundle.lexicon.entries() {
-        let unigram = lm.uni(view.surface);
+    for view in source.entries() {
+        let unigram = lm.as_ref().map_or(1.0e-6, |lm| lm.uni(view.surface));
         let cost = probability_cost(view.prw as f64).saturating_add(probability_cost(unigram));
         lexicon.push(LexEntry::new(
             view.surface,
-            bundle.lexicon.reading(view.index),
+            source.reading(view.index),
             cost,
             0,
         ));
     }
     if lexicon.is_empty() {
-        return Err(LoadError(format!(
-            "{} 沒有任何詞條",
-            data_dir.join("lexicon.bin").display()
-        )));
+        return Err(LoadError(format!("{} 沒有任何詞條", lexicon_bin.display())));
     }
     let ctx = ScoreContext {
         unknown_cost: 30_000,
@@ -198,7 +227,7 @@ pub fn load_zh_bin_resources_with_lm(
     Ok(ZhResources {
         lexicon: Arc::new(lexicon),
         ctx,
-        lm: Some(Arc::new(lm)),
+        lm: lm.map(Arc::new),
     })
 }
 
@@ -941,8 +970,8 @@ fn check_data_manifest(root: &Path) -> Result<(), EngineDataError> {
 ///
 /// 分級：
 /// - 注音 `lexicon.bin`、日文 pack 缺失或壞掉 → 啟動失敗。
-/// - `build-zh-bigram/lm.bin` 是選配：缺席只記 debug；存在但壞掉記警告，
-///   兩種情況都退回 `build-zh/lm.bin` 的 unigram。
+/// - `build-zh-bigram/lm.bin` 是必要資料：存在的語言模型一定要有 bigram；
+///   缺席時只記 info，引擎以詞典-only 啟動（沒有 unigram-only 退回路徑）。
 /// - `english/` 缺席只記 info；目錄存在但驗證失敗記警告，退回內建原型。
 /// - zh-select 存在就安裝；載入失敗只警告一次，維持統計排序。
 /// - reranker 缺席或壞掉 → 記一次警告後繼續。
@@ -964,28 +993,15 @@ pub fn load_engine_data(root: &Path) -> Result<EngineData, EngineDataError> {
     }
     let bigram_lm = root.join(ZH_BIGRAM_DIR).join("lm.bin");
     let zh = if bigram_lm.is_file() {
-        match load_zh_bin_resources_with_lm(&zh_dir, Some(&bigram_lm)) {
-            Ok(resources) => {
-                log::info!("已載入注音 bigram：{}", bigram_lm.display());
-                resources
-            }
-            Err(err) => {
-                log::warn!(
-                    "注音 bigram {} 載入失敗（{err}），改用 {}/lm.bin 的 unigram",
-                    bigram_lm.display(),
-                    ZH_DIR
-                );
-                load_zh_bin_resources(&zh_dir)?
-            }
-        }
+        let resources = load_zh_bin_resources_with_lm(&zh_dir, Some(&bigram_lm))?;
+        log::info!("已載入注音 bigram：{}", bigram_lm.display());
+        resources
     } else {
-        // bigram 是選配資料，安裝版預設不帶；缺席不是錯誤。
-        log::debug!(
-            "未安裝選配的注音 bigram {}，使用 {}/lm.bin 的 unigram",
-            bigram_lm.display(),
-            ZH_DIR
+        log::info!(
+            "未安裝注音 bigram {}，引擎以詞典-only 啟動",
+            bigram_lm.display()
         );
-        load_zh_bin_resources(&zh_dir)?
+        load_zh_bin_lexicon_resources(&zh_dir)?
     };
     // 英文詞表跟著引擎的資料根目錄走；Windows 安裝版不必設 JC_IMEDATA。
     let english_dir = root.join(ENGLISH_PACK_SUBDIR);
@@ -1063,19 +1079,29 @@ mod tests {
 
     #[test]
     fn bin_resources_load_lm_and_bigrams() {
+        let bigram = jc_testdata::require_data!(ZH_BIGRAM_DIR);
+        let bigram = load_zh_bin_resources(&bigram).unwrap();
+        let bigram_lm = bigram.lm.expect("build-zh-bigram 有 lm.bin");
+        assert!(bigram_lm.bigrams() > 0);
+        assert!((bigram_lm.bi("我", "愛") - 0.0044).abs() < 0.001);
+        assert_eq!(bigram.ctx.bigram_mu, 0.7);
+    }
+
+    #[test]
+    fn unigram_only_bin_pack_is_rejected() {
         let Some(plain) = jc_testdata::path(ZH_DIR) else {
             eprintln!("缺少測試資料：{ZH_DIR}");
             return;
         };
-        let bigram = jc_testdata::require_data!(ZH_BIGRAM_DIR);
-        let plain = load_zh_bin_resources(&plain).unwrap();
-        let bigram = load_zh_bin_resources(&bigram).unwrap();
-        let plain_lm = plain.lm.expect("build-zh 仍有 lm.bin");
-        let bigram_lm = bigram.lm.expect("build-zh-bigram 有 lm.bin");
-        assert_eq!(plain_lm.bigrams(), 0);
-        assert!(bigram_lm.bigrams() > 0);
-        assert!((bigram_lm.bi("我", "愛") - 0.0044).abs() < 0.001);
-        assert_eq!(bigram.ctx.bigram_mu, 0.7);
+        let err = load_zh_bin_resources(&plain).unwrap_err();
+        assert!(
+            err.to_string().contains("bigram"),
+            "unigram-only 資料包要回報必須有 bigram：{err}"
+        );
+        // 詞典本身仍可單獨載入，供 bigram 缺席時降級。
+        let lexicon_only = load_zh_bin_lexicon_resources(&plain).unwrap();
+        assert!(lexicon_only.lm.is_none());
+        assert!(!lexicon_only.lexicon.is_empty());
     }
 
     #[test]

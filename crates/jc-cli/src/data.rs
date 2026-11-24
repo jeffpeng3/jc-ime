@@ -224,19 +224,25 @@ mod tests {
 
     #[test]
     fn bin_resources_load_lm_and_bigrams() {
+        let bigram = jc_testdata::require_data!("build-zh-bigram");
+        let bigram = load_zh_bin_resources(&bigram).unwrap();
+        let bigram_lm = bigram.lm.expect("build-zh-bigram 有 lm.bin");
+        assert!(bigram_lm.bigrams() > 0);
+        assert!((bigram_lm.bi("我", "愛") - 0.0044).abs() < 0.001);
+        assert_eq!(bigram.ctx.bigram_mu, 0.7);
+    }
+
+    #[test]
+    fn unigram_only_bin_pack_is_rejected() {
         let Some(plain) = jc_testdata::path("build-zh") else {
             eprintln!("缺少測試資料：build-zh");
             return;
         };
-        let bigram = jc_testdata::require_data!("build-zh-bigram");
-        let plain = load_zh_bin_resources(&plain).unwrap();
-        let bigram = load_zh_bin_resources(&bigram).unwrap();
-        let plain_lm = plain.lm.expect("build-zh 仍有 lm.bin");
-        let bigram_lm = bigram.lm.expect("build-zh-bigram 有 lm.bin");
-        assert_eq!(plain_lm.bigrams(), 0);
-        assert!(bigram_lm.bigrams() > 0);
-        assert!((bigram_lm.bi("我", "愛") - 0.0044).abs() < 0.001);
-        assert_eq!(bigram.ctx.bigram_mu, 0.7);
+        let err = load_zh_bin_resources(&plain).unwrap_err();
+        assert!(
+            err.to_string().contains("bigram"),
+            "unigram-only 資料包要回報必須有 bigram：{err}"
+        );
     }
 
     #[test]

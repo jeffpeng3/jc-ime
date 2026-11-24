@@ -149,9 +149,11 @@ fn main() {
 ///
 /// `output_simplified_live` 只在真的載入 OpenCC tw2s 轉換器時出現；缺席時
 /// 不寫入 `false`，讓 jc-tsf 維持預設，不顯示一顆按了沒反應的開關。
+/// `has_bigram` 一律回報，安裝 smoke 用它確認載入的是 bigram 資料包。
 fn build_shell_caps(
     toggle_key: &str,
     has_zhconv: bool,
+    has_bigram: bool,
 ) -> std::collections::BTreeMap<String, bool> {
     let mut caps = std::collections::BTreeMap::new();
     caps.insert(
@@ -162,6 +164,7 @@ fn build_shell_caps(
         "right_shift".to_string(),
         toggle_key == "both" || toggle_key == "right",
     );
+    caps.insert("has_bigram".to_string(), has_bigram);
     if has_zhconv {
         caps.insert("output_simplified_live".to_string(), true);
     }
@@ -217,26 +220,23 @@ fn run(options: Options) -> anyhow::Result<()> {
     // 保守預設：左 Shift 不切換（預設 left_shift=false）、狀態列的「輸出簡體字」
     // 按了沒反應（simplified_live=false）。`effective` 之後會被 factory 的
     // closure 移走，所以先在這裡算好。
-    let mut shell_caps = build_shell_caps(&effective.toggle_key, false);
+    let mut shell_caps = build_shell_caps(&effective.toggle_key, false, false);
     let mut default_simplified = false;
     let factory: SessionFactory = if let Some(dir) = &data_root {
         log::debug!("資料根目錄：{}", dir.display());
         let data = Arc::new(
             load_engine_data(dir).with_context(|| format!("載入資料失敗：{}", dir.display()))?,
         );
+        let has_bigram = data.zh.lm.as_ref().is_some_and(|lm| lm.bigrams() > 0);
         // 只有真的載入 tw2s 轉換器才宣告能力；否則狀態列會出現一顆假開關。
-        shell_caps = build_shell_caps(&effective.toggle_key, data.zhconv.is_some());
+        shell_caps = build_shell_caps(&effective.toggle_key, data.zhconv.is_some(), has_bigram);
         if data.zhconv.is_some() {
             default_simplified = effective.output_simplified;
         }
         log::info!(
             "載入 {} 個注音詞條{}，日文解碼器就緒",
             data.zh.lexicon.len(),
-            if data.zh.lm.as_ref().is_some_and(|lm| lm.bigrams() > 0) {
-                "（含 bigram）"
-            } else {
-                ""
-            }
+            if has_bigram { "（含 bigram）" } else { "" }
         );
         // 資料載入完成、開始接受連線之前先跑一次第一鍵會走的路徑。冷啟動的
         // 66～73ms 來自第一次解碼、第一次 zh-select 推論與 mmap 分頁；在
@@ -710,17 +710,19 @@ mod tests {
     /// 只有載入 OpenCC 轉換器時才宣告 `output_simplified_live`。
     #[test]
     fn shell_caps_only_advertise_simplified_with_converter() {
-        let without = build_shell_caps("both", false);
+        let without = build_shell_caps("both", false, false);
         assert_eq!(without.get("left_shift"), Some(&true));
         assert_eq!(without.get("right_shift"), Some(&true));
+        assert_eq!(without.get("has_bigram"), Some(&false));
         assert!(
             !without.contains_key("output_simplified_live"),
             "沒有轉換器時不得宣告能力旗標"
         );
 
-        let with = build_shell_caps("left", true);
+        let with = build_shell_caps("left", true, true);
         assert_eq!(with.get("left_shift"), Some(&true));
         assert_eq!(with.get("right_shift"), Some(&false));
+        assert_eq!(with.get("has_bigram"), Some(&true));
         assert_eq!(with.get("output_simplified_live"), Some(&true));
     }
 

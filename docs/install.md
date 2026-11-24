@@ -115,7 +115,7 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%ProgramData%\jc-ime\data\manifest.json` | 資料索引（版本、大小、SHA-256、授權） |
 | `%ProgramData%\jc-ime\data\packs\ja-lexicon-mozc-v2.pack` | Mozc 日文詞典 |
 | `%ProgramData%\jc-ime\data\build-zh\lexicon.bin` | 注音詞典 |
-| `%ProgramData%\jc-ime\data\build-zh\lm.bin` | 注音語言模型 |
+| `%ProgramData%\jc-ime\data\build-zh-bigram\lm.bin` | 注音 bigram 語言模型（必要資料） |
 | `%ProgramData%\jc-ime\data\models\zh-select\model.q8_0.gguf` | 注音選字模型（candle Q8_0，33.9 MiB） |
 | `%ProgramData%\jc-ime\data\models\zh-select\vocab.json` | 注音選字詞表，選字模型載入必要檔 |
 | `%ProgramData%\jc-ime\data\english\words.bin` | 英文詞表 |
@@ -123,6 +123,11 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%LOCALAPPDATA%\jc-ime\settings.json` | 使用者設定；第一次開啟設定程式就以預設值建立，可立即修改，安裝器不覆蓋既有檔 |
 | `%LOCALAPPDATA%\jc-ime\personal.json` | 個人化資料（引擎之後才會寫） |
 | `%LOCALAPPDATA%\jc-ime\tsf.log` | 只有 `JC_TSF_LOG=1` 時才寫 |
+
+注音產品只帶 bigram 語言模型：`build-zh-bigram\lm.bin` 是必要資料。舊的
+unigram-only `build-zh\lm.bin` 已退役，安裝包不提供，引擎也不再退回該檔；
+`lm.bin` 本身若沒有 bigram，載入時會直接報錯。缺少 bigram 檔時引擎仍可
+以詞典-only 啟動，只記 info，不視為安裝失敗。
 
 Funmula 的 `zh-select` 依 `legal\licenses\MIT-Funmula.txt` 可散布，安裝包從 ONNX 轉好
 `model.q8_0.gguf`（33.9 MiB）後隨附，並帶 `vocab.json` 與兩份 model manifest。catalog

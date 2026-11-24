@@ -935,7 +935,7 @@ mod tests {
 
     #[test]
     fn real_zh_lexicon_converts_wo_ai() {
-        let dir = jc_testdata::require_data!("build-zh");
+        let dir = jc_testdata::require_data!("build-zh-bigram");
         let resources = data::load_zh_bin_resources(&dir).unwrap();
         let converter = ZhConverter::new(resources);
         let got = converter.convert("ㄨㄛˇ ㄞˋ", 5);
@@ -944,12 +944,10 @@ mod tests {
 
     #[test]
     fn bigram_pack_boosts_common_word_pair() {
-        let Some(base) = jc_testdata::path("build-zh") else {
-            eprintln!("缺少測試資料：build-zh");
-            return;
-        };
         let bigram = jc_testdata::require_data!("build-zh-bigram");
-        let plain = ZhConverter::new(data::load_zh_bin_resources(&base).unwrap());
+        let mut plain_resources = data::load_zh_bin_resources(&bigram).unwrap();
+        plain_resources.lm = None;
+        let plain = ZhConverter::new(plain_resources);
         let with_bigram = ZhConverter::new(data::load_zh_bin_resources(&bigram).unwrap());
         let plain_rows = plain.nbest("ㄨㄛˇ ㄞˋ", 5);
         let (bigram_rows, stats) = with_bigram.nbest_with_stats("ㄨㄛˇ ㄞˋ", 5);
@@ -958,7 +956,7 @@ mod tests {
         // bigram 真的被查：至少查了 我→愛 與 句首→我 兩次，且 我→愛 命中。
         assert!(stats.queries >= 2, "{stats:?}");
         assert!(stats.hits >= 1, "{stats:?}");
-        // 沒有 bigram 的資料包不會建立評分器，查詢次數是 0。
+        // 沒有 bigram 的資源不會建立評分器，查詢次數是 0。
         assert_eq!(
             plain.nbest_with_stats("ㄨㄛˇ ㄞˋ", 5).1,
             LmQueryStats::default()
@@ -977,12 +975,10 @@ mod tests {
 
     #[test]
     fn bigram_pack_reranks_homophones() {
-        let Some(base) = jc_testdata::path("build-zh") else {
-            eprintln!("缺少測試資料：build-zh");
-            return;
-        };
         let bigram = jc_testdata::require_data!("build-zh-bigram");
-        let plain = ZhConverter::new(data::load_zh_bin_resources(&base).unwrap());
+        let mut plain_resources = data::load_zh_bin_resources(&bigram).unwrap();
+        plain_resources.lm = None;
+        let plain = ZhConverter::new(plain_resources);
         let with_bigram = ZhConverter::new(data::load_zh_bin_resources(&bigram).unwrap());
         let plain_rows = plain.nbest("ㄗㄞˋ ㄐㄧㄢˋ", 5);
         let bigram_rows = with_bigram.nbest("ㄗㄞˋ ㄐㄧㄢˋ", 5);
@@ -995,12 +991,10 @@ mod tests {
 
     #[test]
     fn zero_mu_matches_unigram_costs() {
-        let Some(base) = jc_testdata::path("build-zh") else {
-            eprintln!("缺少測試資料：build-zh");
-            return;
-        };
         let bigram = jc_testdata::require_data!("build-zh-bigram");
-        let plain = ZhConverter::new(data::load_zh_bin_resources(&base).unwrap());
+        let mut plain_resources = data::load_zh_bin_resources(&bigram).unwrap();
+        plain_resources.lm = None;
+        let plain = ZhConverter::new(plain_resources);
         let with_bigram =
             ZhConverter::new(data::load_zh_bin_resources(&bigram).unwrap()).with_mu(0.0);
         for reading in ["ㄨㄛˇ ㄞˋ", "ㄗㄞˋ ㄐㄧㄢˋ", "ㄋㄧˇ ㄏㄠˇ"] {

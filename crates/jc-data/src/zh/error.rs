@@ -66,6 +66,9 @@ pub enum ZhDataError {
     /// 欄位之間的長度、位移或排序不一致。
     #[error("資料檔版面不合法：{0}")]
     Layout(String),
+    /// 語言模型沒有 bigram。
+    #[error("語言模型必須包含 bigram（unigram-only 已不再支援）")]
+    MissingBigram,
     /// `manifest.json` 解析失敗。
     #[error("讀取 {path} 失敗：{source}")]
     BadManifest {

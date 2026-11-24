@@ -81,7 +81,7 @@ pub enum DataRole {
     JaLexicon,
     /// 注音詞典 `build-zh/lexicon.bin`。
     ZhLexicon,
-    /// 注音語言模型 `build-zh/lm.bin`。
+    /// 注音語言模型 `build-zh-bigram/lm.bin`。
     ZhLm,
     /// 英文詞表 `english/words.bin`。
     English,
@@ -515,11 +515,11 @@ pub const CATALOG: &[DataFileSpec] = &[
         role: DataRole::ZhLm,
         licenses: ZH_LICENSES,
         shipped: true,
-        candidates: &["build-zh/lm.bin"],
+        candidates: &["build-zh-bigram/lm.bin"],
         url: None,
     },
-    // Bundle::open 一定要讀這份 manifest 驗證 lexicon.bin 與 lm.bin；
-    // 缺席會讓引擎啟動 fatal。與 english 的三件式中繼檔是同一類問題。
+    // Bundle::open 一定要讀這份 manifest 驗證 lexicon.bin；缺席會讓引擎
+    // 啟動 fatal。與 english 的三件式中繼檔是同一類問題。
     DataFileSpec {
         role: DataRole::ZhLexicon,
         licenses: ZH_LICENSES,
@@ -853,13 +853,20 @@ mod tests {
             );
             assert!(file.shipped);
         }
-        // Bundle::open 也要讀 lm.bin，雖然它的角色是 ZhLm。
+        // Bundle::open 也要讀 lm.bin，雖然它的角色是 ZhLm；產品只帶 bigram。
         assert!(
             manifest
                 .files
                 .iter()
-                .any(|file| file.path == "build-zh/lm.bin" && file.shipped),
-            "注音資料包還要收錄 lm.bin"
+                .any(|file| file.path == "build-zh-bigram/lm.bin" && file.shipped),
+            "注音資料包要收錄 build-zh-bigram/lm.bin"
+        );
+        assert!(
+            !manifest
+                .files
+                .iter()
+                .any(|file| file.path == "build-zh/lm.bin"),
+            "unigram-only 的 build-zh/lm.bin 已退役"
         );
         fs::remove_dir_all(&dir).ok();
     }

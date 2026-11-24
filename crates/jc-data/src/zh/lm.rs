@@ -2,8 +2,9 @@
 //!
 //! 對照前身 Go `core/lm/compact.go`。詞依字串排序，unigram 用二分搜尋；
 //! bigram 依（前詞, 後詞）排序，每筆只存 3 位元組後詞 ID 與 1 位元組量化
-//! 機率，前詞的範圍由 `leftStart` 隱含。沒有 bigram 的資料包（`bigrams`
-//! 為 0）所有 bigram 查詢都回傳 0，unigram 照常可用。
+//! 機率，前詞的範圍由 `leftStart` 隱含。產品只支援含 bigram 的資料包，
+//! `bigrams` 為 0 的 unigram-only 檔會在開啟時被拒絕；`uni()` 保留給
+//! bigram 內插使用。
 
 use std::fs::File;
 use std::ops::Range;
@@ -101,6 +102,9 @@ impl Lm {
         if lm.left_start(words) as usize != bigrams {
             return Err(ZhDataError::Layout("bigram 索引長度不符".into()));
         }
+        if bigrams == 0 {
+            return Err(ZhDataError::MissingBigram);
+        }
         let mut lm = Lm { bigrams, ..lm };
         lm.validate()?;
         Ok(lm)
@@ -184,7 +188,7 @@ impl Lm {
         self.words
     }
 
-    /// bigram 筆數；0 表示這個資料包沒有 bigram。
+    /// bigram 筆數；開啟時已保證大於 0。
     pub fn bigrams(&self) -> usize {
         self.bigrams
     }
@@ -204,9 +208,6 @@ impl Lm {
 
     /// P(w | left)；沒有這個 bigram 回傳 0。
     pub fn bi(&self, left: &str, word: &str) -> f64 {
-        if self.bigrams == 0 {
-            return 0.0;
-        }
         let Some(left) = self.find(left) else {
             return 0.0;
         };
@@ -231,9 +232,6 @@ impl Lm {
 
     /// 是否有以 `left` 為前詞的 bigram。
     pub fn has_left(&self, left: &str) -> bool {
-        if self.bigrams == 0 {
-            return false;
-        }
         match self.find(left) {
             Some(index) => self.left_start(index) != self.left_start(index + 1),
             None => false,
@@ -337,20 +335,34 @@ mod tests {
 
     #[test]
     fn unseen_word_returns_unseen_probability() {
-        let bytes = encode_lm(&[("我", 0.5)], &[]);
+        let bytes = encode_lm(&[("你", 0.25), ("我", 0.5)], &[("我", "你", 0.5)]);
         let path = write_temp("unseen", &bytes);
         let lm = Lm::open(&path).unwrap();
         assert_eq!(lm.uni("我"), 0.5);
         assert_eq!(lm.uni("不存在"), UNSEEN);
         assert_eq!(lm.bi("我", "不存在"), 0.0);
-        assert_eq!(lm.bigrams(), 0);
-        assert!(!lm.has_left("我"));
+        assert_eq!(lm.bigrams(), 1);
+        assert!(lm.has_left("我"));
+        assert!(!lm.has_left("你"));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn unigram_only_model_is_rejected() {
+        let bytes = encode_lm(&[("我", 0.5)], &[]);
+        let path = write_temp("unigram-only", &bytes);
+        let err = Lm::open(&path).err().expect("unigram-only 應被拒絕");
+        assert!(
+            err.to_string().contains("bigram"),
+            "錯誤訊息要指出必須有 bigram：{err}"
+        );
+        assert!(matches!(err, ZhDataError::MissingBigram));
         std::fs::remove_file(path).ok();
     }
 
     #[test]
     fn unsorted_words_are_rejected() {
-        let bytes = encode_lm(&[("我", 0.5), ("你", 0.5)], &[]);
+        let bytes = encode_lm(&[("我", 0.5), ("你", 0.5)], &[("我", "你", 0.5)]);
         let path = write_temp("unsorted", &bytes);
         assert!(Lm::open(&path).is_err());
         std::fs::remove_file(path).ok();

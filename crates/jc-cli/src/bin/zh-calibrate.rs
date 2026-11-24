@@ -93,7 +93,7 @@ fn run() -> Result<(), CliError> {
     let testdata = resolve_testdata(options.testdata.clone(), &options.dev)?;
     let data_dir = match &options.data {
         Some(dir) => dir.clone(),
-        None => jc_cli::data::data_root(&testdata).join("build-zh"),
+        None => jc_cli::data::data_root(&testdata).join("build-zh-bigram"),
     };
     if !data_dir.is_dir() {
         return Err(CliError::data(format!(

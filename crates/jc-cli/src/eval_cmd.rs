@@ -698,7 +698,7 @@ pub fn mixed(
     let resources = match data {
         Some(path) => data::load_zh_bin_resources(&path)?,
         None => {
-            let bin = root.join("build-zh");
+            let bin = root.join("build-zh-bigram");
             if bin.join("manifest.json").is_file() {
                 data::load_zh_bin_resources(&bin)?
             } else {
@@ -1509,8 +1509,8 @@ mod tests {
     #[test]
     fn mixed_golden_compares_surfaces_and_boundaries() {
         let dir = jc_testdata::require_data!("0c-testdata");
-        if !dir.join("../build-zh/manifest.json").is_file() {
-            eprintln!("缺少注音二進位資料包，跳過");
+        if !dir.join("../build-zh-bigram/manifest.json").is_file() {
+            eprintln!("缺少注音 bigram 二進位資料包，跳過");
             return;
         }
         let mut out = Vec::new();
