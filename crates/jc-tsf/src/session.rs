@@ -450,6 +450,7 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
         cursor_rune,
         suggestion,
         navigating,
+        handled,
         ..
     } = response
     else {
@@ -481,6 +482,9 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
     let all_english = !segments.is_empty() && segments.iter().all(|s| s.mode == "english");
     let japanese = segments.iter().any(|s| s.mode == "japanese");
     let pending = suggestion.is_some();
+    // 引擎可以明確說「這次沒處理」（例如候選 index 越界）；有值時尊重它，
+    // 沒有才照舊由內容推斷。
+    let handled = handled.unwrap_or(!preedit.is_empty() || !candidates.is_empty() || pending);
 
     let items: Vec<Value> = candidates
         .iter()
@@ -500,7 +504,7 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
         .collect();
 
     json!({
-        "handled": !preedit.is_empty() || !candidates.is_empty() || pending,
+        "handled": handled,
         "preedit": preedit_segments,
         "cursor": {"rune": cursor_rune, "utf16": utf16_at_rune(preedit, *cursor_rune)},
         "suggestion": suggestion.clone().unwrap_or_default(),
@@ -582,6 +586,13 @@ pub fn to_jc_request(envelope: &Value) -> Value {
             // UnknownOp；那個請求又進了重播紀錄，之後每次 ensure_open 重播都會
             // 失敗，整個 session 就再也開不起來（實機：每個鍵都「server 不可用」）。
             "display" => json!({"op": "snapshot"}),
+            // 候選窗滑鼠點選：jc 有真正的 select op，index 是候選的絕對索引。
+            // 舊路徑靠 fallback 會送出協定不認得的 op，引擎回 UnknownOp。
+            "select" => json!({
+                "op": "select",
+                "index": envelope["req"]["index"].as_u64().unwrap_or(0),
+                "session": envelope["session"].as_u64().unwrap_or(0),
+            }),
             // 0c 的 cancel 是「宿主終止了組字，丟掉它」。jc 沒有 cancel op，
             // 對應的動作是按 Escape：引擎清掉組字。送原樣會回 UnknownOp，
             // 而且每次宿主終止組字都會重試三次（實機 log 會連三行「未知的操作」）。
@@ -2160,6 +2171,7 @@ mod parse_tests {
             suggestion: Some("lo".into()),
             label: None,
             navigating: false,
+            handled: None,
         };
         let reply = response_to_reply(&state);
         let s = parse(&reply);
@@ -2185,6 +2197,7 @@ mod parse_tests {
             suggestion: None,
             label: None,
             navigating: false,
+            handled: None,
         };
         let s = parse(&response_to_reply(&no_suggestion));
         assert!(!s.english_pending, "沒有 suggestion 就沒有英文補全");
@@ -2406,6 +2419,88 @@ mod tests {
             .find(|request| request["op"] == "key")
             .expect("key 要送 key");
         assert!(key.get(TEARDOWN_HINT).is_none(), "互動按鍵維持 10 秒預算");
+    }
+
+    #[test]
+    fn to_jc_request_maps_select_to_protocol_select() {
+        let envelope = json!({
+            "op": "handle",
+            "session": 7,
+            "req": {"type": "select", "index": 2},
+        });
+        let request = to_jc_request(&envelope);
+        assert_eq!(request["op"], "select");
+        assert_eq!(request["index"], 2);
+        assert_eq!(request["session"], 7);
+        let parsed: jc_proto::Request = serde_json::from_value(request).unwrap();
+        assert_eq!(parsed, jc_proto::Request::Select { index: 2 });
+    }
+
+    #[test]
+    fn select_snapshot_applies_preedit_and_candidates() {
+        let (client, st) = mock_client(|request, _st| match request["op"].as_str() {
+            Some("hello") => Some(json!({"ok": true, "session": 1, "info": {}})),
+            Some("select") => Some(json!(Response::State {
+                preedit: "窩".into(),
+                cursor: 1,
+                candidates: vec!["窩".into(), "我".into()],
+                details: Vec::new(),
+                segments: vec![jc_proto::SegmentInfo {
+                    start: 0,
+                    end: 1,
+                    mode: "zhuyin".into(),
+                    script: "bopomofo".into(),
+                }],
+                highlighted: 0,
+                cursor_rune: 1,
+                suggestion: None,
+                label: None,
+                navigating: true,
+                handled: None,
+            })),
+            _ => Some(json!({"ok": true})),
+        });
+        let mut s = Session::with_client(client);
+        let snapshot = s.handle(json!({"type": "select", "index": 1}));
+        assert!(snapshot.ok && snapshot.handled);
+        assert_eq!(snapshot.text(), "窩");
+        assert_eq!(snapshot.candidates.len(), 2);
+        assert_eq!(snapshot.candidate_keys, vec!["1", "2"]);
+
+        let requests = st.lock().unwrap().requests.clone();
+        let select = requests
+            .iter()
+            .rev()
+            .find(|request| request["op"] == "select")
+            .expect("要送出 select");
+        assert_eq!(select["index"], 1);
+        assert_eq!(select["session"], 1);
+    }
+
+    #[test]
+    fn select_out_of_range_is_ok_but_not_handled() {
+        let (client, _st) = mock_client(|request, _st| match request["op"].as_str() {
+            Some("hello") => Some(json!({"ok": true, "session": 1, "info": {}})),
+            Some("select") => Some(json!(Response::State {
+                preedit: "ㄨㄛ".into(),
+                cursor: 2,
+                candidates: vec!["我".into()],
+                details: Vec::new(),
+                segments: Vec::new(),
+                highlighted: 0,
+                cursor_rune: 2,
+                suggestion: None,
+                label: None,
+                navigating: false,
+                handled: Some(false),
+            })),
+            _ => Some(json!({"ok": true})),
+        });
+        let mut s = Session::with_client(client);
+        let snapshot = s.handle(json!({"type": "select", "index": 99}));
+        assert!(snapshot.ok, "越界仍是成功的請求");
+        assert!(!snapshot.handled, "引擎說沒處理，外殼要照實轉出去");
+        assert_eq!(snapshot.text(), "ㄨㄛ", "組字不清掉");
     }
 
     #[test]
@@ -2752,6 +2847,7 @@ mod tests {
             suggestion,
             label: None,
             navigating: false,
+            handled: None,
         }
     }
 

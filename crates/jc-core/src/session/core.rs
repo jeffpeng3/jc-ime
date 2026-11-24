@@ -453,12 +453,26 @@ impl Session {
         let within = self.selection_index(ch)?;
         // 頁位移由核心算：頁碼來自 `highlighted`，頁面大小固定。
         let index = self.current_page() * self.page_size() + within;
-        let Some(candidate) = self.candidates.get(index).cloned() else {
-            return Some(false);
-        };
+        match self.choose_candidate(index) {
+            Some(_) => Some(true),
+            None => Some(false),
+        }
+    }
+
+    /// 依絕對索引套用候選，回傳套用後的快照；越界或無法套用時回 `None`。
+    ///
+    /// 數字鍵選字與候選窗滑鼠點選共用這條路徑，包含片段編輯窗、Mixed
+    /// 只選最後一個音節、英文補完、Mixed 注音片段與一般插入。呼叫端不必
+    /// 先開候選窗；是否為合法選字由呼叫端判斷。
+    pub fn choose_candidate(&mut self, index: usize) -> Option<Snapshot> {
+        if index >= self.candidates.len() {
+            return None;
+        }
         // 游標移到中間或調過詞長時，選字只鎖定這一段，不送出整段組字。
         if self.edit.is_some() {
-            return Some(self.select_window_candidate(index));
+            return self
+                .select_window_candidate(index)
+                .then(|| self.finish_choice());
         }
         // ↓／空白開的純注音候選只涵蓋最後一個音節：選字換那一段，整段留著。
         if self.config.mode == Mode::Mixed && self.in_zh_lane() && self.zh_window_last {
@@ -467,7 +481,9 @@ impl Session {
                 start: self.syllables.len().saturating_sub(1),
                 len: 1,
             });
-            return Some(self.select_window_candidate(index));
+            return self
+                .select_window_candidate(index)
+                .then(|| self.finish_choice());
         }
         // 混合模式的候選是英文補完、拼字建議或已完成的注音詞；英文候選
         // 取代待定按鍵，注音候選換掉結尾的注音片段。純注音路徑（含 Mixed
@@ -477,6 +493,7 @@ impl Session {
             && !self.in_ja_lane()
             && self.menu.is_none()
         {
+            let candidate = self.candidates[index].clone();
             let raw = self.ascii.pending().to_string();
             if !raw.is_empty() && candidate.surface == raw {
                 // 選回原始按鍵：固定成字面，不再讓切分器把它解成羅馬字。
@@ -486,7 +503,7 @@ impl Session {
                 self.navigating = false;
                 self.highlighted = 0;
                 self.mixed_cursor = Self::MIXED_CURSOR_END;
-                return Some(true);
+                return Some(self.finish_choice());
             }
             if !raw.is_empty() && self.ascii.accept(&candidate.surface) {
                 self.learn_english_choice(&raw, &candidate.surface);
@@ -494,15 +511,16 @@ impl Session {
                 self.navigating = false;
                 self.highlighted = 0;
                 self.mixed_cursor = Self::MIXED_CURSOR_END;
-                return Some(true);
+                return Some(self.finish_choice());
             }
             if self.select_mixed_zh_candidate(&candidate.surface) {
                 self.candidate_window = false;
                 self.navigating = false;
                 self.highlighted = 0;
-                return Some(true);
+                return Some(self.finish_choice());
             }
         }
+        let candidate = self.candidates[index].clone();
         self.remember_text(&candidate.surface);
         self.learn_candidate(index);
         let text = if self.menu.is_some() {
@@ -512,7 +530,14 @@ impl Session {
         };
         self.pending_commit = Some(self.finalize(text));
         self.clear_composition();
-        Some(true)
+        Some(self.finish_choice())
+    }
+
+    /// 選字完成後與 `press` 相同的收尾：關掉候選窗並重建顯示。
+    fn finish_choice(&mut self) -> Snapshot {
+        self.candidate_window = false;
+        self.rebuild();
+        self.snapshot()
     }
 
     /// 把候選套用到游標所在的片段，其他片段保持原樣。

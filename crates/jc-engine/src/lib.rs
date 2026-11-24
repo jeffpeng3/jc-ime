@@ -475,6 +475,10 @@ impl Engine {
                         text: session.commit(),
                     },
                     Request::Snapshot => state(session.snapshot()),
+                    Request::Select { index } => match session.choose_candidate(index) {
+                        Some(snapshot) => state(snapshot),
+                        None => Response::Acknowledged { session: 0 },
+                    },
                     Request::OutputSimplified { on } => {
                         session.set_output_simplified(on);
                         state(session.snapshot())
@@ -621,6 +625,19 @@ impl Engine {
                 }
                 self.with_current(Some(Request::Commit), |session| Response::Committed {
                     text: session.commit(),
+                })
+            }
+            Request::Select { index } => {
+                if !self.hello {
+                    return not_handshaked();
+                }
+                self.with_current(Some(Request::Select { index }), |session| {
+                    match session.choose_candidate(index) {
+                        Some(snapshot) => state(snapshot),
+                        // 越界是合法的「點到已消失的候選」：保留目前組字，
+                        // 但明確標成沒處理，外殼才不會清掉畫面。
+                        None => Response::state_with_handled(session.snapshot(), Some(false)),
+                    }
                 })
             }
             Request::OutputSimplified { on } => {
@@ -1023,6 +1040,7 @@ fn request_op(request: &Request) -> &'static str {
         Request::Toggle => "toggle",
         Request::Snapshot => "snapshot",
         Request::Commit => "commit",
+        Request::Select { .. } => "select",
         Request::Shutdown => "shutdown",
         Request::Ping => "ping",
         Request::Health => "health",
@@ -1365,9 +1383,91 @@ mod tests {
     #[test]
     fn unknown_op_reports_unknown_op() {
         let mut engine = Engine::new();
+        let request: Request = serde_json::from_str(r#"{"op":"nope"}"#).unwrap();
         assert_eq!(
-            engine.handle(Request::Unknown),
+            engine.handle(request),
             Response::error(ErrorCode::UnknownOp, "未知的操作")
+        );
+    }
+
+    #[test]
+    fn select_applies_candidate_and_commits_pending_text() {
+        use jc_core::lattice::{InMemoryLexicon, LexEntry};
+
+        let mut lexicon = InMemoryLexicon::new();
+        lexicon.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
+        lexicon.push(LexEntry::new("窩", "ㄨㄛˇ", 20, 0));
+        let config = SessionConfig {
+            zh_lexicon: Some(std::sync::Arc::new(lexicon)),
+            ..Default::default()
+        };
+        let mut engine = Engine::with_session(Session::new(config));
+        hello(&mut engine);
+        type_syllable(&mut engine, "ㄨㄛˇ");
+
+        let Response::State { candidates, .. } = engine.handle(Request::Snapshot) else {
+            panic!("快照應是 State");
+        };
+        let index = candidates
+            .iter()
+            .position(|candidate| candidate == "窩")
+            .expect("候選要有窩");
+
+        let response = engine.handle(Request::Select { index });
+        let Response::State { handled, .. } = response else {
+            panic!("select 應回 State，得到 {response:?}");
+        };
+        assert_eq!(handled, None, "成功套用時沿用內容推斷");
+        assert_eq!(
+            engine.handle(Request::Commit),
+            Response::Committed { text: "窩".into() },
+            "select 要真的換字，不能只移動高亮"
+        );
+        assert!(!engine.is_closing());
+    }
+
+    #[test]
+    fn select_out_of_range_keeps_composition_and_reports_not_handled() {
+        use jc_core::lattice::{InMemoryLexicon, LexEntry};
+
+        let mut lexicon = InMemoryLexicon::new();
+        lexicon.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
+        let config = SessionConfig {
+            zh_lexicon: Some(std::sync::Arc::new(lexicon)),
+            ..Default::default()
+        };
+        let mut engine = Engine::with_session(Session::new(config));
+        hello(&mut engine);
+        type_syllable(&mut engine, "ㄨㄛˇ");
+
+        let before = engine.handle(Request::Snapshot);
+        let response = engine.handle(Request::Select { index: 99 });
+        let Response::State {
+            preedit,
+            candidates,
+            handled,
+            ..
+        } = response
+        else {
+            panic!("越界應回 State，得到 {response:?}");
+        };
+        assert_eq!(handled, Some(false), "越界要明確回 handled=false");
+        assert_eq!(preedit, "我", "越界不得清掉組字");
+        assert!(!candidates.is_empty(), "越界不得清掉候選");
+        assert_eq!(
+            engine.handle(Request::Snapshot),
+            before,
+            "越界不得改變組字狀態"
+        );
+        assert!(!engine.is_closing(), "越界不得斷線");
+    }
+
+    #[test]
+    fn select_before_hello_is_rejected() {
+        let mut engine = Engine::new();
+        assert_eq!(
+            engine.handle(Request::Select { index: 0 }),
+            Response::error(ErrorCode::Internal, "尚未完成握手")
         );
     }
 

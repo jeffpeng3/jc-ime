@@ -245,6 +245,13 @@ pub enum Request {
     Snapshot,
     /// 送出目前的組字結果。
     Commit,
+    /// 候選窗點選：直接套用第 `index` 個候選（從 0 起算）。
+    ///
+    /// 與數字鍵選字走同一條核心路徑；省略 `index` 時視為 0。
+    Select {
+        #[serde(default)]
+        index: usize,
+    },
     /// 要求引擎結束行程。
     Shutdown,
 
@@ -389,6 +396,12 @@ pub enum Response {
         /// 是否已進入明確的候選選取模式。
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         navigating: bool,
+        /// 引擎是否真的處理了這次請求；`None` 表示由外殼依內容推斷。
+        ///
+        /// 目前只有候選 index 越界的 `select` 會明確設成 `false`，讓外殼
+        /// 忽略這次點選而不要清掉組字。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        handled: Option<bool>,
     },
     /// 一次提交的結果。
     Committed { text: String },
@@ -454,6 +467,14 @@ impl Response {
     /// 這是核心快照到線格式的唯一映射點。`details` 與 `candidates` 由同一個
     /// 向量產生，順序與長度必然一致；`segments` 的 byte 位移在這裡換成 rune。
     pub fn state(snapshot: jc_core::Snapshot) -> Self {
+        Self::state_with_handled(snapshot, None)
+    }
+
+    /// 由核心快照建立 [`Response::State`]，並指定 `handled`。
+    ///
+    /// `None` 保留舊行為，由外殼依 `preedit`／`candidates` 推斷；`Some(false)`
+    /// 用在候選越界這類「請求成功但沒有套用」的情況。
+    pub fn state_with_handled(snapshot: jc_core::Snapshot, handled: Option<bool>) -> Self {
         let jc_core::Snapshot {
             preedit,
             cursor_rune,
@@ -499,6 +520,7 @@ impl Response {
             label,
             navigating,
             preedit,
+            handled,
         }
     }
 }
@@ -619,6 +641,7 @@ mod tests {
                 suggestion: None,
                 label: None,
                 navigating: false,
+                handled: None,
             }
         );
     }
@@ -853,6 +876,7 @@ mod tests {
                 Request::OutputSimplified { on: true },
                 r#"{"op":"output_simplified","on":true}"#,
             ),
+            (Request::Select { index: 3 }, r#"{"op":"select","index":3}"#),
         ];
         for (request, expected) in cases {
             let text = serde_json::to_string(&request).unwrap();
@@ -879,6 +903,32 @@ mod tests {
                 context_enabled: false,
             }
         );
+
+        let request: Request = serde_json::from_str(r#"{"op":"select"}"#).unwrap();
+        assert_eq!(request, Request::Select { index: 0 });
+    }
+
+    #[test]
+    fn select_keeps_index_and_ignores_session() {
+        let raw = r#"{"op":"select","index":2,"session":7}"#;
+        let request: Request = serde_json::from_str(raw).unwrap();
+        assert_eq!(request, Request::Select { index: 2 });
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"op":"select","index":2}"#
+        );
+    }
+
+    #[test]
+    fn state_can_report_not_handled() {
+        let response =
+            Response::state_with_handled(jc_core::Snapshot::from_preedit("ㄇ"), Some(false));
+        let text = serde_json::to_string(&response).unwrap();
+        assert_eq!(
+            text,
+            r#"{"op":"state","preedit":"ㄇ","cursor":1,"candidates":[],"cursor_rune":1,"handled":false}"#
+        );
+        assert_eq!(serde_json::from_str::<Response>(&text).unwrap(), response);
     }
 
     #[test]

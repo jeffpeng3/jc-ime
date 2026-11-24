@@ -166,6 +166,7 @@ fn response_state_minimal_accepts_version_one_shape() {
             suggestion: None,
             label: None,
             navigating: false,
+            handled: None,
         }
     );
 }
@@ -187,6 +188,7 @@ fn response_state_v2_round_trips_all_new_fields() {
             suggestion: Some("ˇ".into()),
             label: Some("常用字".into()),
             navigating: true,
+            handled: None,
         }
     );
     match response {

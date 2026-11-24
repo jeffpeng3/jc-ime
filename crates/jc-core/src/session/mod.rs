@@ -1370,6 +1370,86 @@ mod tests {
         assert_eq!(s.commit(), candidates[1].surface);
     }
 
+    /// 數字鍵與 `choose_candidate` 在一般路徑要得到完全相同的結果。
+    #[test]
+    fn test_choose_candidate_matches_digit_selection() {
+        let mut digit = session();
+        type_syllable(&mut digit, "ㄐㄧㄥˇ");
+        digit.press(Key::new(KeyCode::ArrowRight, None, false));
+        let mut chosen = session();
+        type_syllable(&mut chosen, "ㄐㄧㄥˇ");
+        chosen.press(Key::new(KeyCode::ArrowRight, None, false));
+
+        let from_digit = digit.press(Key::char('2', false));
+        let from_choose = chosen.choose_candidate(1).expect("索引 1 應可選");
+        assert_eq!(from_choose.preedit, from_digit.preedit);
+        assert_eq!(from_choose.candidates, from_digit.candidates);
+        assert_eq!(chosen.commit(), digit.commit());
+    }
+
+    /// 片段編輯窗：滑鼠點選與數字鍵都要只換這一段，不送出整段。
+    #[test]
+    fn test_choose_candidate_matches_digit_in_edit_window() {
+        let mut digit = two_syllable_session();
+        digit.press(Key::new(KeyCode::Space, None, false));
+        digit.press(Key::new(KeyCode::ArrowLeft, None, false));
+        digit.press(Key::new(KeyCode::Down, None, false));
+        assert!(digit.edit.is_some(), "要進入片段編輯窗");
+        let mut chosen = two_syllable_session();
+        chosen.press(Key::new(KeyCode::Space, None, false));
+        chosen.press(Key::new(KeyCode::ArrowLeft, None, false));
+        chosen.press(Key::new(KeyCode::Down, None, false));
+        assert!(chosen.edit.is_some());
+
+        let from_digit = digit.press(Key::char('1', false));
+        let from_choose = chosen.choose_candidate(0).expect("索引 0 應可選");
+        assert_eq!(from_choose.preedit, from_digit.preedit);
+        assert_eq!(from_choose.candidates, from_digit.candidates);
+        assert_eq!(
+            chosen.snapshot().preedit,
+            from_choose.preedit,
+            "只換片段，不送出"
+        );
+        assert_eq!(chosen.commit(), digit.commit());
+    }
+
+    /// Mixed 的純注音候選只涵蓋最後一個音節；兩條路徑結果要相同。
+    #[test]
+    fn test_choose_candidate_matches_digit_for_zh_window_last() {
+        let mut digit = two_syllable_session();
+        digit.press(Key::new(KeyCode::Space, None, false));
+        digit.press(Key::new(KeyCode::Down, None, false));
+        assert!(digit.zh_window_last, "空白開窗只列最後一個音節");
+        let mut chosen = two_syllable_session();
+        chosen.press(Key::new(KeyCode::Space, None, false));
+        chosen.press(Key::new(KeyCode::Down, None, false));
+        assert!(chosen.zh_window_last);
+
+        let from_digit = digit.press(Key::char('1', false));
+        let from_choose = chosen.choose_candidate(0).expect("索引 0 應可選");
+        assert_eq!(from_choose.preedit, from_digit.preedit);
+        assert_eq!(from_choose.candidates, from_digit.candidates);
+        assert_eq!(chosen.commit(), digit.commit());
+    }
+
+    /// 越界時 `choose_candidate` 不動狀態，對應引擎的 handled=false。
+    #[test]
+    fn test_choose_candidate_out_of_range_keeps_state() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        let before = s.snapshot();
+        assert!(s.choose_candidate(999).is_none());
+        assert_eq!(s.snapshot(), before);
+    }
+
+    fn two_syllable_session() -> Session {
+        let mut s = session();
+        type_syllable(&mut s, "ㄈㄥ");
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        s
+    }
+
     #[test]
     fn test_without_lexicon_commits_reading() {
         let mut s = Session::new(SessionConfig::new(Mode::Mixed));
