@@ -113,6 +113,9 @@ Source: "{#PayloadDir}\jc-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\jc-settings-ui.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\jc-tsf-smoke.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\jc-tip-register.exe"; DestDir: "{app}"; Flags: ignoreversion
+; 安裝後診斷；由下面的 [Run] 以原使用者身分執行，log 寫到該使用者的
+; %LOCALAPPDATA%\jc-ime\doctor。
+Source: "{#PayloadDir}\post-install-doctor.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 ; 授權文件：payload 內的路徑與 repo 相同，check-payload.py 直接比對雜湊。
 Source: "{#PayloadDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
@@ -203,6 +206,12 @@ Filename: "{app}\jc-tip-register.exe"; Parameters: "user-cleanup-legacy"; Status
 ; 裝完就喚起引擎，不等下次登入。
 ; 已經在跑的監督者會回 AlreadyRunning 並直接結束，不是錯誤。
 Filename: "{app}\jc-engine.exe"; Parameters: "--supervise --data ""{commonappdata}\jc-ime\data"" --settings ""{%LOCALAPPDATA}\jc-ime\settings.json"" --personal-dir ""{%LOCALAPPDATA}\jc-ime"" --personal-prefix personal"; Tasks: enableime; Flags: runhidden nowait runasoriginaluser
+
+; 安裝完成後跑一次 doctor。runasoriginaluser 不能省：診斷要讀原使用者的
+; 語言清單與 TSF 啟用狀態，log 與剪貼簿也必須落在原使用者的
+; %LOCALAPPDATA%。腳本在無互動工作階段（例如 CI service）會跳過訊息框。
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\post-install-doctor.ps1"""; Flags: runhidden waituntilterminated runasoriginaluser
+
 Filename: "{app}\jc-settings-ui.exe"; Description: "{cm:OpenSettings}"; Flags: postinstall nowait skipifsilent unchecked
 
 [UninstallRun]
@@ -213,6 +222,8 @@ Filename: "{app}\jc-tip-register.exe"; Parameters: "machine-unregister"; Flags: 
 [UninstallDelete]
 Type: files; Name: "{app}\*.old-*"
 Type: files; Name: "{commonappdata}\jc-ime\msi-uninstall.log"
+; 安裝後診斷的 log 與 last.txt；反安裝不需要這支腳本留下的紀錄。
+Type: filesandordirs; Name: "{localappdata}\jc-ime\doctor"
 
 [Code]
 const

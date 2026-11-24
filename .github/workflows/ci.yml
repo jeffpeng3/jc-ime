@@ -966,7 +966,7 @@ jobs:
           Get-Content "$env:RUNNER_TEMP\install.log" -Tail 40 -ErrorAction SilentlyContinue | Write-Host
           throw '安裝後 60 秒內引擎沒有建立 pipe；[Run] 的 jc-engine.exe 沒跑起來。'
 
-      - name: 執行 jc-tsf-smoke（doctor）
+      - name: 安裝後 doctor（post-install-doctor.ps1）
         shell: pwsh
         env:
           # Activate 失敗時 TSF 會在 DLL 裡記下是哪一步回錯誤。doctor 只看得到
@@ -975,24 +975,63 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $exe = Join-Path $env:JC_INSTALL_DIR 'jc-tsf-smoke.exe'
-          if (-not (Test-Path $exe)) { throw "找不到 $exe" }
+          # 直接叫安裝器用的同一支腳本，並用 Windows PowerShell 5.1 執行，
+          # 與 [Run] 的 powershell.exe 路徑一致。-NoUi 讓 CI 不會被
+          # MessageBox 卡住；-ExitWithSmokeCode 讓這步能斷言 doctor exit 0。
+          $script = Join-Path $env:JC_INSTALL_DIR 'post-install-doctor.ps1'
+          if (-not (Test-Path $script)) { throw "找不到 $script" }
 
-          $jsonPath = Join-Path $env:RUNNER_TEMP 'smoke.json'
-          $errPath = Join-Path $env:RUNNER_TEMP 'smoke.err.log'
-          & $exe --json 1> $jsonPath 2> $errPath
+          $doctorDir = Join-Path $env:LOCALAPPDATA 'jc-ime\doctor'
+          $lastPath = Join-Path $doctorDir 'last.txt'
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -NoUi -ExitWithSmokeCode
           $code = $LASTEXITCODE
-          if (Test-Path $jsonPath) { Get-Content $jsonPath | Write-Host }
-          if (Test-Path $errPath) { Get-Content $errPath | Write-Host }
+
+          $summary = @()
+          $logPath = $null
+          $jsonPath = $null
+          if (Test-Path $lastPath) {
+            Get-Content $lastPath -Encoding UTF8 | Write-Host
+            Copy-Item $lastPath (Join-Path $env:RUNNER_TEMP 'doctor-last.txt') -Force
+            $summary = @(Get-Content $lastPath -Encoding UTF8)
+            if ($summary.Count -ge 2) {
+              $logPath = $summary[-1].Trim()
+              if (Test-Path $logPath) {
+                $jsonPath = [IO.Path]::ChangeExtension($logPath, '.json')
+                # 保留原本失敗記錄的檔名，讓下面的 artifact 上傳不用改路徑。
+                Copy-Item $logPath (Join-Path $env:RUNNER_TEMP 'smoke.err.log') -Force
+                if (Test-Path $jsonPath) {
+                  Copy-Item $jsonPath (Join-Path $env:RUNNER_TEMP 'smoke.json') -Force
+                }
+                Get-Content $logPath -Encoding UTF8 | Write-Host
+              }
+            }
+          }
 
           if ($code -ne 0) {
-            throw "jc-tsf-smoke 失敗（exit $code）；輸出見 $jsonPath 與 $errPath"
+            throw "post-install-doctor.ps1 失敗（exit $code）；摘要見 $lastPath"
           }
-          if (-not (Test-Path $jsonPath) -or (Get-Item $jsonPath).Length -eq 0) {
-            throw 'jc-tsf-smoke --json 沒有輸出 JSON。'
+          if (-not (Test-Path $lastPath)) {
+            throw "post-install-doctor.ps1 沒有寫入 $lastPath"
           }
+          if ($summary.Count -lt 2) { throw "$lastPath 內容不完整" }
 
-          $report = Get-Content $jsonPath -Raw | ConvertFrom-Json
+          # last.txt 的最後一行必須是同一條 doctor 路徑下的 .log，而且檔案真的
+          # 存在。這一行就是使用者被要求回報的路徑，不能只是好看的字串。
+          if (-not (Test-Path $logPath)) {
+            throw "last.txt 最後一行的 log 路徑不存在：$logPath"
+          }
+          if ([IO.Path]::GetDirectoryName($logPath) -ne $doctorDir) {
+            throw "log 路徑不在 $doctorDir：$logPath"
+          }
+          if ([IO.Path]::GetExtension($logPath) -ne '.log') {
+            throw "last.txt 最後一行不是 .log：$logPath"
+          }
+          if (-not (Test-Path $jsonPath)) {
+            throw "找不到與 log 同名的 JSON：$jsonPath"
+          }
+          Write-Host "doctor log：$logPath"
+
+          $report = Get-Content $jsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
           if ($report.schema -ne 'jc-ime-doctor/1') {
             throw "doctor schema 不是 jc-ime-doctor/1：$($report.schema)"
           }
@@ -1221,6 +1260,7 @@ jobs:
             ${{ runner.temp }}/uninstall.log
             ${{ runner.temp }}/smoke.json
             ${{ runner.temp }}/smoke.err.log
+            ${{ runner.temp }}/doctor-last.txt
             ${{ runner.temp }}/tsf.log
 
 

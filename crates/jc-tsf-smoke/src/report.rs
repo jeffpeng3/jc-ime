@@ -87,6 +87,7 @@ pub struct Summary {
 #[derive(Debug, Clone, Serialize)]
 struct JsonReport<'a> {
     schema: &'static str,
+    version: &'static str,
     ok: bool,
     summary: Summary,
     checks: &'a [Check],
@@ -196,6 +197,7 @@ impl Report {
     pub fn to_json(&self) -> String {
         let document = JsonReport {
             schema: SCHEMA,
+            version: env!("CARGO_PKG_VERSION"),
             ok: self.failed() == 0,
             summary: self.summary(),
             checks: &self.checks,
@@ -203,7 +205,8 @@ impl Report {
         // 這裡的欄位全部是可序列化的基本型別，不會失敗。
         serde_json::to_string_pretty(&document).unwrap_or_else(|error| {
             format!(
-                r#"{{"schema":"{SCHEMA}","ok":false,"summary":{{"pass":0,"warn":0,"fail":1,"skip":0}},"checks":[],"serialize_error":"{error}"}}"#
+                r#"{{"schema":"{SCHEMA}","version":"{}","ok":false,"summary":{{"pass":0,"warn":0,"fail":1,"skip":0}},"checks":[],"serialize_error":"{error}"}}"#,
+                env!("CARGO_PKG_VERSION")
             )
         })
     }
@@ -345,6 +348,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
 
         assert_eq!(value["schema"], SCHEMA);
+        assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(value["ok"], false);
         assert_eq!(value["summary"]["pass"], 1);
         assert_eq!(value["summary"]["warn"], 1);

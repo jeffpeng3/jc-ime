@@ -270,6 +270,14 @@ Copy-FreshArtifact -Source (Join-Path $HelperRelease 'jc-tip-register.exe') `
     -Destination (Join-Path $Payload 'jc-tip-register.exe') `
     -BuiltAfter $buildStartedAt -Label 'jc-tip-register.exe'
 
+# 安裝後診斷腳本不是 cargo 產物，直接從 installer/ 複製進 payload；
+# jc.iss 的 [Files] 與 check-payload.py 都靠這個檔名。
+$doctorScript = Join-Path $PSScriptRoot 'post-install-doctor.ps1'
+if (-not (Test-Path $doctorScript)) {
+    throw "找不到安裝後診斷腳本：$doctorScript"
+}
+Copy-Item $doctorScript (Join-Path $Payload 'post-install-doctor.ps1') -Force
+
 $dataStage = Join-Path $Payload 'data'
 New-Item -ItemType Directory -Path $dataStage | Out-Null
 
