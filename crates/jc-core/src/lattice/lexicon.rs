@@ -121,6 +121,11 @@ fn is_unit_prefix(prefix: &str, full: &str) -> bool {
     }
 }
 
+/// 讀音的第一個音節。
+fn first_unit(reading: &str) -> &str {
+    reading.split(' ').next().unwrap_or(reading)
+}
+
 /// 測試與小型情境用的記憶體詞典。
 ///
 /// 保留加入順序，讓 [`Lexicon::prefix`] 的結果可重現。同一讀音可以有多筆
@@ -130,6 +135,8 @@ fn is_unit_prefix(prefix: &str, full: &str) -> bool {
 pub struct InMemoryLexicon {
     exact: HashMap<String, Vec<LexEntry>>,
     all: Vec<LexEntry>,
+    /// 第一個音節到詞條索引；[`Lexicon::prefix`] 只看同一首音節的詞條。
+    by_first_unit: HashMap<String, Vec<usize>>,
     longest: usize,
 }
 
@@ -146,6 +153,10 @@ impl InMemoryLexicon {
             .entry(entry.reading.clone())
             .or_default()
             .push(entry.clone());
+        self.by_first_unit
+            .entry(first_unit(&entry.reading).to_string())
+            .or_default()
+            .push(self.all.len());
         self.all.push(entry);
     }
 
@@ -178,10 +189,20 @@ impl Lexicon for InMemoryLexicon {
     }
 
     fn prefix(&self, reading: &str) -> Vec<&LexEntry> {
-        self.all
-            .iter()
-            .filter(|e| is_unit_prefix(reading, &e.reading))
-            .collect()
+        if reading.is_empty() {
+            return self.all.iter().collect();
+        }
+        // 前綴以音節為界；首音節不同就不可能匹配，不必掃全部詞條。
+        self.by_first_unit
+            .get(first_unit(reading))
+            .map(|indices| {
+                indices
+                    .iter()
+                    .map(|index| &self.all[*index])
+                    .filter(|e| is_unit_prefix(reading, &e.reading))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn longest_word_units(&self) -> usize {

@@ -27,20 +27,21 @@ pub enum RepeatArc {
 
 /// 判斷詞面的重複種類。
 pub fn repeat_kind(w: &str) -> RepeatArc {
-    let chars: Vec<char> = w.chars().collect();
-    match chars.as_slice() {
-        [c] if c.len_utf8() == w.len() => RepeatArc::SingleRepeat,
-        [a, b] if a == b && a.len_utf8() * 2 == w.len() => RepeatArc::PairRepeat,
+    let mut chars = w.chars();
+    match (chars.next(), chars.next(), chars.next()) {
+        // 單一字元：長度一定等於它自己的 UTF-8 長度。
+        (Some(_), None, _) => RepeatArc::SingleRepeat,
+        (Some(a), Some(b), None) if a == b => RepeatArc::PairRepeat,
         _ => RepeatArc::NoRepeat,
     }
 }
 
 /// 這一列接上詞面 `w`（起點 `at`）時是否要檢查疊字。
-pub fn may_cap(kind: RepeatArc, segs: &[Seg], at: usize, w: &str) -> bool {
+pub fn may_cap(kind: RepeatArc, prev: Option<&Seg>, at: usize, w: &str) -> bool {
     match kind {
-        RepeatArc::SingleRepeat => segs
-            .last()
-            .is_some_and(|prev| prev.end == at && prev.word == w && !prev.partial),
+        RepeatArc::SingleRepeat => {
+            prev.is_some_and(|prev| prev.end == at && prev.word == w && !prev.partial)
+        }
         RepeatArc::PairRepeat => true,
         RepeatArc::NoRepeat => false,
     }
@@ -48,10 +49,15 @@ pub fn may_cap(kind: RepeatArc, segs: &[Seg], at: usize, w: &str) -> bool {
 
 /// 路徑接上 `edge` 時要加的非詞疊字成本；`None` 表示不受限。
 ///
-/// `segs` 是走到 `edge.start` 為止的路徑。
-pub fn repeat_penalty(lex: &dyn Lexicon, lat: &Lattice, segs: &[Seg], edge: &Edge) -> Option<i32> {
+/// `prev` 是走到 `edge.start` 為止的最後一段。
+pub fn repeat_penalty(
+    lex: &dyn Lexicon,
+    lat: &Lattice,
+    prev: Option<&Seg>,
+    edge: &Edge,
+) -> Option<i32> {
     let kind = repeat_kind(&edge.surface);
-    if !may_cap(kind, segs, edge.start, &edge.surface) {
+    if !may_cap(kind, prev, edge.start, &edge.surface) {
         return None;
     }
     match kind {
@@ -124,11 +130,12 @@ mod tests {
 
     #[test]
     fn may_cap_only_matches_adjacent_same_single() {
-        let segs = vec![Seg::new("恩", 0, 1)];
-        assert!(may_cap(RepeatArc::SingleRepeat, &segs, 1, "恩"));
-        assert!(!may_cap(RepeatArc::SingleRepeat, &segs, 2, "恩"));
-        assert!(may_cap(RepeatArc::PairRepeat, &segs, 1, "恩恩"));
-        assert!(!may_cap(RepeatArc::NoRepeat, &segs, 1, "恩"));
+        let seg = Seg::new("恩", 0, 1);
+        assert!(may_cap(RepeatArc::SingleRepeat, Some(&seg), 1, "恩"));
+        assert!(!may_cap(RepeatArc::SingleRepeat, Some(&seg), 2, "恩"));
+        assert!(may_cap(RepeatArc::PairRepeat, Some(&seg), 1, "恩恩"));
+        assert!(!may_cap(RepeatArc::NoRepeat, Some(&seg), 1, "恩"));
+        assert!(!may_cap(RepeatArc::SingleRepeat, None, 1, "恩"));
     }
 
     #[test]
@@ -137,12 +144,12 @@ mod tests {
         lex.push(entry("嗯嗯", "ㄣ ㄣ", 5));
         // 「恩恩」不是詞庫詞。
         let lat = Lattice::build(&["ㄣ", "ㄣ"], &lex, &plain_ctx()).expect("建立詞格");
-        let penalty = repeat_penalty(&lex, &lat, &[], &edge("恩恩", "ㄣ ㄣ", 0, 2));
+        let penalty = repeat_penalty(&lex, &lat, None, &edge("恩恩", "ㄣ ㄣ", 0, 2));
         assert_eq!(penalty, Some(REPEAT_COST));
 
         // 「嗯嗯」是詞庫詞，不罰。
         assert_eq!(
-            repeat_penalty(&lex, &lat, &[], &edge("嗯嗯", "ㄣ ㄣ", 0, 2)),
+            repeat_penalty(&lex, &lat, None, &edge("嗯嗯", "ㄣ ㄣ", 0, 2)),
             None
         );
     }
@@ -151,9 +158,9 @@ mod tests {
     fn single_repeat_skips_when_reading_is_unknown() {
         let lex = InMemoryLexicon::new();
         let lat = Lattice::build(&["ㄣ", "ㄣ"], &lex, &plain_ctx()).expect("建立詞格");
-        let segs = vec![Seg::new("恩", 0, 1)];
+        let seg = Seg::new("恩", 0, 1);
         assert_eq!(
-            repeat_penalty(&lex, &lat, &segs, &edge("恩", "ㄣ", 1, 2)),
+            repeat_penalty(&lex, &lat, Some(&seg), &edge("恩", "ㄣ", 1, 2)),
             Some(REPEAT_COST)
         );
     }

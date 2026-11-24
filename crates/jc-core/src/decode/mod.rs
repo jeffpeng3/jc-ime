@@ -171,6 +171,9 @@ pub(crate) struct PathState {
     pub(crate) capped: bool,
 }
 
+/// 空路徑的指紋種子；n-best 的共享節點路徑用。
+pub(crate) const ROOT_FINGERPRINT: u64 = 0xcbf2_9ce4_8422_2325;
+
 impl PathState {
     /// 路徑的穩定鍵。
     pub(crate) fn key(&self) -> String {
@@ -187,8 +190,24 @@ impl PathState {
     }
 }
 
-/// 路徑排序：成本、段數、穩定鍵。
-pub(crate) fn path_less(a: &PathState, b: &PathState) -> std::cmp::Ordering {
+/// 把一段片段接在既有指紋後面。
+pub(crate) fn fingerprint_after(previous: u64, seg: &Seg) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    previous.hash(&mut hasher);
+    seg.word.hash(&mut hasher);
+    seg.start.hash(&mut hasher);
+    seg.end.hash(&mut hasher);
+    seg.partial.hash(&mut hasher);
+    seg.matched.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// 路徑排序：成本、段數，最後才比完整穩定鍵。
+///
+/// 用在需要與舊行為逐位一致的地方（Viterbi、beam 剪枝、前綴延伸）；n-best
+/// 的插入熱路徑改用共享節點的指紋，避免每次比較都重建路徑字串。
+pub(crate) fn path_less_stable(a: &PathState, b: &PathState) -> std::cmp::Ordering {
     (a.cost, a.segs.len(), a.key()).cmp(&(b.cost, b.segs.len(), b.key()))
 }
 
@@ -285,10 +304,13 @@ impl<'a> Decoder<'a> {
             .pop()
             .unwrap_or_default()
             .into_values()
-            .min_by(path_less);
+            .min_by(path_less_stable);
         if prefix {
             for st in self.prefix_states(lat, locks, &states) {
-                if winner.as_ref().is_none_or(|w| path_less(&st, w).is_lt()) {
+                if winner
+                    .as_ref()
+                    .is_none_or(|w| path_less_stable(&st, w).is_lt())
+                {
                     winner = Some(st);
                 }
             }
@@ -344,7 +366,7 @@ impl<'a> Decoder<'a> {
         if self.beam == 0 || all.len() <= self.beam {
             return all;
         }
-        all.sort_by(|a, b| path_less(a, b));
+        all.sort_by(|a, b| path_less_stable(a, b));
         all.truncate(self.beam);
         all
     }
@@ -365,7 +387,7 @@ impl<'a> Decoder<'a> {
             }
             let k = n - i;
             let mut states: Vec<PathState> = slot.values().cloned().collect();
-            states.sort_by(path_less);
+            states.sort_by(path_less_stable);
             states.truncate(top_b);
             let mut group: BTreeMap<String, PathState> = BTreeMap::new();
             for entry in self.tail_entries(lat, i, k) {
@@ -388,7 +410,7 @@ impl<'a> Decoder<'a> {
                         capped: false,
                     };
                     match group.get(&display) {
-                        Some(old) if !path_less(&cand, old).is_lt() => {}
+                        Some(old) if !path_less_stable(&cand, old).is_lt() => {}
                         _ => {
                             group.insert(display.clone(), cand);
                         }
@@ -763,7 +785,7 @@ pub(crate) fn first_chars(s: &str, n: usize) -> String {
 pub(crate) fn put_best(slot: &mut BTreeMap<(String, u16), PathState>, cand: PathState) {
     let key = (cand.prev_word().unwrap_or_default().to_string(), cand.last);
     match slot.get(&key) {
-        Some(old) if !path_less(&cand, old).is_lt() => {}
+        Some(old) if !path_less_stable(&cand, old).is_lt() => {}
         _ => {
             slot.insert(key, cand);
         }

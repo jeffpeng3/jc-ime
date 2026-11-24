@@ -2265,6 +2265,8 @@ impl Session {
             }
         }
         let original = readings.join(" ");
+        let scorer = zh_scorer(&self.ctx, self.zh_lm.as_deref());
+        let decoder = zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
         let mut out: Vec<Candidate> = Vec::new();
         let mut seen: Vec<String> = Vec::new();
         for variant in variants {
@@ -2275,22 +2277,21 @@ impl Session {
             let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) else {
                 continue;
             };
-            let scorer = zh_scorer(&self.ctx, self.zh_lm.as_deref());
-            let decoder = zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
-            let (hypotheses, _) =
-                decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
-            for hypothesis in hypotheses {
-                if hypothesis.text == variant.join("") || seen.contains(&hypothesis.text) {
-                    continue;
-                }
-                seen.push(hypothesis.text.clone());
-                out.push(Candidate::new(
-                    hypothesis.text,
-                    original.clone(),
-                    hypothesis.cost,
-                    CandidateSource::Lexicon,
-                ));
+            // 模糊音只是補充候選；每個變體各跑一次完整 n-best 會把同音字最多
+            // 的讀音成本乘上變體數。這裡只取最佳路徑，真正的候選量由上面的
+            // 主 n-best 決定。
+            let (segs, cost) = decoder.best(&lattice, &Locks::new(), false);
+            let text: String = segs.iter().map(|seg| seg.word.as_str()).collect();
+            if text.is_empty() || text == variant.join("") || seen.contains(&text) {
+                continue;
             }
+            seen.push(text.clone());
+            out.push(Candidate::new(
+                text,
+                original.clone(),
+                cost,
+                CandidateSource::Lexicon,
+            ));
         }
         out.sort_by_key(|candidate| candidate.cost);
         out

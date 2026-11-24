@@ -179,3 +179,45 @@ Linux，沒有 Windows TSF 可測。需要手動確認：
 2. 打 `watashiwaw96j0 bp6` 不會停在 `w`，能繼續輸入。
 3. 組字中 ←／→ 能移過英文片段。
 4. 打 `ㄊㄞˊ` 後按 ↓，外殼出現候選窗；空白也能開窗。
+
+## 輕聲／一聲的延遲預算與字元邊界 panic
+
+Branch：`fix-tone7-latency`。只改 `crates/jc-core`。
+
+### 延遲預算
+
+`gp6au42k7` 的 `7` 是輕聲 `ㄉㄜ˙`，同音字極多。`cargo test` 的 debug build 下，
+`press()` 每鍵不得超過 **50ms**，`7` 最後要是「神秘的」。驗收用真實資料
+`build-zh-bigram`；測試在資料缺席時跳過。
+
+修正集中在三個地方：
+
+| 位置 | 問題 | 修正 |
+|---|---|---|
+| `decode/nbest.rs` | 每個前詞狀態保留 `k` 條完整路徑，延伸時複製整條 `Vec<Seg>`，排序又用 `format!` 重建穩定鍵；沒有 bigram 時 `beam = 0` 完全不剪枝。 | 路徑改成共享前驅節點，延伸只新增一個節點；排序先比成本，再比預算好的指紋，只有需要與舊順序一致時才建完整穩定鍵。中間層每個前詞只留 2 條，最後一層留滿 `k` 條；`beam = 0` 時前詞狀態上限改成 `k`。 |
+| `session/core.rs` | `fuzzy_candidates()` 對每個模糊音變體各跑一次完整 `nbest`，成本隨變體數倍增。 | 變體只取 `best()` 的最佳路徑，候選量交給主 `nbest`；判斷與既有模糊音測試不變。 |
+| `lattice/lexicon.rs` | `InMemoryLexicon::prefix()` 每次掃全部詞條，候選補全在長讀音上會變慢。 | 加第一個音節索引，只掃同首音節的詞條。 |
+
+`au42k7`、`w96j0`、`w96j0w96j0` 的候選清單在修正前後逐項相同，模糊音既有測試
+沒有放寬。
+
+### `sync_composition_zh` 的 panic
+
+`gp6au42k7au4` 在某些早退路徑會讓 `base` 退回原始注音，而 `segs` 仍是轉換後的
+單字。舊碼用 `seg.word.len()` 累加位元組位移，再切 `base[..at]`：
+
+```
+thread 'main' panicked at crates/jc-core/src/session/composition.rs:82:
+end byte index 24 is not a char boundary; it is inside 'ㄧ'
+```
+
+現在位移一律以 rune 累加，並把片段範圍夾在 `base` 的 rune 長度內，不再對
+`base` 做未檢查的位元組切片。回歸測試：
+
+| 測試 | 內容 |
+|---|---|
+| `crates/jc-core/tests/tone7.rs` `tone7_key_stays_within_budget` | `gp6au42k7` 每鍵 `< 50ms`，最後 preedit 是「神秘的」。 |
+| `crates/jc-core/tests/tone7.rs` `tone7_then_au4_does_not_panic` | `gp6au42k7au4` 不 panic，保留已轉換的字。 |
+| `crates/jc-core/tests/tone7.rs` `tone7_fourth_syllable_never_reverts_both_characters` | 第四鍵不得把兩個字同時退回原始注音。 |
+| `crates/jc-core/tests/tone7.rs` `existing_zh_sequences_stay_stable` | `au42k7`、`w96j0`、`w96j0w96j0` 的既有顯示不變。 |
+| `crates/jc-core/src/session/composition.rs` `sync_composition_zh_uses_rune_offsets_when_widths_differ` | `base` 與 `segs` 寬度不同時不得 panic，片段仍在 rune 範圍內。 |

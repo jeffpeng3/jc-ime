@@ -65,8 +65,13 @@ impl Session {
     ///
     /// `readings` 是每個音節的讀音，`segs` 是最佳路徑的片段。片段顯示文字
     /// 取自 [`Session::base`]，所以 `segs` 的順序必須與 `base` 一致。
+    ///
+    /// 位移一律以 rune 累加。`base` 是轉換後的顯示字串，`seg.word` 是解碼
+    /// 片段；早退路徑可能讓兩者寬度不同（例如 `base` 退回原始注音），用位元組
+    /// 累加會切在多 byte 字元中間。
     pub(super) fn sync_composition_zh(&mut self, readings: &[String], segs: &[crate::decode::Seg]) {
         let base = self.base.clone();
+        let base_runes = crate::output::rune_len(&base);
         let mut literal_offset = self.literal_offset.min(base.len());
         while literal_offset > 0 && !base.is_char_boundary(literal_offset) {
             literal_offset -= 1;
@@ -76,11 +81,12 @@ impl Session {
         let mut segments = Vec::with_capacity(segs.len() + 2);
         let mut at = 0usize;
         for seg in segs {
-            let start_byte = at;
-            at = at.saturating_add(seg.word.len()).min(base.len());
-            let mut start = crate::output::rune_len(&base[..start_byte]);
-            let mut end = crate::output::rune_len(&base[..at]);
-            if !self.literal.is_empty() && start_byte >= literal_offset {
+            let mut start = at.min(base_runes);
+            at = at
+                .saturating_add(crate::output::rune_len(&seg.word))
+                .min(base_runes);
+            let mut end = at;
+            if !self.literal.is_empty() && start >= literal_at {
                 start += literal_width;
                 end += literal_width;
             }
@@ -334,5 +340,59 @@ impl Session {
                 &user.surface,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decode::Seg;
+
+    fn session_with_base(base: &str) -> Session {
+        let mut session = Session::new(SessionConfig::new(crate::Mode::Zh));
+        session.base = base.to_string();
+        session
+    }
+
+    #[test]
+    fn sync_composition_zh_uses_rune_offsets_when_widths_differ() {
+        // `base` 退回原始注音（每個音節 6 到 8 bytes），`segs` 仍是轉換後的
+        // 單字（每個 3 bytes）。舊碼累加位元組位移會在 9 切進 `ㄇ` 的中間。
+        let mut session = session_with_base("ㄕㄣˊㄇㄧˋ的");
+        let readings = [
+            "ㄕㄣˊ".to_string(),
+            "ㄇㄧˋ".to_string(),
+            "ㄉㄜ˙".to_string(),
+        ];
+        let segs = [
+            Seg::new("神", 0, 1),
+            Seg::new("秘", 1, 2),
+            Seg::new("的", 2, 3),
+        ];
+        session.sync_composition_zh(&readings, &segs);
+
+        let runes = crate::output::rune_len(session.composition().text());
+        let segments = session.composition().segments();
+        assert_eq!(segments.len(), 3);
+        assert!(segments.iter().all(|seg| seg.span.end <= runes));
+        assert!(segments
+            .windows(2)
+            .all(|pair| pair[0].span.end <= pair[1].span.start));
+    }
+
+    #[test]
+    fn sync_composition_zh_clamps_segments_longer_than_base() {
+        let mut session = session_with_base("神");
+        let readings = ["ㄕㄣˊ".to_string(), "ㄇㄧˋ".to_string()];
+        let segs = [Seg::new("神", 0, 1), Seg::new("秘", 1, 2)];
+        session.sync_composition_zh(&readings, &segs);
+
+        let runes = crate::output::rune_len(session.composition().text());
+        assert_eq!(runes, 1);
+        assert!(session
+            .composition()
+            .segments()
+            .iter()
+            .all(|seg| seg.span.end <= runes));
     }
 }
