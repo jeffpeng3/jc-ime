@@ -208,12 +208,28 @@ pub struct AsciiInput {
     pieces: Vec<AsciiPiece>,
     /// 這次組字實際按過的按鍵流（含空白與聲調）。統一管線用它重算片段。
     typed: String,
+    /// 這個輸入層使用的英文詞表；`None` 時用行程共用的詞表。
+    english: Option<std::sync::Arc<English>>,
 }
 
 impl AsciiInput {
     /// 建立空狀態。
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 指定英文詞表；引擎載入資料根目錄的 `english/` 後用它帶進來。
+    pub fn with_english(mut self, english: Option<std::sync::Arc<English>>) -> Self {
+        self.english = english;
+        self
+    }
+
+    /// 實際使用的英文詞表。
+    fn english(&self) -> &English {
+        match &self.english {
+            Some(english) => english,
+            None => default_english(),
+        }
     }
 
     /// 目前的原始按鍵。
@@ -320,7 +336,7 @@ impl AsciiInput {
         // 音節原本沒有聲調鍵時，空白是一聲。保留原按鍵，交給統一管線切分。
         let adapter = crate::mixed_latin::LexiconAdapter {
             zh: Some(lexicon),
-            english: Some(default_english()),
+            english: Some(self.english()),
             ..Default::default()
         };
         let with_space = format!("{} ", self.pending);
@@ -442,7 +458,7 @@ impl AsciiInput {
         if long_literal_keys(raw) {
             return None;
         }
-        let english = default_english();
+        let english = self.english();
         if raw.len() < 2 || !ascii_letters(raw) || english.has(raw) {
             return None;
         }
@@ -484,7 +500,7 @@ impl AsciiInput {
     /// 的位元組位移換算成字元數。這是增量版的 `plan_input`，與批次使用同一套
     /// 詞典與計分，切點不會因為「英文詞前綴」的舊規則而不同。
     fn planned_boundary(&self, text: &str, lexicon: &dyn Lexicon) -> Option<(usize, Syllable)> {
-        let english = default_english();
+        let english = self.english();
         let adapter = crate::mixed_latin::LexiconAdapter {
             zh: Some(lexicon),
             english: Some(english),
@@ -618,7 +634,7 @@ impl AsciiInput {
     /// 的按鍵照字面，其餘能組音時顯示注音。英文前綴若同時是一聲讀音
     ///（`up` 是 ㄧㄣ），仍顯示注音。
     fn pending_display(&self, lexicon: &dyn Lexicon) -> String {
-        self.pending_display_with(lexicon, default_english())
+        self.pending_display_with(lexicon, self.english())
     }
 
     fn pending_display_with(&self, lexicon: &dyn Lexicon, english: &English) -> String {
@@ -826,7 +842,7 @@ impl Session {
         if compose_keys(&raw).is_some() {
             return false;
         }
-        let english = crate::mixed::default_english();
+        let english = self.english();
         if !english.dictionary().prefix(&raw, 1).is_empty() {
             return false;
         }
@@ -979,7 +995,7 @@ impl Session {
             self.mixed_typed_spans().get(at - 1)?.1
         } else {
             // 游標在結尾：先試整串按鍵流；尾端只是開候選窗的空白時再省略。
-            let mut whole = AsciiInput::new();
+            let mut whole = self.ascii_input();
             whole.replay(text, &self.lexicon);
             let complete = whole.pending().is_empty()
                 && matches!(whole.pieces().last(), Some(AsciiPiece::Zh(_)));
@@ -993,7 +1009,7 @@ impl Session {
             return None;
         }
         // 重播到目標結尾：最後一個片段必須是注音音節，前面片段是它的前綴。
-        let mut before = AsciiInput::new();
+        let mut before = self.ascii_input();
         before.replay(&text[..end], &self.lexicon);
         if !before.pending().is_empty() {
             return None;
@@ -1008,7 +1024,7 @@ impl Session {
         // 重現前面的片段，這樣才不會切在音節按鍵中間。
         let starts: Vec<usize> = text[..end].char_indices().map(|(start, _)| start).collect();
         for start in starts.into_iter().rev() {
-            let mut suffix = AsciiInput::new();
+            let mut suffix = self.ascii_input();
             suffix.replay(&text[start..end], &self.lexicon);
             if !suffix.pending().is_empty() || suffix.pieces().len() != 1 {
                 continue;
@@ -1017,7 +1033,7 @@ impl Session {
                 AsciiPiece::Zh(syllable) if syllable == &expected => {}
                 _ => continue,
             }
-            let mut prefix = AsciiInput::new();
+            let mut prefix = self.ascii_input();
             prefix.replay(&text[..start], &self.lexicon);
             if prefix.pending().is_empty() && prefix.pieces() == prefix_pieces {
                 return Some((start, end, expected));
@@ -1257,7 +1273,7 @@ impl Session {
         // 維持原本的英文補全流程。
         let is_zhuyin_prefix = !long_literal && self.ascii.display_pending(&self.lexicon) != raw;
         if !is_zhuyin_prefix && !long_literal {
-            for candidate in english_candidates(&self.personal, &raw, limit) {
+            for candidate in english_candidates(&self.personal, self.english(), &raw, limit) {
                 let key = candidate.surface.to_lowercase();
                 if seen.contains(&key) {
                     continue;
@@ -1436,7 +1452,7 @@ impl Session {
     /// `plan_input`。尾巴若接完成的注音音節，切點退到音節開頭，聲調鍵
     /// 才能把 `200 個 z + su3` 切成字面英文加「你」。
     fn plan_latin_text(&self, text: &str) -> Vec<crate::mixed::Plan> {
-        let english = default_english();
+        let english = self.english();
         let adapter = crate::mixed_latin::LexiconAdapter {
             zh: Some(&self.lexicon),
             english: Some(english),
@@ -1707,13 +1723,13 @@ struct RenderedPiece {
 /// 擠掉。打對的完整單字不會有建議，建議保留查詢時的大小寫。
 pub(super) fn english_candidates(
     personal: &crate::personal::Store,
+    english: &English,
     raw: &str,
     limit: usize,
 ) -> Vec<Candidate> {
     if limit == 0 || raw.chars().count() < 2 || !raw.chars().all(|c| c.is_ascii_alphabetic()) {
         return Vec::new();
     }
-    let english = crate::mixed::default_english();
     let mut seen = vec![raw.to_lowercase()];
     let mut corrections: Vec<Candidate> = Vec::new();
     for candidate in english.spelling_candidates(raw, limit.saturating_add(3)) {

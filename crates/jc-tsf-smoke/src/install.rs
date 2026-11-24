@@ -25,6 +25,9 @@ pub const ENGINE_EXE: &str = "jc-engine.exe";
 /// 資料根目錄的索引檔名。
 pub const DATA_MANIFEST: &str = "manifest.json";
 
+/// 英文詞表檔名；安裝後必須在資料根目錄的 `english/` 下。
+pub const ENGLISH_WORDS: &str = "words.bin";
+
 /// 一個被檢查的檔案。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileCheck {
@@ -77,6 +80,8 @@ pub struct InstallProbe {
     pub files: Vec<FileCheck>,
     /// 資料根目錄的 `manifest.json`。
     pub manifest: FileCheck,
+    /// 英文詞表 `english/words.bin`。
+    pub english: FileCheck,
 }
 
 /// 從 `InprocServer32` 的路徑建立探測結果；推不出目錄時回 `None`。
@@ -88,10 +93,13 @@ pub fn probe(inproc: &str) -> Option<InstallProbe> {
         .collect();
     let manifest_path = data_root().join(DATA_MANIFEST);
     let manifest = check_file(manifest_path, DATA_MANIFEST);
+    let english_path = data_root().join("english").join(ENGLISH_WORDS);
+    let english = check_file(english_path, ENGLISH_WORDS);
     Some(InstallProbe {
         dir,
         files,
         manifest,
+        english,
     })
 }
 

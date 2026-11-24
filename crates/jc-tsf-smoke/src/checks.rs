@@ -479,7 +479,22 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
 
     // ── 12. 引擎細節 ────────────────────────────────────────────────
     match engine_probe.engine_detail() {
-        Ok(detail) if !engine_probe.draining() => report.pass("engine.detail", "引擎細節", detail),
+        Ok(detail) if !engine_probe.draining() => match engine_probe.english_words() {
+            Some(words) if words > 1_000 => {
+                report.pass("engine.detail", "引擎細節", detail);
+            }
+            Some(words) => report.fail(
+                "engine.detail",
+                "引擎細節",
+                format!("{detail}；英文只有 {words} 詞，應是內建原型"),
+                "確認 %ProgramData%\\jc-ime\\data\\english\\words.bin 存在且與 manifest 相符；重新啟動引擎",
+            ),
+            None => report.warn(
+                "engine.detail",
+                "引擎細節",
+                format!("{detail}；health 沒有回報 english_words，無法確認英文資料包"),
+            ),
+        },
         Ok(detail) => report.warn(
             "engine.detail",
             "引擎細節",
@@ -567,6 +582,11 @@ fn check_install_files(report: &mut Report, clsid_text: &str) {
         missing.push(probe.manifest.path.display().to_string());
     } else {
         details.push(probe.manifest.sha_detail());
+    }
+    if !probe.english.present {
+        missing.push(probe.english.path.display().to_string());
+    } else {
+        details.push(probe.english.sha_detail());
     }
 
     if !missing.is_empty() {

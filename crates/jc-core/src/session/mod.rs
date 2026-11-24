@@ -47,7 +47,7 @@ use crate::ja::personal as ja_personal;
 use crate::key::{Key, KeyCode};
 use crate::lang::Mode;
 use crate::lattice::{InMemoryLexicon, Lattice};
-use crate::mixed::{space_text, Spacing};
+use crate::mixed::{default_english, space_text, English, Spacing};
 use crate::output::{rune_offset, utf16_offset, Snapshot};
 use crate::personal::PersonalStore;
 use crate::punct::{self, Edit};
@@ -103,6 +103,11 @@ pub struct SessionConfig {
     pub zh_ctx: Option<ScoreContext>,
     /// 注音 bigram 語言模型（`lm.bin`）；`None` 或沒有 bigram 時只用 unigram。
     pub zh_lm: Option<Arc<crate::score::ZhLm>>,
+    /// 英文詞表；`None` 時使用行程共用的 [`crate::mixed::default_english`]。
+    ///
+    /// 引擎從自己的資料根目錄載入 `english/` 後放進來，安裝版因此不必依賴
+    /// `JC_IMEDATA` 或 `JC_ENGLISH_PACK`。`jc-cli` 仍可直接用全域詞表。
+    pub english: Option<Arc<English>>,
     /// 日文解碼器；`None` 時日文只做原樣輸出。
     pub ja: Option<Arc<JaDecoder>>,
     /// 是否呼叫日文解碼器上的重排器；預設關閉，實測 modern-500 全量重排
@@ -184,6 +189,7 @@ impl Default for SessionConfig {
             zh_lexicon: None,
             zh_ctx: None,
             zh_lm: None,
+            english: None,
             ja: None,
             ja_rerank: false,
             ja_neural: NeuralConfig::default(),
@@ -431,6 +437,7 @@ impl Session {
         let lexicon = personal.augment_lexicon(&base_lexicon);
         let zh_lm = config.zh_lm.clone();
         let style = config.style.clone();
+        let english = config.english.clone();
         // 逐字変換控制器與日文解碼器共用同一份詞典；關閉時完全不建立。
         //
         // 神經轉換開啟且模型已載入時，逐字路徑才拿到採用器；關閉或模型
@@ -480,7 +487,7 @@ impl Session {
             suggestion: None,
             last_hypotheses: Vec::new(),
             last_ja_results: Vec::new(),
-            ascii: AsciiInput::new(),
+            ascii: AsciiInput::new().with_english(english),
             zh_lane: false,
             zh_pending_keys: String::new(),
             zh_window_last: false,
@@ -511,6 +518,27 @@ impl Session {
     /// 目前模式。
     pub fn mode(&self) -> Mode {
         self.config.mode
+    }
+
+    /// 這個工作階段使用的英文詞表。
+    ///
+    /// 設定沒有指定時退回行程共用的 [`crate::mixed::default_english`]，
+    /// 因此既有呼叫端不必改。
+    pub fn english(&self) -> &English {
+        match &self.config.english {
+            Some(english) => english,
+            None => default_english(),
+        }
+    }
+
+    /// 目前英文詞表的詞數；health 用來確認載入的是資料包而不是原型。
+    pub fn english_words(&self) -> usize {
+        self.english().dictionary().len()
+    }
+
+    /// 建立與這個工作階段相同英文詞表的 [`AsciiInput`]。
+    fn ascii_input(&self) -> AsciiInput {
+        AsciiInput::new().with_english(self.config.english.clone())
     }
 
     /// 目前組字是否走注音路徑。

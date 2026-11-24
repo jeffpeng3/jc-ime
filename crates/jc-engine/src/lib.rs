@@ -828,6 +828,11 @@ impl Engine {
             .map_or(registry.default_output_simplified, |session| {
                 session.output_simplified()
             });
+        let english_words = registry
+            .current
+            .get(&self.conn)
+            .and_then(|id| self.local.sessions.get(id))
+            .map_or(0, Session::english_words);
         HealthInfo {
             draining: registry.draining || registry.closing,
             // conn 0 是 stdio／測試用，不計入實際 socket 連線。
@@ -837,6 +842,7 @@ impl Engine {
             composing,
             pid: Some(std::process::id()),
             output_simplified,
+            english_words,
             // 0c 把 personal_reset 當成「支援清除學習紀錄」的能力旗標；
             // 這份引擎有 reset 指令且會把空白寫回檔案，所以回 true。
             personal_reset: true,
@@ -1324,6 +1330,29 @@ mod tests {
             ownership_error()
         );
         assert!(first.session_ids().contains(&id), "別條連線不能關掉這個 id");
+    }
+
+    #[test]
+    fn health_reports_session_english_words() {
+        let dict = jc_core::mixed::Dictionary::new([
+            jc_core::mixed::Word::new("hello", 3.0),
+            jc_core::mixed::Word::new("configuration", 2.0),
+            jc_core::mixed::Word::new("small", 1.0),
+        ]);
+        let config = SessionConfig {
+            english: Some(Arc::new(jc_core::mixed::English::new(Some(dict)))),
+            ..SessionConfig::default()
+        };
+        let mut engine = Engine::with_session(Session::new(config));
+        hello(&mut engine);
+        let Response::Health { info } = engine.handle(Request::Health) else {
+            panic!("health 應回 Health");
+        };
+        assert_eq!(info.english_words, 3);
+        assert_eq!(
+            info.as_info().get("english_words").map(String::as_str),
+            Some("3")
+        );
     }
 
     #[test]

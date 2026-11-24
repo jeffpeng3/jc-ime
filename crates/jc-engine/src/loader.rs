@@ -16,6 +16,7 @@ use jc_core::ja::decode::{JaDecoder, JaDictionary, JaReranker, JaWordMatch, JaWo
 use jc_core::ja::lexicon::{JaEntry, JaLexicon, SingleColumnCost};
 use jc_core::ja::rerank::NeuralReranker;
 use jc_core::lattice::{InMemoryLexicon, LexEntry};
+use jc_core::mixed::{English, ENGLISH_PACK_SUBDIR};
 use jc_core::score::{BigramLm, ScoreContext, ZhLm};
 use jc_core::session::neural::{NeuralEngine, NeuralError, NeuralRequest, NeuralRuntime};
 use jc_core::session::SessionConfig;
@@ -682,6 +683,8 @@ pub struct EngineData {
     pub root: PathBuf,
     /// 注音詞典與語言模型。
     pub zh: ZhResources,
+    /// 英文詞表；`None` 表示使用內建原型詞彙。
+    pub english: Option<Arc<English>>,
     /// 日文解碼器；重排器已接上延遲載入包裝。
     pub ja: Arc<JaDecoder>,
     /// Jinen 推論 worker；模型缺席或 `JC_JINEN=off` 時為 `None`。
@@ -695,6 +698,10 @@ impl std::fmt::Debug for EngineData {
         f.debug_struct("EngineData")
             .field("root", &self.root)
             .field("zh_entries", &self.zh.lexicon.len())
+            .field(
+                "english_words",
+                &self.english.as_ref().map(|e| e.dictionary().len()),
+            )
             .field(
                 "has_bigram",
                 &self.zh.lm.as_ref().is_some_and(|lm| lm.bigrams() > 0),
@@ -712,6 +719,7 @@ impl EngineData {
     /// 完全相同。要完全關閉時讓 [`JA_NEURAL_ENV`] 為 `off`。
     pub fn session_config(&self, mode: Mode) -> SessionConfig {
         let mut config = zh_session_config(mode, &self.zh);
+        config.english = self.english.clone();
         config.ja = Some(Arc::clone(&self.ja));
         config.ja_neural.runtime = self.ja_neural.clone();
         config.simplified = self.zhconv.clone();
@@ -815,7 +823,9 @@ fn check_data_manifest(root: &Path) -> Result<(), EngineDataError> {
 ///
 /// 分級：
 /// - 注音 `lexicon.bin`、日文 pack 缺失或壞掉 → 啟動失敗。
-/// - `build-zh-bigram/lm.bin` 缺席 → 警告，退回 `build-zh/lm.bin`。
+/// - `build-zh-bigram/lm.bin` 是選配：缺席只記 debug；存在但壞掉記警告，
+///   兩種情況都退回 `build-zh/lm.bin` 的 unigram。
+/// - `english/` 缺席只記 info；目錄存在但驗證失敗記警告，退回內建原型。
 /// - zh-select 存在就安裝；載入失敗只警告一次，維持統計排序。
 /// - reranker 缺席或壞掉 → 記一次警告後繼續。
 ///
@@ -836,15 +846,32 @@ pub fn load_engine_data(root: &Path) -> Result<EngineData, EngineDataError> {
     }
     let bigram_lm = root.join(ZH_BIGRAM_DIR).join("lm.bin");
     let zh = if bigram_lm.is_file() {
-        load_zh_bin_resources_with_lm(&zh_dir, Some(&bigram_lm))?
+        match load_zh_bin_resources_with_lm(&zh_dir, Some(&bigram_lm)) {
+            Ok(resources) => {
+                log::info!("已載入注音 bigram：{}", bigram_lm.display());
+                resources
+            }
+            Err(err) => {
+                log::warn!(
+                    "注音 bigram {} 載入失敗（{err}），改用 {}/lm.bin 的 unigram",
+                    bigram_lm.display(),
+                    ZH_DIR
+                );
+                load_zh_bin_resources(&zh_dir)?
+            }
+        }
     } else {
-        log::warn!(
-            "找不到 bigram 語言模型 {}，改用 {}/lm.bin",
+        // bigram 是選配資料，安裝版預設不帶；缺席不是錯誤。
+        log::debug!(
+            "未安裝選配的注音 bigram {}，使用 {}/lm.bin 的 unigram",
             bigram_lm.display(),
             ZH_DIR
         );
         load_zh_bin_resources(&zh_dir)?
     };
+    // 英文詞表跟著引擎的資料根目錄走；Windows 安裝版不必設 JC_IMEDATA。
+    let english_dir = root.join(ENGLISH_PACK_SUBDIR);
+    let english = English::load_optional(&english_dir).map(Arc::new);
     let pack = resolve_ja_pack(root, None).map_err(|err| EngineDataError::MissingJaPack {
         message: err.to_string(),
     })?;
@@ -898,6 +925,7 @@ pub fn load_engine_data(root: &Path) -> Result<EngineData, EngineDataError> {
     Ok(EngineData {
         root: root.to_path_buf(),
         zh,
+        english,
         ja: Arc::new(decoder),
         ja_neural,
         zhconv,
@@ -1000,6 +1028,15 @@ mod tests {
         );
         assert!(data.zhconv.is_some(), "資料根目錄的 opencc/ 應載入 tw2s");
         assert!(data.session_config(Mode::Zh).simplified.is_some());
+        let english = data
+            .session_config(Mode::Mixed)
+            .english
+            .expect("資料根目錄的 english/ 應載入詞表");
+        assert!(
+            english.dictionary().len() > 1_000,
+            "英文詞數 {}",
+            english.dictionary().len()
+        );
         let results = data.ja.nbest(
             "わたしはほんをよむ。",
             &jc_core::ja::decode::JaContext::default(),

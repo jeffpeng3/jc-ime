@@ -95,6 +95,17 @@ Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
 `zh_punct` 是歷史角色，用來標記 Funmula 的標點模型。程式自 2026-11-20 起不載入它，
 2026-11-21 也從 catalog 移除；檔案仍在資料目錄供回溯，新的 manifest 不再收錄。
 
+### 英文詞表與選配 bigram
+
+引擎以 `--data` 的資料根目錄為準：`english/` 從同一個根目錄載入，不看
+`JC_IMEDATA`；`JC_ENGLISH_PACK` 只保留給 `jc-cli` 與測試覆寫。`english/`
+目錄不存在只記 info，目錄存在但 manifest 或 `words.bin` 驗證失敗才記 warn。
+
+`build-zh-bigram/lm.bin` 是選配資料。安裝版目前不帶它，引擎找不到時只記
+debug，直接使用 `build-zh/lm.bin` 的 unigram；檔案存在但載入失敗才記 warn 並
+退回 unigram。若之後要納入安裝包，只需要在 manifest 把該檔標成
+`shipped: true`，`installer/build.ps1` 就會照 manifest 複製，不必改安裝腳本。
+
 ## 真實 manifest
 
 2026-11-20T05:58:02Z 對 `/mnt/work/jc/jc-ime-data` 產生的內容：

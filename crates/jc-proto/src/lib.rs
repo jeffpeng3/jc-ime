@@ -95,6 +95,11 @@ pub struct HealthInfo {
     /// 目前是否輸出簡體字。T1a 的 `learn_simplified()` 從這裡讀值。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub output_simplified: bool,
+    /// 目前 session 的英文詞表詞數；原型詞表約 104 詞。
+    ///
+    /// 安裝後 smoke 用它確認引擎真的載入 `english/words.bin`，而不是退回原型。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub english_words: usize,
     /// 引擎是否支援清除學習紀錄（0c `personal_reset`）。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub personal_reset: bool,
@@ -117,6 +122,7 @@ impl HealthInfo {
         }
         info.insert("sessions".to_string(), self.sessions.to_string());
         info.insert("composing".to_string(), self.composing.to_string());
+        info.insert("english_words".to_string(), self.english_words.to_string());
         if let Some(pid) = self.pid {
             info.insert("pid".to_string(), pid.to_string());
         }
@@ -916,6 +922,7 @@ mod tests {
             idle_seconds: Some(9),
             sessions: 3,
             composing: 1,
+            english_words: 80_000,
             pid: Some(42),
             output_simplified: true,
             personal_reset: true,
@@ -932,6 +939,10 @@ mod tests {
         assert_eq!(info_map.get("idle_seconds").map(String::as_str), Some("9"));
         assert_eq!(info_map.get("sessions").map(String::as_str), Some("3"));
         assert_eq!(info_map.get("composing").map(String::as_str), Some("1"));
+        assert_eq!(
+            info_map.get("english_words").map(String::as_str),
+            Some("80000")
+        );
         assert_eq!(info_map.get("pid").map(String::as_str), Some("42"));
         assert_eq!(
             info_map.get("caps_lock_english").map(String::as_str),

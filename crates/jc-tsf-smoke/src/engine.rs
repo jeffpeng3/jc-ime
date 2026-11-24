@@ -95,7 +95,18 @@ impl Probe {
         if let Some(pid) = health.pid {
             text.push_str(&format!("、pid {pid}"));
         }
+        text.push_str(&format!("、英文詞表 {} 詞", health.english_words));
         Ok(text)
+    }
+
+    /// `Health` 回報的英文詞數；沒有 health 或引擎太舊時是 `None`。
+    pub fn english_words(&self) -> Option<usize> {
+        match self {
+            Self::Connected(EngineInfo {
+                health: Ok(health), ..
+            }) if health.english_words > 0 => Some(health.english_words),
+            _ => None,
+        }
     }
 
     /// 引擎是否在交接中（`Health.draining`）。

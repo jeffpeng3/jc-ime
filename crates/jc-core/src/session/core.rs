@@ -2591,7 +2591,8 @@ impl Session {
         }
         // 學過的修正先排，內建前綴補完次之，拼字建議接在後面；打對的詞不會
         // 有建議。
-        let extra = super::mixed::english_candidates(&self.personal, &self.raw, limit);
+        let extra =
+            super::mixed::english_candidates(&self.personal, self.english(), &self.raw, limit);
         for candidate in extra {
             let key = candidate.surface.to_lowercase();
             if seen.contains(&key) {

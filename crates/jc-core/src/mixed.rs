@@ -1341,13 +1341,52 @@ impl English {
         })
     }
 
+    /// 從指定的資料包目錄載入英文詞表。
+    ///
+    /// 與 [`English::from_pack_dir`] 相同，名稱給引擎明確帶入資料根目錄下的
+    /// `english/` 使用；驗證規則仍由 [`Dictionary::load_pack`] 負責。
+    pub fn load_from(dir: &Path) -> Result<Self, MixedError> {
+        Self::from_pack_dir(dir)
+    }
+
+    /// 目錄存在就載入，不存在時回 `None` 並只記一筆 info。
+    ///
+    /// 目錄存在但驗證失敗時記 warn 並帶上原因，讓「沒安裝」與「裝壞了」
+    /// 在 log 裡可以分辨。
+    pub fn load_optional(dir: &Path) -> Option<Self> {
+        if !dir.is_dir() {
+            log::info!(
+                "英文資料包不存在（{}），英文使用內建原型詞彙",
+                dir.display()
+            );
+            return None;
+        }
+        match Self::load_from(dir) {
+            Ok(english) => {
+                log::info!(
+                    "已載入英文詞表：{} 詞（{}）",
+                    english.dictionary().len(),
+                    dir.display()
+                );
+                Some(english)
+            }
+            Err(err) => {
+                log::warn!(
+                    "英文資料包 {} 載入失敗（{err}），改用內建原型詞彙",
+                    dir.display()
+                );
+                None
+            }
+        }
+    }
+
     /// 載入系統上的英文詞表；找不到或載入失敗時退回 [`prototype`]。
     ///
-    /// 目錄依 [`english_pack_dir`] 的規則解析。退回原型時會留一筆警告，
-    /// 方便分辨「沒有資料」與「詞表只有 104 個詞」。
+    /// 目錄依 [`english_pack_dir`] 的規則解析。找不到目錄只記 info；
+    /// 目錄存在但驗證失敗才記警告。
     pub fn load_default() -> Self {
         let Some(dir) = english_pack_dir() else {
-            log::warn!("找不到英文資料包，英文只使用內建原型詞彙");
+            log::info!("找不到英文資料包，英文只使用內建原型詞彙");
             return Self::new(None);
         };
         match Self::from_pack_dir(&dir) {
@@ -3873,6 +3912,94 @@ mod tests {
         assert_eq!(data_root_from(&root), Some(root.clone()));
         assert_eq!(data_root_from(&root.join("missing")), None);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 在暫存目錄寫一份最小的英文資料包，回傳目錄路徑。
+    fn write_minimal_english_pack(words: &[&str]) -> PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir =
+            std::env::temp_dir().join(format!("jc-english-pack-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建立英文資料包目錄");
+
+        let dict = Dictionary::new(
+            words
+                .iter()
+                .enumerate()
+                .map(|(i, word)| Word::new(*word, 10_000.0 - i as f64)),
+        );
+        let words_bin = dict.encode();
+        let notice = b"minimal english pack for tests\n";
+        std::fs::write(dir.join("words.bin"), &words_bin).expect("寫入 words.bin");
+        std::fs::write(dir.join("NOTICE.txt"), notice).expect("寫入 NOTICE.txt");
+
+        let manifest = EnglishManifest {
+            format: 1,
+            words: dict.len(),
+            ranking: "test fixture".to_string(),
+            sources: vec![EnglishSource {
+                name: "test".to_string(),
+                version: "1".to_string(),
+                url: "https://example.invalid/test".to_string(),
+                sha256: sha256_hex(b"test source"),
+                license: "CC0-1.0".to_string(),
+                attribution: "test fixture".to_string(),
+                commit: None,
+            }],
+            inputs: BTreeMap::new(),
+            files: BTreeMap::from([
+                (
+                    "words.bin".to_string(),
+                    EnglishPackFile {
+                        sha256: sha256_hex(&words_bin),
+                        size: words_bin.len() as u64,
+                    },
+                ),
+                (
+                    "NOTICE.txt".to_string(),
+                    EnglishPackFile {
+                        sha256: sha256_hex(notice),
+                        size: notice.len() as u64,
+                    },
+                ),
+            ]),
+        };
+        let json = serde_json::to_vec_pretty(&manifest).expect("序列化 manifest");
+        std::fs::write(dir.join("manifest.json"), json).expect("寫入 manifest.json");
+        dir
+    }
+
+    #[test]
+    fn test_load_from_minimal_pack_routes_hello() {
+        let dir = write_minimal_english_pack(&["hello", "configuration", "small"]);
+        let english = English::load_from(&dir).expect("載入最小英文資料包");
+        assert_eq!(english.dictionary().len(), 3);
+        assert!(english.has("hello"));
+        assert!(english.has("configuration"), "詞表以外的原型詞不算");
+
+        let router = Router::new().with_english(&english);
+        let segments = router.segments("hello");
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].mode, Mode::En);
+        assert_eq!(router.convert("hello").expect("轉換").surface, "hello");
+        // `configuration` 不在內建原型裡，只有載入資料包才會被當英文詞。
+        assert_eq!(
+            router.convert("configuration").expect("轉換").surface,
+            "configuration"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_optional_missing_dir_returns_none() {
+        let dir =
+            std::env::temp_dir().join(format!("jc-english-pack-missing-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(English::load_optional(&dir).is_none());
     }
 
     #[test]

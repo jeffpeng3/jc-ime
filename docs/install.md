@@ -7,6 +7,11 @@
 安裝目錄與資料目錄和舊版相同：程式在 `%ProgramFiles%\jc-ime\`，資料在
 `%ProgramData%\jc-ime\data\`，使用者資料在 `%LOCALAPPDATA%\jc-ime\`。
 
+引擎從 `--data` 指到的資料根目錄載入 `english/words.bin`，不依賴
+`JC_IMEDATA` 或 `JC_ENGLISH_PACK`。安裝版因此可以直接從
+`%ProgramData%\jc-ime\data\english\` 載入完整英文詞表；health 的
+`english_words` 會回報實際詞數（原型約 104 詞，安裝版應遠大於 1000）。
+
 ## 系統需求
 
 | 項目 | 需求 |
@@ -298,6 +303,9 @@ Linux 只能做 `.iss`、payload 與 manifest 的靜態一致性檢查，下面�
 12. 單按左／右 Shift 從中文或日文切到純英文，再按一次回到原本模式；
     Shift+字母、Shift+Ctrl 等組合不誤觸。設定程式不再顯示中英切換鍵、
     啟動模式、Esc 清除、日文神經模型等已停用項目。
+13. 引擎啟動後 `jc-tsf-smoke` 的「安裝檔案」看得到
+    `%ProgramData%\jc-ime\data\english\words.bin`，且 `Health` 的
+    `english_words` 大於 1000；若是 0 或約 104，代表退回內建原型詞表。
 
 ## 已知限制
 
