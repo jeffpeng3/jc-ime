@@ -4,6 +4,20 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.23 - 2026-11-24
+
+### 修正
+
+- 輕聲與一聲的轉換變快：`gp6au42k7` 最後一鍵從 62ms 降到 20ms 上下（release），
+  打完輕聲不再頓一下。
+- 修正打完輕聲或一聲後繼續輸入時，`sync_composition_zh` 在多位元組字元中間切片
+  造成的當機（例如 `gp6au42k7au4`）。
+- 候選補完不再掃描整個詞庫，改用首音節索引。
+
+### 建置
+
+- CI 同一分支的新 push 改為排隊，不再取消進行中的建置。
+
 ## 0.1.22 - 2026-11-24
 
 ### 修正
