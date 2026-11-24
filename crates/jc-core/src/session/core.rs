@@ -83,6 +83,22 @@ impl Session {
         self.literal.push_str(text);
     }
 
+    /// 把英文／Shift 附加的字面尾巴併回一般組字，讓下一個按鍵接在後面。
+    ///
+    /// 注音路徑先把未完成的音節收成音節，字面才會落在它之後；所有權仍由
+    /// [`Session::composition`] 的既有規則決定，不會因此變成 `User`。
+    fn absorb_literal_tail(&mut self) {
+        if self.literal_tail.is_empty() {
+            return;
+        }
+        let tail = std::mem::take(&mut self.literal_tail);
+        if self.in_zh_lane() {
+            // 未完成的音節先收成音節，字面才會落在它之後。
+            self.complete_pending();
+        }
+        self.push_literal(&tail);
+    }
+
     /// 在音節索引 `at` 插入一個完成的音節，游標移到它後面。
     ///
     /// 鎖定、字面插入點與手動片段一起依插入位置平移；被插入點切到的鎖定直接
@@ -179,6 +195,10 @@ impl Session {
     }
 
     pub(super) fn press_char(&mut self, ch: char) {
+        // 字面尾巴要先併回組字，下一個按鍵才會接在它後面。
+        if !self.literal_tail.is_empty() && !self.candidate_window {
+            self.absorb_literal_tail();
+        }
         // 選取模式中 j／k 換前後一個候選；其他時候 j／k 仍是注音鍵。
         if self.in_zh_lane() && self.candidate_window && self.navigating && self.edit.is_some() {
             match ch {
@@ -406,6 +426,7 @@ impl Session {
         keys.push_str(&self.zh_pending_keys);
         keys.push(ch);
         keys.push_str(&self.literal);
+        keys.push_str(&self.literal_tail);
         self.zh.reset();
         self.zh_lane = false;
         self.zh_pending_keys.clear();
@@ -426,6 +447,7 @@ impl Session {
         self.literal.clear();
         self.literal_anchor = 0;
         self.literal_offset = 0;
+        self.literal_tail.clear();
         self.pending_tone = None;
         self.ascii.replay(&keys, &self.lexicon);
         self.mixed_cursor = Self::MIXED_CURSOR_END;
@@ -825,6 +847,11 @@ impl Session {
         self.keep_candidates = false;
         self.edit = None;
         self.highlighted = 0;
+        // 英文／Shift 字面尾巴以 rune 為單位刪除，不刪整個片段。
+        if !self.literal_tail.is_empty() {
+            self.literal_tail.pop();
+            return;
+        }
         if self.in_ja_lane() {
             self.romaji.backspace();
             self.sync_ja_run_keys();
@@ -857,6 +884,11 @@ impl Session {
     ///
     /// 對照上游 `key()` 的 Escape 分支；標示範圍與同音預覽在本埠沒有對應狀態。
     pub(super) fn escape(&mut self) {
+        // 英文模式的 Esc 丟掉整段，包含前面的中文緩衝。
+        if !self.literal_tail.is_empty() {
+            self.clear_composition();
+            return;
+        }
         if self.candidate_window && self.menu.is_none() {
             self.candidate_window = false;
             self.navigating = false;
@@ -1054,6 +1086,9 @@ impl Session {
 
     /// 快照的補全尾綴：注音用路徑補全，混打用英文前綴補全。
     pub(super) fn snapshot_suggestion(&self) -> Option<String> {
+        if !self.literal_tail.is_empty() {
+            return None;
+        }
         if self.menu.is_some() || self.candidate_window || self.accepted_completion.is_some() {
             return None;
         }
@@ -1716,6 +1751,7 @@ impl Session {
         self.literal.clear();
         self.literal_anchor = 0;
         self.literal_offset = 0;
+        self.literal_tail.clear();
         self.candidates.clear();
         self.highlighted = 0;
         self.candidate_window = false;
@@ -1740,6 +1776,12 @@ impl Session {
 
     /// 目前要提交的文字：接受的補全優先，其次高亮候選，最後轉換結果。
     pub(super) fn current_text(&self) -> String {
+        let mut text = self.current_text_without_literal_tail();
+        text.push_str(&self.literal_tail);
+        text
+    }
+
+    fn current_text_without_literal_tail(&self) -> String {
         // 選單開著時送出高亮候選，字面按鍵插在原本的位置。
         if self.menu.is_some() {
             if let Some(candidate) = self.candidates.get(self.highlighted) {
@@ -1812,20 +1854,22 @@ impl Session {
     /// 顯示用字串：高亮候選反映在組字區，未完成的注音插在游標位置。
     pub(super) fn base_with_highlight(&self) -> String {
         let base = self.insert_literal(self.displayed_base());
-        if self.pending.is_empty() {
-            return base;
-        }
-        if !self.in_zh_lane() || self.cursor >= self.syllables.len() {
-            return format!("{}{}", base, self.pending);
-        }
-        let mut at = self.cell_byte(&base, self.cursor).unwrap_or(base.len());
-        while at > 0 && !base.is_char_boundary(at) {
-            at -= 1;
-        }
-        let mut out = String::with_capacity(base.len() + self.pending.len());
-        out.push_str(&base[..at]);
-        out.push_str(&self.pending);
-        out.push_str(&base[at..]);
+        let mut out = if self.pending.is_empty() {
+            base
+        } else if !self.in_zh_lane() || self.cursor >= self.syllables.len() {
+            format!("{}{}", base, self.pending)
+        } else {
+            let mut at = self.cell_byte(&base, self.cursor).unwrap_or(base.len());
+            while at > 0 && !base.is_char_boundary(at) {
+                at -= 1;
+            }
+            let mut out = String::with_capacity(base.len() + self.pending.len());
+            out.push_str(&base[..at]);
+            out.push_str(&self.pending);
+            out.push_str(&base[at..]);
+            out
+        };
+        out.push_str(&self.literal_tail);
         out
     }
 

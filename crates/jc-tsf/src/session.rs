@@ -580,6 +580,10 @@ pub fn to_jc_request(envelope: &Value) -> Value {
                 }
                 json!({"op": "key", "key": key})
             }
+            "literal" => json!({
+                "op": "literal",
+                "text": envelope["req"]["text"].as_str().unwrap_or(""),
+            }),
             "toggle" => json!({"op": "toggle"}),
             "commit" => json!({"op": "commit"}),
             // 0c 的 display 是「給我目前的顯示狀態」。jc 沒有這個 op，送過去會回
@@ -848,6 +852,11 @@ impl Client {
         }
         Some(reply)
     }
+}
+
+/// 會開候選窗的翻頁鍵；英文組字中不交給引擎。
+fn is_page_navigation(key: &str) -> bool {
+    matches!(key, "Up" | "Down" | "PageUp" | "PageDown")
 }
 
 /// 重開 session（引擎重啟、斷線）時要不要送「設定模式」還原外殼記得的模式。
@@ -1676,7 +1685,8 @@ impl Session {
             // 在組字中採用引擎回報的語言（給 UI 顯示用）。
             // Caps Lock 英文是暫時狀態，引擎才是權威（重連後設定可能已被關掉）；
             // 一般按鍵則一律用外殼記住的中英模式。
-            let adopt_engine_mode = (kind != "key" || self.caps_english)
+            let adopt_engine_mode = (!matches!(kind.as_str(), "key" | "literal")
+                || self.caps_english)
                 && s.commit.is_empty()
                 && !s.preedit.is_empty();
             if !adopt_engine_mode {
@@ -1764,8 +1774,23 @@ impl Session {
     }
 
     /// 送一個按鍵。
+    ///
+    /// 英文組字中不把翻頁鍵送進引擎；即使引擎有候選，也不能用
+    /// `↓`／`↑`／`PageUp`／`PageDown` 開候選窗。
     pub fn key(&mut self, key: &str) -> Snapshot {
+        if self.english && self.english_state.composing() && is_page_navigation(key) {
+            let mut snapshot = self.english_state.clone();
+            snapshot.candidates.clear();
+            snapshot.candidate_keys.clear();
+            snapshot.navigating = false;
+            return snapshot;
+        }
         self.handle(json!({"type": "key", "key": key}))
+    }
+
+    /// 把字面文字原樣交給引擎接在目前組字後面。
+    pub fn literal(&mut self, text: &str) -> Snapshot {
+        self.handle(json!({"type": "literal", "text": text}))
     }
 
     /// 為游標所在片段重開候選。
@@ -2924,6 +2949,35 @@ mod tests {
         assert!(accepted.handled);
         assert_eq!(accepted.commit, "hello");
         assert!(!s.english_state.english_wants_key("Enter"));
+    }
+
+    #[test]
+    fn literal_request_becomes_a_jc_literal_op() {
+        let request =
+            to_jc_request(&json!({"op": "handle", "req": {"type": "literal", "text": "A"}}));
+        assert_eq!(request, json!({"op": "literal", "text": "A"}));
+    }
+
+    #[test]
+    fn english_composition_does_not_open_candidates_on_page_keys() {
+        let (mut s, st) = toy_session();
+        st.lock().unwrap().candidates = vec!["hello".into()];
+        let start = s.handle(json!({"type": "mode", "on": true}));
+        assert!(start.english);
+        for key in ["h", "e", "l"] {
+            assert!(s.key(key).handled);
+        }
+        let before = st.lock().unwrap().requests.len();
+        for key in ["Down", "Up", "PageDown", "PageUp"] {
+            let snap = s.key(key);
+            assert!(snap.candidates.is_empty(), "{key} 不得開候選");
+            assert!(!snap.navigating, "{key} 不得進入選取");
+        }
+        assert_eq!(
+            before,
+            st.lock().unwrap().requests.len(),
+            "英文組字中的翻頁鍵不送引擎"
+        );
     }
 
     #[test]

@@ -298,6 +298,11 @@ pub struct Session {
     pub(super) literal_anchor: usize,
     /// 字面按鍵在目前轉換結果中的位元組位置。
     pub(super) literal_offset: usize,
+    /// 英文模式或 Shift＋可列印鍵附加的字面尾巴。
+    ///
+    /// 這一段不進混打規劃，永遠接在目前組字最後；因此前面的中文不會被
+    /// 整段重讀成英文字面，所有權也維持原狀（`Auto`）。
+    pub(super) literal_tail: String,
     pub(super) candidates: Vec<Candidate>,
     pub(super) highlighted: usize,
     /// 候選視窗是否由 Tab／方向鍵開啟；數字鍵只在開啟時選字。
@@ -465,6 +470,7 @@ impl Session {
             literal: String::new(),
             literal_anchor: 0,
             literal_offset: 0,
+            literal_tail: String::new(),
             candidates: Vec::new(),
             highlighted: 0,
             candidate_window: false,
@@ -612,6 +618,19 @@ impl Session {
     /// 翻頁鍵、Home／End 在候選清單中移動，左右方向鍵與 Tab 也在候選間移動。
     pub fn press(&mut self, key: Key) -> Snapshot {
         self.expire_segment_view();
+        // 字面尾巴存在時，Backspace 只刪一個字元，不重算前面的組字；這樣
+        // 英文路徑不會因為重建而冒出新候選。
+        if key.code == KeyCode::Backspace && !self.literal_tail.is_empty() {
+            self.literal_tail.pop();
+            self.candidate_window = false;
+            self.navigating = false;
+            self.keep_candidates = false;
+            self.edit = None;
+            self.highlighted = 0;
+            self.suggestion = None;
+            self.candidates.clear();
+            return self.snapshot();
+        }
         // 私密狀態跟著每個按鍵走：true 設起來，false 明確清掉，不跨欄位殘留。
         self.private = key.private;
         // 私密欄位裡的反悔鍵不該動到前一個一般欄位的學習。
@@ -708,8 +727,30 @@ impl Session {
     /// 中英切換。
     ///
     /// 英文由外殼直接放行按鍵，不進引擎；引擎只回目前快照，不改變組字或
-    /// 記住前一個模式。外殼自己保存中英模式並在重連後還原。
+    /// 記住前一個模式。外殼自己保存中英模式並在重連後還原。切換不清組字，
+    /// 也不鎖定片段：先前的中文仍是 `Auto`，游標移回去照常能選字。
     pub fn toggle_english(&mut self) -> Snapshot {
+        self.snapshot()
+    }
+
+    /// 把 `text` 原樣接在目前組字最後，不進混打規劃。
+    ///
+    /// 這是英文模式與 Shift＋可列印鍵的唯一入口。字面尾巴顯示在未完成的
+    /// 注音之後，`Enter` 送出整段、`Esc` 丟掉整段、`Backspace` 只刪一個
+    /// 字元；候選與 suggestion 一律清空。
+    pub fn literal(&mut self, text: &str) -> Snapshot {
+        if text.is_empty() {
+            return self.snapshot();
+        }
+        self.candidate_window = false;
+        self.navigating = false;
+        self.keep_candidates = false;
+        self.edit = None;
+        self.highlighted = 0;
+        self.accepted_completion = None;
+        self.suggestion = None;
+        self.candidates.clear();
+        self.literal_tail.push_str(text);
         self.snapshot()
     }
 
@@ -1070,6 +1111,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::composition::Owner;
     use crate::lattice::LexEntry;
 
     fn lexicon() -> InMemoryLexicon {
@@ -1094,6 +1136,8 @@ mod tests {
             ("風", "ㄈㄥ"),
             ("學", "ㄒㄩㄝˊ"),
             ("國", "ㄍㄨㄛˊ"),
+            ("台", "ㄊㄞˊ"),
+            ("灣", "ㄨㄢ"),
         ] {
             lex.push(LexEntry::new(surface, reading, 0, 0));
         }
@@ -2147,6 +2191,100 @@ mod tests {
         assert_eq!(s.mode(), Mode::Mixed);
         s.toggle_english();
         assert_eq!(s.mode(), Mode::Mixed);
+    }
+
+    /// 字面輸入接在未完成的注音後面，不重新規劃前面的中文，也不鎖定任何片段。
+    #[test]
+    fn test_literal_appends_after_unfinished_zhuyin_without_user_owners() {
+        let mut s = session();
+        type_keys(&mut s, "w96j0");
+        assert_eq!(s.snapshot().preedit, "台ㄨㄢ");
+        let snap = s.literal("A");
+        assert_eq!(snap.preedit, "台ㄨㄢA");
+        assert!(snap.candidates.is_empty(), "字面輸入不產生候選");
+        assert!(snap.suggestion.is_none(), "字面輸入不產生 suggestion");
+        assert!(
+            !snap.owners.contains(&Owner::User),
+            "字面輸入不得鎖定片段：{:?}",
+            snap.owners
+        );
+        assert_eq!(s.press(Key::new(KeyCode::Enter, None, false)).preedit, "");
+        assert_eq!(s.commit(), "台ㄨㄢA");
+    }
+
+    /// 切英文後再打英文字面，同一段繼續；Enter 送整段、Esc 丟整段。
+    #[test]
+    fn test_english_literal_keeps_buffer_and_commits_whole_segment() {
+        let mut s = session();
+        type_keys(&mut s, "w96j0");
+        s.toggle_english();
+        let snap = s.literal("hello");
+        assert_eq!(snap.preedit, "台ㄨㄢhello");
+        assert!(snap.candidates.is_empty());
+        assert!(snap.suggestion.is_none());
+        assert!(!snap.owners.contains(&Owner::User));
+
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "台ㄨㄢhello");
+
+        type_keys(&mut s, "w96j0");
+        s.toggle_english();
+        s.literal("hello");
+        let snap = s.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(snap.preedit, "");
+        assert_eq!(s.commit(), "");
+    }
+
+    /// 英文模式的空白是字面空白，Backspace 只刪一個字元。
+    #[test]
+    fn test_english_literal_space_and_backspace() {
+        let mut s = session();
+        type_keys(&mut s, "w96j0");
+        s.toggle_english();
+        s.literal("hello");
+        let snap = s.literal(" ");
+        assert_eq!(snap.preedit, "台ㄨㄢhello ");
+        assert_eq!(s.literal("world").preedit, "台ㄨㄢhello world");
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "台ㄨㄢhello worl");
+        assert!(snap.candidates.is_empty());
+    }
+
+    /// toggle 兩次都保留整段緩衝，owners 仍是 Auto。
+    #[test]
+    fn test_toggle_twice_keeps_literal_buffer() {
+        let mut s = session();
+        type_keys(&mut s, "w96j0");
+        s.toggle_english();
+        s.literal("hello");
+        for _ in 0..2 {
+            let snap = s.toggle_english();
+            assert_eq!(snap.preedit, "台ㄨㄢhello");
+            assert!(!snap.owners.contains(&Owner::User));
+        }
+    }
+
+    /// Shift 字面不影響游標回到中文段之後的選字。
+    #[test]
+    fn test_literal_keeps_chinese_segment_editable() {
+        let mut s = session();
+        type_keys(&mut s, "w96j0");
+        s.literal("A");
+        // 完成未完成的注音後游標才能回到「台」。
+        s.press(Key::new(KeyCode::Space, None, false));
+        assert!(s.move_cursor_to(0));
+        assert!(!s.candidates.is_empty(), "游標回到台仍要有候選");
+        let before = s.snapshot().preedit;
+        assert!(before.ends_with('A'), "字面尾巴要留在組字最後：{before:?}");
+        assert!(!s.snapshot().owners.contains(&Owner::User));
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::char('1', false));
+        let after = s.snapshot().preedit;
+        assert!(after.ends_with('A'), "選字不得吃掉字面尾巴：{after:?}");
+        assert!(
+            s.snapshot().owners.contains(&Owner::User),
+            "使用者選過的字才由既有的所有權機制鎖定"
+        );
     }
 
     /// 英文拼錯時，候選在原字後面補上拼字建議；打對的字沒有拼字建議。

@@ -26,7 +26,9 @@ pub mod loader;
 mod personal_merge;
 pub mod supervise;
 use jc_proto::message::{read_message, ProtoError};
-use jc_proto::{write_message, ErrorCode, HealthInfo, Request, Response, PROTOCOL_VERSION};
+use jc_proto::{
+    write_message, ErrorCode, HealthInfo, Request, Response, MAX_LITERAL_BYTES, PROTOCOL_VERSION,
+};
 
 /// 回報給 wrapper 的引擎識別字串。
 pub fn engine_label() -> String {
@@ -470,6 +472,7 @@ impl Engine {
                 let logged = request.clone();
                 self.apply_to_session(to, Some(request), |session| match logged {
                     Request::Key { key } => state(session.press(key)),
+                    Request::Literal { text, .. } => state(session.literal(&text)),
                     Request::Toggle => state(session.toggle_english()),
                     Request::Commit => Response::Committed {
                         text: session.commit(),
@@ -604,6 +607,25 @@ impl Engine {
                     }
                     state(snapshot)
                 })
+            }
+            Request::Literal { text, session: _ } => {
+                if !self.hello {
+                    return not_handshaked();
+                }
+                if text.len() > MAX_LITERAL_BYTES {
+                    return Response::error(
+                        ErrorCode::BadFrame,
+                        format!("literal 超過 {MAX_LITERAL_BYTES} bytes：{}", text.len()),
+                    );
+                }
+                lock(&self.shared).last_key = Some(Instant::now());
+                self.with_current(
+                    Some(Request::Literal {
+                        text: text.clone(),
+                        session: 0,
+                    }),
+                    |s| state(s.literal(&text)),
+                )
             }
             Request::Toggle => {
                 if !self.hello {
@@ -1037,6 +1059,7 @@ fn request_op(request: &Request) -> &'static str {
     match request {
         Request::Hello { .. } => "hello",
         Request::Key { .. } => "key",
+        Request::Literal { .. } => "literal",
         Request::Toggle => "toggle",
         Request::Snapshot => "snapshot",
         Request::Commit => "commit",
@@ -1200,6 +1223,45 @@ mod tests {
         );
         assert_eq!(engine.composition(), "");
         assert_eq!(engine.handle(Request::Snapshot), state_of(""));
+    }
+
+    #[test]
+    fn literal_appends_without_candidates_and_rejects_oversize() {
+        let mut engine = Engine::new();
+        hello(&mut engine);
+        engine.handle(Request::Key {
+            key: Key::char('ㄇ', false),
+        });
+        engine.handle(Request::Key {
+            key: Key::char('ㄚ', false),
+        });
+        let response = engine.handle(Request::Literal {
+            text: "hello".into(),
+            session: 0,
+        });
+        let Response::State {
+            preedit,
+            candidates,
+            suggestion,
+            ..
+        } = response
+        else {
+            panic!("literal 要回 State");
+        };
+        assert_eq!(preedit, "ㄇㄚhello");
+        assert!(candidates.is_empty());
+        assert!(suggestion.is_none());
+
+        let too_long = "a".repeat(jc_proto::MAX_LITERAL_BYTES + 1);
+        let response = engine.handle(Request::Literal {
+            text: too_long,
+            session: 0,
+        });
+        let Response::Error { code, .. } = response else {
+            panic!("超長 literal 要回錯誤");
+        };
+        assert_eq!(code, ErrorCode::BadFrame);
+        assert_eq!(engine.composition(), "ㄇㄚhello");
     }
 
     #[test]

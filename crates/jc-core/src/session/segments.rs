@@ -84,9 +84,16 @@ impl Session {
     /// 呼叫端修改回傳值不影響 session。手動編輯過的片段會原樣回傳，直到下一次
     /// 按鍵讓組字狀態重新推導為止。
     pub fn segments(&self) -> Vec<Segment> {
-        self.segment_manual
+        let mut segments = self
+            .segment_manual
             .clone()
-            .unwrap_or_else(|| self.segments.clone())
+            .unwrap_or_else(|| self.segments.clone());
+        if !self.literal_tail.is_empty() {
+            let end = self.base_with_highlight().len();
+            let start = end.saturating_sub(self.literal_tail.len());
+            segments.push(Segment::new(start, end, Lang::En, Script::Latin));
+        }
+        segments
     }
 
     /// 游標在目前組字字串中的 rune 位置。

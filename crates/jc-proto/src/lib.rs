@@ -27,6 +27,9 @@ pub use message::{read_message, read_payload, write_message};
 /// 升級；不認識新 op 的舊引擎由 [`Request::Unknown`] 收下並回 `UnknownOp`。
 pub const PROTOCOL_VERSION: u32 = 3;
 
+/// `literal` op 一次最多附加的位元組數；超過由引擎回 `ok=false`。
+pub const MAX_LITERAL_BYTES: usize = 256;
+
 /// 一個候選的結構化資訊。
 ///
 /// 與 [`Response::State`] 的 `candidates` **等長、同序**：`details[i]` 描述的
@@ -237,6 +240,16 @@ pub enum Request {
     Hello { protocol: u32, client: String },
     /// 送出一個按鍵。
     Key { key: Key },
+    /// 把 `text` 原樣接在目前組字後面，不進英文詞表、不產生候選或 suggestion。
+    ///
+    /// 英文模式與 Shift＋可列印鍵走這條路；沒有組字時也會開一段新的組字。
+    Literal {
+        /// 要附加的字面文字；上限是 [`MAX_LITERAL_BYTES`]。
+        text: String,
+        /// 0c 信封帶來的 session id；引擎以連線目前的 session 為準。
+        #[serde(default, skip_serializing_if = "is_zero_u64")]
+        session: u64,
+    },
     /// 單按左右 Shift：在目前語言與純英文 En 之間切換。
     ///
     /// 引擎記住切換前的模式，再收到一次就回到原本的 Mixed 或 Ja。
@@ -550,6 +563,31 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Request>(&text).unwrap(),
             Request::Toggle
+        );
+    }
+
+    #[test]
+    fn literal_uses_op_tag_and_carries_text() {
+        let text = serde_json::to_string(&Request::Literal {
+            text: "h".into(),
+            session: 2,
+        })
+        .unwrap();
+        assert_eq!(text, r#"{"op":"literal","text":"h","session":2}"#);
+        assert_eq!(
+            serde_json::from_str::<Request>(&text).unwrap(),
+            Request::Literal {
+                text: "h".into(),
+                session: 2
+            }
+        );
+        let old = serde_json::from_str::<Request>(r#"{"op":"literal","text":"A"}"#).unwrap();
+        assert_eq!(
+            old,
+            Request::Literal {
+                text: "A".into(),
+                session: 0
+            }
         );
     }
 

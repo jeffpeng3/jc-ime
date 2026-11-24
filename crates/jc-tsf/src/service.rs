@@ -228,8 +228,14 @@ fn settle_step<T: PartialEq, C>(current: Option<&T>, owner: Option<&T>) -> Focus
 #[derive(Debug, PartialEq)]
 enum EnglishKey {
     Eat(bool),
+    /// 直接交給應用程式的字面文字（IMM32 相容層用）。
     Literal(String),
-    WordEnd { key: String, typed: String },
+    /// 原樣送進引擎 `literal` op 的字面文字。
+    EngineLiteral(String),
+    WordEnd {
+        key: String,
+        typed: String,
+    },
 }
 
 impl EnglishKey {
@@ -325,6 +331,22 @@ impl State {
 
     fn vocab_keys(&self) -> bool {
         self.session.vocab_keys() && !self.session.english() && !self.session.japanese()
+    }
+
+    /// 組字中的 Shift＋可列印鍵：走字面，不讓前面的注音被重新規劃。
+    ///
+    /// 空白不在此列；中文的 Shift+Space 仍保留原本的全形切換語意。
+    fn shift_literal_key(&self, vk: u32, lparam: isize) -> Option<String> {
+        if !self.composing || !keys::shift_down() || keys::modifier_down() || keys::is_space_key(vk)
+        {
+            return None;
+        }
+        keys::literal(vk, lparam, false)
+    }
+
+    /// 英文模式的可列印鍵（含空白）；Caps Lock 照英文語意套用。
+    fn english_literal_key(&self, vk: u32, lparam: isize) -> Option<String> {
+        keys::literal(vk, lparam, true)
     }
 
     fn japanese_key(&mut self, vk: u32) -> Option<&'static str> {
@@ -1118,6 +1140,20 @@ impl TextService_Impl {
         self.present(ctx, &snapshot)
     }
 
+    /// 把字面文字送進引擎的 `literal` op，不重新規劃前面的注音。
+    fn handle_literal(&self, ctx: Option<&ITfContext>, text: &str) -> bool {
+        zlog!("handle_literal 送引擎 literal={:?}", text);
+        let snapshot = self.state.borrow_mut().session.literal(text);
+        zlog!(
+            "handle_literal 引擎回 ok={} handled={} composing={} preedit={}",
+            snapshot.ok,
+            snapshot.handled,
+            snapshot.composing(),
+            snapshot.text()
+        );
+        self.present(ctx, &snapshot)
+    }
+
     /// 結束目前組字：commit（失焦、停用）或 cancel（應用程式自行終止組字）。
     fn finish(&self, ctx: Option<&ITfContext>, kind: &str) {
         let (composing, completing) = {
@@ -1373,6 +1409,13 @@ impl TextService_Impl {
                 snap.english_pending,
                 snap.composing()
             );
+            // 有組字、又沒有英文補全時，所有可列印鍵都是字面：直接送引擎
+            // 的 literal op。空白也算字面，不當一聲、不選第一個候選。
+            if snap.ok && snap.composing() && !snap.english_pending && !keys::modifier_down() {
+                if let Some(text) = self.state.borrow_mut().english_literal_key(vk, lparam) {
+                    return Some(EnglishKey::EngineLiteral(text));
+                }
+            }
             if !snap.ok
                 || (!snap.english_autocomplete && !snap.full_width && !caps_lower)
                 || snap.composing() && !snap.english_pending
@@ -2022,6 +2065,19 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             }
             self.learn_mode(vk);
             self.sync_caps(pic.as_ref(), vk);
+            if self
+                .state
+                .borrow()
+                .shift_literal_key(vk, lparam.0)
+                .is_some()
+            {
+                zlog!(
+                    "OnTestKeyDown vk={}({}) 結束：Shift 字面 -> 吃",
+                    vk,
+                    vk_label(vk)
+                );
+                return Ok(true.into());
+            }
             let wants = match self.english_key_policy(pic.as_ref(), vk, lparam.0) {
                 Some(policy) => policy.eats(),
                 None => self.wants_key(vk, lparam.0),
@@ -2133,6 +2189,15 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             self.commit_before_host_key(pic.as_ref(), vk, lparam.0, false);
             self.learn_mode(vk);
             self.sync_caps(pic.as_ref(), vk);
+            if let Some(text) = self.state.borrow().shift_literal_key(vk, lparam.0) {
+                zlog!(
+                    "OnKeyDown vk={}({}) 結束：Shift 字面={:?}",
+                    vk,
+                    vk_label(vk),
+                    text
+                );
+                return Ok(self.handle_literal(pic.as_ref(), &text).into());
+            }
             let literal_fallback = key_tested == Some(true) && {
                 let st = self.state.borrow();
                 !st.composing && !st.session.english()
@@ -2146,6 +2211,15 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                         text
                     );
                     return Ok(self.type_text(pic.as_ref(), vk, text).into());
+                }
+                Some(EnglishKey::EngineLiteral(text)) => {
+                    zlog!(
+                        "OnKeyDown vk={}({}) 結束：英文 EngineLiteral={:?}",
+                        vk,
+                        vk_label(vk),
+                        text
+                    );
+                    return Ok(self.handle_literal(pic.as_ref(), &text).into());
                 }
                 Some(EnglishKey::WordEnd { key, typed }) => {
                     zlog!(

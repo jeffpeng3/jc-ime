@@ -113,6 +113,22 @@ pub fn japanese_named(vk: u32) -> Option<&'static str> {
     })
 }
 
+/// 這一鍵實際產生的字面文字；空白是 `" "`，其餘只接受可見 ASCII。
+///
+/// [`literal`] 走的是 `ToUnicode`，所以 Shift+A 是 `"A"`、Shift+1 是 `"!"`，
+/// 不受中文模式的注音鍵盤排列影響。
+pub fn literal(vk: u32, lparam: isize, caps_lock: bool) -> Option<String> {
+    if is_space_key(vk) {
+        return Some(" ".into());
+    }
+    printable(vk, lparam, caps_lock)
+}
+
+/// 這一鍵是不是空白鍵。
+pub fn is_space_key(vk: u32) -> bool {
+    vk as u16 == VK_SPACE.0
+}
+
 /// 依目前鍵盤狀態把虛擬鍵轉成字元；只接受可見 ASCII（0x21–0x7e）。
 /// `caps_lock` 為 false（中文模式，#168）時不理 Caps Lock：字母照沒開 Caps Lock 時的大小寫，沒按 Shift 是小寫注音鍵，
 /// Shift＋字母是大寫；英文模式傳 true，照 Caps Lock 打大寫。
