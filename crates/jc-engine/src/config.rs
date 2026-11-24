@@ -577,6 +577,32 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// 舊 `mode` 欄位遷移：一律 Mixed，`en` 另記成開機直接英文。
+    #[test]
+    fn legacy_mode_setting_starts_mixed_and_keeps_english_start() {
+        for (legacy, start) in [
+            ("zh", settings::START_ZHUYIN),
+            ("ja", settings::START_ZHUYIN),
+            ("en", settings::START_ENGLISH),
+        ] {
+            let settings = parsed(&format!(
+                r#"{{"mode":"{legacy}","punctuation":true,"toggle_key":"right"}}"#
+            ));
+            let effective = effective(&settings, &Overrides::default(), "windows");
+            assert_eq!(effective.mode, Mode::Mixed, "{legacy}");
+            assert_eq!(effective.start_mode, start, "{legacy}");
+            assert!(effective.punctuation, "{legacy} 的其他設定要保留");
+            assert_eq!(effective.toggle_key, "right");
+            let config = session_config(SessionConfig::default(), &effective);
+            assert_eq!(config.mode, Mode::Mixed, "{legacy}");
+            assert!(config.punct_mark.is_some(), "{legacy}");
+        }
+        // 明確的 start_mode 優先，不能被舊 mode=en 覆蓋。
+        let settings = parsed(r#"{"mode":"en","start_mode":"zhuyin"}"#);
+        let effective = effective(&settings, &Overrides::default(), "windows");
+        assert_eq!(effective.start_mode, settings::START_ZHUYIN);
+    }
+
     /// 混打開關已移除：中文使用者不論舊檔值或開始模式，都從 Mixed 啟動。
     #[test]
     fn chinese_settings_always_start_in_mixed_mode() {

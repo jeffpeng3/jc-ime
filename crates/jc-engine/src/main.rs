@@ -222,6 +222,7 @@ fn run(options: Options) -> anyhow::Result<()> {
     // closure 移走，所以先在這裡算好。
     let mut shell_caps = build_shell_caps(&effective.toggle_key, false, false);
     let mut default_simplified = false;
+    let start_mode = effective.start_mode.clone();
     let factory: SessionFactory = if let Some(dir) = &data_root {
         log::debug!("資料根目錄：{}", dir.display());
         let data = Arc::new(
@@ -258,6 +259,7 @@ fn run(options: Options) -> anyhow::Result<()> {
     };
     let mut engine = Engine::with_factory(factory, personal_dir);
     engine.set_extra_caps(shell_caps);
+    engine.set_start_mode(start_mode);
     engine.set_default_output_simplified(default_simplified);
     if options.personal_prefix != DEFAULT_PERSONAL_PREFIX {
         log::info!("個人資料檔名前綴：{}", options.personal_prefix);

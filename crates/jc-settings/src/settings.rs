@@ -477,6 +477,8 @@ pub struct Settings {
     pub(crate) profiles: Option<Value>,
     /// 舊欄位 `selection` 與 `ja_neural_mode` 同時出現且語意不同。
     pub(crate) selection_conflict: bool,
+    /// 舊欄位 `mode` 的原值；已遷移成 mixed，只留給診斷說明。
+    pub(crate) legacy_mode: Option<String>,
     /// 檔案的 schema 比本版新，或不是整數，所以不覆寫。
     pub(crate) read_only: bool,
     pub(crate) profile_invalid: bool,
@@ -683,6 +685,7 @@ impl Settings {
             extra: BTreeMap::new(),
             profiles: None,
             selection_conflict: false,
+            legacy_mode: None,
             read_only: false,
             profile_invalid: false,
         };
@@ -708,6 +711,7 @@ impl Settings {
         let has_toggle = members.contains_key("toggle_key");
         let has_primary_language = members.contains_key("primary_language");
         let has_output_variant = members.contains_key("output_variant");
+        let has_start_mode = members.contains_key("start_mode");
         let has_ja_neural_mode = members.contains_key("ja_neural_mode");
         // 舊欄位：等新欄位讀完再遷移，兩者都在時以新欄位為準。
         let legacy_selection = members.remove("selection");
@@ -761,6 +765,24 @@ impl Settings {
                 }
                 _ => {
                     kept.insert("selection".to_string(), raw);
+                }
+            }
+        }
+        // 舊欄位 mode：zh／ja／en 都併入 mixed。en 另外記成開機直接英文；
+        // 明確的 start_mode 優先，不能覆蓋使用者其他設定。
+        if let Some(raw) = members.remove("mode") {
+            match raw.as_str().map(str::to_ascii_lowercase).as_deref() {
+                Some("en" | "english") => {
+                    if !has_start_mode {
+                        settings.start_mode = START_ENGLISH.to_string();
+                    }
+                    settings.legacy_mode = Some("en".to_string());
+                }
+                Some("zh" | "zhuyin") => settings.legacy_mode = Some("zh".to_string()),
+                Some("ja" | "japanese") => settings.legacy_mode = Some("ja".to_string()),
+                Some("mixed") => settings.legacy_mode = Some("mixed".to_string()),
+                _ => {
+                    kept.insert("mode".to_string(), raw);
                 }
             }
         }
@@ -1023,6 +1045,16 @@ impl Settings {
             out.push(
                 "ja-neural-mode 與舊欄位 selection 語意不同；以 ja-neural-mode 為準".to_string(),
             );
+        }
+        if let Some(mode) = &self.legacy_mode {
+            out.push(format!(
+                "mode：舊值 {mode} 已遷移成 mixed；{}",
+                if mode == "en" {
+                    "en 記成 start-mode=english"
+                } else {
+                    "輸出仍由其他設定決定"
+                }
+            ));
         }
         if self.read_only {
             out.push(SettingsError::ReadOnly.to_string());

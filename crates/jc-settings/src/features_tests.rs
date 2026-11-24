@@ -335,6 +335,50 @@ fn test_start_mode_default_and_compat() {
 }
 
 #[test]
+fn test_legacy_mode_migrates_to_mixed_without_touching_other_settings() {
+    for legacy in ["zh", "ja", "en"] {
+        let body = format!(
+            r#"{{"mode":"{legacy}","punctuation":true,"toggle_key":"right","custom":"keep"}}"#
+        );
+        let settings = Settings::from_json_for(body.as_bytes(), "linux").expect("解析");
+        assert_eq!(
+            settings.start_mode,
+            if legacy == "en" {
+                crate::START_ENGLISH
+            } else {
+                crate::START_ZHUYIN
+            },
+            "{legacy} 的開機模式"
+        );
+        assert!(settings.punctuation, "{legacy} 的其他設定要保留");
+        assert_eq!(settings.toggle_key, crate::TOGGLE_RIGHT);
+        let text = serde_json::to_string(&settings).expect("序列化");
+        let raw: serde_json::Value = serde_json::from_str(&text).expect("解析");
+        assert!(raw.get("mode").is_none(), "mode 要遷移後移除：{text}");
+        assert_eq!(raw["custom"], "keep", "未知欄位要原樣保留：{text}");
+        assert!(
+            settings.notes().iter().any(|note| note.contains("mode")),
+            "{:?}",
+            settings.notes()
+        );
+    }
+
+    // 明確的 start_mode 優先，舊 mode=en 不能覆蓋使用者設定。
+    let settings = Settings::from_json_for(
+        br#"{"mode":"en","start_mode":"zhuyin","punctuation":false}"#,
+        "linux",
+    )
+    .expect("解析");
+    assert_eq!(settings.start_mode, crate::START_ZHUYIN);
+    assert!(!settings.punctuation);
+
+    // 讀不懂的 mode 值仍原樣保留，不假裝遷移成功。
+    let settings = Settings::from_json_for(br#"{"mode":"klingon"}"#, "linux").expect("解析");
+    let text = serde_json::to_string(&settings).expect("序列化");
+    assert!(text.contains("\"mode\":\"klingon\""), "{text}");
+}
+
+#[test]
 fn test_language_migration_and_projection() {
     let settings = Settings::default();
     assert_eq!(settings.primary_language, crate::LANGUAGE_ZH);

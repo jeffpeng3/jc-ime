@@ -1463,6 +1463,12 @@ impl Session {
         self.learn_capabilities(&reply["info"], self.generation);
         let _ = self.learn_simplified(&reply["info"]);
         let start_english = reply["info"]["start_mode"] == "english";
+        // 開機直接英文只套用在還沒學過模式的第一次開 session；重連後保留
+        // 使用者自己切換的狀態。
+        if start_english && !self.mode_known {
+            self.english = true;
+            self.base_english = true;
+        }
         if reply["info"]["start_mode"] == "japanese" && self.japanese_cap && !self.english {
             self.japanese = true;
         }

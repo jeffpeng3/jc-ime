@@ -110,6 +110,8 @@ pub struct Registry {
     extra_caps: BTreeMap<String, bool>,
     /// 新 session 的簡體輸出預設值；來自 `settings.json` 與轉換器是否可用。
     default_output_simplified: bool,
+    /// 啟動時的開機模式（`english`／`zhuyin`）；外殼讀 health 的 `start_mode`。
+    start_mode: Option<String>,
     /// 正在處理的請求數；drain 要等它與 composing 都歸零。
     active: usize,
     last_key: Option<Instant>,
@@ -138,6 +140,7 @@ impl Registry {
             personal_loaded: false,
             extra_caps: BTreeMap::new(),
             default_output_simplified: false,
+            start_mode: None,
             active: 0,
             last_key: None,
             last_slow: None,
@@ -837,6 +840,11 @@ impl Engine {
         lock(&self.shared).extra_caps = caps;
     }
 
+    /// 設定開機模式；外殼從 health 的 `start_mode` 判斷是否直接英文。
+    pub fn set_start_mode(&mut self, mode: impl Into<String>) {
+        lock(&self.shared).start_mode = Some(mode.into());
+    }
+
     /// 設定新 session 的簡體輸出預設值；`main` 依生效設定與轉換器可用性呼叫一次。
     pub fn set_default_output_simplified(&mut self, on: bool) {
         lock(&self.shared).default_output_simplified = on;
@@ -878,6 +886,7 @@ impl Engine {
             // 0c 把 personal_reset 當成「支援清除學習紀錄」的能力旗標；
             // 這份引擎有 reset 指令且會把空白寫回檔案，所以回 true。
             personal_reset: true,
+            start_mode: registry.start_mode.clone(),
             capabilities,
             last_slow_op: last_slow.map(|slow| slow.op.clone()),
             last_slow_ms: last_slow.map(|slow| slow.ms),

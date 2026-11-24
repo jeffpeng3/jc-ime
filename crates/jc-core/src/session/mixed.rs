@@ -1922,8 +1922,7 @@ mod tests {
     }
 
     /// `Mode::Mixed` 下 `watashi` 走羅馬字路徑出假名，空白與後續按鍵仍可
-    /// 繼續輸入；注音模式（`Mode::Zh`）把同一串拉丁鍵解成注音是設計，不是
-    /// 路由 bug。
+    /// 繼續輸入；拉丁鍵被切成注音是混打路由的設計，不是 bug。
     #[test]
     fn test_watashi_continues_in_mixed_mode() {
         let mut s = Session::new(SessionConfig::new(Mode::Mixed));

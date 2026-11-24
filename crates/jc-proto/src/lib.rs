@@ -103,6 +103,9 @@ pub struct HealthInfo {
     /// 引擎是否支援清除學習紀錄（0c `personal_reset`）。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub personal_reset: bool,
+    /// 啟動時的中英模式：`english` 或 `zhuyin`。外殼據此決定開機是否直接英文。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_mode: Option<String>,
     /// 其他能力旗標；0c 以 `info[name] == "true"` 判定是否支援。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub capabilities: BTreeMap<String, bool>,
@@ -139,6 +142,18 @@ impl HealthInfo {
             info.insert("pid".to_string(), pid.to_string());
         }
         info.insert("settings_deferred_apply".to_string(), "true".to_string());
+        if let Some(mode) = &self.start_mode {
+            info.insert("start_mode".to_string(), mode.clone());
+            info.insert(
+                "initial_mode".to_string(),
+                if mode == "english" {
+                    "english"
+                } else {
+                    "zhuyin"
+                }
+                .to_string(),
+            );
+        }
         if self.personal_reset {
             info.insert("personal_reset".to_string(), "true".to_string());
         }
@@ -948,6 +963,7 @@ mod tests {
             pid: Some(42),
             output_simplified: true,
             personal_reset: true,
+            start_mode: Some("english".to_string()),
             capabilities: BTreeMap::from([("caps_lock_english".into(), true)]),
             ..HealthInfo::default()
         };
