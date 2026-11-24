@@ -202,6 +202,8 @@ jobs:
             exit 1
           fi
           echo "資料包 SHA-256 通過：${actual}"
+          # 留給後續的 check-data-bundle.sh 重算；檔名一併寫入，讓腳本自己找得到 bundle。
+          printf '%s  %s\n' "${actual}" "${bundle}" > "${bundle}.sha256"
 
           root="${RUNNER_TEMP}/jc-ime-data"
           rm -rf "${root}"
@@ -256,6 +258,21 @@ jobs:
           fi
           echo "JC_IMEDATA=${data_root}" >> "${GITHUB_ENV}"
           echo "資料根目錄：${data_root}"
+      # 下載後、建置前先驗內容。缺 bigram／english 或混進退役的 build-zh/lm.bin
+      # 要在這裡就紅，不要等 install-smoke 跑很久才發現。
+      # 快取命中時沒有重新下載 bundle，只驗內容；下載路徑另外重算 SHA-256。
+      - name: 檢查資料包內容
+        shell: bash
+        env:
+          DATA_BUNDLE_SHA256: ${{ vars.JC_DATA_BUNDLE_SHA256 }}
+          JC_DATA_BUNDLE_FILE: ${{ runner.temp }}/jc-ime-data-bundle
+        run: |
+          set -euo pipefail
+          args=("${JC_IMEDATA}")
+          if [[ -f "${JC_DATA_BUNDLE_FILE}" ]]; then
+            args+=("${DATA_BUNDLE_SHA256}")
+          fi
+          bash scripts/check-data-bundle.sh "${args[@]}"
       # 只有 linux 與 build-windows 負責存檔：兩者各自對應一個 runner.os 的 key，
       # 其他 job 只還原，避免同一份近 1GB 的快取被多個 job 同時上傳。
       - name: 儲存資料包快取
@@ -448,6 +465,11 @@ jobs:
           }
           "JC_IMEDATA=$dataRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "資料根目錄：$dataRoot"
+      # 與 linux 相同：建置／測試前先確認資料包內容。SHA-256 已在上面的下載
+      # 步驟比對過，這裡只驗檔案清單與 manifest 一致性。
+      - name: 檢查資料包內容
+        shell: bash
+        run: bash scripts/check-data-bundle.sh "$(cygpath -u "${JC_IMEDATA}")"
       # 只跑 test（debug）。release 建置由下面的 build-windows job 並行處理，
       # 不必等測試結束才起步。
       - name: Test
@@ -731,6 +753,11 @@ jobs:
           }
           "JC_DATA_ROOT=$dataRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "資料根目錄：$dataRoot"
+      # setup.exe 的資料來源也要先驗：少了 bigram／english 或混進退役的
+      # build-zh/lm.bin，這裡就讓 build-windows 紅，不必等安裝 smoke。
+      - name: 檢查資料包內容
+        shell: bash
+        run: bash scripts/check-data-bundle.sh "$(cygpath -u "${JC_DATA_ROOT}")"
       # 只有 linux 與 build-windows 負責存檔：兩者各自對應一個 runner.os 的 key，
       # 其他 job 只還原，避免同一份近 1GB 的快取被多個 job 同時上傳。
       - name: 儲存資料包快取
