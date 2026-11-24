@@ -4,6 +4,17 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.22 - 2026-11-24
+
+### 修正
+
+- 混打模式的未完成注音不再提早轉成字：`saej/` 停在 `さㄍㄨㄥ`，按空白才是
+  `さ供`。
+- 候選窗第一帧改在視窗顯示後才送，並把 `Present`／`Commit` 的失敗寫進 log；
+  新增 `rect`、`cloaked`、`swap`、`present` 診斷欄位。
+- 長串英文不再停在 48 字元；已顯示成字面的英文 run 再接字母時不會被日文推斷
+  改寫。
+
 ## 0.1.21 - 2026-11-24
 
 ### 修正
