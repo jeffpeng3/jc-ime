@@ -238,6 +238,14 @@ fn run(options: Options) -> anyhow::Result<()> {
                 ""
             }
         );
+        // 資料載入完成、開始接受連線之前先跑一次第一鍵會走的路徑。冷啟動的
+        // 66～73ms 來自第一次解碼、第一次 zh-select 推論與 mmap 分頁；在
+        // 這裡先付掉，使用者按下的第一個鍵才不會突然變慢。這段必須在
+        // listener 建立前完成：外殼的 health／hello 有 1 秒逾時，預熱本身
+        // 的量測目標是 300ms 以內，遠低於逾期門檻。
+        let warm_config = config::session_config(data.session_config(effective.mode), &effective);
+        let prewarm = data.prewarm(&warm_config);
+        log::info!("{}", prewarm.log_line());
         // session 建立在 Engine::open_session 裡會從全行程共用的 PersonalStore
         // 灌入快照，因此工廠本身不需要碰個人資料；它只負責建立空白 session。
         Arc::new(move || {

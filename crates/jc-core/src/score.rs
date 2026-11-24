@@ -315,6 +315,11 @@ impl ZhLm {
     pub fn bi_hits(&self) -> u64 {
         self.bi_hits.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// 讀過 mmap 每個記憶體頁一次，預熱冷啟動的 page fault。
+    pub fn touch_pages(&self) -> usize {
+        self.inner.touch_pages()
+    }
 }
 
 impl std::fmt::Debug for ZhLm {

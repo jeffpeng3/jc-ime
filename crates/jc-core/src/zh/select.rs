@@ -833,8 +833,16 @@ mod model {
     /// 安裝全域選字模型。之後的 [`crate::decode::Decoder::nbest`] 都會嘗試
     /// 用它重排注音候選。
     pub fn install(model: SelectModel) {
+        install_shared(Arc::new(model));
+    }
+
+    /// 安裝已共用所有權的選字模型。
+    ///
+    /// 預熱需要暫時移除模型、跑一次不含選字的解碼，再把同一個模型裝回去；
+    /// 重新載入權重會多花上百毫秒，所以另外留這個入口。
+    pub fn install_shared(model: Arc<SelectModel>) {
         if let Ok(mut slot) = slot().lock() {
-            *slot = Some(Arc::new(model));
+            *slot = Some(model);
         }
     }
 
@@ -924,8 +932,8 @@ mod model {
 }
 
 pub use model::{
-    clear, install, installed, latency_stats, rerank_nbest, resolve_model_dir, LatencyStats,
-    SelectModel,
+    clear, install, install_shared, installed, latency_stats, rerank_nbest, resolve_model_dir,
+    LatencyStats, SelectModel,
 };
 
 #[cfg(test)]

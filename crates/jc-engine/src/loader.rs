@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use jc_core::ja::decode::{JaDecoder, JaDictionary, JaReranker, JaWordMatch, JaWordSource};
 use jc_core::ja::lexicon::{JaEntry, JaLexicon, SingleColumnCost};
@@ -724,6 +724,124 @@ impl EngineData {
         config.ja_neural.runtime = self.ja_neural.clone();
         config.simplified = self.zhconv.clone();
         config
+    }
+
+    /// 在開始接受連線前把第一次輸入會用到的路徑先跑一遍。
+    ///
+    /// 冷啟動的第一鍵慢在三件事：第一次解碼、第一次 zh-select 推論、mmap
+    /// 分頁。這裡依序量測並預熱：
+    ///
+    /// 1. 暫時移除 select 模型，用 `ㄨㄛˇ ㄞˋ ㄋㄧˇ ㄨㄛˇ` 跑一次完整注音解碼。
+    /// 2. 把同一個模型裝回去，直接跑一次固定候選的推論。
+    /// 3. 走訪詞典全部詞條，並讀過 `lm.bin` 每個記憶體頁。
+    /// 4. 把模型裝回去，用同一個輸入再跑一次完整路徑（解碼＋nbest＋重排）。
+    ///
+    /// 回傳各段耗時；結果本身丟掉。固定輸入只用內建詞表一定有的字，模型
+    /// 檔案壞掉時 `score` 會失敗，但不影響啟動。
+    pub fn prewarm(&self, config: &SessionConfig) -> PrewarmStats {
+        let started = Instant::now();
+        let mut config = config.clone();
+        // 預熱固定跑注音路徑；設定是日文或英文時也一樣，第一鍵的注音成本
+        // 不分模式都存在。
+        config.mode = Mode::Zh;
+
+        let model = jc_core::zh::select::installed();
+        jc_core::zh::select::clear();
+        let decode_started = Instant::now();
+        let mut session = jc_core::session::Session::new(config.clone());
+        // 四個音節，跟下面完整路徑與第一次 select 推論用同一個輸入。
+        for ch in "ji394su3ji3".chars() {
+            session.press(jc_core::Key::char(ch, false));
+        }
+        // 選字模型缺席時 `commit` 只取走統計首選；有模型時才會再跑一次
+        // 重排。這裡的重點是解碼與詞格建置。
+        let _ = session.commit();
+        let decode = decode_started.elapsed();
+        if let Some(model) = model {
+            jc_core::zh::select::install_shared(model);
+        }
+
+        let select = match jc_core::zh::select::installed() {
+            Some(model) => {
+                // 四個音節，跟下面完整路徑用同一個輸入，讓第一次推論的
+                // 張量形狀就是實際第一個較長輸入會用到的形狀。
+                let reading = vec![
+                    "ㄨㄛˇ".to_string(),
+                    "ㄞˋ".to_string(),
+                    "ㄋㄧˇ".to_string(),
+                    "ㄨㄛˇ".to_string(),
+                ];
+                let select_started = Instant::now();
+                let result = model.score("", &reading, &["我愛你我", "我愛你窩"]);
+                let elapsed = select_started.elapsed();
+                // 推論結果沒有用途，但不要讓最佳化把整段拿掉。
+                if let Ok(scores) = result {
+                    std::hint::black_box(scores);
+                }
+                elapsed
+            }
+            None => Duration::ZERO,
+        };
+
+        let lexicon_started = Instant::now();
+        let mut touched = 0usize;
+        for entry in self.zh.lexicon.entries() {
+            touched = touched.wrapping_add(entry.surface.len() + entry.reading.len());
+        }
+        if let Some(lm) = &self.zh.lm {
+            touched = touched.wrapping_add(lm.touch_pages());
+        }
+        std::hint::black_box(touched);
+        let lexicon = lexicon_started.elapsed();
+
+        // 最後把整條路徑接起來跑一次：解碼、nbest、select 重排都在同一個
+        // session 裡。前面分開量過的兩段都已經暖了，這一步補的是第一次
+        // 把它們串起來時的張量配置與候選準備成本。
+        let pipeline_started = Instant::now();
+        let mut session = jc_core::session::Session::new(config);
+        // `我愛你我` 剛好四個音節，讓詞格、nbest 與 select 的張量形狀都跟
+        // 實機上第一個較長的輸入一致。
+        for ch in "ji394su3ji3".chars() {
+            session.press(jc_core::Key::char(ch, false));
+        }
+        let _ = session.commit();
+        let pipeline = pipeline_started.elapsed();
+
+        PrewarmStats {
+            decode,
+            select,
+            lexicon,
+            pipeline,
+            total: started.elapsed(),
+        }
+    }
+}
+
+/// 啟動預熱的各段耗時。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PrewarmStats {
+    /// 第一次注音解碼（不含 select 模型）。
+    pub decode: Duration,
+    /// 第一次 select 模型推論。
+    pub select: Duration,
+    /// 走訪詞典與 `lm.bin` mmap 分頁。
+    pub lexicon: Duration,
+    /// 接上 select 後跑一次完整路徑（解碼＋nbest＋重排）。
+    pub pipeline: Duration,
+    /// 全部預熱工作的總時間。
+    pub total: Duration,
+}
+
+impl PrewarmStats {
+    /// 給啟動日誌用的一行摘要。
+    pub fn log_line(&self) -> String {
+        format!(
+            "預熱完成：decode={:.1}ms select={:.1}ms lexicon={:.1}ms 合計={:.1}ms",
+            self.decode.as_secs_f64() * 1000.0,
+            self.select.as_secs_f64() * 1000.0,
+            self.lexicon.as_secs_f64() * 1000.0,
+            self.total.as_secs_f64() * 1000.0
+        )
     }
 }
 

@@ -244,6 +244,39 @@ impl Lm {
     pub fn unigrams(&self) -> impl Iterator<Item = (&str, f64)> + '_ {
         (0..self.words).map(|index| (self.word(index), self.uni_prob(index) as f64))
     }
+
+    /// 讀過每個記憶體頁一次，讓冷啟動的 mmap page fault 先發生。
+    ///
+    /// 回傳讀到的位元組和，呼叫端用 [`std::hint::black_box`] 吃掉，避免被
+    /// 最佳化掉。頁面大小固定用 4096：一般平台都是這個值或更小，寧可多讀
+    /// 幾次也不要漏頁。`validate()` 只碰索引區，`uni` 與 `q` 兩段仍是
+    /// 第一次查詢才載入，因此這裡六段都要走。
+    pub fn touch_pages(&self) -> usize {
+        fn touch(map: &[u8], range: &Range<usize>, sum: &mut usize) {
+            let bytes = &map[range.clone()];
+            let mut at = 0;
+            while at < bytes.len() {
+                *sum = sum.wrapping_add(bytes[at] as usize);
+                at += 4096;
+            }
+            if let Some(last) = bytes.last() {
+                *sum = sum.wrapping_add(*last as usize);
+            }
+        }
+
+        let mut sum = 0;
+        for range in [
+            &self.strs,
+            &self.off,
+            &self.uni,
+            &self.left_start,
+            &self.right,
+            &self.q,
+        ] {
+            touch(&self.map, range, &mut sum);
+        }
+        sum
+    }
 }
 
 fn verify_image(path: &Path, info: &FileInfo, map: &[u8]) -> Result<(), ZhDataError> {
