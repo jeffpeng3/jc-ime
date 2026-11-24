@@ -44,7 +44,10 @@ pub struct EngineInfo {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Probe {
     /// 連線、握手與 `Key` 都成功。
-    Connected(EngineInfo),
+    ///
+    /// 用 `Box` 裝起來：`EngineInfo` 內含 `HealthInfo`，直接內嵌會讓兩個變體的
+    /// 大小差距超過 clippy 門檻。
+    Connected(Box<EngineInfo>),
     /// 連不上或握手失敗；`detail` 已分類並可直接輸出。
     Unavailable {
         /// 失敗種類。
@@ -101,41 +104,40 @@ impl Probe {
 
     /// `Health` 回報是否載入 bigram；沒有 health 或引擎太舊時是 `None`。
     pub fn has_bigram(&self) -> Option<bool> {
-        match self {
-            Self::Connected(EngineInfo {
-                health: Ok(health), ..
-            }) => health.capabilities.get("has_bigram").copied(),
-            _ => None,
-        }
+        let Self::Connected(info) = self else {
+            return None;
+        };
+        let Ok(health) = &info.health else {
+            return None;
+        };
+        health.capabilities.get("has_bigram").copied()
     }
 
     /// `Health` 回報的英文詞數；沒有 health 或引擎太舊時是 `None`。
     pub fn english_words(&self) -> Option<usize> {
-        match self {
-            Self::Connected(EngineInfo {
-                health: Ok(health), ..
-            }) if health.english_words > 0 => Some(health.english_words),
-            _ => None,
-        }
+        let Self::Connected(info) = self else {
+            return None;
+        };
+        let Ok(health) = &info.health else {
+            return None;
+        };
+        (health.english_words > 0).then_some(health.english_words)
     }
 
     /// 引擎是否在交接中（`Health.draining`）。
     pub fn draining(&self) -> bool {
-        matches!(
-            self,
-            Self::Connected(EngineInfo {
-                health: Ok(HealthInfo { draining: true, .. }),
-                ..
-            })
-        )
+        let Self::Connected(info) = self else {
+            return false;
+        };
+        matches!(&info.health, Ok(HealthInfo { draining: true, .. }))
     }
 
     /// 最近一次慢請求 `(op, 毫秒, 輸入長度)`；沒有慢請求或 health 不可用時為 `None`。
     pub fn last_slow(&self) -> Option<(String, u64, usize)> {
-        let Self::Connected(EngineInfo {
-            health: Ok(health), ..
-        }) = self
-        else {
+        let Self::Connected(info) = self else {
+            return None;
+        };
+        let Ok(health) = &info.health else {
             return None;
         };
         let op = health.last_slow_op.clone()?;
@@ -228,13 +230,13 @@ pub fn probe() -> Probe {
         Err(error) => Err(error.to_string()),
     };
 
-    Probe::Connected(EngineInfo {
+    Probe::Connected(Box::new(EngineInfo {
         protocol,
         engine,
         session,
         health,
         key,
-    })
+    }))
 }
 
 /// 連線（含重試），回傳 socket 或（分類, 錯誤訊息）。
@@ -347,7 +349,7 @@ mod tests {
 
     #[test]
     fn engine_detail_reports_health_and_sessions() {
-        let probe = Probe::Connected(EngineInfo {
+        let probe = Probe::Connected(Box::new(EngineInfo {
             protocol: PROTOCOL_VERSION,
             engine: "jc-engine 0.1.4".to_string(),
             session: 2,
@@ -359,7 +361,7 @@ mod tests {
                 ..HealthInfo::default()
             }),
             key: "State（組字 \"\"、候選 0 個）".to_string(),
-        });
+        }));
         let detail = probe.engine_detail().unwrap();
         assert!(detail.contains("jc-engine 0.1.4"), "{detail}");
         assert!(detail.contains("session 2"), "{detail}");
@@ -371,7 +373,7 @@ mod tests {
 
     #[test]
     fn draining_engine_is_flagged() {
-        let probe = Probe::Connected(EngineInfo {
+        let probe = Probe::Connected(Box::new(EngineInfo {
             protocol: PROTOCOL_VERSION,
             engine: "jc-engine 0.1.4".to_string(),
             session: 1,
@@ -380,7 +382,7 @@ mod tests {
                 ..HealthInfo::default()
             }),
             key: "State".to_string(),
-        });
+        }));
         assert!(probe.draining());
         assert!(probe.engine_detail().unwrap().contains("draining=true"));
     }
