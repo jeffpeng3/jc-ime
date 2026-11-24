@@ -44,14 +44,14 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
+use crate::ipc_budget::{self, request_budget_ms};
 use crate::ipc_retry::{self, Step};
 use crate::log::zlog;
 
 /// 單次 I/O 的逾時：只代表「這一小段時間沒有進展」，不代表對方死了。
 pub const IO_TIMEOUT_MS: u32 = 1000;
-/// 一個請求的整體預算：單次 I/O 逾時後若對方還活著，就在同一個請求上繼續等，
-/// 直到這個期限才放棄。open／health 仍只用 [`IO_TIMEOUT_MS`]。
-pub const HANDLE_TIMEOUT_MS: u32 = 10_000;
+/// 收尾／探測請求的整體預算；分類見 [`crate::ipc_budget::request_budget_ms`]。
+pub use crate::ipc_budget::{HANDLE_TIMEOUT_MS, TEARDOWN_TIMEOUT_MS};
 /// 啟動 server 後等待管道出現的時間。
 pub const SPAWN_WAIT_MS: u32 = 5000;
 /// 兩次啟動之間至少隔這麼久：server 反覆死掉時不會每鍵都啟動一次、也不會每鍵都等 5 秒。
@@ -530,19 +530,17 @@ impl Client {
         if !self.connect() {
             return None;
         }
-        let Some(bytes) = frame(envelope) else {
+        // 收尾／探測用 1 秒，互動請求維持 10 秒；display 的內部標記只在本行程
+        // 使用，送訊框前拿掉。
+        let budget = request_budget_ms(envelope);
+        let payload = ipc_budget::strip_teardown_hint(envelope);
+        let Some(bytes) = frame(&payload) else {
             // 本機編碼失敗，不是對方關線；讓 session 走「傳輸失敗」而不是重啟。
             self.failure_peer_closed = false;
             return None;
         };
         let h = self.handle?;
         let op = envelope["op"].as_str().unwrap_or("?");
-        // open（hello）與 health 是探測性質：維持原本 1 秒，不讓 TIP 載入或選單卡住。
-        let budget = if matches!(op, "hello" | "health") {
-            IO_TIMEOUT_MS
-        } else {
-            HANDLE_TIMEOUT_MS
-        };
         let started = Instant::now();
         let deadline = started + Duration::from_millis(budget as u64);
         let peer_alive = || !self.peer_closed();

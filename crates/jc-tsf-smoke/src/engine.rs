@@ -129,6 +129,22 @@ impl Probe {
             })
         )
     }
+
+    /// 最近一次慢請求 `(op, 毫秒, 輸入長度)`；沒有慢請求或 health 不可用時為 `None`。
+    pub fn last_slow(&self) -> Option<(String, u64, usize)> {
+        let Self::Connected(EngineInfo {
+            health: Ok(health), ..
+        }) = self
+        else {
+            return None;
+        };
+        let op = health.last_slow_op.clone()?;
+        Some((
+            op,
+            health.last_slow_ms.unwrap_or(0),
+            health.last_slow_input_len.unwrap_or(0),
+        ))
+    }
 }
 
 /// 解析引擎 pipe 名稱；規則與 `jc-tsf`、`jc-engine` 共用 `jc-windows`。

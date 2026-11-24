@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use jc_core::personal::{PersonalError, PersonalStore};
 use jc_core::session::{Session, SessionConfig};
@@ -47,6 +47,15 @@ const PERSONAL_FLUSH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// 超過這個耗時就記一行慢請求；正常的按鍵不寫 log，避免洗版。
 const SLOW_REQUEST: Duration = Duration::from_millis(200);
+
+/// 最近一次慢請求的快照；health 用它讓 doctor 與 TSF log 不必翻引擎 log。
+#[derive(Debug, Clone)]
+struct SlowRequest {
+    op: String,
+    ms: u64,
+    input_len: usize,
+    at: SystemTime,
+}
 
 /// 中斷一條連線的回呼。drain／shutdown 時由 watcher 跨連線廣播。
 ///
@@ -104,6 +113,8 @@ pub struct Registry {
     /// 正在處理的請求數；drain 要等它與 composing 都歸零。
     active: usize,
     last_key: Option<Instant>,
+    /// 最近一次超過 [`SLOW_REQUEST`] 的請求；跨連線共享，health 直接回報。
+    last_slow: Option<SlowRequest>,
 }
 
 impl Registry {
@@ -129,6 +140,7 @@ impl Registry {
             default_output_simplified: false,
             active: 0,
             last_key: None,
+            last_slow: None,
         }
     }
 
@@ -497,6 +509,25 @@ impl Engine {
             .unwrap_or(0)
     }
 
+    /// 記下最近一次慢請求：寫一行 log，並放進共用的 health 快照。
+    fn note_slow_request(&self, op: &str, elapsed: Duration, input_len: usize) {
+        let slow = SlowRequest {
+            op: op.to_string(),
+            ms: elapsed.as_millis() as u64,
+            input_len,
+            at: SystemTime::now(),
+        };
+        log::warn!(
+            "慢請求 op={} session={} 耗時={}ms 輸入長度={} 時間={:?}",
+            slow.op,
+            self.current_session(),
+            slow.ms,
+            slow.input_len,
+            slow.at
+        );
+        lock(&self.shared).last_slow = Some(slow);
+    }
+
     /// 清除單一連線的握手狀態並重置它目前的 session。
     ///
     /// `Shutdown` 是全行程旗標，不會被清掉；`closing` 只是「這條連線要收掉」的
@@ -833,6 +864,7 @@ impl Engine {
             .get(&self.conn)
             .and_then(|id| self.local.sessions.get(id))
             .map_or(0, Session::english_words);
+        let last_slow = registry.last_slow.as_ref();
         HealthInfo {
             draining: registry.draining || registry.closing,
             // conn 0 是 stdio／測試用，不計入實際 socket 連線。
@@ -847,6 +879,9 @@ impl Engine {
             // 這份引擎有 reset 指令且會把空白寫回檔案，所以回 true。
             personal_reset: true,
             capabilities,
+            last_slow_op: last_slow.map(|slow| slow.op.clone()),
+            last_slow_ms: last_slow.map(|slow| slow.ms),
+            last_slow_input_len: last_slow.map(|slow| slow.input_len),
         }
     }
 
@@ -1028,11 +1063,7 @@ pub fn serve<R: Read, W: Write>(
                 let response = engine.handle(request);
                 let elapsed = started.elapsed();
                 if elapsed > SLOW_REQUEST {
-                    log::warn!(
-                        "慢請求 op={op} session={} 耗時={}ms 輸入長度={input_len}",
-                        engine.current_session(),
-                        elapsed.as_millis()
-                    );
+                    engine.note_slow_request(op, elapsed, input_len);
                 }
                 write_message(output, &response, max_frame)?;
                 if engine.is_closing() {
@@ -1206,6 +1237,25 @@ mod tests {
             engine.handle(Request::Commit),
             Response::Committed { text: "我".into() }
         );
+    }
+
+    #[test]
+    fn health_reports_the_last_slow_request() {
+        let mut engine = Engine::new();
+        let Response::Health { info } = engine.handle(Request::Health) else {
+            panic!("health 應回 Health");
+        };
+        assert_eq!(info.last_slow_op, None);
+        assert_eq!(info.last_slow_ms, None);
+        assert_eq!(info.last_slow_input_len, None);
+
+        engine.note_slow_request("key", Duration::from_millis(412), 37);
+        let Response::Health { info } = engine.handle(Request::Health) else {
+            panic!("health 應回 Health");
+        };
+        assert_eq!(info.last_slow_op.as_deref(), Some("key"));
+        assert_eq!(info.last_slow_ms, Some(412));
+        assert_eq!(info.last_slow_input_len, Some(37));
     }
 
     #[test]

@@ -68,6 +68,15 @@ pub struct Check {
     /// 失敗時可執行的下一步；其他狀態不輸出這個欄位。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,
+    /// 最近一次慢請求的 op；只有慢請求檢查會填。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_slow_op: Option<String>,
+    /// 最近一次慢請求的耗時（毫秒）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_slow_ms: Option<u64>,
+    /// 最近一次慢請求的輸入長度（位元組）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_slow_input_len: Option<usize>,
 }
 
 /// JSON 的 `summary` 物件。
@@ -117,6 +126,23 @@ impl Report {
     /// 記一項警告。
     pub fn warn(&mut self, id: &str, title: &str, detail: impl Into<String>) {
         self.push(id, title, Status::Warn, detail.into(), None);
+    }
+
+    /// 記一項慢請求警告：不影響通過與否，但 JSON 會帶診斷欄位。
+    pub fn warn_slow(
+        &mut self,
+        id: &str,
+        title: &str,
+        detail: impl Into<String>,
+        op: &str,
+        ms: u64,
+        input_len: usize,
+    ) {
+        self.push(id, title, Status::Warn, detail.into(), None);
+        let check = self.checks.last_mut().expect("剛加入一項檢查");
+        check.last_slow_op = Some(op.to_string());
+        check.last_slow_ms = Some(ms);
+        check.last_slow_input_len = Some(input_len);
     }
 
     /// 記一項失敗；`fix` 是給使用者的可執行下一步。
@@ -234,6 +260,9 @@ impl Report {
             status,
             detail,
             fix,
+            last_slow_op: None,
+            last_slow_ms: None,
+            last_slow_input_len: None,
         });
     }
 
@@ -388,5 +417,28 @@ mod tests {
         report.skip("b", "B", "skip");
         let value: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
         assert_eq!(value["ok"], true);
+    }
+
+    #[test]
+    fn slow_request_is_a_warning_with_json_fields() {
+        let mut report = Report::new(false);
+        report.pass("engine.detail", "引擎細節", "正常");
+        report.warn_slow(
+            "engine.slow",
+            "慢請求",
+            "最近一次慢請求 op=key、耗時 412ms、輸入長度 37 位元組",
+            "key",
+            412,
+            37,
+        );
+        assert_eq!(report.failed(), 0, "慢請求不影響通過與否");
+        assert_eq!(report.warned(), 1);
+
+        let value: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+        let check = &value["checks"][1];
+        assert_eq!(check["status"], "warn");
+        assert_eq!(check["last_slow_op"], "key");
+        assert_eq!(check["last_slow_ms"], 412);
+        assert_eq!(check["last_slow_input_len"], 37);
     }
 }

@@ -518,6 +518,18 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
         ),
     }
 
+    // 慢請求只做觀測：WARN 不影響結束碼，但 JSON 與人類輸出都帶得出 op／耗時。
+    if let Some((op, ms, input_len)) = engine_probe.last_slow() {
+        report.warn_slow(
+            "engine.slow",
+            "慢請求",
+            format!("最近一次慢請求 op={op}、耗時 {ms}ms、輸入長度 {input_len} 位元組"),
+            &op,
+            ms,
+            input_len,
+        );
+    }
+
     // 放掉所有 COM 參照後再看一次：S_OK 代表沒有漏掉的引用。
     drop(text_service);
     drop(thread_mgr);

@@ -14,6 +14,10 @@ pub mod session;
 #[cfg(any(windows, test))]
 pub(crate) mod ipc_retry;
 
+/// 請求的整體預算分類（Linux 也編、也測）。
+#[cfg(any(windows, test))]
+pub(crate) mod ipc_budget;
+
 /// 候選窗的純版面（Linux 也編、也測）。
 pub mod candidate_layout;
 

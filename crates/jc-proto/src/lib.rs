@@ -106,6 +106,18 @@ pub struct HealthInfo {
     /// 其他能力旗標；0c 以 `info[name] == "true"` 判定是否支援。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub capabilities: BTreeMap<String, bool>,
+    /// 最近一次超過 200ms 的請求 op；沒有慢請求時省略。
+    ///
+    /// 實機回報變慢時，`doctor` 與 TSF 的 `tsf.log` 直接讀這個欄位，
+    /// 不必回頭翻引擎 log。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_slow_op: Option<String>,
+    /// 上面那個慢請求的耗時（毫秒）；沒有慢請求時省略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_slow_ms: Option<u64>,
+    /// 上面那個慢請求的線路 JSON 長度（位元組）；沒有慢請求時省略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_slow_input_len: Option<usize>,
 }
 
 impl HealthInfo {
@@ -132,6 +144,16 @@ impl HealthInfo {
         }
         if self.output_simplified {
             info.insert("output_simplified".to_string(), "true".to_string());
+        }
+        // 慢請求診斷：TSF 的 health 處理與 doctor 都從 info map 讀這些 key。
+        if let Some(op) = &self.last_slow_op {
+            info.insert("last_slow_op".to_string(), op.clone());
+        }
+        if let Some(ms) = self.last_slow_ms {
+            info.insert("last_slow_ms".to_string(), ms.to_string());
+        }
+        if let Some(len) = self.last_slow_input_len {
+            info.insert("last_slow_input_len".to_string(), len.to_string());
         }
         for (name, enabled) in &self.capabilities {
             info.insert(name.clone(), enabled.to_string());
@@ -927,6 +949,7 @@ mod tests {
             output_simplified: true,
             personal_reset: true,
             capabilities: BTreeMap::from([("caps_lock_english".into(), true)]),
+            ..HealthInfo::default()
         };
         let info_map = info.as_info();
         // T1a 的 learn_simplified() 讀的就是這個 key 與值。
@@ -960,6 +983,39 @@ mod tests {
             Some("false"),
             "0c 的 health 一律回 draining key"
         );
+    }
+
+    #[test]
+    fn health_info_reports_the_last_slow_request() {
+        let info = HealthInfo {
+            last_slow_op: Some("key".into()),
+            last_slow_ms: Some(412),
+            last_slow_input_len: Some(37),
+            ..HealthInfo::default()
+        };
+        let text = serde_json::to_string(&info).unwrap();
+        assert!(text.contains(r#""last_slow_op":"key""#), "{text}");
+        assert!(text.contains(r#""last_slow_ms":412"#), "{text}");
+        assert!(text.contains(r#""last_slow_input_len":37"#), "{text}");
+        let parsed: HealthInfo = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed, info);
+
+        let map = info.as_info();
+        assert_eq!(map.get("last_slow_op").map(String::as_str), Some("key"));
+        assert_eq!(map.get("last_slow_ms").map(String::as_str), Some("412"));
+        assert_eq!(
+            map.get("last_slow_input_len").map(String::as_str),
+            Some("37")
+        );
+
+        // 沒有慢請求時三欄都不出現，舊外殼看到的形狀不變。
+        let empty = HealthInfo::default();
+        let text = serde_json::to_string(&empty).unwrap();
+        assert!(!text.contains("last_slow"), "{text}");
+        let map = empty.as_info();
+        assert!(!map.contains_key("last_slow_op"));
+        assert!(!map.contains_key("last_slow_ms"));
+        assert!(!map.contains_key("last_slow_input_len"));
     }
 
     #[test]

@@ -35,6 +35,12 @@ pub const PROTOCOL_VERSION: u32 = JC_PROTOCOL_VERSION;
 /// hello 的客戶端識別。
 const CLIENT_NAME: &str = "jc-tsf";
 
+/// 內部預算標記：0c 的 `display` 轉成 `snapshot` 後仍要走收尾預算。
+///
+/// 這個欄位只在本行程的 `Session` → `PipeTransport` 之間使用，`ipc::Client`
+/// 送訊框前會拿掉，不會出現在引擎收到的 JSON。
+pub(crate) const TEARDOWN_HINT: &str = "_jc_teardown";
+
 /// 引擎重啟時等待新引擎的期限（0c `ipc::RESTART_WAIT`）。
 pub const RESTART_WAIT: Duration = Duration::from_secs(5);
 
@@ -779,7 +785,14 @@ impl Client {
             }
             return None;
         }
-        let request = to_jc_request(envelope);
+        let mut request = to_jc_request(envelope);
+        // 0c 的 display 在協定上就是 snapshot；加上內部標記，讓 IPC 用 1 秒收尾
+        // 預算，而不是互動 snapshot 的 10 秒。
+        if envelope["op"].as_str() == Some("handle")
+            && envelope["req"]["type"].as_str() == Some("display")
+        {
+            request[TEARDOWN_HINT] = Value::Bool(true);
+        }
         let Some(raw) = self.transport.request(&request) else {
             if self.transport.failed_peer_closed() {
                 self.expect_restart();
@@ -795,6 +808,25 @@ impl Client {
             Ok(response) => response_to_reply(&response),
             Err(_) => raw, // T3 之前的 health／close 等擴充 op
         };
+        // health 帶回慢請求時留一行診斷；沒有慢請求的 health 不寫，避免洗版。
+        if envelope["op"].as_str() == Some("health") {
+            let info = &reply["info"];
+            if let Some(op) = info["last_slow_op"].as_str() {
+                let number = |value: &Value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .or_else(|| value.as_u64().map(|n| n.to_string()))
+                        .unwrap_or_else(|| "?".to_string())
+                };
+                zlog!(
+                    "health: last_slow_op={} last_slow_ms={} last_slow_input_len={}",
+                    op,
+                    number(&info["last_slow_ms"]),
+                    number(&info["last_slow_input_len"])
+                );
+            }
+        }
         if reply["ok"].as_bool() == Some(false) && reply["error"].as_str() == Some("引擎正在切換")
         {
             self.expect_restart();
@@ -2348,6 +2380,26 @@ mod tests {
         assert_eq!(request["op"], "snapshot");
         let parsed: jc_proto::Request = serde_json::from_value(request).unwrap();
         assert!(matches!(parsed, jc_proto::Request::Snapshot));
+    }
+
+    #[test]
+    fn display_requests_are_marked_as_teardown() {
+        let (mut s, st) = toy_session();
+        assert!(s.handle(json!({"type": "display", "columns": 0})).ok);
+        s.key("a");
+        let requests = st.lock().unwrap().requests.clone();
+        let snapshot = requests
+            .iter()
+            .rev()
+            .find(|request| request["op"] == "snapshot")
+            .expect("display 要送 snapshot");
+        assert_eq!(snapshot[TEARDOWN_HINT], true, "display 用收尾預算");
+        let key = requests
+            .iter()
+            .rev()
+            .find(|request| request["op"] == "key")
+            .expect("key 要送 key");
+        assert!(key.get(TEARDOWN_HINT).is_none(), "互動按鍵維持 10 秒預算");
     }
 
     #[test]
