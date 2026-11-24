@@ -1012,6 +1012,40 @@ mod tests {
     }
 
     #[test]
+    fn mixed_session_keeps_long_literal_run() {
+        let Some(root) = jc_testdata::root() else {
+            eprintln!("缺少測試資料：JC_TESTDATA");
+            return;
+        };
+        let data = load_engine_data(&root).unwrap();
+        let config = data.session_config(Mode::Mixed);
+        assert!(config.ja_live.enabled, "引擎預設要開 ja_live");
+        assert!(config.ja.is_some(), "引擎路徑要有日文解碼器");
+
+        let preedit = |keys: &str| {
+            let mut session = jc_core::session::Session::new(data.session_config(Mode::Mixed));
+            for ch in keys.chars() {
+                session.press(jc_core::key::Key::char(ch, false));
+            }
+            session.snapshot().preedit
+        };
+
+        assert_eq!(preedit(&"z".repeat(70)), "z".repeat(70));
+        assert_eq!(preedit(&("z".repeat(70) + "a")), "z".repeat(70) + "a");
+        assert_eq!(preedit(&("z".repeat(70) + "ab")), "z".repeat(70) + "ab");
+        assert_eq!(preedit(&("z".repeat(70) + ".a")), "z".repeat(70) + ".a");
+
+        // 既有混打切分不得回歸。
+        let rishi = preedit("rishireej/");
+        assert!(
+            rishi == "りしれ供" || rishi == "りしれㄍㄨㄥ",
+            "rishireej/ 回歸：{rishi}"
+        );
+        assert_eq!(preedit("w96j0 "), "台灣");
+        assert_eq!(preedit("ji394su3"), "我愛你");
+    }
+
+    #[test]
     fn missing_root_and_lexicon_report_paths() {
         let err = load_engine_data(Path::new("/no/such/jc-data-root")).unwrap_err();
         assert!(err.to_string().contains("/no/such/jc-data-root"));

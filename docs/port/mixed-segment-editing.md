@@ -112,24 +112,33 @@ Mixed 沒有音節格，游標改用**片段邊界索引** `mixed_cursor`：
 `mixed_latin` 的英文詞表查詢窗口是 `MAX_ENGLISH_CHARS = 48`。這個窗口只限制
 「拿去查詞表或 autocomplete 的字尾長度」，不是英文片段的覆蓋上限。
 
-- 連續小寫 run 超過窗口後，DP 仍從 run 開頭保留一個英文字面種子，之後每個
-  按鍵以 1 個字元續接同一個英文片段。片段成本沿用 `en_word_cost`。
+- 一段已經走英文字面的 run 超過窗口後，DP 仍從 run 開頭保留一個英文字面
+  種子，之後每個按鍵以 1 個字元續接同一個英文片段。片段成本沿用
+  `en_word_cost`。
+- 續接規則是「已字面化的英文 run 只能繼續字面」：後面再打小寫字母時，不會
+  回頭把前面顯示過的字母重新解讀成假名或其他語言。`z` 這類打不成かな的字面
+  run 會整串保留，`z` 連打 70 次再加 `a`、`b` 仍是 72 個英文字元。
+- 日文仍然可以從 run 的開頭接手。產品預設開啟 ja_live 時，`a` 從一開始就
+  可能走日文路徑（`aa` 顯示 `ああ`）；這不是長 run 的續接情境，也不受上面
+  的英文字面鎖影響。
 - 詞表與 autocomplete 還是只看最後 48 個字元；超過窗口的部分照按鍵字面顯示。
-- 長 run 內不再讓日文或注音音節從中間接手。`a` 連打 70 次顯示 70 個 `a`，
-  200 次也完整顯示；長 run 後面再打 `b`、`.` 或空白都能繼續。
+- 長 run 內不再讓日文或注音音節從中間接手。長 run 後面接標點時標點走
+  symbol 片段，標點後的字母仍能繼續輸入。
 - `Session` 的待定按鍵不再因為 `MAX_WORD_BYTES` 丟掉字母。上限只留給詞表
   查詢，輸入本身保留完整按鍵流。
 
-測試在 `crates/jc-core/src/mixed_latin.rs` 與
-`crates/jc-core/src/session/mixed.rs`：
+測試在 `crates/jc-core/src/mixed_latin.rs`、`crates/jc-core/src/session/mixed.rs`
+與 `crates/jc-engine/src/loader.rs`：
 
 | 測試 | 內容 |
 |---|---|
-| `test_long_lowercase_run_stays_literal` | 70、200 個 `a` 都是一個英文片段，讀音等於原字串。 |
+| `test_long_lowercase_run_stays_literal` | 70、200 個 `a` 在無日文解碼器時都是一個英文片段。 |
 | `test_long_lowercase_run_continues_at_tail` | 70 個 `a` 後再打 `b`，增量 DP 不走失。 |
 | `test_mixed_prefix_then_long_run_keeps_every_key` | `sa` 加 70 個 `a` 仍完整覆蓋。 |
-| `test_mixed_long_lowercase_run_keeps_every_key` | Session 層 70、200 個 `a` 與 70 個 `z` 的 preedit 完整。 |
-| `test_mixed_long_lowercase_run_accepts_more_letters` | 長 run 後再打字母會繼續變長，`z` 70 次再加 `ab` 是 72 個字元。 |
+| `test_mixed_long_literal_run_not_reinterpreted_as_japanese` | 有日文解碼器時，70 個 `z` 後打 `a`、`b` 不會變成假名。 |
+| `test_mixed_long_lowercase_run_keeps_every_key` | Session 層長串 preedit 完整，按鍵不被丟掉。 |
+| `test_mixed_long_lowercase_run_accepts_more_letters` | 長 run 後再打字母與標點會繼續變長。 |
+| `mixed_session_keeps_long_literal_run` | 以 `load_engine_data` → `EngineData::session_config(Mode::Mixed)` 的 ja_live Session 驗證同一串按鍵與既有混打輸出。 |
 
 ## 測試
 

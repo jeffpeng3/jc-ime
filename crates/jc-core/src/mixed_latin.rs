@@ -434,7 +434,7 @@ const ZH: usize = 1;
 const EN: usize = 2;
 const LANGS: usize = 3;
 /// 英文詞在一個片段裡的最大字元數。
-const MAX_ENGLISH_CHARS: usize = 48;
+pub(crate) const MAX_ENGLISH_CHARS: usize = 48;
 
 /// 分數相同時的語言偏好；日文優先，其次注音，最後英文。
 fn lang_rank(lang: usize) -> u8 {

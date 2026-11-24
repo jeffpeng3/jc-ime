@@ -667,6 +667,23 @@ impl Session {
         }
     }
 
+    /// 尾巴是否已經是顯示中的英文字面 run。
+    ///
+    /// `prefix` 是目前待定按鍵扣掉剛按下的字母。長 run 超過詞表窗口後由
+    /// 統一管線固定成英文字面；後續字母只能接在同一個字面片段後面。
+    fn trailing_literal_english(&self, prefix: &str) -> bool {
+        let Some(last) = self.segments.last() else {
+            return false;
+        };
+        if last.mode != Mode::En || last.script != Script::Latin {
+            return false;
+        }
+        let Some(text) = self.base.get(last.start..last.end) else {
+            return false;
+        };
+        !text.is_empty() && text.chars().all(|ch| ch.is_ascii_lowercase()) && prefix.ends_with(text)
+    }
+
     /// 依按鍵推斷日文片段（`ja_mixed.go` 的 `maybeJapanese`）。
     ///
     /// 只在設定有日文解碼器時啟用。待定按鍵必須是兩個以上小寫 ASCII 字母、
@@ -696,6 +713,13 @@ impl Session {
             return false;
         };
         if kana.is_empty() || !pending.is_empty() {
+            return false;
+        }
+        // 已經字面化的長英文 run 只能續接字面。日文可以從 run 開頭接手，
+        // 但不能在使用者看到一整串英文字面後，才把前面幾鍵改寫成假名。
+        if raw.len() > crate::mixed_latin::MAX_ENGLISH_CHARS
+            && self.trailing_literal_english(&raw[..raw.len() - 1])
+        {
             return false;
         }
         self.ascii.reset();
@@ -1813,6 +1837,24 @@ mod tests {
                 "{ch} 長 run 後的標點與字母"
             );
         }
+    }
+
+    /// 日文解碼器開啟時，已經字面化的長 run 不能因為下一個字母改寫成假名。
+    #[test]
+    fn test_mixed_long_literal_run_not_reinterpreted_as_japanese() {
+        use std::sync::Arc;
+
+        let decoder = crate::ja::decode::JaDecoder::new(Arc::new(TestJaSource(Vec::new())));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.ja = Some(Arc::new(decoder));
+        let mut s = Session::new(config);
+
+        mixed_type(&mut s, &"z".repeat(70));
+        assert_eq!(s.snapshot().preedit, "z".repeat(70));
+        mixed_type(&mut s, "a");
+        assert_eq!(s.snapshot().preedit, "z".repeat(70) + "a");
+        mixed_type(&mut s, "b");
+        assert_eq!(s.snapshot().preedit, "z".repeat(70) + "ab");
     }
 
     /// 已有混打前綴時，後面的長小寫 run 仍要完整切分，不能吃掉尾巴。
