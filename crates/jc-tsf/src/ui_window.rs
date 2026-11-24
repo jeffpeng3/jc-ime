@@ -1,4 +1,4 @@
-//! TSF DLL 內的候選窗：HWND + Direct2D + DirectComposition。
+//! TSF DLL 內的候選窗：HWND + Direct2D + DirectComposition surface。
 //!
 //! 這個視窗不建立執行緒、不開新程序，也不碰 `jc-ui`。它只活在 TSF 的 UI 執行緒上：
 //! `present` 在按鍵路徑同步更新內容，滑鼠點選則把 `WM_SELECT_CANDIDATE` 送回
@@ -7,8 +7,12 @@
 //! 幾個硬性約束：
 //! - `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`：點視窗不會搶焦點，也不會出現在工作列。
 //! - 一律 `SW_SHOWNOACTIVATE`／`SWP_NOACTIVATE`，絕不呼叫 `SetFocus`。
-//! - 繪製用 D3D11 → DXGI swap chain（for composition）→ Direct2D device context →
-//!   DirectComposition visual。`Present(0, …)` 不等垂直同步。
+//! - 呈現用 `IDCompositionSurface`，不是 swap chain：surface 尺寸固定，換尺寸就重建，
+//!   每次畫完 `surface.EndDraw()` 再 `comp.Commit()`。繪製放在 `WM_PAINT`。
+//! - `WS_EX_NOREDIRECTIONBITMAP` 是 DComp 的前提；沒有它的話系統會準備一張不透明的
+//!   重導向點陣圖，把合成器畫的內容蓋掉。
+//! - TSF 的按鍵路徑是同步的、訊息迴圈沒在跑，所以更新後要 `InvalidateRect` 再
+//!   `UpdateWindow`，`WM_PAINT` 才會真的發生、畫面才會合成。
 //! - 初始化失敗只記一行日誌並收起，不在輸入路徑重試；下一次 Activate 再說。
 
 use std::ffi::c_void;
@@ -18,13 +22,13 @@ use windows::Win32::Foundation::{
     WPARAM,
 };
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateDevice, ID2D1Bitmap1, ID2D1DeviceContext, ID2D1Image, ID2D1RenderTarget,
-    ID2D1SolidColorBrush, D2D1_BITMAP_OPTIONS, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-    D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ROUNDED_RECT,
+    D2D1CreateFactory, ID2D1Bitmap1, ID2D1DeviceContext, ID2D1Factory1, ID2D1SolidColorBrush,
+    D2D1_BITMAP_OPTIONS, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
+    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_ROUNDED_RECT,
 };
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_10_1,
@@ -34,7 +38,8 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
 };
 use windows::Win32::Graphics::DirectComposition::{
-    DCompositionCreateDevice, IDCompositionDevice, IDCompositionVisual,
+    DCompositionCreateDevice, IDCompositionDevice, IDCompositionSurface, IDCompositionTarget,
+    IDCompositionVisual,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
@@ -43,28 +48,25 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
     DWRITE_WORD_WRAPPING_NO_WRAP,
 };
-use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
+    DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM,
 };
-use windows::Win32::Graphics::Dxgi::{
-    IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISurface, IDXGISwapChain, IDXGISwapChain1,
-    DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
-    DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT,
-};
+use windows::Win32::Graphics::Dxgi::{IDXGIDevice, IDXGISurface};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, ValidateRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    BeginPaint, EndPaint, GetMonitorInfoW, InvalidateRect, MonitorFromPoint, UpdateWindow,
+    MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, GetWindowLongPtrW,
-    GetWindowRect, IsWindowVisible, PostMessageW, RegisterClassW, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, UnregisterClassW, GWLP_USERDATA, HWND_TOPMOST, MA_NOACTIVATE, SM_CXSCREEN,
-    SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WM_DESTROY,
-    WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_PAINT,
-    WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetSystemMetrics,
+    GetWindowLongPtrW, GetWindowRect, IsWindowVisible, LoadCursorW, PostMessageW, RegisterClassW,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, UnregisterClassW, CS_DROPSHADOW, CS_HREDRAW,
+    CS_VREDRAW, GWLP_USERDATA, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST, IDC_ARROW, MA_NOACTIVATE,
+    SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_SHOWWINDOW, SW_HIDE,
+    SW_SHOWNOACTIVATE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEACTIVATE,
+    WM_NCDESTROY, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows_core::{w, Interface, PCWSTR};
 
@@ -77,9 +79,6 @@ use crate::ui::{UiMessage, WM_SELECT_CANDIDATE};
 const CLASS_NAME: PCWSTR = w!("jcCandidateUiWindow");
 /// 候選窗與插入點的距離（DIP）。
 const GAP_DIP: f32 = 4.0;
-/// `DXGI_STATUS_OCCLUDED`：Present 成功但 DWM 目前沒合成這個視窗。
-/// windows-rs 沒有匯出這個 status 常數，值取自 `dxgi.h`。
-const DXGI_STATUS_OCCLUDED: i32 = 0x087A_0001u32 as i32;
 
 // 32-bit 的 `SetWindowLongPtrW`／`GetWindowLongPtrW` 在 windows-rs 收 `i32`，
 // 64-bit 收 `isize`；差異只留在這兩個小函式裡。
@@ -190,71 +189,34 @@ fn create_device() -> windows_core::Result<ID3D11Device> {
     )))
 }
 
-/// 候選窗的 GPU 資源：swap chain、D2D、DirectWrite、DirectComposition。
+/// 執行一次會回 `HRESULT` 的步驟：失敗時寫出階段名稱與數值，方便實機定位。
+fn stage<T>(step: &str, result: windows_core::Result<T>) -> windows_core::Result<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            zlog!(
+                "ui: 候選窗 {step} 失敗 hr={:#010x} {error}",
+                error.code().0 as u32
+            );
+            Err(error)
+        }
+    }
+}
+
+/// DirectWrite 的量測與文字格式。
 ///
-/// 建立後就一直留到 `LocalWindow` 被銷毀（Deactivate）；`resize`／`draw` 失敗時
-/// 由呼叫端把整個 `Graphics` 丟掉，下一個按鍵再重建。
-struct Graphics {
-    /// 只為了持有參照：visual 的內容是這條 swap chain，這裡不能讓它被釋放。
-    swap: IDXGISwapChain1,
-    swap_base: IDXGISwapChain,
-    d2d: ID2D1DeviceContext,
-    rt: ID2D1RenderTarget,
-    /// 同上：visual／target 由 `comp` 管理，參照要留到視窗銷毀。
-    comp: IDCompositionDevice,
+/// 與呈現資源分開：surface 要用最終尺寸建立，所以得先有字型才能算版面。
+struct Text {
     write: IDWriteFactory,
     format_text: IDWriteTextFormat,
     format_key: IDWriteTextFormat,
     format_small: IDWriteTextFormat,
     format_pager: IDWriteTextFormat,
-    brush_background: ID2D1SolidColorBrush,
-    brush_border: ID2D1SolidColorBrush,
-    brush_text: ID2D1SolidColorBrush,
-    brush_dim: ID2D1SolidColorBrush,
-    brush_highlight: ID2D1SolidColorBrush,
-    brush_highlight_text: ID2D1SolidColorBrush,
-    target: Option<ID2D1Bitmap1>,
-    dark: bool,
-    width: u32,
-    height: u32,
 }
 
-impl Graphics {
-    fn new(hwnd: HWND, dark: bool) -> windows_core::Result<Graphics> {
+impl Text {
+    fn new() -> windows_core::Result<Text> {
         unsafe {
-            let device = create_device()?;
-            let dxgi: IDXGIDevice = device.cast()?;
-            let adapter: IDXGIAdapter = dxgi.GetAdapter()?;
-            let factory: IDXGIFactory2 = adapter.GetParent()?;
-            let desc = DXGI_SWAP_CHAIN_DESC1 {
-                Width: 1,
-                Height: 1,
-                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                Stereo: false.into(),
-                SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-                BufferCount: 2,
-                Scaling: DXGI_SCALING_STRETCH,
-                SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
-                AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-                Flags: 0,
-            };
-            let swap = factory.CreateSwapChainForComposition(&device, &desc, None)?;
-            let swap_base: IDXGISwapChain = swap.cast()?;
-            let d2d_device = D2D1CreateDevice(&dxgi, None)?;
-            let d2d = d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
-            let rt: ID2D1RenderTarget = d2d.cast()?;
-
-            let comp: IDCompositionDevice = DCompositionCreateDevice(&dxgi)?;
-            let target = comp.CreateTargetForHwnd(hwnd, true)?;
-            let visual: IDCompositionVisual = comp.CreateVisual()?;
-            visual.SetContent(&swap)?;
-            target.SetRoot(&visual)?;
-            comp.Commit()?;
-
             let write: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let format_text =
                 text_format(&write, TextStyle::Candidate, DWRITE_TEXT_ALIGNMENT_LEADING)?;
@@ -263,65 +225,27 @@ impl Graphics {
                 text_format(&write, TextStyle::Small, DWRITE_TEXT_ALIGNMENT_LEADING)?;
             let format_pager =
                 text_format(&write, TextStyle::Small, DWRITE_TEXT_ALIGNMENT_TRAILING)?;
-
-            let palette = palette(dark);
-            let brush_background = rt.CreateSolidColorBrush(&palette.background, None)?;
-            let brush_border = rt.CreateSolidColorBrush(&palette.border, None)?;
-            let brush_text = rt.CreateSolidColorBrush(&palette.text, None)?;
-            let brush_dim = rt.CreateSolidColorBrush(&palette.dim, None)?;
-            let brush_highlight = rt.CreateSolidColorBrush(&palette.highlight, None)?;
-            let brush_highlight_text = rt.CreateSolidColorBrush(&palette.highlight_text, None)?;
-            Ok(Graphics {
-                swap,
-                swap_base,
-                d2d,
-                rt,
-                comp,
+            Ok(Text {
                 write,
                 format_text,
                 format_key,
                 format_small,
                 format_pager,
-                brush_background,
-                brush_border,
-                brush_text,
-                brush_dim,
-                brush_highlight,
-                brush_highlight_text,
-                target: None,
-                dark,
-                width: 0,
-                height: 0,
             })
         }
     }
 
-    fn set_theme(&mut self, dark: bool) -> windows_core::Result<()> {
-        if self.dark == dark {
-            return Ok(());
-        }
-        let palette = palette(dark);
-        self.brush_background =
-            unsafe { self.rt.CreateSolidColorBrush(&palette.background, None)? };
-        self.brush_border = unsafe { self.rt.CreateSolidColorBrush(&palette.border, None)? };
-        self.brush_text = unsafe { self.rt.CreateSolidColorBrush(&palette.text, None)? };
-        self.brush_dim = unsafe { self.rt.CreateSolidColorBrush(&palette.dim, None)? };
-        self.brush_highlight = unsafe { self.rt.CreateSolidColorBrush(&palette.highlight, None)? };
-        self.brush_highlight_text = unsafe {
-            self.rt
-                .CreateSolidColorBrush(&palette.highlight_text, None)?
-        };
-        self.dark = dark;
-        Ok(())
-    }
-
-    /// 文字寬度（DIP）。DirectWrite 的量測與繪製用同一個 `IDWriteTextFormat`。
-    fn measure(&self, text: &str, style: TextStyle) -> f32 {
-        let format = match style {
+    fn format(&self, style: TextStyle) -> &IDWriteTextFormat {
+        match style {
             TextStyle::Candidate => &self.format_text,
             TextStyle::Key => &self.format_key,
             TextStyle::Small => &self.format_small,
-        };
+        }
+    }
+
+    /// 文字寬度（DIP）。量測與繪製用同一個 `IDWriteTextFormat`。
+    fn measure(&self, text: &str, style: TextStyle) -> f32 {
+        let format = self.format(style);
         let utf16: Vec<u16> = text.encode_utf16().collect();
         let layout = unsafe { self.write.CreateTextLayout(&utf16, format, 4096.0, 64.0) };
         match layout {
@@ -335,102 +259,296 @@ impl Graphics {
             Err(_) => 0.0,
         }
     }
+}
 
-    /// 把目前的 visual 樹送給 DWM。顯示順序改變後要再送一次，不能吞掉錯誤。
-    fn commit(&self) -> windows_core::Result<()> {
-        unsafe { self.comp.Commit() }
-    }
+/// 候選窗的呈現資源：D2D device context + DirectComposition surface。
+///
+/// surface 是固定尺寸的：換尺寸就重建一條，重新 `SetContent` 再 `Commit`。
+/// `visual`／`comp_target` 要留在 struct 裡，不然合成樹會斷。
+/// 建立後就一直留到 `LocalWindow` 被銷毀（Deactivate）；繪製失敗時由呼叫端
+/// 把整個 `Graphics` 丟掉，下一次顯示重建。
+struct Graphics {
+    dc: ID2D1DeviceContext,
+    surface: IDCompositionSurface,
+    comp: IDCompositionDevice,
+    /// surface 的內容容器；換 surface 後要重新 `SetContent`。
+    visual: IDCompositionVisual,
+    /// `CreateTargetForHwnd` 的結果；`SetRoot` 之後要留著。
+    /// 只為了持有參照：合成目標要活著，不然合成樹會斷。
+    _comp_target: IDCompositionTarget,
+    brush_background: ID2D1SolidColorBrush,
+    brush_border: ID2D1SolidColorBrush,
+    brush_text: ID2D1SolidColorBrush,
+    brush_dim: ID2D1SolidColorBrush,
+    brush_highlight: ID2D1SolidColorBrush,
+    brush_highlight_text: ID2D1SolidColorBrush,
+    dark: bool,
+    /// 目前 surface 的像素尺寸；改變時重建。
+    size: (u32, u32),
+    /// 最近一次 `surface.EndDraw` 的 HRESULT；0 代表成功。診斷用。
+    present_hr: i32,
+    /// 最近一次 `comp.Commit` 的 HRESULT；0 代表成功。診斷用。
+    commit_hr: i32,
+}
 
-    /// swap chain 目前的緩衝尺寸；診斷用，取不到時回 `None`。
-    fn swap_size(&self) -> Option<(u32, u32)> {
-        let desc = unsafe { self.swap.GetDesc1() }.ok()?;
-        Some((desc.Width, desc.Height))
-    }
+impl Graphics {
+    /// 在視窗上建立呈現資源；surface 用最終像素尺寸建立。
+    fn new(
+        hwnd: HWND,
+        dark: bool,
+        width: u32,
+        height: u32,
+        dpi: u32,
+    ) -> windows_core::Result<Graphics> {
+        let (width, height) = (width.max(1), height.max(1));
+        unsafe {
+            let device = stage("D3D11CreateDevice", create_device())?;
+            let dxgi: IDXGIDevice = stage("IDXGIDevice::cast", device.cast())?;
 
-    /// 把 swap chain 對齊視窗大小；bitmap 的 DPI 設成監視器 DPI，之後畫圖都用 DIP。
-    fn resize(&mut self, width: u32, height: u32, dpi: u32) -> windows_core::Result<()> {
-        let width = width.max(1);
-        let height = height.max(1);
-        if self.target.take().is_some() {
-            unsafe { self.d2d.SetTarget(None) };
-        }
-        if self.width != width || self.height != height {
-            unsafe {
-                self.swap_base.ResizeBuffers(
-                    2,
+            let factory: ID2D1Factory1 = stage(
+                "D2D1CreateFactory",
+                D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None),
+            )?;
+            let d2d_device = stage("CreateDevice", factory.CreateDevice(&dxgi))?;
+            let dc = stage(
+                "CreateDeviceContext",
+                d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE),
+            )?;
+
+            let comp: IDCompositionDevice =
+                stage("DCompositionCreateDevice", DCompositionCreateDevice(&dxgi))?;
+            let comp_target = stage("CreateTargetForHwnd", comp.CreateTargetForHwnd(hwnd, true))?;
+            let visual = stage("CreateVisual", comp.CreateVisual())?;
+            let surface = stage(
+                "CreateSurface",
+                comp.CreateSurface(
                     width,
                     height,
                     DXGI_FORMAT_B8G8R8A8_UNORM,
-                    DXGI_SWAP_CHAIN_FLAG(0),
-                )?;
-            }
-            self.width = width;
-            self.height = height;
+                    DXGI_ALPHA_MODE_PREMULTIPLIED,
+                ),
+            )?;
+            stage("SetContent", visual.SetContent(&surface))?;
+            stage("SetRoot", comp_target.SetRoot(&visual))?;
+            stage("Commit", comp.Commit())?;
+            zlog!(
+                "ui: 候選窗呈現建立 hwnd={:#x} surface={}x{} dpi={}",
+                hwnd.0 as usize,
+                width,
+                height,
+                dpi
+            );
+
+            let palette = palette(dark);
+            let brush_background = stage(
+                "CreateSolidColorBrush",
+                dc.CreateSolidColorBrush(&palette.background, None),
+            )?;
+            let brush_border = stage(
+                "CreateSolidColorBrush",
+                dc.CreateSolidColorBrush(&palette.border, None),
+            )?;
+            let brush_text = stage(
+                "CreateSolidColorBrush",
+                dc.CreateSolidColorBrush(&palette.text, None),
+            )?;
+            let brush_dim = stage(
+                "CreateSolidColorBrush",
+                dc.CreateSolidColorBrush(&palette.dim, None),
+            )?;
+            let brush_highlight = stage(
+                "CreateSolidColorBrush",
+                dc.CreateSolidColorBrush(&palette.highlight, None),
+            )?;
+            let brush_highlight_text = stage(
+                "CreateSolidColorBrush",
+                dc.CreateSolidColorBrush(&palette.highlight_text, None),
+            )?;
+            Ok(Graphics {
+                dc,
+                surface,
+                comp,
+                visual,
+                _comp_target: comp_target,
+                brush_background,
+                brush_border,
+                brush_text,
+                brush_dim,
+                brush_highlight,
+                brush_highlight_text,
+                dark,
+                size: (width, height),
+                present_hr: 0,
+                commit_hr: 0,
+            })
         }
-        let surface: IDXGISurface = unsafe { self.swap_base.GetBuffer(0)? };
-        let dpi = if dpi == 0 { BASE_DPI } else { dpi };
-        let properties = D2D1_BITMAP_PROPERTIES1 {
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_IGNORE,
-            },
-            dpiX: dpi as f32,
-            dpiY: dpi as f32,
-            bitmapOptions: D2D1_BITMAP_OPTIONS(
-                D2D1_BITMAP_OPTIONS_TARGET.0 | D2D1_BITMAP_OPTIONS_CANNOT_DRAW.0,
-            ),
-            ..Default::default()
+    }
+
+    fn set_theme(&mut self, dark: bool) -> windows_core::Result<()> {
+        if self.dark == dark {
+            return Ok(());
+        }
+        let palette = palette(dark);
+        self.brush_background =
+            unsafe { self.dc.CreateSolidColorBrush(&palette.background, None)? };
+        self.brush_border = unsafe { self.dc.CreateSolidColorBrush(&palette.border, None)? };
+        self.brush_text = unsafe { self.dc.CreateSolidColorBrush(&palette.text, None)? };
+        self.brush_dim = unsafe { self.dc.CreateSolidColorBrush(&palette.dim, None)? };
+        self.brush_highlight = unsafe { self.dc.CreateSolidColorBrush(&palette.highlight, None)? };
+        self.brush_highlight_text = unsafe {
+            self.dc
+                .CreateSolidColorBrush(&palette.highlight_text, None)?
         };
-        let bitmap = unsafe {
-            self.d2d
-                .CreateBitmapFromDxgiSurface(&surface, Some(&properties))?
-        };
-        let image: ID2D1Image = bitmap.cast()?;
-        unsafe { self.d2d.SetTarget(&image) };
-        self.target = Some(bitmap);
+        self.dark = dark;
         Ok(())
     }
 
-    /// 畫完後送出一帧，回傳 `Present` 的原始 `HRESULT`。
+    /// surface 尺寸變了就重建，並重新綁到 visual。
     ///
-    /// `Present` 的成功碼不只 `S_OK`：`DXGI_STATUS_OCCLUDED` 也是成功，代表 DWM
-    /// 現在沒合成這個視窗；呼叫端要記錄下來，下一個按鍵再重畫重送。
-    fn draw(&mut self, layout: &Layout) -> windows_core::Result<windows_core::HRESULT> {
+    /// DComp 的 surface 尺寸固定；候選窗高度會隨候選數變，所以每次繪製前都要確認。
+    fn resize(&mut self, width: u32, height: u32) -> windows_core::Result<()> {
+        let (width, height) = (width.max(1), height.max(1));
+        if self.size == (width, height) {
+            return Ok(());
+        }
         unsafe {
-            self.d2d.BeginDraw();
+            let surface = stage(
+                "CreateSurface",
+                self.comp.CreateSurface(
+                    width,
+                    height,
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    DXGI_ALPHA_MODE_PREMULTIPLIED,
+                ),
+            )?;
+            stage("SetContent", self.visual.SetContent(&surface))?;
+            stage("Commit", self.comp.Commit())?;
+            self.surface = surface;
+            self.size = (width, height);
+            zlog!("ui: 候選窗 surface 重建 surface={}x{}", width, height);
+        }
+        Ok(())
+    }
+
+    /// 畫一帧並送出。
+    ///
+    /// `BeginDraw` 回來的貼圖不保證從 (0,0) 開始，所有座標都要加上 `offset`。
+    /// D2D 的 bitmap DPI 設成監視器 DPI，所以版面用 DIP 直接畫，offset 先換成 DIP。
+    fn paint(&mut self, layout: &Layout, text: &Text, dpi: u32) -> windows_core::Result<()> {
+        unsafe {
+            let mut offset = POINT::default();
+            let target: IDXGISurface = stage(
+                "SurfaceBeginDraw",
+                self.surface.BeginDraw(None, &mut offset),
+            )?;
+            let dpi = if dpi == 0 { BASE_DPI } else { dpi };
+            let properties = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: dpi as f32,
+                dpiY: dpi as f32,
+                bitmapOptions: D2D1_BITMAP_OPTIONS(
+                    D2D1_BITMAP_OPTIONS_TARGET.0 | D2D1_BITMAP_OPTIONS_CANNOT_DRAW.0,
+                ),
+                ..Default::default()
+            };
+            let bitmap: ID2D1Bitmap1 = match stage(
+                "CreateBitmapFromDxgiSurface",
+                self.dc
+                    .CreateBitmapFromDxgiSurface(&target, Some(&properties)),
+            ) {
+                Ok(bitmap) => bitmap,
+                Err(error) => {
+                    // BeginDraw 配到的貼圖一定要 EndDraw 釋放，不然下一次會失敗。
+                    let _ = self.surface.EndDraw();
+                    return Err(error);
+                }
+            };
+            self.dc.SetTarget(&bitmap);
+            self.dc.BeginDraw();
+            // 每帧清成透明：surface 會沿用上一帧的內容。
+            self.dc.Clear(Some(&D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            }));
+            let ox = candidate_layout::dip_from_px(offset.x, dpi);
+            let oy = candidate_layout::dip_from_px(offset.y, dpi);
+            self.draw_content(layout, text, ox, oy);
+
+            let drawn = self.dc.EndDraw(None, None);
+            self.dc.SetTarget(None);
+            let presented = self.surface.EndDraw();
+            let committed = self.comp.Commit();
+            self.present_hr = presented.as_ref().err().map_or(0, |e| e.code().0);
+            self.commit_hr = committed.as_ref().err().map_or(0, |e| e.code().0);
+            if let Err(error) = &presented {
+                zlog!(
+                    "ui: 候選窗 SurfaceEndDraw 失敗 hr={:#010x} {error}",
+                    error.code().0 as u32
+                );
+            }
+            if let Err(error) = &committed {
+                zlog!(
+                    "ui: 候選窗 Commit 失敗 hr={:#010x} {error}",
+                    error.code().0 as u32
+                );
+            }
+            // EndDraw 失敗（例如 D2DERR_RECREATE_TARGET）往上丟，由呼叫端丟掉整個
+            // `Graphics`，下一次顯示重建。
+            stage("EndDraw", drawn)?;
+            stage("SurfaceEndDraw", presented)?;
+            stage("Commit", committed)?;
+            Ok(())
+        }
+    }
+
+    /// 既有的繪製流程；所有座標加上 `offset`（DIP）。
+    fn draw_content(&self, layout: &Layout, text: &Text, ox: f32, oy: f32) {
+        unsafe {
             let full = D2D_RECT_F {
-                left: 0.0,
-                top: 0.0,
-                right: layout.width,
-                bottom: layout.height,
+                left: ox,
+                top: oy,
+                right: ox + layout.width,
+                bottom: oy + layout.height,
             };
-            self.rt.FillRectangle(&full, &self.brush_background);
+            self.dc.FillRectangle(&full, &self.brush_background);
             let border = D2D_RECT_F {
-                left: 0.5,
-                top: 0.5,
-                right: (layout.width - 0.5).max(0.5),
-                bottom: (layout.height - 0.5).max(0.5),
+                left: ox + 0.5,
+                top: oy + 0.5,
+                right: ox + (layout.width - 0.5).max(0.5),
+                bottom: oy + (layout.height - 0.5).max(0.5),
             };
-            self.rt
+            self.dc
                 .DrawRectangle(&border, &self.brush_border, 1.0, None);
             if let Some(rect) = layout
                 .highlighted
                 .and_then(|index| layout.row_highlight(index))
             {
                 let rounded = D2D1_ROUNDED_RECT {
-                    rect: d2d_rect(rect),
+                    rect: d2d_rect(rect, ox, oy),
                     radiusX: CORNER_RADIUS,
                     radiusY: CORNER_RADIUS,
                 };
-                self.rt
+                self.dc
                     .FillRoundedRectangle(&rounded, &self.brush_highlight);
             }
             for line in &layout.header {
-                self.draw_text(&line.text, &self.format_small, line.rect, &self.brush_dim);
+                self.draw_text(
+                    &line.text,
+                    text.format(TextStyle::Small),
+                    line.rect,
+                    &self.brush_dim,
+                    ox,
+                    oy,
+                );
             }
             for (index, row) in layout.rows.iter().enumerate() {
                 let highlighted = layout.highlighted == Some(index);
-                let text = if highlighted {
+                let brush = if highlighted {
                     &self.brush_highlight_text
                 } else {
                     &self.brush_text
@@ -441,20 +559,38 @@ impl Graphics {
                     &self.brush_dim
                 };
                 if let Some(key) = &row.key {
-                    self.draw_text(&key.text, &self.format_key, key.rect, dim);
+                    self.draw_text(
+                        &key.text,
+                        text.format(TextStyle::Key),
+                        key.rect,
+                        dim,
+                        ox,
+                        oy,
+                    );
                 }
-                self.draw_text(&row.text, &self.format_text, row.text_rect, text);
+                self.draw_text(
+                    &row.text,
+                    text.format(TextStyle::Candidate),
+                    row.text_rect,
+                    brush,
+                    ox,
+                    oy,
+                );
                 if let Some(rect) = row.note_rect {
-                    self.draw_text(&row.note, &self.format_small, rect, dim);
+                    self.draw_text(&row.note, text.format(TextStyle::Small), rect, dim, ox, oy);
                 }
             }
             if let Some(pager) = &layout.pager {
-                self.draw_text(&pager.text, &self.format_pager, pager.rect, &self.brush_dim);
+                self.draw_text(
+                    &pager.text,
+                    &text.format_pager,
+                    pager.rect,
+                    &self.brush_dim,
+                    ox,
+                    oy,
+                );
             }
-            self.d2d.EndDraw(None, None)?;
         }
-        // 不等垂直同步：候選窗晚一帧上屏沒有關係，按鍵路徑不能卡住。
-        Ok(unsafe { self.swap_base.Present(0, DXGI_PRESENT(0)) })
     }
 
     fn draw_text(
@@ -463,13 +599,15 @@ impl Graphics {
         format: &IDWriteTextFormat,
         rect: DipRect,
         brush: &ID2D1SolidColorBrush,
+        ox: f32,
+        oy: f32,
     ) {
         let utf16: Vec<u16> = text.encode_utf16().collect();
         unsafe {
-            self.rt.DrawText(
+            self.dc.DrawText(
                 &utf16,
                 format,
-                &d2d_rect(rect),
+                &d2d_rect(rect, ox, oy),
                 brush,
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL,
@@ -478,12 +616,12 @@ impl Graphics {
     }
 }
 
-fn d2d_rect(rect: DipRect) -> D2D_RECT_F {
+fn d2d_rect(rect: DipRect, ox: f32, oy: f32) -> D2D_RECT_F {
     D2D_RECT_F {
-        left: rect.left,
-        top: rect.top,
-        right: rect.right(),
-        bottom: rect.bottom(),
+        left: ox + rect.left,
+        top: oy + rect.top,
+        right: ox + rect.right(),
+        bottom: oy + rect.bottom(),
     }
 }
 
@@ -566,11 +704,21 @@ fn caret_rect(message: &UiMessage) -> Rect {
     )
 }
 
+/// 最近一次 `WM_PAINT` 的結果；只用在診斷 log。
+#[derive(Clone, Copy)]
+enum Paint {
+    None,
+    Ok { present_hr: i32, commit_hr: i32 },
+    Failed(u32),
+}
+
 /// TSF DLL 內的候選窗本體。只有建立它的 TSF 執行緒會碰它。
 pub struct LocalWindow {
     hwnd: HWND,
     instance: HINSTANCE,
     graphics: Option<Graphics>,
+    /// DirectWrite 資源；建立呈現資源之前就要先量版面。
+    text: Option<Text>,
     layout: Option<Layout>,
     /// 最近一次呈現的訊息：DPI 變化與滑鼠點選都要用。
     last: UiMessage,
@@ -579,8 +727,7 @@ pub struct LocalWindow {
     dpi: u32,
     /// 初始化失敗：本次 Activate 內不再嘗試，避免每個鍵都撞一次 GPU。
     failed: bool,
-    /// 上一次 `Present` 回 `DXGI_STATUS_OCCLUDED`：下一個按鍵要照常重畫重送。
-    occluded: bool,
+    paint: Paint,
     /// `SetWindowPos` 可能同步送來 `WM_DPICHANGED`；重入時直接忽略，避免遞迴。
     updating: bool,
 }
@@ -591,8 +738,10 @@ impl LocalWindow {
             let instance: HINSTANCE = GetModuleHandleW(None)?.into();
             // 類別是行程內的，不帶資源；重複註冊（多個 TSF 執行緒）由系統忽略錯誤。
             let _ = RegisterClassW(&WNDCLASSW {
+                style: CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW,
                 lpfnWndProc: Some(window_proc),
                 hInstance: instance,
+                hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
                 lpszClassName: CLASS_NAME,
                 ..Default::default()
             });
@@ -615,13 +764,14 @@ impl LocalWindow {
                 hwnd,
                 instance,
                 graphics: None,
+                text: None,
                 layout: None,
                 last: UiMessage::default(),
                 visible: false,
                 dark: false,
                 dpi: BASE_DPI,
                 failed: false,
-                occluded: false,
+                paint: Paint::None,
                 updating: false,
             });
             // Box 的內容不會再搬動，USERDATA 指向穩定的位址。
@@ -663,13 +813,14 @@ impl LocalWindow {
         if became_visible {
             self.dark = theme_is_dark();
         }
-        if self.graphics.is_none() {
-            match Graphics::new(self.hwnd, self.dark) {
-                Ok(graphics) => self.graphics = Some(graphics),
+        // 先算版面與尺寸，才決定 surface 要建多大。
+        if self.text.is_none() {
+            match Text::new() {
+                Ok(text) => self.text = Some(text),
                 Err(error) => {
                     self.failed = true;
                     zlog!(
-                        "ui: 候選窗 Direct2D 初始化失敗，改為不顯示（hr={:#010x} {error}）",
+                        "ui: 候選窗 DirectWrite 初始化失敗，改為不顯示（hr={:#010x} {error}）",
                         error.code().0 as u32
                     );
                     self.hide();
@@ -702,11 +853,27 @@ impl LocalWindow {
             }
         }
         self.dpi = dpi;
+        let count = layout.rows.len();
+        let (layout_width, layout_height) = (layout.width, layout.height);
 
-        // 先顯示、再送第一帧。`WS_EX_NOREDIRECTIONBITMAP` 的視窗沒有 GDI 轉向表面，
-        // 畫面只來自 DirectComposition；flip-model 的 composition swap chain 在視窗
-        // 還藏著時送出的第一個 `Present` 不會被 DWM 合成，之後才 ShowWindow 就只剩
-        // 空白。定位完成後立刻顯示，第一帧才會真的上屏。
+        // 呈現資源用最終像素尺寸建立；surface 尺寸固定，先建小尺寸沒有意義。
+        let width = size.0.max(1) as u32;
+        let height = size.1.max(1) as u32;
+        if self.graphics.is_none() {
+            match Graphics::new(self.hwnd, self.dark, width, height, dpi) {
+                Ok(graphics) => self.graphics = Some(graphics),
+                Err(error) => {
+                    self.failed = true;
+                    zlog!(
+                        "ui: 候選窗 Direct2D 初始化失敗，改為不顯示（hr={:#010x} {error}）",
+                        error.code().0 as u32
+                    );
+                    self.hide();
+                    return Ok(());
+                }
+            }
+        }
+
         let first_show = !self.visible;
         if first_show {
             unsafe { SetLastError(ERROR_SUCCESS) };
@@ -721,109 +888,80 @@ impl LocalWindow {
                 );
             }
             self.visible = true;
-            // 建立 Graphics 時視窗還藏著，那次 Commit 可能沒被 DWM 採用；顯示後補一次。
-            if let Some(graphics) = self.graphics.as_ref() {
-                if let Err(error) = graphics.commit() {
-                    zlog!(
-                        "ui: 候選窗 Commit 失敗（顯示後）hr={:#010x}",
-                        error.code().0 as u32
-                    );
-                }
-            }
         }
 
-        let dark = self.dark;
-        let frame = {
-            let graphics = self.graphics.as_mut().expect("Graphics 已建立");
-            graphics
-                .resize(size.0.max(1) as u32, size.1.max(1) as u32, dpi)
-                .and_then(|()| graphics.set_theme(dark))
-                .and_then(|()| graphics.draw(&layout))
-        };
-        let present = match frame {
-            Ok(present) => present,
-            Err(error) => {
-                // 裝置遺失之類的執行期錯誤：收起、丟掉資源，下一個按鍵重建。
-                zlog!(
-                    "ui: 候選窗繪製失敗，改為不顯示（hr={:#010x} {error}）",
-                    error.code().0 as u32
-                );
-                self.graphics = None;
-                self.layout = None;
-                self.occluded = false;
-                self.hide();
-                return Ok(());
-            }
-        };
-        // `DXGI_STATUS_OCCLUDED` 是成功碼，但畫面沒有上屏。記下狀態，下一個按鍵照常
-        // 走完整流程重畫重送；不另外排程、不重試、不等待。
-        let occluded = present.0 == DXGI_STATUS_OCCLUDED;
-        let was_occluded = std::mem::replace(&mut self.occluded, occluded);
-        if present.is_err() {
-            zlog!(
-                "ui: 候選窗 Present 失敗 hr={:#010x}，改為不顯示",
-                present.0 as u32
-            );
-            self.graphics = None;
-            self.layout = None;
-            self.occluded = false;
+        // 內容換過了，要求重畫。`InvalidateRect` 只是排進佇列，TSF 按鍵處理是
+        // 同步的、訊息迴圈沒在跑，所以還要 `UpdateWindow` 直接送 `WM_PAINT`。
+        self.layout = Some(layout);
+        self.paint = Paint::None;
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+            let _ = UpdateWindow(self.hwnd);
+        }
+        if let Paint::Failed(hr) = self.paint {
+            zlog!("ui: 候選窗繪製失敗 hr={:#010x}，改為不顯示", hr);
             self.hide();
             return Ok(());
         }
-        if occluded {
-            zlog!(
-                "ui: 候選窗 Present 被遮蔽（DXGI_STATUS_OCCLUDED）occluded_prev={was_occluded}，下一個按鍵重送"
-            );
-        }
-        if first_show {
-            // 排查用：0 寬或 visible=false 就代表問題在版面尺寸／視窗狀態，
-            // 不是「沒有呼叫到這裡」。只在第一次顯示時寫一行。
-            let mut rect = RECT::default();
-            let got_rect = unsafe { GetWindowRect(self.hwnd, &mut rect) }.is_ok();
-            let mut cloaked: u32 = 0;
-            let cloaked_result = unsafe {
-                DwmGetWindowAttribute(
-                    self.hwnd,
-                    DWMWA_CLOAKED,
-                    &mut cloaked as *mut u32 as *mut c_void,
-                    std::mem::size_of::<u32>() as u32,
-                )
-            };
-            let (swap_width, swap_height) = self
-                .graphics
-                .as_ref()
-                .and_then(|graphics| graphics.swap_size())
-                .unwrap_or((0, 0));
-            zlog!(
-                "ui: 候選窗 hwnd={:#x} layout={}x{} size={}x{} at=({}, {}) visible={} rect=({}, {}, {}, {}) cloaked={:#x} cloaked_hr={:#010x} swap={}x{} present={:#010x}",
-                self.hwnd.0 as usize,
-                layout.width,
-                layout.height,
-                size.0,
-                size.1,
-                position.0,
-                position.1,
-                unsafe { IsWindowVisible(self.hwnd).as_bool() },
-                if got_rect { rect.left } else { 0 },
-                if got_rect { rect.top } else { 0 },
-                if got_rect { rect.right } else { 0 },
-                if got_rect { rect.bottom } else { 0 },
-                cloaked,
-                cloaked_result
-                    .map(|()| 0u32)
-                    .unwrap_or_else(|error| error.code().0 as u32),
-                swap_width,
-                swap_height,
-                present.0 as u32
-            );
-        }
-        self.layout = Some(layout);
+
+        // 排查用：surface 尺寸、paint／present／commit 的結果都寫出來。
+        let mut rect = RECT::default();
+        let got_rect = unsafe { GetWindowRect(self.hwnd, &mut rect) }.is_ok();
+        let surface = self
+            .graphics
+            .as_ref()
+            .map(|graphics| format!("{}x{}", graphics.size.0, graphics.size.1))
+            .unwrap_or_else(|| "n/a".to_owned());
+        let (paint_label, present_label, commit_hr) = match self.paint {
+            Paint::Ok {
+                present_hr,
+                commit_hr,
+            } => (
+                "ok".to_owned(),
+                if present_hr == 0 {
+                    "ok".to_owned()
+                } else {
+                    format!("{:#010x}", present_hr as u32)
+                },
+                commit_hr,
+            ),
+            Paint::Failed(hr) => (format!("fail {:#010x}", hr), "n/a".to_owned(), 0),
+            Paint::None => ("none".to_owned(), "n/a".to_owned(), 0),
+        };
+        zlog!(
+            "ui: 候選窗 hwnd={:#x} n={} at=({}, {}) layout={}x{} size={}x{} rect=({}, {}, {}, {}) visible={} surface={} dpi={} paint={} present={} commit={:#010x} style={:#010x} exstyle={:#010x}",
+            self.hwnd.0 as usize,
+            count,
+            position.0,
+            position.1,
+            layout_width,
+            layout_height,
+            size.0,
+            size.1,
+            if got_rect { rect.left } else { 0 },
+            if got_rect { rect.top } else { 0 },
+            if got_rect { rect.right } else { 0 },
+            if got_rect { rect.bottom } else { 0 },
+            unsafe { IsWindowVisible(self.hwnd).as_bool() },
+            surface,
+            dpi,
+            paint_label,
+            present_label,
+            commit_hr,
+            unsafe { GetWindowLongPtrW(self.hwnd, GWL_STYLE) } as u32,
+            unsafe { GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE) } as u32
+        );
         Ok(())
     }
 
     /// 定位並調整大小；失敗時記一行 `HRESULT`／`GetLastError` 並回 `false`。
     fn place(&self, size: (i32, i32), position: (i32, i32)) -> bool {
         unsafe { SetLastError(ERROR_SUCCESS) };
+        let flags = if self.visible {
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW
+        } else {
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER
+        };
         let placed = unsafe {
             SetWindowPos(
                 self.hwnd,
@@ -832,7 +970,7 @@ impl LocalWindow {
                 position.1,
                 size.0,
                 size.1,
-                SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+                flags,
             )
         };
         match placed {
@@ -861,8 +999,8 @@ impl LocalWindow {
         work: Rect,
         gap: i32,
     ) -> (Layout, (i32, i32), (i32, i32)) {
-        let graphics = self.graphics.as_ref().expect("Graphics 已建立");
-        let layout = candidate_layout::layout(content, |text, style| graphics.measure(text, style));
+        let text = self.text.as_ref().expect("Text 已建立");
+        let layout = candidate_layout::layout(content, |line, style| text.measure(line, style));
         let size = candidate_layout::fit_size(
             (
                 px_from_dip(layout.width, dpi),
@@ -882,6 +1020,69 @@ impl LocalWindow {
             self.visible = false;
         }
         self.layout = None;
+        self.paint = Paint::None;
+    }
+
+    /// `WM_PAINT`：`BeginPaint`／`EndPaint` 包住整帧繪製。
+    ///
+    /// 失敗就丟掉呈現資源（例如 `D2DERR_RECREATE_TARGET`），下一次顯示重建。
+    fn paint(&mut self) {
+        unsafe {
+            let mut ps = PAINTSTRUCT::default();
+            let hdc = BeginPaint(self.hwnd, &mut ps);
+            if hdc.is_invalid() {
+                let error = GetLastError();
+                zlog!("ui: 候選窗 BeginPaint 失敗 GetLastError={:#010x}", error.0);
+                self.paint = Paint::Failed(error.0);
+                return;
+            }
+            let result = self.paint_inner();
+            let _ = EndPaint(self.hwnd, &ps);
+            match result {
+                Ok(()) => {
+                    let (present_hr, commit_hr) = self
+                        .graphics
+                        .as_ref()
+                        .map(|graphics| (graphics.present_hr, graphics.commit_hr))
+                        .unwrap_or((0, 0));
+                    self.paint = Paint::Ok {
+                        present_hr,
+                        commit_hr,
+                    };
+                }
+                Err(error) => {
+                    zlog!(
+                        "ui: 候選窗繪製失敗 hr={:#010x} {error}，丟掉呈現資源下次重建",
+                        error.code().0 as u32
+                    );
+                    self.paint = Paint::Failed(error.code().0 as u32);
+                    self.graphics = None;
+                    self.layout = None;
+                }
+            }
+        }
+    }
+
+    fn paint_inner(&mut self) -> windows_core::Result<()> {
+        let dark = self.dark;
+        let dpi = self.dpi();
+        let Some(text) = self.text.as_ref() else {
+            return Ok(());
+        };
+        let Some(layout) = self.layout.as_ref() else {
+            return Ok(());
+        };
+        let Some(graphics) = self.graphics.as_mut() else {
+            return Ok(());
+        };
+        let mut rc = RECT::default();
+        unsafe { GetClientRect(self.hwnd, &mut rc)? };
+        let width = (rc.right - rc.left).max(1) as u32;
+        let height = (rc.bottom - rc.top).max(1) as u32;
+        graphics.resize(width, height)?;
+        graphics.set_theme(dark)?;
+        graphics.paint(layout, text, dpi)?;
+        Ok(())
     }
 
     /// 滑鼠左鍵：換成 DIP 後命中候選，把 `WM_SELECT_CANDIDATE` 送回 TSF 的訊息視窗。
@@ -933,7 +1134,7 @@ impl LocalWindow {
 
 impl Drop for LocalWindow {
     fn drop(&mut self) {
-        // 先放掉 swap chain／D2D／DComp，再銷毀視窗。
+        // 先放掉呈現資源（它持有這個 hwnd 的合成目標），再銷毀視窗。
         self.graphics = None;
         set_userdata(self.hwnd, 0);
         unsafe {
@@ -969,11 +1170,11 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
-        // 內容由 DirectComposition 上屏，視窗本身不需要擦底色或畫任何東西。
+        // 背景由 D2D 自己畫，讓系統擦一次是白費工還會閃。
         WM_ERASEBKGND => LRESULT(1),
         WM_PAINT => {
-            unsafe {
-                let _ = ValidateRect(Some(hwnd), None);
+            if let Some(window) = window() {
+                window.paint();
             }
             LRESULT(0)
         }
