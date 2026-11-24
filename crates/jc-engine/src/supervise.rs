@@ -1097,10 +1097,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 測試鎖名稱：pid、時間戳與原子計數都不同，跨行程、跨次執行都唯一。
+    ///
+    /// pid 擋住同時執行的行程；時間戳與計數再擋住 pid 被回收後撞上前一次
+    /// 執行殘留的名稱。
+    #[cfg(any(unix, windows))]
+    fn test_lock_name() -> String {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        format!("jc-ime-test-lock-{}-{nanos}-{seq}", std::process::id())
+    }
+
+    /// 等平台真的放手後再拿一次鎖。
+    ///
+    /// Linux 上其他行程的 `fork` 會暫時繼承我們的監聽 fd（`O_CLOEXEC` 只在
+    /// exec 時生效），所以 `drop` 之後 abstract 名稱可能晚幾毫秒才消失。
+    /// 這裡給 100ms 的有限重試；第二次 acquire 仍必須立刻被拒，不套用重試。
+    #[cfg(any(unix, windows))]
+    fn acquire_after_release(name: &str) -> Result<InstanceLock, Error> {
+        let deadline = Instant::now() + Duration::from_millis(100);
+        loop {
+            match InstanceLock::acquire(name) {
+                Ok(lock) => return Ok(lock),
+                Err(Error::AlreadyRunning { .. }) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn second_supervisor_is_rejected_by_lock() {
-        let name = format!("jc-ime-test-lock-{}", std::process::id());
+        let name = test_lock_name();
         let first = InstanceLock::acquire(&name).expect("第一個鎖應成功");
         let second = InstanceLock::acquire(&name);
         assert!(
@@ -1108,7 +1142,7 @@ mod tests {
             "第二個鎖應被拒絕"
         );
         drop(first);
-        let third = InstanceLock::acquire(&name).expect("釋放後應能再取得");
+        let third = acquire_after_release(&name).expect("釋放後應能再取得");
         drop(third);
     }
 
@@ -1116,7 +1150,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn second_supervisor_is_rejected_by_lock() {
-        let name = format!(r"Local\jc-ime-test-lock-{}", std::process::id());
+        let name = format!(r"Local\{}", test_lock_name());
         let first = InstanceLock::acquire(&name).expect("第一個鎖應成功");
         let second = InstanceLock::acquire(&name);
         assert!(
@@ -1124,7 +1158,7 @@ mod tests {
             "第二個鎖應被拒絕"
         );
         drop(first);
-        let third = InstanceLock::acquire(&name).expect("釋放後應能再取得");
+        let third = acquire_after_release(&name).expect("釋放後應能再取得");
         drop(third);
     }
 
