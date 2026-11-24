@@ -476,16 +476,34 @@ tar.gz 旁附 `.sha256`。Linux 版沒有 Fcitx5／IBus 整合，`jc-settings-ui
 
 ## Release 說明
 
-`publish` 會產生並附上：
+`publish` 呼叫 `scripts/release-notes.sh` 產生並附上完整的 Release 說明，不再在
+workflow 內 inline 拼字串：
+
+```sh
+scripts/release-notes.sh <版本> <iso版本> <true|false> <資料根目錄> <CHANGELOG 路徑>
+```
 
 - 版本與發佈日期（UTC）；版本有 pre-release 後綴時，另外註明 setup.exe 的
   `AppVersion` 是完整字串，`VersionInfoVersion` 只有四段數字
 - 模型與資料版本：安裝包內 `manifest.json` 的 `version`（涵蓋詞典與模型）
+- 資料包內容：bigram 語言模型是必要檔案、unigram 已退役、英文詞表與 zh-select
+  神經選字模型都隨附
 - `docs/CHANGELOG.md` 中 `## <version>` 的段落
 - 兩個平台的下載檔名與 `.sha256` 提示
 - 簽章狀態：已簽章，或明確標「未簽章」與 SmartScreen／AppLocker 影響
-- 已知限制：x86 TIP 未支援、安裝程式需要管理員、注音選字模型需另外下載、Linux
-  沒有桌面整合、設定變更需重啟引擎
+- 已知限制：x64／x86 TIP 共用同一個輸入法項目、安裝程式需要管理員且只加進
+  執行安裝的帳號、Linux 沒有桌面整合、設定變更要重啟引擎、Windows 實機流程
+  仍需人工驗證
+
+改說明內容或要確認資料檔齊全時，先跑檢查模式：
+
+```sh
+scripts/release-notes.sh --check /mnt/work/jc/jc-ime-data
+```
+
+`--check` 驗證說明引用的資料檔都存在，至少包含 `build-zh-bigram/lm.bin`、
+`english/words.bin`、`models/zh-select/` 的 model／vocab／manifest 與 jinen 模型。
+缺少時逐行印出 `::error::`、預期路徑，並以 exit 1 結束。
 
 Release 已存在時會更新標題與說明，並用 `--clobber` 覆蓋 assets，方便重跑失敗
 的發佈。Release 標題就是 `<version>`，tag 是 `v<version>`。版本含 `-` 時一律
