@@ -1995,10 +1995,9 @@ mod tests {
         assert_eq!(s.commit(), "=");
     }
 
-    /// 全形數字：混合模式把 ASCII 數字當字面英文輸出，不再另列寬度候選。
+    /// 全形數字：混合模式的英數字面候選提供 `０-９` 變體。
     ///
-    /// 原測試鎖的是已移除的英文直出模式；等價行為改成確認同一串數字在
-    /// Mixed 會原樣留在組字並送出，全形由輸入風格的全形狀態處理。
+    /// 英文直出模式已移除；等價路徑是混合模式待定英數按鍵的寬度候選。
     #[test]
     fn test_full_width_digit_candidates() {
         let mut s = Session::new(SessionConfig::new(Mode::Mixed));
@@ -2006,8 +2005,10 @@ mod tests {
             s.press(Key::char(ch, false));
         }
         assert_eq!(s.snapshot().preedit, "123");
-        s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(s.commit(), "123");
+        s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(s.candidates()[1].surface, "１２３");
+        s.press(Key::char('2', false));
+        assert_eq!(s.commit(), "１２３");
     }
 
     /// 單按 Shift 由外殼處理；引擎只回快照，不切換核心模式也不清組字。
@@ -2025,14 +2026,25 @@ mod tests {
         assert_eq!(s.snapshot().preedit, before);
     }
 
-    /// 混合輸入中的日文片段也一樣：toggle 不改變核心狀態。
+    /// 混合輸入中真正的日文片段也一樣：toggle 不改變核心狀態。
     #[test]
     fn test_toggle_english_keeps_japanese_run() {
-        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
-        type_syllable(&mut s, "ㄨㄛˇ");
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.ja = Some(Arc::new(JaDecoder::new(Arc::new(LiveTestSource(
+            Vec::new(),
+        )))));
+        let mut s = Session::new(config);
+        type_ja(&mut s, "watashi");
+        let before = s.snapshot().preedit;
+        assert_eq!(before, "わたし", "要先建立 romaji → kana 的日文片段");
+        assert!(s.ja_run, "這段組字必須是日文推斷出來的 ja_run");
+
         s.toggle_english();
         assert_eq!(s.mode(), Mode::Mixed);
-        assert!(!s.snapshot().preedit.is_empty());
+        assert_eq!(s.snapshot().preedit, before, "切英文後日文片段仍在");
+        s.toggle_english();
+        assert_eq!(s.mode(), Mode::Mixed);
+        assert_eq!(s.snapshot().preedit, before, "切回中文後日文片段仍在");
     }
 
     /// 引擎一律停在 Mixed，沒有「切換來源」可以回到其他模式。
@@ -2134,18 +2146,18 @@ mod tests {
     #[test]
     fn test_english_skip_demotes_learned_correction() {
         let mut s = english_session();
-        type_keys(&mut s, "Recieved");
-        assert_eq!(accept_english(&mut s, "Received"), "Received");
+        type_keys(&mut s, "recieve");
+        assert_eq!(accept_english(&mut s, "receive"), "receive");
 
         for _ in 0..crate::personal::SKIP_LIMIT {
-            type_keys(&mut s, "Recieved");
-            assert_eq!(accept_english(&mut s, "Recieved"), "Recieved");
+            type_keys(&mut s, "recieve");
+            assert_eq!(accept_english(&mut s, "recieve"), "recieve");
         }
 
-        type_keys(&mut s, "Recieved");
-        assert_ne!(s.candidates()[0].surface, "Received");
+        type_keys(&mut s, "recieve");
+        assert_ne!(s.candidates()[0].surface, "receive");
         assert!(
-            candidate_index(&s, "Received").is_some(),
+            candidate_index(&s, "receive").is_some(),
             "降權不是刪除，修正仍要留在候選裡"
         );
     }
@@ -2154,18 +2166,18 @@ mod tests {
     #[test]
     fn test_english_manual_choice_restores_learned_correction() {
         let mut s = english_session();
-        type_keys(&mut s, "Recieved");
-        assert_eq!(accept_english(&mut s, "Received"), "Received");
+        type_keys(&mut s, "recieve");
+        assert_eq!(accept_english(&mut s, "receive"), "receive");
         for _ in 0..crate::personal::SKIP_LIMIT {
-            type_keys(&mut s, "Recieved");
-            assert_eq!(accept_english(&mut s, "Recieved"), "Recieved");
+            type_keys(&mut s, "recieve");
+            assert_eq!(accept_english(&mut s, "recieve"), "recieve");
         }
-        type_keys(&mut s, "Recieved");
-        assert_ne!(s.candidates()[0].surface, "Received");
+        type_keys(&mut s, "recieve");
+        assert_ne!(s.candidates()[0].surface, "receive");
 
-        assert_eq!(accept_english(&mut s, "Received"), "Received");
-        type_keys(&mut s, "Recieved");
-        assert_eq!(s.candidates()[0].surface, "Received");
+        assert_eq!(accept_english(&mut s, "receive"), "receive");
+        type_keys(&mut s, "recieve");
+        assert_eq!(s.candidates()[0].surface, "receive");
     }
 
     /// 5 個字母的拼法只記錄證據，排序維持原樣。
@@ -2245,7 +2257,11 @@ mod tests {
         assert!(at > 0, "拼字建議要排在原字後面：{surfaces:?}");
 
         s.press(Key::new(KeyCode::Tab, None, false));
-        s.press(Key::char('2', false));
+        let at = candidate_index(&s, "receive").expect("要有 receive 的拼字建議");
+        s.select(at);
+        let digit =
+            char::from_digit((at % crate::session::PAGE_SIZE) as u32 + 1, 10).expect("候選在頁內");
+        s.press(Key::char(digit, false));
         assert_eq!(s.snapshot().preedit, "receive");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "receive");

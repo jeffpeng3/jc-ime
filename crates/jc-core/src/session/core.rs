@@ -478,6 +478,16 @@ impl Session {
             && self.menu.is_none()
         {
             let raw = self.ascii.pending().to_string();
+            if !raw.is_empty() && candidate.surface == raw {
+                // 選回原始按鍵：固定成字面，不再讓切分器把它解成羅馬字。
+                self.ascii.force_literal();
+                self.learn_english_choice(&raw, &candidate.surface);
+                self.candidate_window = false;
+                self.navigating = false;
+                self.highlighted = 0;
+                self.mixed_cursor = Self::MIXED_CURSOR_END;
+                return Some(true);
+            }
             if !raw.is_empty() && self.ascii.accept(&candidate.surface) {
                 self.learn_english_choice(&raw, &candidate.surface);
                 self.candidate_window = false;

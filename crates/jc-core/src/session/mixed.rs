@@ -211,6 +211,8 @@ pub struct AsciiInput {
     typed: String,
     /// 這個輸入層使用的英文詞表；`None` 時用行程共用的詞表。
     english: Option<std::sync::Arc<English>>,
+    /// 待定按鍵已被使用者固定成字面；統一管線不得再改寫成假名。
+    literalized: bool,
 }
 
 impl AsciiInput {
@@ -255,6 +257,7 @@ impl AsciiInput {
 
     /// 清空。
     pub fn reset(&mut self) {
+        self.literalized = false;
         self.pending.clear();
         self.pieces.clear();
         self.typed.clear();
@@ -275,8 +278,22 @@ impl AsciiInput {
     /// 加一個按鍵；空白與聲調鍵交給 [`AsciiInput::space`]／
     /// [`AsciiInput::tone`]。
     pub fn press(&mut self, ch: char) {
+        self.literalized = false;
         self.pending.push(ch);
         self.typed.push(ch);
+    }
+
+    /// 把目前的待定按鍵固定成字面。
+    ///
+    /// 使用者從候選清單選回原始按鍵時，即使那一串剛好也能解成羅馬字，也要
+    /// 保留字面，不能再被下一次重建改寫成假名。
+    pub fn force_literal(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let raw = std::mem::take(&mut self.pending);
+        self.push_literal(&raw);
+        self.literalized = true;
     }
 
     /// 把一段已定案的字面放進按鍵流；不進待定按鍵。
@@ -1246,6 +1263,18 @@ impl Session {
             0,
             CandidateSource::Literal,
         ));
+        // 半形英數與數字提供全形變體；舊英文直出模式的等價候選路徑。
+        if let Some(full) = crate::symbols::width_variant(&raw) {
+            if full != raw {
+                seen.push(full.to_lowercase());
+                self.candidates.push(Candidate::new(
+                    full,
+                    raw.clone(),
+                    1,
+                    CandidateSource::Literal,
+                ));
+            }
+        }
         // 整串可以組成注音時，原按鍵之外另列注音本身（`co6` 的 ㄏㄟˊ）。
         if !long_literal {
             if let Some(text) = self.ascii.reading_candidate(&raw, &self.lexicon) {
@@ -1408,6 +1437,9 @@ impl Session {
     /// 含已完成的注音、照字面的英數、空白與聲調；顯示與送出一律用同一條
     /// 管線重算，不再區分「已完成片段」與「待定按鍵」。
     fn latin_run_text(&self) -> Option<&str> {
+        if self.ascii.literalized {
+            return None;
+        }
         let text = self.ascii.typed();
         if text.is_empty() {
             return None;
