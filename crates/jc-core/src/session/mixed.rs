@@ -85,6 +85,21 @@ fn ascii_letters(text: &str) -> bool {
     !text.is_empty() && text.chars().all(|ch| ch.is_ascii_alphabetic())
 }
 
+/// 連續小寫英文 run 超過這個長度就只規劃尾巴。
+///
+/// 英文詞表窗口是 48 個字元，96 已遠超窗口，前段必定是字面英文；門檻
+/// 取在使用者回報「超過 100 個字開始變慢」之前。
+const LONG_LITERAL_RUN: usize = 96;
+/// 長 run 每次重新規劃的尾巴長度（rune）。
+const PLAN_TAIL_CHARS: usize = 64;
+/// 尾巴注音音節最多幾個按鍵。
+const ZH_SUFFIX_KEYS: usize = 8;
+
+/// 是否需要跳過英文補全與注音前綴的昂貴查詢。
+fn long_literal_keys(text: &str) -> bool {
+    text.len() > LONG_LITERAL_RUN && text.bytes().all(|byte| byte.is_ascii_lowercase())
+}
+
 /// `raw` 加上任何一個聲調是否組得成詞典解釋得了的音節。
 fn mixed_reachable(raw: &str, pieces: &[AsciiPiece], lexicon: &dyn Lexicon) -> bool {
     [TONE1, 'ˊ', 'ˇ', 'ˋ', '˙']
@@ -102,6 +117,79 @@ fn mixed_reading(
     let mut composer = compose_keys(raw)?;
     let syllable = composer.add(tone)?;
     reading_reachable(syllable.as_str(), pieces, lexicon).then_some(syllable)
+}
+
+/// 長小寫 run 的凍結片段：整段照字面輸出英文。
+fn literal_en_plan(start: usize, end: usize) -> crate::mixed::Plan {
+    crate::mixed::Plan {
+        start,
+        end,
+        mode: Mode::En,
+        script: crate::segment::Script::Latin,
+        kana: String::new(),
+        kana_ok: false,
+        verbatim: false,
+        zh: None,
+        zh_done: Vec::new(),
+    }
+}
+
+/// 把相鄰的英文字面片段併回一個，維持「一個英文 run 就是一個片段」。
+fn merge_adjacent_en_plans(plans: &mut Vec<crate::mixed::Plan>) {
+    let mut merged: Vec<crate::mixed::Plan> = Vec::with_capacity(plans.len());
+    for plan in plans.drain(..) {
+        if let Some(last) = merged.last_mut() {
+            if last.mode == Mode::En
+                && last.script == crate::segment::Script::Latin
+                && plan.mode == Mode::En
+                && plan.script == crate::segment::Script::Latin
+                && last.end == plan.start
+            {
+                last.end = plan.end;
+                continue;
+            }
+        }
+        merged.push(plan);
+    }
+    *plans = merged;
+}
+
+/// 長小寫 run 尾巴接一個完整注音音節時的切點（前段字元數, 音節）。
+///
+/// `text` 要含聲調鍵或一聲空白。前段必須是超過門檻的純小寫字面英文，
+/// 這樣凍結前段不會把注音、日文或標點鎖成英文；尾巴最多
+/// [`ZH_SUFFIX_KEYS`] 個按鍵。
+fn long_run_zh_boundary(
+    text: &str,
+    pieces: &[AsciiPiece],
+    lexicon: &dyn Lexicon,
+) -> Option<(usize, Syllable)> {
+    let tone_key = text.chars().next_back()?;
+    let (body_end, symbol) = if tone_key.is_whitespace() {
+        (text.len() - tone_key.len_utf8(), TONE1)
+    } else {
+        let symbol = Keyboard::standard().symbol(tone_key)?;
+        if class_of(symbol) != Class::Tone {
+            return None;
+        }
+        (text.len() - tone_key.len_utf8(), symbol)
+    };
+    let low = body_end.saturating_sub(ZH_SUFFIX_KEYS);
+    for start in low..body_end {
+        let prefix = &text[..start];
+        if prefix.len() < LONG_LITERAL_RUN || !prefix.bytes().all(|byte| byte.is_ascii_lowercase())
+        {
+            continue;
+        }
+        let body = &text[start..body_end];
+        if body.is_empty() || !body.bytes().all(|byte| byte.is_ascii_lowercase()) {
+            continue;
+        }
+        if let Some(syllable) = mixed_reading(body, symbol, pieces, lexicon) {
+            return Some((start, syllable));
+        }
+    }
+    None
 }
 
 /// 英數混打的待定按鍵：累積原始按鍵，聲調或空白才決定是注音還是英文。
@@ -215,6 +303,19 @@ impl AsciiInput {
             self.push_literal(" ");
             return;
         }
+        // 長小寫 run 的空白只有兩種結果：尾巴是完成注音時當一聲，否則整串
+        // 照字面留下。兩者都不需要為整串跑完整規劃。
+        if long_literal_keys(&self.pending) {
+            let with_space = format!("{} ", self.pending);
+            if let Some((at, syllable)) = long_run_zh_boundary(&with_space, &self.pieces, lexicon) {
+                self.split_literal(at);
+                self.push_zh(syllable);
+                return;
+            }
+            let raw = std::mem::take(&mut self.pending);
+            self.push_literal(&format!("{raw} "));
+            return;
+        }
         // R2：前一個英數 run 加上這個空白可以被注音完整解析，而且最後一個
         // 音節原本沒有聲調鍵時，空白是一聲。保留原按鍵，交給統一管線切分。
         let adapter = crate::mixed_latin::LexiconAdapter {
@@ -285,6 +386,18 @@ impl AsciiInput {
         // `vul3`），聲調鍵完成的是尾巴那一個音節；照同一份規劃切點拆開，
         // 增量狀態才不會整串留在 pending。
         let with_tone = format!("{}{key}", self.pending);
+        // 長字面 run 不跑整串規劃：尾巴的注音音節直接切開，前段留在字面。
+        if let Some((at, syllable)) = long_run_zh_boundary(&with_tone, &self.pieces, lexicon) {
+            self.split_literal(at);
+            self.push_zh(syllable);
+            return true;
+        }
+        // 長小寫 run 沒有可切出的注音音節時，聲調鍵照字面留在 pending，
+        // 不必再為整串跑一次完整規劃。
+        if long_literal_keys(&self.pending) {
+            self.pending.push(key);
+            return true;
+        }
         if let Some((at, syllable)) = self.planned_boundary(&with_tone, lexicon) {
             self.split_literal(at);
             self.push_zh(syllable);
@@ -325,6 +438,10 @@ impl AsciiInput {
     /// 英文自動補字建議：前綴補完優先，其次差一鍵的修正。
     pub fn suggestion(&self) -> Option<String> {
         let raw = &self.pending;
+        // 長字面 run 的英文補全沒有意義，前綴查詢只會隨按鍵數變慢。
+        if long_literal_keys(raw) {
+            return None;
+        }
         let english = default_english();
         if raw.len() < 2 || !ascii_letters(raw) || english.has(raw) {
             return None;
@@ -508,6 +625,11 @@ impl AsciiInput {
         let raw = &self.pending;
         if raw.is_empty() {
             return String::new();
+        }
+        // 長小寫 run 一律照字面顯示：DP 在同一種 run 上也是字面英文，
+        // 不必每次按鍵都重跑 prototype／英文詞表查詢。
+        if long_literal_keys(raw) {
+            return raw.clone();
         }
         if prototype().has(raw) {
             return raw.clone();
@@ -828,10 +950,10 @@ impl Session {
         let Some(text) = self.latin_run_text() else {
             return Vec::new();
         };
-        let Some((plans, _)) = self.incremental_latin_split_for(&text) else {
+        let Some(plans) = self.incremental_latin_split_for(text) else {
             return Vec::new();
         };
-        let rendered = self.render_latin_plans(&text, &plans);
+        let rendered = self.render_latin_plans(text, &plans);
         plans
             .iter()
             .zip(rendered)
@@ -858,7 +980,7 @@ impl Session {
         } else {
             // 游標在結尾：先試整串按鍵流；尾端只是開候選窗的空白時再省略。
             let mut whole = AsciiInput::new();
-            whole.replay(&text, &self.lexicon);
+            whole.replay(text, &self.lexicon);
             let complete = whole.pending().is_empty()
                 && matches!(whole.pieces().last(), Some(AsciiPiece::Zh(_)));
             if complete {
@@ -910,8 +1032,8 @@ impl Session {
     /// 中文候選換回按鍵流，不會跨過英文或記號片段。
     pub(super) fn mixed_trailing_zh_span(&self) -> Option<(usize, usize)> {
         let text = self.latin_run_text()?;
-        let (plans, _) = self.incremental_latin_split_for(&text)?;
-        let rendered = self.render_latin_plans(&text, &plans);
+        let plans = self.incremental_latin_split_for(text)?;
+        let rendered = self.render_latin_plans(text, &plans);
         // 先去掉尾端空白（開候選窗時留下的按鍵），再從尾端往回收注音片段。
         let last = plans.iter().zip(&rendered).rposition(|(_, item)| {
             !item.surface.is_empty() && !item.surface.chars().all(char::is_whitespace)
@@ -1007,15 +1129,18 @@ impl Session {
             self.composition.clear();
             return;
         }
-        let mut split_used = false;
+        let mut split: Option<(Vec<crate::mixed::Plan>, String)> = None;
         if let Some((plans, text)) = self.incremental_latin_split() {
             self.apply_latin_split(&plans, &text);
-            split_used = true;
-        }
-        if !split_used {
+            split = Some((plans, text));
+        } else {
             self.rebuild_mixed_legacy();
         }
-        self.rebuild_mixed_candidates();
+        self.rebuild_mixed_candidates(
+            split
+                .as_ref()
+                .map(|(plans, text)| (plans.as_slice(), text.as_str())),
+        );
     }
 
     /// 沒有啟用拉丁切分時的原路徑：照原本的片段推斷組字。
@@ -1053,20 +1178,22 @@ impl Session {
     }
 
     /// 混合模式的候選：原按鍵、注音本身與英文前綴補完。
-    fn rebuild_mixed_candidates(&mut self) {
+    fn rebuild_mixed_candidates(&mut self, split: Option<(&[crate::mixed::Plan], &str)>) {
         // 待定按鍵是英文詞時，候選先放原按鍵，再放注音顯示與英文前綴補完。
         // 同一個拼法有學過的修正時，修正直接排第一，原按鍵留在第二項。
         let raw = self.ascii.pending().to_string();
         if raw.is_empty() {
             // 注音音節打完後，待定按鍵是空的，但已完成的注音片段仍有候選；
             // 少了這段，Mixed 按 ↓ 或空白永遠開不了候選窗。
-            self.rebuild_mixed_zh_candidates();
+            self.rebuild_mixed_zh_candidates(split);
             return;
         }
         // 待定按鍵還沒清空，但統一管線已經把尾巴判成完成的注音音節
         // （`savul3` 是 `sa`＋`vul3`）。候選要列那個音節的詞，不能只列
         // 原始按鍵；`cands=1` 的字面候選會讓使用者永遠選不到「小」。
-        if let Some(reading) = self.planned_trailing_zh_reading() {
+        if let Some(reading) =
+            split.and_then(|(plans, text)| Self::planned_trailing_zh_reading(plans, text))
+        {
             if self.mixed_cursor.min(self.segments.len()) == self.segments.len() {
                 self.fill_zh_candidates(reading);
                 if !self
@@ -1087,17 +1214,21 @@ impl Session {
         }
         let limit = self.max_candidates();
         let mut seen = vec![raw.to_lowercase()];
-        if let Some(learned) = self.personal.english_correction(&raw) {
-            let learned = learned.to_string();
-            let key = learned.to_lowercase();
-            if !seen.contains(&key) {
-                seen.push(key);
-                self.candidates.push(Candidate::new(
-                    learned,
-                    raw.clone(),
-                    0,
-                    CandidateSource::Personal,
-                ));
+        // 長小寫 run 是字面英文，學過的英文修正與注音候選都不會改變它。
+        let long_literal = long_literal_keys(&raw);
+        if !long_literal {
+            if let Some(learned) = self.personal.english_correction(&raw) {
+                let learned = learned.to_string();
+                let key = learned.to_lowercase();
+                if !seen.contains(&key) {
+                    seen.push(key);
+                    self.candidates.push(Candidate::new(
+                        learned,
+                        raw.clone(),
+                        0,
+                        CandidateSource::Personal,
+                    ));
+                }
             }
         }
         self.candidates.push(Candidate::new(
@@ -1107,23 +1238,25 @@ impl Session {
             CandidateSource::Literal,
         ));
         // 整串可以組成注音時，原按鍵之外另列注音本身（`co6` 的 ㄏㄟˊ）。
-        if let Some(text) = self.ascii.reading_candidate(&raw, &self.lexicon) {
-            if !seen.contains(&text) {
-                seen.push(text.clone());
-                self.candidates.push(Candidate::new(
-                    text,
-                    raw.clone(),
-                    1,
-                    CandidateSource::Literal,
-                ));
+        if !long_literal {
+            if let Some(text) = self.ascii.reading_candidate(&raw, &self.lexicon) {
+                if !seen.contains(&text) {
+                    seen.push(text.clone());
+                    self.candidates.push(Candidate::new(
+                        text,
+                        raw.clone(),
+                        1,
+                        CandidateSource::Literal,
+                    ));
+                }
             }
         }
         // pending 顯示成注音代表它還是未完成的注音前綴（例如 su 是 ㄋㄧ）。
         // 這時英文補全只留在 Snapshot.suggestion 提示，不進候選讓數字鍵選到，
         // 避免組字區被補全取代而鎖死語言。hello、sug 等照字面顯示的前綴
         // 維持原本的英文補全流程。
-        let is_zhuyin_prefix = self.ascii.display_pending(&self.lexicon) != raw;
-        if !is_zhuyin_prefix {
+        let is_zhuyin_prefix = !long_literal && self.ascii.display_pending(&self.lexicon) != raw;
+        if !is_zhuyin_prefix && !long_literal {
             for candidate in english_candidates(&self.personal, &raw, limit) {
                 let key = candidate.surface.to_lowercase();
                 if seen.contains(&key) {
@@ -1140,12 +1273,14 @@ impl Session {
     ///
     /// 顯示仍由統一管線決定；候選只取游標所在的那一個音節，不列整串詞，
     /// 也不跨過英文片段去猜前面中文的詞。沒有注音音節時不產生候選。
-    fn rebuild_mixed_zh_candidates(&mut self) {
+    fn rebuild_mixed_zh_candidates(&mut self, split: Option<(&[crate::mixed::Plan], &str)>) {
         // 游標在結尾時直接問統一管線：已完成注音的尾巴就是最後一個注音
         // 片段。這條路不依賴 `AsciiInput` 的 pending 狀態，`ej/ ` 這種
         // 空白當一聲、或前段是 ja 的混合 run 才不會只剩字面候選。
         if self.mixed_cursor.min(self.segments.len()) == self.segments.len() {
-            if let Some(reading) = self.planned_trailing_zh_reading() {
+            if let Some(reading) =
+                split.and_then(|(plans, text)| Self::planned_trailing_zh_reading(plans, text))
+            {
                 self.fill_zh_candidates(reading);
                 return;
             }
@@ -1160,9 +1295,7 @@ impl Session {
     ///
     /// 只認結尾是聲調鍵或空白（一聲）的注音片段；打在音節中間的前綴仍走
     /// 原本的英文／注音前綴候選邏輯。
-    fn planned_trailing_zh_reading(&self) -> Option<String> {
-        let text = self.latin_run_text()?;
-        let (plans, _) = self.incremental_latin_split_for(&text)?;
+    fn planned_trailing_zh_reading(plans: &[crate::mixed::Plan], text: &str) -> Option<String> {
         let plan = plans.last()?;
         if plan.mode != Mode::Zh {
             return None;
@@ -1265,49 +1398,44 @@ impl Session {
     ///
     /// 含已完成的注音、照字面的英數、空白與聲調；顯示與送出一律用同一條
     /// 管線重算，不再區分「已完成片段」與「待定按鍵」。
-    fn latin_run_text(&self) -> Option<String> {
+    fn latin_run_text(&self) -> Option<&str> {
         let text = self.ascii.typed();
         if text.is_empty() {
             return None;
         }
-        Some(text.to_string())
+        Some(text)
     }
 
     /// 逐鍵增量：用與 [`crate::mixed::Router::convert`] 相同的管線重算片段。
-    fn incremental_latin_split(&mut self) -> Option<(Vec<crate::mixed::Plan>, String)> {
-        let text = self.latin_run_text()?;
-        let english = default_english();
-        let adapter = crate::mixed_latin::LexiconAdapter {
-            zh: Some(&self.lexicon),
-            english: Some(english),
-            ..Default::default()
-        };
-        let cfg = crate::mixed::Config::default();
-        let plans = crate::mixed::plan_input(
-            &text,
-            english as &dyn crate::mixed::Lookup,
-            &cfg,
-            Some(&adapter),
-        );
-        let plans = crate::mixed::visible_plans(plans, &text);
-        if plans.is_empty() {
-            return None;
-        }
-        Some((plans, text))
+    fn incremental_latin_split(&self) -> Option<(Vec<crate::mixed::Plan>, String)> {
+        // 文字必須活過 `apply_latin_split` 的可變借用，這裡只複製一次；
+        // 其他讀取路徑都直接借用 `AsciiInput::typed`。
+        let text = self.latin_run_text()?.to_string();
+        let plans = self.plan_latin_text(&text);
+        (!plans.is_empty()).then_some((plans, text))
     }
 
     /// 沒有增量結果時重算一次；提交路徑會用到。
     fn latin_surface(&self) -> Option<String> {
-        let (plans, text) = self.incremental_latin_split_for(&self.latin_run_text()?)?;
+        let text = self.latin_run_text()?;
+        let plans = self.plan_latin_text(text);
+        if plans.is_empty() {
+            return None;
+        }
         let mut out = String::new();
-        for piece in self.render_latin_plans(&text, &plans) {
+        for piece in self.render_latin_plans(text, &plans) {
             out.push_str(&piece.surface);
         }
         Some(out)
     }
 
-    /// 不修改狀態的統一管線版本，給 [`Session::latin_surface`] 用。
-    fn incremental_latin_split_for(&self, text: &str) -> Option<(Vec<crate::mixed::Plan>, String)> {
+    /// 統一管線的規劃；長小寫 run 只規劃尾巴。
+    ///
+    /// 超過 [`LONG_LITERAL_RUN`] 的純小寫 run 前段已經確定是字面英文，
+    /// 凍結成一個英文片段，只把最後 [`PLAN_TAIL_CHARS`] 個字元交給
+    /// `plan_input`。尾巴若接完成的注音音節，切點退到音節開頭，聲調鍵
+    /// 才能把 `200 個 z + su3` 切成字面英文加「你」。
+    fn plan_latin_text(&self, text: &str) -> Vec<crate::mixed::Plan> {
         let english = default_english();
         let adapter = crate::mixed_latin::LexiconAdapter {
             zh: Some(&self.lexicon),
@@ -1315,14 +1443,74 @@ impl Session {
             ..Default::default()
         };
         let cfg = crate::mixed::Config::default();
-        let plans = crate::mixed::plan_input(
-            text,
-            english as &dyn crate::mixed::Lookup,
-            &cfg,
-            Some(&adapter),
-        );
-        let plans = crate::mixed::visible_plans(plans, text);
-        (!plans.is_empty()).then_some((plans, text.to_string()))
+        let lookup = english as &dyn crate::mixed::Lookup;
+        let split_lex = &adapter as &dyn crate::mixed_latin::SplitLexicon;
+
+        let Some(tail_start) = self.long_run_tail_start(text) else {
+            let plans = crate::mixed::plan_input(text, lookup, &cfg, Some(split_lex));
+            return crate::mixed::visible_plans(plans, text);
+        };
+
+        let mut plans = Vec::new();
+        plans.push(literal_en_plan(0, tail_start));
+        let tail = &text[tail_start..];
+        for mut plan in crate::mixed::plan_input(tail, lookup, &cfg, Some(split_lex)) {
+            plan.start += tail_start;
+            plan.end += tail_start;
+            plans.push(plan);
+        }
+        let mut plans = crate::mixed::visible_plans(plans, text);
+        merge_adjacent_en_plans(&mut plans);
+        plans
+    }
+
+    /// 長小寫 run 的凍結切點；沒有可凍結的前段時回傳 `None`。
+    fn long_run_tail_start(&self, text: &str) -> Option<usize> {
+        if text.len() <= LONG_LITERAL_RUN || !text.is_ascii() {
+            return None;
+        }
+        // 找最後一段連續小寫英文 run。
+        let bytes = text.as_bytes();
+        let mut found: Option<(usize, usize)> = None;
+        let mut index = 0;
+        while index < bytes.len() {
+            if !bytes[index].is_ascii_lowercase() {
+                index += 1;
+                continue;
+            }
+            let start = index;
+            while index < bytes.len() && bytes[index].is_ascii_lowercase() {
+                index += 1;
+            }
+            if index - start > LONG_LITERAL_RUN {
+                found = Some((start, index));
+            }
+        }
+        let (run_start, run_end) = found?;
+        let mut tail_start = text.len().saturating_sub(PLAN_TAIL_CHARS);
+        if tail_start < run_start || tail_start > run_end {
+            return None;
+        }
+        // 冷凍前段必須整段都是小寫英文；遇到注音、日文或標點就不凍結。
+        if !text[..tail_start]
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase())
+        {
+            return None;
+        }
+        // 尾巴是完成的注音音節時，切在音節開頭，不要把音節留在字面裡。
+        if let Some((zh_start, _)) = long_run_zh_boundary(text, &[], &self.lexicon) {
+            if zh_start > tail_start && zh_start <= run_end {
+                tail_start = zh_start;
+            }
+        }
+        (tail_start > 0).then_some(tail_start)
+    }
+
+    /// 不修改狀態的統一管線版本，給診斷路徑用。
+    fn incremental_latin_split_for(&self, text: &str) -> Option<Vec<crate::mixed::Plan>> {
+        let plans = self.plan_latin_text(text);
+        (!plans.is_empty()).then_some(plans)
     }
 
     /// 把統一管線的片段轉成顯示字面與讀音。
