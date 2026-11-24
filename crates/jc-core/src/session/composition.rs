@@ -381,6 +381,33 @@ mod tests {
     }
 
     #[test]
+    fn sync_composition_zh_inserts_literal_after_multibyte_segments() {
+        let mut session = session_with_base("神秘的");
+        session.literal = "，".to_string();
+        session.literal_offset = "神秘".len();
+        let readings = [
+            "ㄕㄣˊ".to_string(),
+            "ㄇㄧˋ".to_string(),
+            "ㄉㄜ˙".to_string(),
+        ];
+        let segs = [
+            Seg::new("神", 0, 1),
+            Seg::new("秘", 1, 2),
+            Seg::new("的", 2, 3),
+        ];
+        session.sync_composition_zh(&readings, &segs);
+
+        assert_eq!(session.composition().text(), "神秘，的");
+        let spans: Vec<(usize, usize)> = session
+            .composition()
+            .segments()
+            .iter()
+            .map(|segment| (segment.span.start, segment.span.end))
+            .collect();
+        assert_eq!(spans, [(0, 1), (1, 2), (2, 3), (3, 4)]);
+    }
+
+    #[test]
     fn sync_composition_zh_clamps_segments_longer_than_base() {
         let mut session = session_with_base("神");
         let readings = ["ㄕㄣˊ".to_string(), "ㄇㄧˋ".to_string()];

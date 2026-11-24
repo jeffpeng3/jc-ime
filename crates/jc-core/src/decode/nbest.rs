@@ -474,3 +474,268 @@ fn insert_top(arena: &Arena, list: &mut Vec<u32>, path: u32, k: usize) {
     list.sort_by(|a, b| arena.less(*a, *b));
     list.truncate(k);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decode::Lock;
+    use crate::lattice::{InMemoryLexicon, LexEntry};
+    use crate::score::{ConnectionMatrix, ScoreContext};
+
+    fn entry(surface: &str, reading: &str, cost: i32) -> LexEntry {
+        LexEntry::new(surface, reading, cost, 1)
+    }
+
+    fn ctx() -> ScoreContext {
+        ScoreContext {
+            length_bonus: 0,
+            unknown_cost: 100,
+            connection: ConnectionMatrix::with_fallback(0),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn nbest_dedupes_same_text_and_orders_by_cost() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(entry("甲", "ㄐㄧㄚˇ", 5));
+        lex.push(entry("假", "ㄐㄧㄚˇ", 6));
+        lex.push(entry("乙", "ㄧˇ", 5));
+        lex.push(entry("甲乙", "ㄐㄧㄚˇ ㄧˇ", 9));
+        let ctx = ctx();
+        let lat = Lattice::build(&["ㄐㄧㄚˇ", "ㄧˇ"], &lex, &ctx).expect("建立詞格");
+        let d = Decoder::new(&lex, &ctx);
+        let (rows, _) = d.nbest(&lat, &Locks::new(), false, 8);
+        assert_eq!(rows[0].text, "甲乙");
+        assert_eq!(rows[0].cost, 9, "長度折扣已關閉");
+        let texts: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+        assert!(texts.contains(&"假乙"));
+        assert_eq!(texts.iter().filter(|t| **t == "甲乙").count(), 1);
+    }
+
+    #[test]
+    fn nbest_respects_locks() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(entry("甲", "ㄚ", 1));
+        lex.push(entry("乙", "ㄚ", 2));
+        lex.push(entry("丙", "ㄅ", 1));
+        let ctx = ctx();
+        let lat = Lattice::build(&["ㄚ", "ㄅ"], &lex, &ctx).expect("建立詞格");
+        let d = Decoder::new(&lex, &ctx);
+        let mut locks = Locks::new();
+        locks.insert(
+            0,
+            Lock {
+                word: "乙".to_string(),
+                len: 1,
+                ..Default::default()
+            },
+        );
+        let (rows, _) = d.nbest(&lat, &locks, false, 8);
+        assert_eq!(rows[0].text, "乙丙");
+    }
+
+    #[test]
+    fn nbest_lists_are_nested_and_empty_input_is_empty() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(entry("甲", "ㄚ", 1));
+        lex.push(entry("乙", "ㄚ", 2));
+        lex.push(entry("丙", "ㄚ", 3));
+        let ctx = ctx();
+        let lat = Lattice::build(&["ㄚ"; 3], &lex, &ctx).expect("建立詞格");
+        let d = Decoder::new(&lex, &ctx);
+        let (full, _) = d.nbest(&lat, &Locks::new(), true, 16);
+        assert!(!full.is_empty());
+        let (best, _) = d.nbest(&lat, &Locks::new(), true, 1);
+        assert_eq!(best[0], full[0]);
+        for _ in 0..5 {
+            assert_eq!(
+                d.nbest(&lat, &Locks::new(), true, 4).0,
+                d.nbest(&lat, &Locks::new(), true, 4).0
+            );
+        }
+        assert!(d.nbest(&lat, &Locks::new(), true, 0).0.is_empty());
+    }
+
+    #[test]
+    fn prefix_extension_is_flagged_as_partial() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(entry("沒", "ㄇㄟˊ", 5));
+        lex.push(entry("沒有", "ㄇㄟˊ ㄧㄡˇ", 2));
+        let ctx = ctx();
+        let lat = Lattice::build(&["ㄇㄟˊ"], &lex, &ctx).expect("建立詞格");
+        let d = Decoder::new(&lex, &ctx);
+        let (rows, _) = d.nbest(&lat, &Locks::new(), true, 8);
+        assert!(rows.iter().any(|r| r.segments.last().unwrap().partial));
+    }
+
+    #[test]
+    fn audit_target_separates_surface_and_reading_reachability() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(entry("甲乙", "ㄚ ㄅ", 5));
+        lex.push(entry("丙丁", "ㄚ ㄅ", 6));
+        let ctx = ctx();
+        let lat = Lattice::build(&["ㄚ", "ㄅ"], &lex, &ctx).expect("建立詞格");
+        let d = Decoder::new(&lex, &ctx);
+        let a = d.audit_target(&lat, &Locks::new(), false, "丙丁");
+        assert!(a.surface_segmentable);
+        assert!(a.best.is_some());
+
+        let b = d.audit_target(&lat, &Locks::new(), false, "未知");
+        assert!(!b.surface_segmentable);
+        assert!(b.best.is_none());
+    }
+
+    /// 測試用的 bigram 模型：所有詞共用同一個 unigram。
+    struct FakeLm {
+        pairs: Vec<((&'static str, &'static str), f64)>,
+    }
+
+    impl FakeLm {
+        fn uni(&self) -> f64 {
+            0.001
+        }
+    }
+
+    impl crate::score::BigramLm for FakeLm {
+        fn uni(&self, _word: &str) -> f64 {
+            self.uni()
+        }
+
+        fn bi(&self, left: &str, word: &str) -> f64 {
+            self.pairs
+                .iter()
+                .find(|((l, w), _)| *l == left && *w == word)
+                .map(|(_, p)| *p)
+                .unwrap_or(0.0)
+        }
+
+        fn bigram_count(&self) -> usize {
+            self.pairs.len()
+        }
+    }
+
+    #[test]
+    fn nbest_uses_bigram_context_of_previous_word() {
+        // 改寫前身 TestCandidatesUseRightContextAndRespectOtherLocks 的語境：
+        // 「再見」是常用組合，「在見」不是；沒有 bigram 時兩者同分。
+        let mut lex = InMemoryLexicon::new();
+        let uni_cost = crate::score::probability_cost(0.001);
+        for (w, r) in [
+            ("在", "ㄗㄞˋ"),
+            ("再", "ㄗㄞˋ"),
+            ("見", "ㄐㄧㄢˋ"),
+            ("間", "ㄐㄧㄢˋ"),
+        ] {
+            lex.push(LexEntry::new(w, r, uni_cost, 1));
+        }
+        // 未知詞邊只用來補缺字；成本拉高，讓四條詞典路徑互相競爭。
+        let ctx = ScoreContext {
+            unknown_cost: uni_cost * 10,
+            ..ctx()
+        };
+        let lat = Lattice::build(&["ㄗㄞˋ", "ㄐㄧㄢˋ"], &lex, &ctx).expect("建立詞格");
+
+        let plain = Decoder::new(&lex, &ctx);
+        let (rows, _) = plain.nbest(&lat, &Locks::new(), false, 4);
+        assert_eq!(rows[0].text, "再見", "同分時依穩定鍵排序");
+        assert_eq!(rows[0].cost, uni_cost * 2);
+
+        let lm = FakeLm {
+            pairs: vec![
+                (("<s>", "再"), 0.8),
+                (("<s>", "在"), 0.4),
+                (("再", "見"), 0.9),
+                (("在", "見"), 0.001),
+                (("在", "間"), 0.5),
+                (("再", "間"), 0.001),
+            ],
+        };
+        let scorer = crate::score::LmScorer::new(&ctx, &lm);
+        let with_lm = Decoder::new(&lex, &ctx).with_scorer(&scorer);
+        let (rows, _) = with_lm.nbest(&lat, &Locks::new(), false, 4);
+        assert_eq!(rows[0].text, "再見");
+        // P = 0.7·0.9 + 0.3·0.001 與 P = 0.7·0.8 + 0.3·0.001 的內插成本。
+        let p_seeing = 0.7 * 0.9 + 0.3 * 0.001;
+        let p_start = 0.7 * 0.8 + 0.3 * 0.001;
+        let expected =
+            crate::score::probability_cost(p_start) + crate::score::probability_cost(p_seeing);
+        assert_eq!(rows[0].cost, expected);
+        assert!(rows[0].cost < uni_cost * 2, "常用組合要被抬升");
+        let zaijian = rows
+            .iter()
+            .find(|row| row.text == "在見")
+            .expect("在見 仍在清單");
+        let p_zaijian_start = 0.7 * 0.4 + 0.3 * 0.001;
+        let p_zaijian_see = 0.7 * 0.001 + 0.3 * 0.001;
+        assert_eq!(
+            zaijian.cost,
+            crate::score::probability_cost(p_zaijian_start)
+                + crate::score::probability_cost(p_zaijian_see)
+        );
+        assert!(zaijian.cost > rows[0].cost);
+    }
+
+    #[test]
+    fn nbest_without_beam_still_keeps_k_rows() {
+        let mut lex = InMemoryLexicon::new();
+        for (index, surface) in ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛"]
+            .iter()
+            .enumerate()
+        {
+            lex.push(entry(surface, "ㄚ", index as i32));
+        }
+        let ctx = ctx();
+        let lat = Lattice::build(&["ㄚ", "ㄚ"], &lex, &ctx).expect("建立詞格");
+        // beam 預設 0；前詞狀態仍要以 k 為上限，不能把整個 beam 展開。
+        let d = Decoder::new(&lex, &ctx);
+        let (rows, _) = d.nbest(&lat, &Locks::new(), false, 6);
+        assert_eq!(rows.len(), 6);
+        let texts: std::collections::HashSet<&str> =
+            rows.iter().map(|row| row.text.as_str()).collect();
+        assert_eq!(texts.len(), 6, "每一列都是不同顯示字串");
+    }
+
+    #[test]
+    fn nbest_many_homophones_returns_distinct_texts_in_cost_order() {
+        let mut lex = InMemoryLexicon::new();
+        for (index, surface) in ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
+            .iter()
+            .enumerate()
+        {
+            lex.push(entry(surface, "ㄕˋ", index as i32));
+        }
+        let ctx = ctx();
+        let lat = Lattice::build(&["ㄕˋ", "ㄕˋ"], &lex, &ctx).expect("建立詞格");
+        let (rows, _) = Decoder::new(&lex, &ctx).nbest(&lat, &Locks::new(), false, 8);
+        assert_eq!(rows.len(), 8);
+        // 疊字「甲甲」不是詞庫詞，會被非詞疊字懲罰，成本低的一條是「甲乙」。
+        assert_eq!(rows[0].text, "甲乙");
+        assert!(rows.windows(2).all(|pair| {
+            (pair[0].cost, pair[0].segments.len()) <= (pair[1].cost, pair[1].segments.len())
+        }));
+        let texts: std::collections::HashSet<&str> =
+            rows.iter().map(|row| row.text.as_str()).collect();
+        assert_eq!(texts.len(), rows.len(), "同一個顯示字串只留成本最低的一條");
+    }
+
+    #[test]
+    fn beam_limits_expanded_contexts_only_when_set() {
+        let mut lex = InMemoryLexicon::new();
+        for (w, r) in [("甲", "ㄚ"), ("乙", "ㄚ"), ("丙", "ㄅ")] {
+            lex.push(entry(w, r, 0));
+        }
+        let ctx = ctx();
+        let lat = Lattice::build(&["ㄚ", "ㄅ"], &lex, &ctx).expect("建立詞格");
+        let mut d = Decoder::new(&lex, &ctx);
+        let (full, _) = d.nbest(&lat, &Locks::new(), false, 2);
+        assert_eq!(full.len(), 2);
+        d.beam = 1;
+        let (limited, stats) = d.nbest(&lat, &Locks::new(), false, 2);
+        assert_eq!(limited.len(), 2);
+        // 起點一條路徑 × 3 條邊，加上 beam 留下的 1 個狀態 × 2 條邊。
+        assert_eq!(stats.scored_extensions, 5, "只展開一個前詞狀態");
+        // beam 只影響展開的狀態數，最佳路徑仍是成本最低的一條。
+        assert_eq!(limited[0], full[0]);
+    }
+}

@@ -219,6 +219,33 @@ mod tests {
     }
 
     #[test]
+    fn prefix_index_matches_linear_unit_prefix_scan() {
+        let mut lex = InMemoryLexicon::new();
+        for (surface, reading) in [
+            ("台", "ㄊㄞˊ"),
+            ("台北", "ㄊㄞˊ ㄅㄟˇ"),
+            ("颱", "ㄊㄞˊ"),
+            ("他", "ㄊㄚ"),
+            ("天", "ㄊㄧㄢ"),
+        ] {
+            lex.push(entry(surface, reading, 0));
+        }
+        let got: Vec<&str> = lex
+            .prefix("ㄊㄞˊ")
+            .iter()
+            .map(|entry| entry.surface.as_str())
+            .collect();
+        assert_eq!(got, ["台", "台北", "颱"]);
+        assert!(lex.prefix("ㄊㄞ").is_empty(), "前綴以音節為界");
+        let all: Vec<&str> = lex
+            .prefix("")
+            .iter()
+            .map(|entry| entry.surface.as_str())
+            .collect();
+        assert_eq!(all, ["台", "台北", "颱", "他", "天"]);
+    }
+
+    #[test]
     fn lookup_returns_exact_reading_only() {
         let mut lex = InMemoryLexicon::new();
         lex.push(entry("丼", "ㄉㄨㄥˋ", 10));
