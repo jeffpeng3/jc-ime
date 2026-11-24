@@ -46,10 +46,13 @@ jc-ime-0.1.0-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\
    Run 值直接執行 `jc-engine.exe --supervise`，並帶 `--data`、`--settings`、
    `--personal-dir` 與 `--personal-prefix personal`；**不帶** `--socket`，pipe
    名稱由引擎與 TIP 共用的 `jc_windows::resolve_pipe_name()` 從目前使用者 SID
-   推出。安裝完成時也會以 `runasoriginaluser` 先啟動一次，不必等下次登入。
+   推出。
 5. 以 `runasoriginaluser` 執行 `user-install`，把單一「jc 注音」加進你的語言清單；
    再執行 `user-cleanup-legacy` 清掉舊語言清單項目。不改你的預設輸入法。
 6. 建立開始功能表的「jc 注音設定」與「jc 注音授權」兩個捷徑。
+7. 以原使用者身分先啟動一次 `jc-engine.exe --supervise`，再執行
+   `post-install-doctor.ps1`，跑一次安裝診斷並把紀錄寫到
+   `%LOCALAPPDATA%\jc-ime\doctor\`；有 FAIL 時會提示，見〈安裝診斷（doctor）〉。
 
 從舊 MSI 升級時，安裝器會在複製檔案前先找舊的「jc 注音」MSI，停掉引擎與載入
 `jc-tsf.dll` 的行程，再執行 `msiexec /x` 移除舊版；找不到或移除失敗都不會中斷
@@ -86,22 +89,49 @@ jc-ime-0.1.0-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\
 `jc-tsf-smoke.exe` 就是 doctor：免管理員，載入 `jc-tsf.dll` 後跑 12 項檢查，
 涵蓋 DLL、COM、TSF 啟動、引擎 pipe、註冊機碼、使用者語言清單與引擎健康狀態。
 
+安裝完成後，安裝器會以 `runasoriginaluser` 自動執行
+`%ProgramFiles%\jc-ime\post-install-doctor.ps1`。這支腳本用 Windows PowerShell
+5.1 呼叫 `jc-tsf-smoke.exe --json`，並把結果保存到
+`%LOCALAPPDATA%\jc-ime\doctor\`：
+
+| 檔案 | 內容 |
+|---|---|
+| `<yyyyMMdd-HHmmss>.json` | `jc-tsf-smoke --json` 的 stdout，`jc-ime-doctor/1` 物件 |
+| `<yyyyMMdd-HHmmss>.log` | stderr 加上人類可讀摘要、版本、結束碼與 log 路徑 |
+| `last.txt` | 這次的摘要；最後一行是同一筆 `.log` 的完整路徑 |
+
+同一秒內重跑不會覆蓋上一筆，撞名時會加上 `-1`、`-2` 等序號。**有 FAIL 時**，
+腳本會把 `last.txt` 複製到剪貼簿，並跳出訊息框顯示摘要前 15 行與 log 路徑。
+在 Session 0、非互動工作階段或 `-NoUi` 時只寫 log，不碰剪貼簿也不跳視窗。
+
 ```bat
-"%ProgramFiles%\jc-ime\jc-tsf-smoke.exe"
-"%ProgramFiles%\jc-ime\jc-tsf-smoke.exe" --json > "%TEMP%\smoke.json"
+:: 手動重跑（使用目前使用者）
+powershell.exe -NoProfile -ExecutionPolicy Bypass ^
+  -File "%ProgramFiles%\jc-ime\post-install-doctor.ps1"
+
+:: CI／無人環境：不顯示 UI，並讓離開碼反映 doctor 結果
+powershell.exe -NoProfile -ExecutionPolicy Bypass ^
+  -File "%ProgramFiles%\jc-ime\post-install-doctor.ps1" -NoUi -ExitWithSmokeCode
+```
+
+安裝器的 `[Run]` 不帶 `-ExitWithSmokeCode`，所以診斷失敗不會讓安裝失敗；預設
+一律以 0 結束。直接跑 `jc-tsf-smoke.exe` 時仍然可以用原本的 `--json`：
+
+```bat
+"%ProgramFiles%\jc-ime\jc-tsf-smoke.exe" --json
 ```
 
 - `--json` 時 stdout 只有一個 `jc-ime-doctor/1` JSON 物件，人類可讀的診斷行
-  改走 stderr；要留下完整紀錄就自己重導：
-  `jc-tsf-smoke.exe --json > "%TEMP%\smoke.json" 2> "%TEMP%\smoke.err.log"`。
-- 結束碼：`0` 全部通過或只有警告、`1` 至少一項 `[FAIL]`、`2` 參數錯誤。
+  改走 stderr。
+- `jc-tsf-smoke.exe` 的結束碼：`0` 全部通過或只有警告、`1` 至少一項 `[FAIL]`、
+  `2` 參數錯誤。
 - 12 項的意義與每個失敗的修復指令見
   [`port/tsf-smoke.md`](port/tsf-smoke.md)。
 
-**目前沒有 `%LOCALAPPDATA%\jc-ime\doctor\` 這個 log 目錄。** doctor 不會寫檔，
-也不會自動建立目錄；上面的 `%TEMP%` 路徑是 CI 與手動重導用的，不是程式內建。
-TSF 自己的 log 仍在 `%LOCALAPPDATA%\jc-ime\tsf.log`，只有設 `JC_TSF_LOG=1`
-才會寫。
+`install-smoke` CI job 也執行同一支 `post-install-doctor.ps1`，加上 `-NoUi`
+與 `-ExitWithSmokeCode`，再從 `last.txt` 取 log 路徑、複製 `.log`／`.json`
+成 artifact。TSF 自己的 log 仍在 `%LOCALAPPDATA%\jc-ime\tsf.log`，只有設
+`JC_TSF_LOG=1` 才會寫。
 
 ### 看不到「jc 注音」
 
@@ -136,6 +166,7 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%ProgramFiles%\jc-ime\jc-cli.exe` | 資料驗證與評測工具 |
 | `%ProgramFiles%\jc-ime\jc-settings-ui.exe` | 設定程式 |
 | `%ProgramFiles%\jc-ime\jc-tsf-smoke.exe` | 免管理員冒煙測試 |
+| `%ProgramFiles%\jc-ime\post-install-doctor.ps1` | 安裝後自動執行 doctor 並保存診斷紀錄 |
 | `%ProgramFiles%\jc-ime\jc-tip-register.exe` | 安裝器自訂動作用；手動修復註冊；開始功能表捷徑的啟動器 |
 | `%ProgramFiles%\jc-ime\LICENSE` | 本專案 AGPL-3.0-only 全文 |
 | `%ProgramFiles%\jc-ime\NOTICE` | 專案 NOTICE（本專案與隨附第三方元件的關係） |
@@ -154,6 +185,7 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%LOCALAPPDATA%\jc-ime\personal.json` | 個人化資料；引擎啟動時載入，學習後原子寫回 |
 | `%LOCALAPPDATA%\jc-ime\supervisor.log` | `--supervise` 的環狀 log；預設位置，可用 `--supervisor-log` 改 |
 | `%LOCALAPPDATA%\jc-ime\tsf.log` | TSF 診斷 log；只有 `JC_TSF_LOG=1` 時才寫 |
+| `%LOCALAPPDATA%\jc-ime\doctor\` | 安裝後與手動 doctor 的 `<時間>.json`、`<時間>.log`、`last.txt`；反安裝會刪除這個子目錄 |
 
 注音產品只帶 bigram 語言模型：`build-zh-bigram\lm.bin` 是必要資料。舊的
 unigram-only `build-zh\lm.bin` 已退役，安裝包不提供，引擎也不再退回該檔；
@@ -216,7 +248,8 @@ Funmula 的 `zh-select` 依 `legal\licenses\MIT-Funmula.txt` 可散布，安裝�
 這裡不依賴檔案關聯。
 
 反安裝會刪掉這些授權檔並收掉 `legal\` 目錄，不留孤兒檔。使用者資料
-（`%LOCALAPPDATA%\jc-ime`）不在安裝目錄，反安裝不主動刪除。
+（`%LOCALAPPDATA%\jc-ime`）不在安裝目錄，反安裝只會刪除其中的 `doctor\`
+診斷紀錄，其他使用者資料不主動刪除。
 Funmula 模型的授權說明在 `legal\licenses\MIT-Funmula.txt`，隨安裝包安裝並保留
 copyright，符合 MIT 的散布條件。
 
@@ -250,8 +283,9 @@ profile 註冊，也不呼叫 `ILOT_UNINSTALL`。反安裝時**不**呼叫 `ILOT
 "%ProgramFiles%\jc-ime\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\uninstall.log
 ```
 
-反安裝不會刪除 `%LOCALAPPDATA%\jc-ime`（settings.json、personal.json、
-supervisor.log、tsf.log）。要清使用者資料，以該使用者身分執行：
+反安裝會刪除 `%LOCALAPPDATA%\jc-ime\doctor`（doctor 的紀錄），但不會刪除
+`%LOCALAPPDATA%\jc-ime` 其他內容（settings.json、personal.json、
+supervisor.log、tsf.log）。要清全部使用者資料，以該使用者身分執行：
 
 ```bat
 "%ProgramFiles%\jc-ime\jc-tip-register.exe" user-uninstall 0
@@ -267,6 +301,7 @@ supervisor.log、tsf.log）。要清使用者資料，以該使用者身分執�
    `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe` 刪不掉就登記下次開機刪除，
    然後收掉 `legal\licenses` 與 `legal`。安裝目錄本身還留著反安裝程式檔案時交給
    Inno 收尾；只有前面真的排了開機刪除，才會把整個目錄一起登記。
+   `[UninstallDelete]` 另外刪除 `%LOCALAPPDATA%\jc-ime\doctor`。
 
 如果 `jc-tsf.dll` 正被 explorer 或其他程式載入，反安裝會把檔案改名或排到重開機後
 才刪得掉；這是 TSF DLL 的常態，重開機一次即可完成。反安裝**不從你的語言清單
@@ -276,7 +311,8 @@ supervisor.log、tsf.log）。要清使用者資料，以該使用者身分執�
 反安裝由哪個帳號執行，就只清那個帳號的 `HKCU`。其他帳號的語言清單項目在 profile
 被全域移除後會變成無效項目，需要該使用者自行在語言設定移除，或再跑一次
 `jc-tip-register.exe user-cleanup-legacy`。這個清理只動 HKCU 的語言清單，不會
-刪除 `%LOCALAPPDATA%\jc-ime`；要清資料請用 `user-uninstall 0`。
+刪除 `%LOCALAPPDATA%\jc-ime` 的資料（doctor 的紀錄由反安裝的
+`[UninstallDelete]` 另行清除）；要清全部資料請用 `user-uninstall 0`。
 
 ## 升級
 
@@ -341,6 +377,7 @@ signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 ^
 | 安裝在「新增語言」前完成 | 先安裝 zh-TW 語言，再重跑 setup.exe |
 | 安裝卡住或失敗 | 看 `/LOG=` 指定的 `install.log`；`PrepareToInstall` 的讓路與 `machine-register` 的結束碼都在裡面 |
 | 想確認 DLL 與類廠 | `cd "%ProgramFiles%\jc-ime"` 後執行 `.\jc-tsf-smoke.exe` |
+| 安裝後跳出「jc 注音 安裝診斷」訊息 | 看 `%LOCALAPPDATA%\jc-ime\doctor\last.txt`；最後一行是完整 `.log`。修正後可重跑 `post-install-doctor.ps1` |
 | 想知道 TSF 內部發生什麼 | 設 `JC_TSF_LOG=1` 後重開應用程式，看 `%LOCALAPPDATA%\jc-ime\tsf.log` 與 DebugView |
 | 反安裝後還有機碼 | `reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-...}" /reg:32`（兩個檢視都查）；用 `jc-tip-register.exe machine-unregister` 補清 profile 與分類 |
 | 找不到授權文件或捷徑打不開 | 看 `%ProgramFiles%\jc-ime\LICENSE`、`NOTICE` 與 `legal\`；缺檔就重跑 setup.exe |
@@ -359,8 +396,8 @@ Linux 只能做 `.iss`、payload 與 manifest 的靜態一致性檢查，下面�
 5. UWP 應用程式（例如 Windows 設定或小算盤）能否載入 TIP；若不行，檢查安裝目錄上
    `ALL APPLICATION PACKAGES` 的讀取權限。
 6. 升級：舊版反安裝、新版安裝後，語言清單只剩一項「jc 注音」、舊 CLSID 機碼與舊 DLL 檔案消失、個人資料與設定檔保留。
-7. 反安裝後機碼、檔案是否清乾淨；`%LOCALAPPDATA%\jc-ime` 不會被反安裝刪除，
-   要另外確認 `user-uninstall 0` 是否清掉。
+7. 反安裝後機碼、檔案是否清乾淨；反安裝只會刪除 `%LOCALAPPDATA%\jc-ime\doctor`，
+   其他 `%LOCALAPPDATA%\jc-ime` 內容要另外確認 `user-uninstall 0` 是否清掉。
 8. 非管理員帳號只按 `Win+Space` 使用時，是否會因為 Run 項目或 ACL 出問題。
 9. 未簽章與已簽章兩種 setup.exe 的 SmartScreen 行為。
 10. 32 位元應用程式（例如舊版 Office）與 64 位元應用程式使用**同一個**「jc 注音」
@@ -375,6 +412,9 @@ Linux 只能做 `.iss`、payload 與 manifest 的靜態一致性檢查，下面�
 13. 引擎啟動後 `jc-tsf-smoke` 的「安裝檔案」看得到
     `%ProgramData%\jc-ime\data\english\words.bin`，且 `Health` 的
     `english_words` 大於 1000；若是 0 或約 104，代表退回內建原型詞表。
+14. 安裝完成後 `%LOCALAPPDATA%\jc-ime\doctor\` 是否產生 `<時間>.json`、
+    `<時間>.log` 與 `last.txt`；有 FAIL 時剪貼簿與訊息框是否出現，Session 0
+    是否只寫 log。install-smoke 會用 `-NoUi -ExitWithSmokeCode` 跑同一支腳本。
 
 ## 已知限制
 

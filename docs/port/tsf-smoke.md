@@ -71,6 +71,21 @@ cargo build --release --features test-export -p jc-tsf
 
 release DLL 沒有這個符號是正常出貨狀態，診斷程式只會印一行 `[INFO]`。
 
+## 安裝後自動執行
+
+安裝器會在 `[Run]` 以原使用者身分執行
+`%ProgramFiles%\jc-ime\post-install-doctor.ps1`。腳本呼叫
+`jc-tsf-smoke.exe --json`，把結果寫到 `%LOCALAPPDATA%\jc-ime\doctor\`：
+
+- `<yyyyMMdd-HHmmss>.json`：doctor 的 stdout。
+- `<yyyyMMdd-HHmmss>.log`：stderr、版本、結束碼與摘要。
+- `last.txt`：這次摘要，最後一行是完整 `.log` 路徑。
+
+同一秒重跑會加 `-1`、`-2` 序號。有 FAIL 時，腳本把 `last.txt` 複製到剪貼簿並
+跳出訊息框顯示摘要前 15 行；Session 0、非互動或加 `-NoUi` 時只寫檔。安裝器
+預設忽略 doctor 的結束碼，CI 用 `-ExitWithSmokeCode` 取得 `jc-tsf-smoke` 的
+結果。install-smoke 也執行同一支腳本。
+
 ## 十二項檢查
 
 | # | id | 檢查 | 判定 | 只回報 |
@@ -114,7 +129,8 @@ msctf 在 `AdviseKeyEventSink` 回 `E_INVALIDARG`。已安裝 `jc-tsf` 時，msc
 `Activate`。旗標只影響本行程，不改系統或使用者的預設輸入法。
 
 檢查 5 成功後會立刻 `Deactivate` 並等 200 ms：`jc-tsf` 的 worker 在 `Activate`
-時會連上引擎，而引擎一次只服務一條連線，不先放掉的話檢查 6 會連不進去。
+時會連上引擎。引擎現在可接受多條連線；這裡先放掉，讓檢查 6 從乾淨狀態建立
+自己的連線。
 
 ### 檢查 6 的引擎錯誤分類
 
@@ -214,6 +230,7 @@ Windows 各版本寫入的格式不完全一致，比對時接受有無大括號
 ```json
 {
   "schema": "jc-ime-doctor/1",
+  "version": "0.1.24",
   "ok": false,
   "summary": { "pass": 1, "warn": 1, "fail": 2, "skip": 1 },
   "checks": [
@@ -229,6 +246,8 @@ Windows 各版本寫入的格式不完全一致，比對時接受有無大括號
 規則：
 
 - `schema` 固定 `jc-ime-doctor/1`。
+- `version` 是 `jc-tsf-smoke` 的 `CARGO_PKG_VERSION`；安裝後腳本用它記錄版本，
+  JSON 解析失敗時才改讀執行檔的 PE 版本。
 - `ok` 等於「沒有任何 `fail`」；只有 `warn`／`skip` 時仍是 `true`。
 - `summary` 四個計數加起來等於 `checks` 的長度；上面的範例只列 5 項，完整執行
   固定 12 項。
@@ -404,6 +423,7 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼、沒有 Windows
 | n/a | `crates/jc-tsf-smoke/src/tsf_profile.rs`（`IsEnabledLanguageProfile`、`EnumLanguageProfiles`、`GetActiveProfile`） | rewritten |
 | n/a | `crates/jc-tsf-smoke/src/engine.rs`、`engine_failure.rs`（引擎 pipe、健康狀態、失敗分類） | rewritten；連線與握手交給 `jc-windows` |
 | n/a | `crates/jc-tsf-smoke/src/report.rs`（人類輸出與 `jc-ime-doctor/1` JSON） | rewritten；Linux 也會編譯 |
+| n/a | `installer/post-install-doctor.ps1`（安裝後執行、log、剪貼簿與訊息框） | 新增；install-smoke 共用 |
 | n/a（Go 沒有 Windows 外殼） | `crates/jc-tsf/src/lib.rs` 的 `jc_test_key` | rewritten；`debug_assertions` 或 feature `test-export` 才編譯 |
 
 參考實作是 <https://github.com/LeafHW/hufu-ime-rust> 的
@@ -436,7 +456,7 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼、沒有 Windows
 3. `ITfKeystrokeMgr::TestKeyDown` 是否真的把事件送到本 TIP 的
    `OnTestKeyDown`；`consumed` 依引擎連線狀態而變。
 4. 檢查 5 的 `Deactivate` 到檢查 6 之間，200 ms 是否足以讓 `jc-tsf` 的 worker
-   關掉 pipe（引擎一次只服務一條連線）。
+   關掉 pipe（引擎可接受多條連線，但這裡仍要確認舊連線已釋放）。
 5. `DllCanUnloadNow` 在釋放所有物件後是否回到 `S_OK`（refcount 洩漏）。
 6. 中文輸出在 `cmd.exe` 的顯示（Rust 對 console handle 使用 `WriteConsoleW`，
    理論上正確，未實測）。
