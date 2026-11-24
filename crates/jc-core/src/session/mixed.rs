@@ -6,7 +6,7 @@
 use super::*;
 use crate::composition::{CompSegment, Lang, Owner};
 use crate::lattice::Lexicon;
-use crate::mixed::{default_english, prototype, English, MAX_WORD_BYTES};
+use crate::mixed::{default_english, prototype, English};
 use crate::zh::keyboard::Keyboard;
 use crate::zh::syllable::{class_of, Class, Composer, Syllable, TONE1};
 
@@ -170,10 +170,6 @@ impl AsciiInput {
     /// 加一個按鍵；空白與聲調鍵交給 [`AsciiInput::space`]／
     /// [`AsciiInput::tone`]。
     pub fn press(&mut self, ch: char) {
-        // 英文詞上限與前身 `english.MaxWordBytes` 相同；超過的字母不進待定按鍵。
-        if ch.is_ascii_alphabetic() && self.pending.len() >= MAX_WORD_BYTES {
-            return;
-        }
         self.pending.push(ch);
         self.typed.push(ch);
     }
@@ -1770,6 +1766,66 @@ mod tests {
         assert_eq!(snap.preedit, "我", "英文片段整段刪掉");
     }
 
+    /// 長串小寫字母不能停在詞表窗口；每個按鍵都要反映在 preedit。
+    #[test]
+    fn test_mixed_long_lowercase_run_keeps_every_key() {
+        for len in [70usize, 200] {
+            let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+            mixed_type(&mut s, &"a".repeat(len));
+            let preedit = s.snapshot().preedit;
+            assert_eq!(preedit.chars().count(), len, "{len} 個 a 要完整顯示");
+            assert!(
+                preedit.chars().all(|ch| ch == 'a'),
+                "{len} 個 a：{preedit:?}"
+            );
+        }
+
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+        mixed_type(&mut s, &"z".repeat(70));
+        assert_eq!(s.snapshot().preedit, "z".repeat(70), "z 的長 run 也要完整");
+    }
+
+    /// 長串英文後面再打字母要繼續變長，不能卡在窗口尾端。
+    #[test]
+    fn test_mixed_long_lowercase_run_accepts_more_letters() {
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+        mixed_type(&mut s, &"a".repeat(70));
+        mixed_type(&mut s, "b");
+        let preedit = s.snapshot().preedit;
+        assert_eq!(preedit.chars().count(), 71);
+        assert_eq!(preedit, "a".repeat(70) + "b");
+
+        // 使用者原始回報：按住 z，之後打 a、b 都要接在後面。
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+        mixed_type(&mut s, &"z".repeat(70));
+        mixed_type(&mut s, "ab");
+        assert_eq!(s.snapshot().preedit.chars().count(), 72);
+        assert_eq!(s.snapshot().preedit, "z".repeat(70) + "ab");
+
+        // 標點走符號片段；標點後面的字母仍要能接上。
+        for ch in ['z', 'a'] {
+            let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+            mixed_type(&mut s, &ch.to_string().repeat(70));
+            mixed_type(&mut s, ".a");
+            assert_eq!(
+                s.snapshot().preedit,
+                ch.to_string().repeat(70) + ".a",
+                "{ch} 長 run 後的標點與字母"
+            );
+        }
+    }
+
+    /// 已有混打前綴時，後面的長小寫 run 仍要完整切分，不能吃掉尾巴。
+    #[test]
+    fn test_mixed_prefix_then_long_run_keeps_every_key() {
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+        mixed_type(&mut s, "sa");
+        mixed_type(&mut s, &"a".repeat(70));
+        let preedit = s.snapshot().preedit;
+        assert_eq!(preedit.chars().count(), 72);
+        assert_eq!(preedit, "sa".to_string() + &"a".repeat(70));
+    }
+
     /// 混合模式打完注音後要有中文候選；↓ 進入選取模式，空白開候選窗。
     #[test]
     fn test_mixed_candidates_open_on_down_and_space() {
@@ -2235,15 +2291,20 @@ mod tests {
         assert_eq!(hello.reading_candidate("hello", &lex), None);
     }
 
-    /// 對照 `english_autocomplete.go`：完整英文詞沒有補全，打錯一鍵有更正，
-    /// 超過 `MAX_WORD_BYTES` 的字母不再收進待定按鍵。
+    /// 對照 `english_autocomplete.go`：完整英文詞沒有補全，打錯一鍵有更正。
+    /// 詞表查詢有長度上限，但輸入本身不能因為上限丟掉按鍵。
     #[test]
     fn test_english_autocomplete_limits() {
         assert_eq!(typed("hellp").suggestion().as_deref(), Some("hello"));
         assert_eq!(typed("hello").suggestion(), None);
-        let long = "a".repeat(MAX_WORD_BYTES + 8);
+        let long = "a".repeat(crate::mixed::MAX_WORD_BYTES + 8);
         let input = typed(&long);
-        assert_eq!(input.pending().len(), MAX_WORD_BYTES);
+        assert_eq!(
+            input.pending().len(),
+            long.len(),
+            "超過詞表上限的按鍵仍要留在輸入裡"
+        );
+        assert_eq!(input.suggestion(), None, "超長 run 不做詞表補完");
     }
 
     /// 對照 `finishMixedTone` 接空白：照字面留下的按鍵補空白，顯示成注音的

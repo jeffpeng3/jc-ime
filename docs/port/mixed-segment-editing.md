@@ -107,6 +107,30 @@ Mixed 沒有音節格，游標改用**片段邊界索引** `mixed_cursor`：
 - 直接以 `Mode::Ja` 啟動、或使用者手動切換的日文不受影響，只有 `ja_run` 推斷
   出來的片段有這條退回規則。
 
+## 長串英文照字面續接
+
+`mixed_latin` 的英文詞表查詢窗口是 `MAX_ENGLISH_CHARS = 48`。這個窗口只限制
+「拿去查詞表或 autocomplete 的字尾長度」，不是英文片段的覆蓋上限。
+
+- 連續小寫 run 超過窗口後，DP 仍從 run 開頭保留一個英文字面種子，之後每個
+  按鍵以 1 個字元續接同一個英文片段。片段成本沿用 `en_word_cost`。
+- 詞表與 autocomplete 還是只看最後 48 個字元；超過窗口的部分照按鍵字面顯示。
+- 長 run 內不再讓日文或注音音節從中間接手。`a` 連打 70 次顯示 70 個 `a`，
+  200 次也完整顯示；長 run 後面再打 `b`、`.` 或空白都能繼續。
+- `Session` 的待定按鍵不再因為 `MAX_WORD_BYTES` 丟掉字母。上限只留給詞表
+  查詢，輸入本身保留完整按鍵流。
+
+測試在 `crates/jc-core/src/mixed_latin.rs` 與
+`crates/jc-core/src/session/mixed.rs`：
+
+| 測試 | 內容 |
+|---|---|
+| `test_long_lowercase_run_stays_literal` | 70、200 個 `a` 都是一個英文片段，讀音等於原字串。 |
+| `test_long_lowercase_run_continues_at_tail` | 70 個 `a` 後再打 `b`，增量 DP 不走失。 |
+| `test_mixed_prefix_then_long_run_keeps_every_key` | `sa` 加 70 個 `a` 仍完整覆蓋。 |
+| `test_mixed_long_lowercase_run_keeps_every_key` | Session 層 70、200 個 `a` 與 70 個 `z` 的 preedit 完整。 |
+| `test_mixed_long_lowercase_run_accepts_more_letters` | 長 run 後再打字母會繼續變長，`z` 70 次再加 `ab` 是 72 個字元。 |
+
 ## 測試
 
 新增在 `crates/jc-core/src/session/mixed.rs` 的測試模組：

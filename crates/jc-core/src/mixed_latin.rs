@@ -529,8 +529,28 @@ fn compute_cell(
     lexicon: &dyn SplitLexicon,
 ) {
     let mut best: [Option<Cell>; LANGS] = [None, None, None];
+    // 目前位置往前最長的連續小寫片段（不設上限）。長 run 要能從尾巴照字面
+    // 續接；詞表查詢仍只看後面 `MAX_ENGLISH_CHARS` 個字元。標點或空白接在
+    // 長 run 後面時，`run_end` 退一格，才不會讓標點回頭吃掉 run 的字尾。
+    let run_end = if chars[j - 1].is_ascii_lowercase() {
+        j
+    } else {
+        j - 1
+    };
+    let mut run_start = run_end;
+    while run_start > 0 && chars[run_start - 1].is_ascii_lowercase() {
+        run_start -= 1;
+    }
+    let long_window = run_end - run_start > MAX_ENGLISH_CHARS;
+    let long_run = j == run_end && long_window;
     let low = j.saturating_sub(MAX_SYLLABLE_CHARS);
     for start in low..j {
+        // 超過詞表窗口的長 run 只照字面：不再讓日文或注音音節從 run 內接手，
+        // 否則 `a` 的長串會在窗口邊界後變成かな，後面的字母也會失去覆蓋。
+        // 標點與聲調鍵也不能回頭吃掉長 run 的字尾。
+        if long_window && start >= run_start {
+            continue;
+        }
         let keys = &chars[start..j];
         if let Some(kana) = ja_grammar().lookup(keys) {
             let piece = syllable_score(JA, kana, true, opts, lexicon);
@@ -566,7 +586,7 @@ fn compute_cell(
         }
         // 英文錯字的最後一個字母（`hellp` 的 `p`）留在英文片段，交給補完，
         // 不要被注音的單字母音節吃掉。
-        if opts.single_letter_en_tail && j - start == 1 {
+        if opts.single_letter_en_tail && !long_window && j - start == 1 {
             consider_en_tail(&mut best, cells, start, opts.en_word_cost, opts);
         }
         let word: String = chars[start..j].iter().collect();
@@ -579,6 +599,7 @@ fn compute_cell(
         // 全小寫、結尾只剩一個字母的 run 仍要照字面留給 autocomplete。給它
         // 一個有懲罰的英文候選：真實詞表命中或合法羅馬字仍然優先勝出。
         let fallback_word = opts.single_letter_en_tail
+            && !long_window
             && word_len >= 4
             && !known
             && start == suffix_start
@@ -601,6 +622,28 @@ fn compute_cell(
                     best[EN] = Some(Cell {
                         fallback_en: true,
                         ..cell
+                    });
+                }
+            }
+        }
+    }
+    if long_run {
+        // 跨過詞表窗口的第一格用整個 run 當字面種子；之後每一格只續接一個
+        // 字元，維持「同一個英文片段」的狀態，任意長度都能走到尾端。
+        if j == run_start + MAX_ENGLISH_CHARS + 1 {
+            consider_en_literal(&mut best, cells, run_start, opts.en_word_cost, opts);
+        } else if let Some(prev) = cells[j - 1][EN] {
+            if prev.en_word {
+                let score = prev.score + opts.en_word_cost;
+                let pieces = prev.pieces.saturating_add(1);
+                if better(score, pieces, EN, best[EN], opts) {
+                    best[EN] = Some(Cell {
+                        score,
+                        pieces,
+                        prev_pos: (j - 1) as u32,
+                        prev_lang: EN as u8,
+                        en_word: true,
+                        fallback_en: false,
                     });
                 }
             }
@@ -674,6 +717,39 @@ fn consider_en_tail(
             en_word: false,
             fallback_en: false,
         });
+    }
+}
+
+/// 把長小寫 run 的英文字面種子併進 `best[EN]`。
+///
+/// 種子可以接在任何前一個語言後面（包含短 run 的照字面候選），但只用在
+/// 跨過詞表窗口的那一格；之後由 [`compute_cell`] 逐字元續接。
+fn consider_en_literal(
+    best: &mut [Option<Cell>; LANGS],
+    cells: &[[Option<Cell>; LANGS]],
+    start: usize,
+    piece_score: i32,
+    opts: &Options,
+) {
+    for prev_lang in [JA, ZH, EN] {
+        let Some(prev) = cells[start][prev_lang] else {
+            continue;
+        };
+        let mut score = prev.score + piece_score;
+        if prev_lang != EN {
+            score += opts.switch_cost;
+        }
+        let pieces = prev.pieces.saturating_add(1);
+        if better(score, pieces, prev_lang, best[EN], opts) {
+            best[EN] = Some(Cell {
+                score,
+                pieces,
+                prev_pos: start as u32,
+                prev_lang: prev_lang as u8,
+                en_word: true,
+                fallback_en: false,
+            });
+        }
     }
 }
 
@@ -1388,6 +1464,60 @@ mod tests {
         assert_eq!(split.pieces[0].text("sa vul3"), "sa");
         assert_eq!(split.pieces[1].text("sa vul3"), "vul3");
         assert_eq!(split.pieces[1].start, 3);
+    }
+
+    fn long_lower(ch: char, len: usize) -> String {
+        std::iter::repeat_n(ch, len).collect()
+    }
+
+    /// 超過詞表窗口的小寫 run 仍要照字面覆蓋整段，不能只顯示前 48 個字元。
+    #[test]
+    fn test_long_lowercase_run_stays_literal() {
+        for len in [70usize, 200] {
+            let text = long_lower('a', len);
+            let split = split(&text, &opts(), &NoLexicon)
+                .unwrap_or_else(|| panic!("{len} 個 a 應能完整切分"));
+            assert_eq!(split.len(), 1, "{len} 個 a 應是一個英文片段");
+            assert_eq!(split.pieces[0].lang, SplitLang::En);
+            assert_eq!(split.pieces[0].text(&text), text);
+            assert_eq!(split.pieces[0].reading, text);
+        }
+    }
+
+    /// 最後再多打一個字母時，長 run 要能從尾巴續接。
+    #[test]
+    fn test_long_lowercase_run_continues_at_tail() {
+        let text = long_lower('a', 71);
+        let split = split(&text, &opts(), &NoLexicon).expect("71 個 a 應能切分");
+        assert_eq!(split.len(), 1);
+        assert_eq!(split.pieces[0].lang, SplitLang::En);
+        assert_eq!(split.pieces[0].text(&text), text);
+
+        let mut splitter = LatinSplitter::new(opts());
+        splitter.set_text(&long_lower('a', 70), &NoLexicon);
+        splitter.push('b', &NoLexicon);
+        let (preview, tail) = splitter.preview();
+        assert_eq!(tail, "", "長 run 後面不該留下尾巴");
+        assert_eq!(
+            preview.pieces[0].text(splitter.text()),
+            long_lower('a', 70) + "b"
+        );
+    }
+
+    /// 前面已有混打片段時，後面的長小寫 run 仍要完整覆蓋。
+    #[test]
+    fn test_mixed_prefix_then_long_run_keeps_every_key() {
+        let text = format!("sa{}", long_lower('a', 70));
+        let split = split(&text, &opts(), &NoLexicon).expect("sa＋長 run 應能切分");
+        let covered: String = split.pieces.iter().map(|piece| piece.text(&text)).collect();
+        assert_eq!(covered, text, "不能漏掉長 run 後面的字母");
+        let last = split.pieces.last().expect("至少一個片段");
+        assert_eq!(last.lang, SplitLang::En);
+        assert!(
+            last.text(&text).ends_with(&long_lower('a', 70)),
+            "長 run 要完整留在英文片段：{:?}",
+            last.text(&text)
+        );
     }
 
     #[test]
