@@ -30,7 +30,7 @@ use crate::ja::lexicon::{
 };
 use crate::ja::lm::LanguageModel;
 use crate::ja::rewrite::particle_reading_alternative;
-use crate::lang::Mode;
+use crate::lang::Lang;
 use crate::segment::{Script, Segment};
 
 /// 單一詞條可佔用的讀音單位數上限，對齊前身 `lang.DefaultLimits().MaxWordUnits`。
@@ -221,7 +221,7 @@ impl JaResult {
             let start = surface.len();
             surface.push_str(&clause.surface);
             let end = surface.len();
-            segments.push(Segment::new(start, end, Mode::Ja, Script::Kana));
+            segments.push(Segment::new(start, end, Lang::Ja, Script::Kana));
         }
         Conversion {
             surface,

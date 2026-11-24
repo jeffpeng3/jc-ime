@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::ja::input::{can_sokuon, default_romaji_table};
-use crate::lang::Mode;
+use crate::lang::Lang;
 use crate::lattice::Lexicon;
 use crate::zh::keyboard::Keyboard;
 use crate::zh::pinyin::is_legal_base;
@@ -45,11 +45,11 @@ pub enum SplitLang {
 
 impl SplitLang {
     /// 對應的輸入模式。
-    pub fn mode(self) -> Mode {
+    pub fn mode(self) -> Lang {
         match self {
-            Self::Ja => Mode::Ja,
-            Self::Zh => Mode::Zh,
-            Self::En => Mode::En,
+            Self::Ja => Lang::Ja,
+            Self::Zh => Lang::Zh,
+            Self::En => Lang::En,
         }
     }
 

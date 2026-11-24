@@ -4,7 +4,8 @@
 //! `finishMixedTone` 與 `mixedBoundary`。
 
 use super::*;
-use crate::composition::{CompSegment, Lang, Owner};
+use crate::composition::{CompSegment, Lang as CompLang, Owner};
+use crate::lang::Lang;
 use crate::lattice::Lexicon;
 use crate::mixed::{default_english, prototype, English};
 use crate::zh::keyboard::Keyboard;
@@ -124,7 +125,7 @@ fn literal_en_plan(start: usize, end: usize) -> crate::mixed::Plan {
     crate::mixed::Plan {
         start,
         end,
-        mode: Mode::En,
+        mode: Lang::En,
         script: crate::segment::Script::Latin,
         kana: String::new(),
         kana_ok: false,
@@ -139,9 +140,9 @@ fn merge_adjacent_en_plans(plans: &mut Vec<crate::mixed::Plan>) {
     let mut merged: Vec<crate::mixed::Plan> = Vec::with_capacity(plans.len());
     for plan in plans.drain(..) {
         if let Some(last) = merged.last_mut() {
-            if last.mode == Mode::En
+            if last.mode == Lang::En
                 && last.script == crate::segment::Script::Latin
-                && plan.mode == Mode::En
+                && plan.mode == Lang::En
                 && plan.script == crate::segment::Script::Latin
                 && last.end == plan.start
             {
@@ -515,7 +516,7 @@ impl AsciiInput {
         );
         let plans = crate::mixed::visible_plans(plans, text);
         let plan = plans.last()?;
-        if plan.mode != Mode::Zh || plan.start == 0 {
+        if plan.mode != Lang::Zh || plan.start == 0 {
             return None;
         }
         // 前段要是純英文字母的 run；`3.5 ` 這種數字與標點混排仍照字面，
@@ -813,7 +814,7 @@ impl Session {
         let Some(last) = self.segments.last() else {
             return false;
         };
-        if last.mode != Mode::En || last.script != Script::Latin {
+        if last.mode != Lang::En || last.script != Script::Latin {
             return false;
         }
         let Some(text) = self.base.get(last.start..last.end) else {
@@ -1170,9 +1171,9 @@ impl Session {
             .map(|piece| {
                 let (text, mode, script) = match piece {
                     AsciiPiece::Zh(syllable) => {
-                        (self.decode_syllable(syllable), Mode::Zh, Script::Bopomofo)
+                        (self.decode_syllable(syllable), Lang::Zh, Script::Bopomofo)
                     }
-                    AsciiPiece::Literal(text) => (text.clone(), Mode::En, Script::Latin),
+                    AsciiPiece::Literal(text) => (text.clone(), Lang::En, Script::Latin),
                 };
                 let start = at;
                 at += text.len();
@@ -1184,9 +1185,9 @@ impl Session {
             let start = at;
             at += text.len();
             let (mode, script) = if text == self.ascii.pending() {
-                (Mode::En, Script::Latin)
+                (Lang::En, Script::Latin)
             } else {
-                (Mode::Zh, Script::Bopomofo)
+                (Lang::Zh, Script::Bopomofo)
             };
             self.segments.push(Segment::new(start, at, mode, script));
         }
@@ -1313,7 +1314,7 @@ impl Session {
     /// 原本的英文／注音前綴候選邏輯。
     fn planned_trailing_zh_reading(plans: &[crate::mixed::Plan], text: &str) -> Option<String> {
         let plan = plans.last()?;
-        if plan.mode != Mode::Zh {
+        if plan.mode != Lang::Zh {
             return None;
         }
         let literal = &text[plan.start..plan.end];
@@ -1386,7 +1387,7 @@ impl Session {
                 Ok(lattice) => {
                     let decoder = Decoder::new(&self.lexicon, &self.ctx);
                     let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
-                    out.push_str(&decoder.conversion(&lattice, &segs, Mode::Zh).surface);
+                    out.push_str(&decoder.conversion(&lattice, &segs, Lang::Zh).surface);
                 }
                 Err(_) => {
                     for unit in run.iter() {
@@ -1545,36 +1546,36 @@ impl Session {
                     };
                 }
                 match plan.mode {
-                    Mode::Ja => {
+                    Lang::Ja => {
                         if !plan.kana_ok || plan.kana.is_empty() {
                             RenderedPiece {
                                 surface: literal.to_string(),
-                                mode: Mode::Ja,
+                                mode: Lang::Ja,
                                 reading: String::new(),
                                 units: 0,
                             }
                         } else {
                             RenderedPiece {
                                 surface: self.decode_kana(&plan.kana),
-                                mode: Mode::Ja,
+                                mode: Lang::Ja,
                                 reading: plan.kana.clone(),
                                 units: plan.kana.chars().count(),
                             }
                         }
                     }
-                    Mode::Zh => {
+                    Lang::Zh => {
                         let (reading, surface) = self.zh_plan_surface(plan, literal);
                         let units = reading.split_whitespace().count();
                         RenderedPiece {
                             surface,
-                            mode: Mode::Zh,
+                            mode: Lang::Zh,
                             reading,
                             units,
                         }
                     }
                     _ => RenderedPiece {
                         surface: literal.to_string(),
-                        mode: Mode::En,
+                        mode: Lang::En,
                         reading: String::new(),
                         units: 0,
                     },
@@ -1646,9 +1647,9 @@ impl Session {
             let rune_start = crate::output::rune_len(&text[..start]);
             let rune_end = crate::output::rune_len(&text[..end]);
             let lang = match item.mode {
-                Mode::Ja => Lang::Ja,
-                Mode::Zh => Lang::Zh,
-                _ => Lang::Literal,
+                Lang::Ja => CompLang::Ja,
+                Lang::Zh => CompLang::Zh,
+                _ => CompLang::Literal,
             };
             pieces.push(CompSegment::new(
                 rune_start..rune_end,
@@ -1683,7 +1684,7 @@ impl Session {
             Ok(lattice) => {
                 let decoder = Decoder::new(&self.lexicon, &self.ctx);
                 let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
-                let surface = decoder.conversion(&lattice, &segs, Mode::Zh).surface;
+                let surface = decoder.conversion(&lattice, &segs, Lang::Zh).surface;
                 // 詞典詞的成本可能高於未知詞，最佳路徑會停在讀音字面。
                 // 有真字時改顯示那條路徑，`ㄨㄢ` 才會是「彎」。
                 let literal: String = units.concat();
@@ -1708,7 +1709,7 @@ impl Session {
 /// 一個切分片段轉成顯示字面後的結果。
 struct RenderedPiece {
     surface: String,
-    mode: Mode,
+    mode: Lang,
     reading: String,
     units: usize,
 }
@@ -2394,7 +2395,7 @@ mod tests {
         mixed_type(&mut s, "rishireej/ sasmall");
         let snap = s.snapshot();
         assert_eq!(snap.preedit, "りしれ供さsmall");
-        let got: Vec<(Mode, String)> = s
+        let got: Vec<(Lang, String)> = s
             .segments()
             .iter()
             .map(|segment| {
@@ -2407,10 +2408,10 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                (Mode::Ja, "りしれ".to_string()),
-                (Mode::Zh, "供".to_string()),
-                (Mode::Ja, "さ".to_string()),
-                (Mode::En, "small".to_string()),
+                (Lang::Ja, "りしれ".to_string()),
+                (Lang::Zh, "供".to_string()),
+                (Lang::Ja, "さ".to_string()),
+                (Lang::En, "small".to_string()),
             ],
             "批次規劃是 rishire｜ej/ ｜sa｜small"
         );
@@ -2759,12 +2760,12 @@ mod tests {
             let want = router.convert(input).expect("轉換");
             assert_eq!(got_surface, want.surface, "{input:?} 字面");
 
-            let got: Vec<(Mode, String)> = session
+            let got: Vec<(Lang, String)> = session
                 .segments()
                 .iter()
                 .map(|seg| (seg.mode, got_surface[seg.start..seg.end].to_string()))
                 .collect();
-            let want_segments: Vec<(Mode, String)> = want
+            let want_segments: Vec<(Lang, String)> = want
                 .segments
                 .iter()
                 .map(|seg| (seg.mode, seg.surface.clone()))

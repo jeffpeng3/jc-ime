@@ -5,12 +5,12 @@
 //! 1. [`classify`] 與 [`scan`] 判斷英數詞的種類（英文、網址、email、識別字、
 //!    全角英數、數字）；
 //! 2. [`Router::segments`] 把輸入切成語言片段，`Segment::mode` 是該片段的語言
-//!    （[`Mode::Zh`]、[`Mode::Ja`]、[`Mode::En`]），`script` 是字面種類；
+//!    （[`Lang::Zh`]、[`Lang::Ja`]、[`Lang::En`]），`script` 是字面種類；
 //! 3. [`Router::convert`] 把每個片段交給對應的轉換器：注音走
 //!    [`crate::decode::Decoder`]、日文走 [`crate::ja::decode::JaDecoder`]、
 //!    英文照原樣直出；
-//! 4. [`Router::detect`] 回報整段輸入的 [`Mode`]，只有單一語言時就不是
-//!    [`Mode::Mixed`]。
+//! 4. [`Router::detect`] 回報整段輸入的 [`Lang`]，只有單一語言時就不是
+//!    [`Lang::Mixed`]。
 //!
 //! 判定規則沿用前身 `core/ja/mixed`：大寫、全角、數字、網址、email、識別字與
 //! 學過的英文詞一律照字面；小寫且是英文詞典的完整單字也照字面；其餘能完整
@@ -29,7 +29,7 @@ use crate::decode::{Conversion, Decoder, Locks};
 use crate::ja::decode::{JaContext, JaDecoder};
 use crate::ja::input::{RomajiEvent, RomajiInput};
 use crate::key::Key;
-use crate::lang::Mode;
+use crate::lang::Lang;
 use crate::lattice::{Lattice as ZhLattice, LatticeError, Lexicon};
 use crate::score::ScoreContext;
 use crate::segment::{detect as detect_script, Script, Segment};
@@ -1842,7 +1842,7 @@ struct Atom {
     start: usize,
     end: usize,
     script: Script,
-    mode: Option<Mode>,
+    mode: Option<Lang>,
     kind: AtomKind,
     /// 羅馬字已還原的かな；只有整段可完整かな化時才有值。
     kana: Option<String>,
@@ -1861,7 +1861,7 @@ struct Atom {
 pub(crate) struct Plan {
     pub(crate) start: usize,
     pub(crate) end: usize,
-    pub(crate) mode: Mode,
+    pub(crate) mode: Lang,
     pub(crate) script: Script,
     pub(crate) kana: String,
     pub(crate) kana_ok: bool,
@@ -1945,16 +1945,16 @@ impl<'a> Router<'a> {
     }
 
     /// 回報整段輸入的語言：只有單一語言時就是那個語言，否則
-    /// [`Mode::Mixed`]。空輸入視為英文直出。
-    pub fn detect(&self, input: &str) -> Mode {
+    /// [`Lang::Mixed`]。空輸入視為英文直出。
+    pub fn detect(&self, input: &str) -> Lang {
         let segments = self.segments(input);
         let Some(first) = segments.first() else {
-            return Mode::En;
+            return Lang::En;
         };
         if segments.iter().all(|s| s.mode == first.mode) {
             first.mode
         } else {
-            Mode::Mixed
+            Lang::Mixed
         }
     }
 
@@ -2025,7 +2025,7 @@ impl<'a> Router<'a> {
     fn convert_plan(&self, plan: &Plan, input: &str) -> Result<(String, i32), MixedError> {
         let literal = &input[plan.start..plan.end];
         match plan.mode {
-            Mode::Zh => match &self.zh {
+            Lang::Zh => match &self.zh {
                 Some(route) => {
                     if let Some(reading) = &plan.zh {
                         let syllables: Vec<String> =
@@ -2042,12 +2042,12 @@ impl<'a> Router<'a> {
                     let lattice = ZhLattice::build(&syllables, route.lexicon, route.ctx)?;
                     let decoder = Decoder::new(route.lexicon, route.ctx);
                     let (segs, cost) = decoder.best(&lattice, &Locks::new(), false);
-                    let conversion = decoder.conversion(&lattice, &segs, Mode::Zh);
+                    let conversion = decoder.conversion(&lattice, &segs, Lang::Zh);
                     Ok((conversion.surface, cost))
                 }
                 None => Ok((literal.to_string(), 0)),
             },
-            Mode::Ja => {
+            Lang::Ja => {
                 // すでにかな・漢字で書かれた字面與符號沒有羅馬字可解，照原樣輸出。
                 if !plan.kana_ok || plan.kana.is_empty() || plan.script == Script::Symbol {
                     return Ok((literal.to_string(), 0));
@@ -2123,7 +2123,7 @@ fn convert_zh_group(
     let lattice = ZhLattice::build(&syllables, route.lexicon, route.ctx)?;
     let decoder = Decoder::new(route.lexicon, route.ctx);
     let (segs, group_cost) = decoder.best(&lattice, &Locks::new(), false);
-    let conversion = decoder.conversion(&lattice, &segs, Mode::Zh);
+    let conversion = decoder.conversion(&lattice, &segs, Lang::Zh);
     surface.push_str(&conversion.surface);
     *cost = cost.saturating_add(group_cost);
     group.clear();
@@ -2169,7 +2169,7 @@ pub struct AtomView {
     /// 書寫系統。
     pub script: Script,
     /// 語言；還沒判定時是 `None`。
-    pub mode: Option<Mode>,
+    pub mode: Option<Lang>,
     /// atom 種類名稱。
     pub kind: &'static str,
     /// 輸入字面。
@@ -2243,7 +2243,7 @@ pub struct PlanView {
     /// 輸入終點（位元組）。
     pub end: usize,
     /// 語言。
-    pub mode: Mode,
+    pub mode: Lang,
     /// 書寫系統。
     pub script: Script,
     /// 輸入字面。
@@ -2297,7 +2297,7 @@ pub fn explain(
 pub(crate) fn visible_plans(plans: Vec<Plan>, input: &str) -> Vec<Plan> {
     let is_split = |plan: &Plan| {
         plan.zh.is_some()
-            || (plan.mode == Mode::Ja && plan.script == Script::Latin && !plan.kana.is_empty())
+            || (plan.mode == Lang::Ja && plan.script == Script::Latin && !plan.kana.is_empty())
     };
     let mut keep = vec![true; plans.len()];
     for (index, plan) in plans.iter().enumerate() {
@@ -2329,7 +2329,7 @@ pub struct MixedSegment {
     /// 輸入上的終點（UTF-8 位元組，不含）。
     pub input_end: usize,
     /// 這一段的語言。
-    pub mode: Mode,
+    pub mode: Lang,
     /// 這一段的字面種類。
     pub script: Script,
     /// 這一段的輸出字面。
@@ -2373,7 +2373,7 @@ impl MixedResult {
     }
 
     /// 依序回報每段的語言。
-    pub fn languages(&self) -> Vec<Mode> {
+    pub fn languages(&self) -> Vec<Lang> {
         self.segments.iter().map(|s| s.mode).collect()
     }
 }
@@ -2453,7 +2453,7 @@ fn build_atoms(
                 start,
                 end: i,
                 script: Script::Bopomofo,
-                mode: Some(Mode::Zh),
+                mode: Some(Lang::Zh),
                 kind: AtomKind::Zhuyin,
                 kana: None,
                 zh: None,
@@ -2485,7 +2485,7 @@ fn build_atoms(
                     end: piece_end,
                     script,
                     mode: if script == Script::Kana {
-                        Some(Mode::Ja)
+                        Some(Lang::Ja)
                     } else {
                         None
                     },
@@ -2935,7 +2935,7 @@ fn push_literal_piece(
             start: offset,
             end: offset + core.len(),
             script: Script::Latin,
-            mode: Some(Mode::Ja),
+            mode: Some(Lang::Ja),
             kind: AtomKind::Word,
             kana: Some(kana),
             zh: None,
@@ -2953,7 +2953,7 @@ fn push_literal_piece(
             start: offset,
             end: offset + prefix.len(),
             script: Script::Latin,
-            mode: Some(Mode::Ja),
+            mode: Some(Lang::Ja),
             kind: AtomKind::Word,
             kana: Some(kana),
             zh: None,
@@ -2970,7 +2970,7 @@ fn push_literal_piece(
             } else {
                 Script::Latin
             },
-            mode: Some(Mode::En),
+            mode: Some(Lang::En),
             kind: AtomKind::Word,
             kana: None,
             zh: None,
@@ -2996,7 +2996,7 @@ fn latin_literal_atom(start: usize, end: usize, text: &str) -> Atom {
         } else {
             Script::Latin
         },
-        mode: Some(Mode::En),
+        mode: Some(Lang::En),
         kind: AtomKind::Word,
         kana: None,
         zh: None,
@@ -3153,10 +3153,10 @@ fn group_words(atoms: &mut Vec<Atom>, input: &str) {
             let mut english = false;
             for &w in &words {
                 let mode = atoms[w].mode;
-                if mode == Some(Mode::En) {
+                if mode == Some(Lang::En) {
                     english = true;
-                } else if english || (mode == Some(Mode::Ja) && kana_units(&atoms[w]) < 2) {
-                    atoms[w].mode = Some(Mode::En);
+                } else if english || (mode == Some(Lang::Ja) && kana_units(&atoms[w]) < 2) {
+                    atoms[w].mode = Some(Lang::En);
                     atoms[w].kana = None;
                     english = true;
                 }
@@ -3209,7 +3209,7 @@ fn kana_units(atom: &Atom) -> usize {
 }
 
 fn resolve_han(atoms: &mut [Atom]) {
-    let modes: Vec<Option<Mode>> = atoms.iter().map(|a| a.mode).collect();
+    let modes: Vec<Option<Lang>> = atoms.iter().map(|a| a.mode).collect();
     for i in 0..atoms.len() {
         if atoms[i].kind != AtomKind::Han || atoms[i].mode.is_some() {
             continue;
@@ -3217,24 +3217,24 @@ fn resolve_han(atoms: &mut [Atom]) {
         let previous = modes[..i].iter().rev().find_map(|m| *m);
         let next = modes[i + 1..].iter().find_map(|m| *m);
         let mode = match (previous, next) {
-            (Some(Mode::Ja), _) | (_, Some(Mode::Ja)) => Mode::Ja,
+            (Some(Lang::Ja), _) | (_, Some(Lang::Ja)) => Lang::Ja,
             (Some(m), _) => m,
             (None, Some(m)) => m,
-            (None, None) => Mode::Zh,
+            (None, None) => Lang::Zh,
         };
         atoms[i].mode = Some(mode);
     }
 }
 
 fn resolve_symbols(atoms: &mut [Atom]) {
-    let modes: Vec<Option<Mode>> = atoms.iter().map(|a| a.mode).collect();
+    let modes: Vec<Option<Lang>> = atoms.iter().map(|a| a.mode).collect();
     for i in 0..atoms.len() {
         if atoms[i].kind != AtomKind::Symbol || atoms[i].mode.is_some() {
             continue;
         }
         let previous = modes[..i].iter().rev().find_map(|m| *m);
         let next = modes[i + 1..].iter().find_map(|m| *m);
-        let mode = previous.or(next).unwrap_or(Mode::En);
+        let mode = previous.or(next).unwrap_or(Lang::En);
         atoms[i].mode = Some(mode);
     }
 }
@@ -3252,18 +3252,18 @@ fn script_family(script: Script) -> u8 {
 fn merge_atoms(atoms: &[Atom], input: &str) -> Vec<Plan> {
     let mut plans: Vec<Plan> = Vec::new();
     for atom in atoms {
-        let mode = atom.mode.unwrap_or(Mode::En);
+        let mode = atom.mode.unwrap_or(Lang::En);
         if let Some(last) = plans.last_mut() {
             if last.mode == mode && script_family(last.script) == script_family(atom.script) {
                 last.end = atom.end;
                 last.verbatim = last.verbatim && atom.verbatim;
                 match atom.kind {
                     AtomKind::Kana => last.kana.push_str(&input[atom.start..atom.end]),
-                    AtomKind::Word if mode == Mode::Ja => match &atom.kana {
+                    AtomKind::Word if mode == Lang::Ja => match &atom.kana {
                         Some(kana) => last.kana.push_str(kana),
                         None => last.kana_ok = false,
                     },
-                    AtomKind::Word if mode == Mode::Zh => {
+                    AtomKind::Word if mode == Lang::Zh => {
                         if let Some(reading) = &atom.zh {
                             match &mut last.zh {
                                 Some(zh) => {
@@ -3295,11 +3295,11 @@ fn merge_atoms(atoms: &[Atom], input: &str) -> Vec<Plan> {
         };
         match atom.kind {
             AtomKind::Kana => plan.kana = input[atom.start..atom.end].to_string(),
-            AtomKind::Word if mode == Mode::Ja => match &atom.kana {
+            AtomKind::Word if mode == Lang::Ja => match &atom.kana {
                 Some(kana) => plan.kana = kana.clone(),
                 None => plan.kana_ok = false,
             },
-            AtomKind::Word if mode == Mode::Zh => {
+            AtomKind::Word if mode == Lang::Zh => {
                 if atom.zh.is_some() {
                     plan.zh = atom.zh.clone();
                     plan.zh_done.extend(atom.zh_done.iter().copied());
@@ -3325,11 +3325,11 @@ mod tests {
         English::new(Some(prototype().clone()))
     }
 
-    fn mode_of(name: &str) -> Mode {
+    fn mode_of(name: &str) -> Lang {
         match name {
-            "zh" => Mode::Zh,
-            "ja" => Mode::Ja,
-            _ => Mode::En,
+            "zh" => Lang::Zh,
+            "ja" => Lang::Ja,
+            _ => Lang::En,
         }
     }
 
@@ -3983,7 +3983,7 @@ mod tests {
         let router = Router::new().with_english(&english);
         let segments = router.segments("hello");
         assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0].mode, Mode::En);
+        assert_eq!(segments[0].mode, Lang::En);
         assert_eq!(router.convert("hello").expect("轉換").surface, "hello");
         // `configuration` 不在內建原型裡，只有載入資料包才會被當英文詞。
         assert_eq!(
@@ -4112,21 +4112,21 @@ mod tests {
     #[test]
     fn test_detect_mode() {
         let r = Router::new();
-        assert_eq!(r.detect("ㄓㄨˋ"), Mode::Zh);
-        assert_eq!(r.detect("かな"), Mode::Ja);
-        assert_eq!(r.detect("hello"), Mode::En);
-        assert_eq!(r.detect("watashiwaㄉㄚˋdesu"), Mode::Mixed);
-        assert_eq!(r.detect(""), Mode::En);
+        assert_eq!(r.detect("ㄓㄨˋ"), Lang::Zh);
+        assert_eq!(r.detect("かな"), Lang::Ja);
+        assert_eq!(r.detect("hello"), Lang::En);
+        assert_eq!(r.detect("watashiwaㄉㄚˋdesu"), Lang::Mixed);
+        assert_eq!(r.detect(""), Lang::En);
     }
 
     #[test]
     fn test_watashi_routes_to_japanese() {
         let english = English::new(None);
         let r = Router::new().with_english(&english);
-        assert_eq!(r.detect("watashi"), Mode::Ja);
+        assert_eq!(r.detect("watashi"), Lang::Ja);
         let segs = r.segments("watashi");
         assert_eq!(segs.len(), 1);
-        assert_eq!(segs[0].mode, Mode::Ja);
+        assert_eq!(segs[0].mode, Lang::Ja);
         assert_eq!(segs[0].script, Script::Latin);
         assert_eq!(r.convert("watashi").expect("轉換").surface, "わたし");
 
@@ -4147,13 +4147,13 @@ mod tests {
         let segs = r.segments(input);
         assert_eq!(segs.len(), 3);
         assert_eq!(&input[segs[0].start..segs[0].end], "watashiwa");
-        assert_eq!(segs[0].mode, Mode::Ja);
+        assert_eq!(segs[0].mode, Lang::Ja);
         assert_eq!(segs[0].script, Script::Latin);
         assert_eq!(&input[segs[1].start..segs[1].end], "ㄉㄚˋㄐㄧ");
-        assert_eq!(segs[1].mode, Mode::Zh);
+        assert_eq!(segs[1].mode, Lang::Zh);
         assert_eq!(segs[1].script, Script::Bopomofo);
         assert_eq!(&input[segs[2].start..segs[2].end], "desu");
-        assert_eq!(segs[2].mode, Mode::Ja);
+        assert_eq!(segs[2].mode, Lang::Ja);
 
         // 位元組位移：注音聲母、介音、韻母是 3 bytes，聲調符號 `ˋ` 是 2 bytes，
         // 所以「ㄉㄚˋㄐㄧ」共 14 bytes，接在 9 bytes 後面。
@@ -4169,13 +4169,13 @@ mod tests {
         let r = Router::new().with_english(&e).with_ja(&ja);
         let result = r.convert("kyouhaAPI").expect("轉換");
         assert_eq!(result.surface, "今日はAPI");
-        assert_eq!(result.languages(), vec![Mode::Ja, Mode::En]);
+        assert_eq!(result.languages(), vec![Lang::Ja, Lang::En]);
         assert_eq!(result.segments[1].surface, "API");
 
         let url = "https://example.com/a?b=1#x";
         let result = r.convert(&format!("kyouha{url}")).expect("轉換");
         assert_eq!(result.surface, format!("今日は{url}"));
-        assert_eq!(result.languages(), vec![Mode::Ja, Mode::En]);
+        assert_eq!(result.languages(), vec![Lang::Ja, Lang::En]);
     }
 
     #[test]
@@ -4185,7 +4185,7 @@ mod tests {
         let r = Router::new().with_english(&e).with_ja(&ja);
         let result = r.convert("kyouhafoo@example.com").expect("轉換");
         assert_eq!(result.surface, "今日はfoo@example.com");
-        assert_eq!(result.languages(), vec![Mode::Ja, Mode::En]);
+        assert_eq!(result.languages(), vec![Lang::Ja, Lang::En]);
     }
 
     #[test]
@@ -4194,7 +4194,7 @@ mod tests {
         let r = Router::new().with_zh(&lex, &ctx);
         let result = r.convert("ㄉㄚˋㄐㄧㄅㄚ").expect("轉換");
         assert_eq!(result.surface, "大雞巴");
-        assert_eq!(result.languages(), vec![Mode::Zh]);
+        assert_eq!(result.languages(), vec![Lang::Zh]);
         assert_eq!(result.segments[0].input_start, 0);
         assert_eq!(result.segments[0].end_utf16, 3);
         assert_eq!(result.cursor_utf16, 3);
@@ -4239,7 +4239,7 @@ mod tests {
         assert_eq!(conversion.surface, "大雞巴");
         assert_eq!(conversion.segments[0].start, 0);
         assert_eq!(conversion.segments[0].end, 9);
-        assert_eq!(conversion.segments[0].mode, Mode::Zh);
+        assert_eq!(conversion.segments[0].mode, Lang::Zh);
     }
 
     #[test]
@@ -4273,13 +4273,13 @@ mod tests {
         let r = Router::new().with_english(&e);
         let segs = r.segments("kyouhaAPI");
         assert_eq!(segs.len(), 2);
-        assert_eq!(segs[0].mode, Mode::Ja);
-        assert_eq!(segs[1].mode, Mode::En);
+        assert_eq!(segs[0].mode, Lang::Ja);
+        assert_eq!(segs[1].mode, Lang::En);
 
         // 打不成合法羅馬字的英文字不拆。
         let segs = r.segments("kubectl");
         assert_eq!(segs.len(), 1);
-        assert_eq!(segs[0].mode, Mode::En);
+        assert_eq!(segs[0].mode, Lang::En);
     }
 
     #[test]
@@ -4337,7 +4337,7 @@ mod tests {
         let r = Router::new().with_english(&e);
         let result = r.convert("kubectl pCloud GitHub").expect("轉換");
         assert_eq!(result.surface, "kubectl pCloud GitHub");
-        assert!(result.languages().iter().all(|&m| m == Mode::En));
+        assert!(result.languages().iter().all(|&m| m == Lang::En));
     }
 
     #[test]
@@ -4350,8 +4350,8 @@ mod tests {
             .map(|segment| &"desu is a good sentence"[segment.start..segment.end])
             .collect();
         assert_eq!(texts, vec!["desu", " ", "is a good sentence"]);
-        assert_eq!(segments[0].mode, Mode::Ja);
-        assert_eq!(segments[2].mode, Mode::En);
+        assert_eq!(segments[0].mode, Lang::Ja);
+        assert_eq!(segments[2].mode, Lang::En);
     }
 
     #[test]
@@ -4379,7 +4379,7 @@ mod tests {
         let r = Router::new().with_zh(&lex, &ctx).with_english(&e);
         let result = r.convert("kanji").expect("轉換");
         assert_eq!(result.surface, "かんじ");
-        assert_eq!(result.languages(), vec![Mode::Ja]);
+        assert_eq!(result.languages(), vec![Lang::Ja]);
     }
 
     #[test]
@@ -4399,7 +4399,7 @@ mod tests {
         assert_eq!(result.surface, "りしれ供さsmall");
         assert_eq!(
             result.languages(),
-            vec![Mode::Ja, Mode::Zh, Mode::Ja, Mode::En]
+            vec![Lang::Ja, Lang::Zh, Lang::Ja, Lang::En]
         );
     }
 
@@ -4424,7 +4424,7 @@ mod tests {
         assert_eq!(result.surface, "りしれ供さ小");
         assert_eq!(
             result.languages(),
-            vec![Mode::Ja, Mode::Zh, Mode::Ja, Mode::Zh]
+            vec![Lang::Ja, Lang::Zh, Lang::Ja, Lang::Zh]
         );
         let pieces: Vec<&str> = result
             .segments
@@ -4476,7 +4476,7 @@ mod tests {
         let segs = r.segments("5k42.");
         assert_eq!(segs.len(), 1);
         assert_eq!((segs[0].start, segs[0].end), (0, 5));
-        assert_eq!(segs[0].mode, Mode::Zh);
+        assert_eq!(segs[0].mode, Lang::Zh);
 
         // 英文句點不是注音，切成英文詞加符號。
         let segs = r.segments("hello.");
@@ -4579,12 +4579,12 @@ mod tests {
         // `xi` 單獨是合法羅馬字；前一個 run 是注音時，R4 讓它留在注音。
         let alone = r.segments("xi");
         assert_eq!(alone.len(), 1);
-        assert_eq!(alone[0].mode, Mode::Ja);
+        assert_eq!(alone[0].mode, Lang::Ja);
 
         let carried = r.segments("dk4 xi");
         assert_eq!(carried.len(), 2);
-        assert_eq!(carried[0].mode, Mode::Zh);
-        assert_eq!(carried[1].mode, Mode::Zh);
+        assert_eq!(carried[0].mode, Lang::Zh);
+        assert_eq!(carried[1].mode, Lang::Zh);
     }
 
     #[test]
@@ -4617,7 +4617,7 @@ mod tests {
         let segs = r.segments("desu ");
         assert_eq!(segs.len(), 2);
         assert_eq!((segs[0].start, segs[0].end), (0, 4));
-        assert_eq!(segs[0].mode, Mode::Ja);
+        assert_eq!(segs[0].mode, Lang::Ja);
         assert_eq!(segs[1].script, Script::Symbol);
         assert_eq!(&"desu "[segs[1].start..segs[1].end], " ");
     }
@@ -4636,7 +4636,7 @@ mod tests {
         // 無詞表也不能把合法羅馬字或「かな前綴＋英文詞」整段並成英文。
         let segs = r.segments("rishire");
         assert_eq!(segs.len(), 1);
-        assert_eq!(segs[0].mode, Mode::Ja);
+        assert_eq!(segs[0].mode, Lang::Ja);
         let segs = r.segments("kyouhahello");
         let texts: Vec<&str> = segs
             .iter()

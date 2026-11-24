@@ -6,7 +6,7 @@
 use unicode_categories::UnicodeCategories;
 use unicode_script::{Script as UnicodeScript, UnicodeScript as _};
 
-use crate::lang::Mode;
+use crate::lang::Lang;
 use crate::zh::han::is_han;
 use crate::zh::syllable::{class_of, Class};
 
@@ -71,13 +71,13 @@ impl Script {
         matches!(self, Script::Bopomofo | Script::Kana)
     }
 
-    /// 這個書寫系統能確定的輸入模式；不是強訊號時回傳 [`Mode::Mixed`]，
+    /// 這個書寫系統能確定的輸入模式；不是強訊號時回傳 [`Lang::Mixed`]，
     /// 由呼叫端依候選決定語言。
-    pub fn mode(self) -> Mode {
+    pub fn mode(self) -> Lang {
         match self {
-            Script::Bopomofo => Mode::Zh,
-            Script::Kana => Mode::Ja,
-            _ => Mode::Mixed,
+            Script::Bopomofo => Lang::Zh,
+            Script::Kana => Lang::Ja,
+            _ => Lang::Mixed,
         }
     }
 }
@@ -93,14 +93,14 @@ pub struct Segment {
     /// 片段終點（不含）。
     pub end: usize,
     /// 這個片段所屬的輸入模式。
-    pub mode: Mode,
+    pub mode: Lang,
     /// 這個片段的書寫系統。
     pub script: Script,
 }
 
 impl Segment {
     /// 建立片段。
-    pub fn new(start: usize, end: usize, mode: Mode, script: Script) -> Self {
+    pub fn new(start: usize, end: usize, mode: Lang, script: Script) -> Self {
         Self {
             start,
             end,
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn segment_length_is_end_minus_start() {
-        let s = Segment::new(2, 5, Mode::Ja, Script::Kana);
+        let s = Segment::new(2, 5, Lang::Ja, Script::Kana);
         assert_eq!(s.len(), 3);
         assert!(!s.is_empty());
         assert_eq!(s.start, 2);
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn inverted_range_has_zero_length() {
-        let s = Segment::new(7, 3, Mode::Zh, Script::Bopomofo);
+        let s = Segment::new(7, 3, Lang::Zh, Script::Bopomofo);
         assert_eq!(s.len(), 0);
         assert!(s.is_empty());
     }
@@ -530,7 +530,7 @@ mod tests {
         let second = splitter.split("かな");
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].script, Script::Kana);
-        assert_eq!(second[0].mode, Mode::Ja);
+        assert_eq!(second[0].mode, Lang::Ja);
 
         first[0].script = Script::Symbol;
         let third = splitter.split("a1ㄓ");

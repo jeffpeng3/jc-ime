@@ -35,13 +35,12 @@ pub enum Lang {
 }
 
 impl Lang {
-    /// 由輸入模式對應到片段語言；英文與混合模式沒有單一語言。
-    pub fn from_mode(mode: Mode) -> Option<Self> {
-        match mode {
-            Mode::Zh => Some(Self::Zh),
-            Mode::Ja => Some(Self::Ja),
-            Mode::En | Mode::Mixed => None,
-        }
+    /// 由輸入模式對應到片段語言。
+    ///
+    /// 收斂後唯一的輸入模式是混打，沒有單一片段語言；語言一律由分段器依
+    /// 實際文字判定。
+    pub fn from_mode(_mode: Mode) -> Option<Self> {
+        None
     }
 
     /// 這個語言是否會被送去轉換。

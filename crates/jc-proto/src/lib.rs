@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub use frame::{DEFAULT_MAX_FRAME, HEADER_LEN};
 pub use jc_core::candidate::CandidateSource;
-pub use jc_core::{Key, KeyCode, Mode, Snapshot};
+pub use jc_core::{Key, KeyCode, Lang, Mode, Snapshot};
 pub use message::{read_message, read_payload, write_message};
 
 /// 協定版本。握手時兩邊的版本必須相同。
@@ -182,13 +182,13 @@ pub struct VocabInfo {
     pub raw: Option<serde_json::Value>,
 }
 
-/// 核心的 [`Mode`] 轉成線格式名稱。
-fn mode_name(mode: Mode) -> &'static str {
+/// 核心的片段語言 [`Lang`] 轉成線格式名稱。
+fn mode_name(mode: Lang) -> &'static str {
     match mode {
-        Mode::Zh => "zhuyin",
-        Mode::Ja => "japanese",
-        Mode::En => "english",
-        Mode::Mixed => "mixed",
+        Lang::Zh => "zhuyin",
+        Lang::Ja => "japanese",
+        Lang::En => "english",
+        Lang::Mixed => "mixed",
     }
 }
 

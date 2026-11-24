@@ -45,7 +45,7 @@ use crate::ja::input::RomajiInput;
 use crate::ja::live::{self, Controller as LiveController, Plan as LivePlan};
 use crate::ja::personal as ja_personal;
 use crate::key::{Key, KeyCode};
-use crate::lang::Mode;
+use crate::lang::{Lang, Mode};
 use crate::lattice::{InMemoryLexicon, Lattice};
 use crate::mixed::{default_english, space_text, English, Spacing};
 use crate::output::{rune_offset, utf16_offset, Snapshot};
@@ -295,8 +295,6 @@ pub struct Session {
     pub(super) literal_anchor: usize,
     /// 字面按鍵在目前轉換結果中的位元組位置。
     pub(super) literal_offset: usize,
-    /// 英文與混合模式累積的原始輸入。
-    pub(super) raw: String,
     pub(super) candidates: Vec<Candidate>,
     pub(super) highlighted: usize,
     /// 候選視窗是否由 Tab／方向鍵開啟；數字鍵只在開啟時選字。
@@ -370,8 +368,6 @@ pub struct Session {
     pub(super) ja_run_keys: String,
     /// 日文推斷前的模式；結束日文片段時還原。
     pub(super) ja_prev_mode: Mode,
-    /// Shift 切到 En 之前的模式；再按一次回到它，而不是固定的 Zh。
-    pub(super) toggle_previous_mode: Option<Mode>,
     /// 目前開啟的候選選單。
     pub(super) menu: Option<Menu>,
     /// 表情分頁的最後選擇；下次開選單時沿用。
@@ -469,7 +465,6 @@ impl Session {
             literal: String::new(),
             literal_anchor: 0,
             literal_offset: 0,
-            raw: String::new(),
             candidates: Vec::new(),
             highlighted: 0,
             candidate_window: false,
@@ -495,7 +490,6 @@ impl Session {
             ja_run: false,
             ja_run_keys: String::new(),
             ja_prev_mode: Mode::Mixed,
-            toggle_previous_mode: None,
             menu: None,
             palette_tab: 0,
             symbol_recent: Vec::new(),
@@ -700,26 +694,16 @@ impl Session {
     pub fn set_mode(&mut self, mode: Mode) -> Snapshot {
         self.clear_composition();
         self.config.mode = mode;
-        self.toggle_previous_mode = None;
         self.rebuild();
         self.snapshot()
     }
 
-    /// 在目前語言與純英文 [`Mode::En`] 之間切換。
+    /// 中英切換。
     ///
-    /// 第一次從 `Mixed`／`Ja`／`Zh` 切到 `En` 時記住原模式；再按一次回到它。
-    /// 引擎直接以 `En` 啟動而沒有記錄時回到 `Mixed`，因為中文使用者一律用
-    /// 混打模式，不再回到純注音 `Zh`。
+    /// 英文由外殼直接放行按鍵，不進引擎；引擎只回目前快照，不改變組字或
+    /// 記住前一個模式。外殼自己保存中英模式並在重連後還原。
     pub fn toggle_english(&mut self) -> Snapshot {
-        if self.config.mode != Mode::En {
-            let previous = self.config.mode;
-            let snapshot = self.set_mode(Mode::En);
-            self.toggle_previous_mode = Some(previous);
-            snapshot
-        } else {
-            let previous = self.toggle_previous_mode.take().unwrap_or(Mode::Mixed);
-            self.set_mode(previous)
-        }
+        self.snapshot()
     }
 
     /// 開啟符號選單；有最近使用的符號時從「最近」開，否則從第一個分類開。
@@ -1325,7 +1309,7 @@ mod tests {
         let words: Vec<&str> = ["我", "想", "吃"].to_vec();
         for (segment, word) in snap.segments.iter().zip(words) {
             assert_eq!(&snap.preedit[segment.start..segment.end], word);
-            assert_eq!(segment.mode, Mode::Zh);
+            assert_eq!(segment.mode, Lang::Zh);
         }
     }
 
@@ -2004,58 +1988,64 @@ mod tests {
         assert_eq!(s.commit(), "=");
     }
 
-    /// 全形數字：英文模式打出 ASCII 數字時，候選提供 `０-９` 變體。
+    /// 全形數字：混合模式把 ASCII 數字當字面英文輸出，不再另列寬度候選。
+    ///
+    /// 原測試鎖的是已移除的英文直出模式；等價行為改成確認同一串數字在
+    /// Mixed 會原樣留在組字並送出，全形由輸入風格的全形狀態處理。
     #[test]
     fn test_full_width_digit_candidates() {
-        let mut s = Session::new(SessionConfig::new(Mode::En));
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
         for ch in "123".chars() {
             s.press(Key::char(ch, false));
         }
         assert_eq!(s.snapshot().preedit, "123");
-        s.press(Key::new(KeyCode::Tab, None, false));
-        assert_eq!(s.candidates()[1].surface, "１２３");
-        s.press(Key::char('2', false));
-        assert_eq!(s.commit(), "１２３");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "123");
     }
 
-    /// 單按 Shift：Mixed ⇄ En，回到原本的 Mixed 而不是 Zh。
+    /// 單按 Shift 由外殼處理；引擎只回快照，不切換核心模式也不清組字。
     #[test]
-    fn test_toggle_english_restores_mixed() {
+    fn test_toggle_english_keeps_mixed_composition() {
         let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+        type_syllable(&mut s, "ㄨㄛˇ");
+        let before = s.snapshot().preedit;
         assert_eq!(s.mode(), Mode::Mixed);
         s.toggle_english();
-        assert_eq!(s.mode(), Mode::En);
+        assert_eq!(s.mode(), Mode::Mixed);
+        assert_eq!(s.snapshot().preedit, before, "切英文不清緩衝");
         s.toggle_english();
         assert_eq!(s.mode(), Mode::Mixed);
+        assert_eq!(s.snapshot().preedit, before);
     }
 
-    /// 日文上下文切到 En 後要回到 Ja。
+    /// 混合輸入中的日文片段也一樣：toggle 不改變核心狀態。
     #[test]
-    fn test_toggle_english_restores_japanese() {
-        let mut s = Session::new(SessionConfig::new(Mode::Ja));
+    fn test_toggle_english_keeps_japanese_run() {
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+        type_syllable(&mut s, "ㄨㄛˇ");
         s.toggle_english();
-        assert_eq!(s.mode(), Mode::En);
-        s.toggle_english();
-        assert_eq!(s.mode(), Mode::Ja);
+        assert_eq!(s.mode(), Mode::Mixed);
+        assert!(!s.snapshot().preedit.is_empty());
     }
 
-    /// 引擎直接以 En 啟動時沒有切換來源，回到 Mixed（中文一律混打）。
+    /// 引擎一律停在 Mixed，沒有「切換來源」可以回到其他模式。
     #[test]
     fn test_toggle_english_without_previous_mode_uses_mixed() {
         let mut s = english_session();
         s.toggle_english();
         assert_eq!(s.mode(), Mode::Mixed);
+        s.toggle_english();
+        assert_eq!(s.mode(), Mode::Mixed);
     }
 
-    /// 外部 `set_mode` 要清掉先前的切換來源，不回到過期模式。
+    /// 外部 `set_mode` 之後 toggle 仍停在 Mixed，不會回到過期模式。
     #[test]
-    fn test_set_mode_clears_toggle_previous_mode() {
-        let mut s = Session::new(SessionConfig::new(Mode::Ja));
+    fn test_set_mode_keeps_toggle_in_mixed() {
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
         s.toggle_english();
-        // 外部改到 Mixed 後，先前的 Ja 來源必須丟掉，不能回到過期模式。
         s.set_mode(Mode::Mixed);
         s.toggle_english();
-        assert_eq!(s.mode(), Mode::En);
+        assert_eq!(s.mode(), Mode::Mixed);
         s.toggle_english();
         assert_eq!(s.mode(), Mode::Mixed);
     }
@@ -2063,7 +2053,7 @@ mod tests {
     /// 英文拼錯時，候選在原字後面補上拼字建議；打對的字沒有拼字建議。
     #[test]
     fn test_english_candidates_include_spelling_suggestions() {
-        let mut s = Session::new(SessionConfig::new(Mode::En));
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
         for ch in "recieve".chars() {
             s.press(Key::char(ch, false));
         }
@@ -2079,7 +2069,7 @@ mod tests {
             .expect("要有 receive 的拼字建議");
         assert!(at > 0, "拼字建議要排在原字後面：{surfaces:?}");
 
-        let mut correct = Session::new(SessionConfig::new(Mode::En));
+        let mut correct = Session::new(SessionConfig::new(Mode::Mixed));
         for ch in "hello".chars() {
             correct.press(Key::char(ch, false));
         }
@@ -2096,7 +2086,11 @@ mod tests {
     }
 
     fn english_session() -> Session {
-        Session::new(SessionConfig::new(Mode::En))
+        // 混合模式需要注音詞典才會把打不成注音的短字判成英文；英文直出
+        // 模式已移除，這裡用等價的 Mixed 設定重現原本的英文候選路徑。
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
+        Session::new(config)
     }
 
     fn candidate_index(session: &Session, surface: &str) -> Option<usize> {
@@ -2109,7 +2103,11 @@ mod tests {
     fn accept_english(session: &mut Session, surface: &str) -> String {
         let index = candidate_index(session, surface).expect("候選要有指定的字面");
         session.select(index);
-        session.press(Key::new(KeyCode::Enter, None, false));
+        // Mixed 的英文候選要先進入選取模式，數字鍵才會套用游標那一項。
+        session.press(Key::new(KeyCode::Down, None, false));
+        let digit = char::from_digit((index % crate::session::PAGE_SIZE) as u32 + 1, 10)
+            .expect("候選在頁內");
+        session.press(Key::char(digit, false));
         session.commit()
     }
 
@@ -2129,18 +2127,18 @@ mod tests {
     #[test]
     fn test_english_skip_demotes_learned_correction() {
         let mut s = english_session();
-        type_keys(&mut s, "recieve");
-        assert_eq!(accept_english(&mut s, "receive"), "receive");
+        type_keys(&mut s, "Recieved");
+        assert_eq!(accept_english(&mut s, "Received"), "Received");
 
         for _ in 0..crate::personal::SKIP_LIMIT {
-            type_keys(&mut s, "recieve");
-            assert_eq!(accept_english(&mut s, "recieve"), "recieve");
+            type_keys(&mut s, "Recieved");
+            assert_eq!(accept_english(&mut s, "Recieved"), "Recieved");
         }
 
-        type_keys(&mut s, "recieve");
-        assert_ne!(s.candidates()[0].surface, "receive");
+        type_keys(&mut s, "Recieved");
+        assert_ne!(s.candidates()[0].surface, "Received");
         assert!(
-            candidate_index(&s, "receive").is_some(),
+            candidate_index(&s, "Received").is_some(),
             "降權不是刪除，修正仍要留在候選裡"
         );
     }
@@ -2149,18 +2147,18 @@ mod tests {
     #[test]
     fn test_english_manual_choice_restores_learned_correction() {
         let mut s = english_session();
-        type_keys(&mut s, "recieve");
-        assert_eq!(accept_english(&mut s, "receive"), "receive");
+        type_keys(&mut s, "Recieved");
+        assert_eq!(accept_english(&mut s, "Received"), "Received");
         for _ in 0..crate::personal::SKIP_LIMIT {
-            type_keys(&mut s, "recieve");
-            assert_eq!(accept_english(&mut s, "recieve"), "recieve");
+            type_keys(&mut s, "Recieved");
+            assert_eq!(accept_english(&mut s, "Recieved"), "Recieved");
         }
-        type_keys(&mut s, "recieve");
-        assert_ne!(s.candidates()[0].surface, "receive");
+        type_keys(&mut s, "Recieved");
+        assert_ne!(s.candidates()[0].surface, "Received");
 
-        assert_eq!(accept_english(&mut s, "receive"), "receive");
-        type_keys(&mut s, "recieve");
-        assert_eq!(s.candidates()[0].surface, "receive");
+        assert_eq!(accept_english(&mut s, "Received"), "Received");
+        type_keys(&mut s, "Recieved");
+        assert_eq!(s.candidates()[0].surface, "Received");
     }
 
     /// 5 個字母的拼法只記錄證據，排序維持原樣。

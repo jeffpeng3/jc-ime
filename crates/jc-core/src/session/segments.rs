@@ -779,7 +779,7 @@ mod tests {
         assert_eq!(s.active_segment(), Some(2));
         for (index, (segment, want)) in segments.iter().zip(["我", "想", "吃"]).enumerate() {
             assert_eq!(&s.base[segment.start..segment.end], want);
-            assert_eq!(segment.mode, Mode::Zh);
+            assert_eq!(segment.mode, Lang::Zh);
             assert_eq!(segment.script, Script::Bopomofo);
             assert_eq!(s.segment_at(index), Some(index));
         }
@@ -813,20 +813,20 @@ mod tests {
             "副本不影響 session"
         );
 
-        assert!(s.replace_segment(0, Segment::new(0, 3, Mode::Ja, Script::Kana)));
-        assert_eq!(s.segments()[0].mode, Mode::Ja);
-        assert!(s.insert_segment(2, Segment::new(6, 9, Mode::Zh, Script::Han)));
+        assert!(s.replace_segment(0, Segment::new(0, 3, Lang::Ja, Script::Kana)));
+        assert_eq!(s.segments()[0].mode, Lang::Ja);
+        assert!(s.insert_segment(2, Segment::new(6, 9, Lang::Zh, Script::Han)));
         assert_eq!(s.segments().len(), 3);
-        assert_eq!(s.segments()[1].mode, Mode::Zh, "插入不影響其他片段");
+        assert_eq!(s.segments()[1].mode, Lang::Zh, "插入不影響其他片段");
         assert!(s.remove_segment(2));
         assert_eq!(s.segments().len(), 2);
         assert!(s.remove_segment(0));
-        assert_eq!(s.segments()[0].mode, Mode::Zh);
+        assert_eq!(s.segments()[0].mode, Lang::Zh);
 
         assert!(!s.remove_segment(9));
-        assert!(!s.replace_segment(9, Segment::new(0, 1, Mode::Zh, Script::Han)));
-        assert!(!s.insert_segment(9, Segment::new(0, 1, Mode::Zh, Script::Han)));
-        assert!(!s.replace_segment(0, Segment::new(1, 1, Mode::Zh, Script::Han)));
+        assert!(!s.replace_segment(9, Segment::new(0, 1, Lang::Zh, Script::Han)));
+        assert!(!s.insert_segment(9, Segment::new(0, 1, Lang::Zh, Script::Han)));
+        assert!(!s.replace_segment(0, Segment::new(1, 1, Lang::Zh, Script::Han)));
     }
 
     /// 手動片段只存活到下一次按鍵。
@@ -837,8 +837,8 @@ mod tests {
     fn test_manual_segments_expire_on_next_key() {
         let mut s = session();
         type_syllable(&mut s, "ㄨㄛˇ");
-        assert!(s.replace_segment(0, Segment::new(0, 3, Mode::Ja, Script::Kana)));
-        assert_eq!(s.segments()[0].mode, Mode::Ja);
+        assert!(s.replace_segment(0, Segment::new(0, 3, Lang::Ja, Script::Kana)));
+        assert_eq!(s.segments()[0].mode, Lang::Ja);
         s.press(Key::char('x', false));
         let preedit = s.preedit();
         let segments = s.segments();
@@ -846,7 +846,7 @@ mod tests {
         assert_eq!(&preedit[segments[0].start..segments[0].end], "我");
         assert_eq!(&preedit[segments[1].start..segments[1].end], "ㄌ");
         assert!(
-            segments.iter().all(|segment| segment.mode == Mode::Zh),
+            segments.iter().all(|segment| segment.mode == Lang::Zh),
             "下一次按鍵重新推導"
         );
     }

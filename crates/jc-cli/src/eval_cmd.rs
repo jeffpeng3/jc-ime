@@ -830,21 +830,21 @@ pub fn mixed(
 }
 
 /// 案例的 `language` 欄位轉成路由用的 [`Mode`]。
-fn mode_of(language: &str) -> Mode {
+fn mode_of(language: &str) -> jc_core::Lang {
     match language {
-        "zh" | "zh-Hant" | "zh-Hans" => Mode::Zh,
-        "ja" => Mode::Ja,
-        _ => Mode::En,
+        "zh" | "zh-Hant" | "zh-Hans" => jc_core::Lang::Zh,
+        "ja" => jc_core::Lang::Ja,
+        _ => jc_core::Lang::En,
     }
 }
 
 /// [`Mode`] 轉成 JSON 用的語言代號。
-fn mode_name(mode: Mode) -> &'static str {
+fn mode_name(mode: jc_core::Lang) -> &'static str {
     match mode {
-        Mode::Zh => "zh",
-        Mode::Ja => "ja",
-        Mode::En => "en",
-        Mode::Mixed => "mixed",
+        jc_core::Lang::Zh => "zh",
+        jc_core::Lang::Ja => "ja",
+        jc_core::Lang::En => "en",
+        jc_core::Lang::Mixed => "mixed",
     }
 }
 

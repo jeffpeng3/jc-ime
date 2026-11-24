@@ -5,7 +5,7 @@
 //! 這一輪只有 identity 實作，`zhconv` 之後接上。
 
 use crate::candidate::Candidate;
-use crate::lang::Mode;
+use crate::lang::Lang;
 use crate::segment::Segment;
 
 /// 候選視窗一頁幾項。
@@ -32,20 +32,20 @@ pub enum Variant {
 
 impl Variant {
     /// 這個變體屬於哪個語言。
-    pub fn language(self) -> Mode {
+    pub fn language(self) -> Lang {
         match self {
-            Variant::ZhHant | Variant::ZhHans => Mode::Zh,
-            Variant::JaShinjitai | Variant::JaKyujitai => Mode::Ja,
-            Variant::English => Mode::En,
+            Variant::ZhHant | Variant::ZhHans => Lang::Zh,
+            Variant::JaShinjitai | Variant::JaKyujitai => Lang::Ja,
+            Variant::English => Lang::En,
         }
     }
 }
 
 /// 語言的預設輸出變體。
-pub fn default_variant(mode: Mode) -> Variant {
+pub fn default_variant(mode: Lang) -> Variant {
     match mode {
-        Mode::Zh => Variant::ZhHant,
-        Mode::Ja => Variant::JaShinjitai,
+        Lang::Zh => Variant::ZhHant,
+        Lang::Ja => Variant::JaShinjitai,
         _ => Variant::English,
     }
 }
@@ -56,14 +56,14 @@ pub struct OutSegment {
     /// 輸出字面。
     pub surface: String,
     /// 這個片段的語言。
-    pub mode: Mode,
+    pub mode: Lang,
     /// 輸出變體；`None` 表示用語言的預設變體。
     pub variant: Option<Variant>,
 }
 
 impl OutSegment {
     /// 建立片段。
-    pub fn new(surface: impl Into<String>, mode: Mode) -> Self {
+    pub fn new(surface: impl Into<String>, mode: Lang) -> Self {
         Self {
             surface: surface.into(),
             mode,
@@ -189,7 +189,7 @@ impl VariantRenderer {
 impl Renderer for VariantRenderer {
     fn render(&self, seg: &OutSegment) -> Result<String, OutputError> {
         let variant = seg.effective_variant();
-        if !matches!(seg.mode, Mode::Mixed) && variant.language() != seg.mode {
+        if !matches!(seg.mode, Lang::Mixed) && variant.language() != seg.mode {
             return Err(OutputError::VariantMismatch);
         }
         match variant {
@@ -204,7 +204,7 @@ impl Renderer for VariantRenderer {
 /// 依片段語言補標點。
 pub trait Punctuator {
     /// 只插入或替換標點，不改寫既有詞面。
-    fn insert(&self, text: &str, mode: Mode) -> String;
+    fn insert(&self, text: &str, mode: Lang) -> String;
 }
 
 /// 把半形標點換成該語言的全形標點。
@@ -214,10 +214,10 @@ pub trait Punctuator {
 pub struct LanguagePunctuator;
 
 impl Punctuator for LanguagePunctuator {
-    fn insert(&self, text: &str, mode: Mode) -> String {
+    fn insert(&self, text: &str, mode: Lang) -> String {
         let table = match mode {
-            Mode::Zh => zh_punctuation(),
-            Mode::Ja => ja_punctuation(),
+            Lang::Zh => zh_punctuation(),
+            Lang::Ja => ja_punctuation(),
             _ => return text.to_string(),
         };
         let mut r: Vec<char> = text.chars().collect();
@@ -517,7 +517,7 @@ mod tests {
             segments: vec![Segment::new(
                 0,
                 9,
-                Mode::Zh,
+                Lang::Zh,
                 crate::segment::Script::Bopomofo,
             )],
             candidates: vec![Candidate::new("我", "ㄨㄛˇ", 1, CandidateSource::Lexicon)],
@@ -574,11 +574,11 @@ mod tests {
 
     #[test]
     fn default_variant_follows_mode() {
-        assert_eq!(default_variant(Mode::Zh), Variant::ZhHant);
-        assert_eq!(default_variant(Mode::Ja), Variant::JaShinjitai);
-        assert_eq!(default_variant(Mode::En), Variant::English);
-        assert_eq!(Variant::ZhHans.language(), Mode::Zh);
-        assert_eq!(Variant::JaKyujitai.language(), Mode::Ja);
+        assert_eq!(default_variant(Lang::Zh), Variant::ZhHant);
+        assert_eq!(default_variant(Lang::Ja), Variant::JaShinjitai);
+        assert_eq!(default_variant(Lang::En), Variant::English);
+        assert_eq!(Variant::ZhHans.language(), Lang::Zh);
+        assert_eq!(Variant::JaKyujitai.language(), Lang::Ja);
     }
 
     #[test]
@@ -586,28 +586,28 @@ mod tests {
         let r = VariantRenderer::identity();
         let cases = [
             (
-                OutSegment::new("臺灣", Mode::Zh).with_variant(Variant::ZhHant),
+                OutSegment::new("臺灣", Lang::Zh).with_variant(Variant::ZhHant),
                 Ok("臺灣".to_string()),
             ),
             (
-                OutSegment::new("日本語です", Mode::Ja).with_variant(Variant::JaShinjitai),
+                OutSegment::new("日本語です", Lang::Ja).with_variant(Variant::JaShinjitai),
                 Ok("日本語です".to_string()),
             ),
             (
-                OutSegment::new("Hello, world! 123", Mode::En).with_variant(Variant::English),
+                OutSegment::new("Hello, world! 123", Lang::En).with_variant(Variant::English),
                 Ok("Hello, world! 123".to_string()),
             ),
-            (OutSegment::new("臺灣", Mode::Zh), Ok("臺灣".to_string())),
+            (OutSegment::new("臺灣", Lang::Zh), Ok("臺灣".to_string())),
             (
-                OutSegment::new("國", Mode::Ja).with_variant(Variant::JaKyujitai),
+                OutSegment::new("國", Lang::Ja).with_variant(Variant::JaKyujitai),
                 Err(OutputError::UnsupportedVariant(Variant::JaKyujitai)),
             ),
             (
-                OutSegment::new("臺灣", Mode::Zh).with_variant(Variant::ZhHans),
+                OutSegment::new("臺灣", Lang::Zh).with_variant(Variant::ZhHans),
                 Ok("臺灣".to_string()),
             ),
             (
-                OutSegment::new("臺灣", Mode::En).with_variant(Variant::ZhHant),
+                OutSegment::new("臺灣", Lang::En).with_variant(Variant::ZhHant),
                 Err(OutputError::VariantMismatch),
             ),
         ];
@@ -630,12 +630,12 @@ mod tests {
         let calls = Rc::new(Cell::new(0));
         let r = VariantRenderer::new(Counting(calls.clone()));
         assert_eq!(
-            r.render(&OutSegment::new("繁", Mode::Zh).with_variant(Variant::ZhHant)),
+            r.render(&OutSegment::new("繁", Lang::Zh).with_variant(Variant::ZhHant)),
             Ok("繁".to_string())
         );
         assert_eq!(calls.get(), 1);
         assert_eq!(
-            r.render(&OutSegment::new("繁", Mode::Zh).with_variant(Variant::ZhHans)),
+            r.render(&OutSegment::new("繁", Lang::Zh).with_variant(Variant::ZhHans)),
             Ok("繁".to_string())
         );
         assert_eq!(calls.get(), 1);
@@ -655,12 +655,12 @@ mod tests {
         let calls = Rc::new(Cell::new(0));
         let r = VariantRenderer::identity().with_hans(Counting(calls.clone()));
         assert_eq!(
-            r.render(&OutSegment::new("繁", Mode::Zh).with_variant(Variant::ZhHans)),
+            r.render(&OutSegment::new("繁", Lang::Zh).with_variant(Variant::ZhHans)),
             Ok("简".to_string())
         );
         assert_eq!(calls.get(), 1);
         assert_eq!(
-            r.render(&OutSegment::new("繁", Mode::Zh).with_variant(Variant::ZhHant)),
+            r.render(&OutSegment::new("繁", Lang::Zh).with_variant(Variant::ZhHant)),
             Ok("繁".to_string())
         );
         assert_eq!(calls.get(), 1);
@@ -669,56 +669,56 @@ mod tests {
     #[test]
     fn language_punctuator_follows_cjk_neighbours() {
         let p = LanguagePunctuator;
-        assert_eq!(p.insert("你好,世界", Mode::Zh), "你好，世界");
-        assert_eq!(p.insert("完成了!", Mode::Zh), "完成了！");
-        assert_eq!(p.insert("這是什麼?:好", Mode::Zh), "這是什麼？：好");
-        assert_eq!(p.insert("こんにちは,世界", Mode::Ja), "こんにちは、世界");
-        assert_eq!(p.insert("です.", Mode::Ja), "です。");
-        assert_eq!(p.insert("Hello, world!", Mode::En), "Hello, world!");
-        assert_eq!(p.insert("版本3.14", Mode::Zh), "版本3.14");
-        assert_eq!(p.insert("檔案a.txt", Mode::Zh), "檔案a.txt");
-        assert_eq!(p.insert("hello,world", Mode::Zh), "hello,world");
-        assert_eq!(p.insert("你好，世界。", Mode::Zh), "你好，世界。");
-        assert_eq!(p.insert("OK,你好", Mode::Zh), "OK，你好");
+        assert_eq!(p.insert("你好,世界", Lang::Zh), "你好，世界");
+        assert_eq!(p.insert("完成了!", Lang::Zh), "完成了！");
+        assert_eq!(p.insert("這是什麼?:好", Lang::Zh), "這是什麼？：好");
+        assert_eq!(p.insert("こんにちは,世界", Lang::Ja), "こんにちは、世界");
+        assert_eq!(p.insert("です.", Lang::Ja), "です。");
+        assert_eq!(p.insert("Hello, world!", Lang::En), "Hello, world!");
+        assert_eq!(p.insert("版本3.14", Lang::Zh), "版本3.14");
+        assert_eq!(p.insert("檔案a.txt", Lang::Zh), "檔案a.txt");
+        assert_eq!(p.insert("hello,world", Lang::Zh), "hello,world");
+        assert_eq!(p.insert("你好，世界。", Lang::Zh), "你好，世界。");
+        assert_eq!(p.insert("OK,你好", Lang::Zh), "OK，你好");
     }
 
     #[test]
     fn cjk_latin_spacer_only_between_cjk_and_letters() {
         let sp = CjkLatinSpacer;
         let seg = |mode, s: &str| OutSegment::new(s, mode);
-        assert_eq!(sp.between(&seg(Mode::Ja, "私"), &seg(Mode::En, "is")), " ");
+        assert_eq!(sp.between(&seg(Lang::Ja, "私"), &seg(Lang::En, "is")), " ");
         assert_eq!(
-            sp.between(&seg(Mode::En, "is"), &seg(Mode::Zh, "學生")),
+            sp.between(&seg(Lang::En, "is"), &seg(Lang::Zh, "學生")),
             " "
         );
         assert_eq!(
-            sp.between(&seg(Mode::Ja, "です"), &seg(Mode::En, "OK")),
+            sp.between(&seg(Lang::Ja, "です"), &seg(Lang::En, "OK")),
             " "
         );
         assert_eq!(
-            sp.between(&seg(Mode::Ja, "コンピューター"), &seg(Mode::En, "ABC")),
+            sp.between(&seg(Lang::Ja, "コンピューター"), &seg(Lang::En, "ABC")),
             " "
         );
-        assert_eq!(sp.between(&seg(Mode::Zh, "私"), &seg(Mode::En, "123")), "");
-        assert_eq!(sp.between(&seg(Mode::En, "abc"), &seg(Mode::En, "def")), "");
-        assert_eq!(sp.between(&seg(Mode::Zh, "私 "), &seg(Mode::En, "is")), "");
-        assert_eq!(sp.between(&seg(Mode::Zh, ""), &seg(Mode::En, "is")), "");
+        assert_eq!(sp.between(&seg(Lang::Zh, "私"), &seg(Lang::En, "123")), "");
+        assert_eq!(sp.between(&seg(Lang::En, "abc"), &seg(Lang::En, "def")), "");
+        assert_eq!(sp.between(&seg(Lang::Zh, "私 "), &seg(Lang::En, "is")), "");
+        assert_eq!(sp.between(&seg(Lang::Zh, ""), &seg(Lang::En, "is")), "");
         assert_eq!(
-            sp.between(&seg(Mode::En, "Python"), &seg(Mode::Zh, "文件")),
+            sp.between(&seg(Lang::En, "Python"), &seg(Lang::Zh, "文件")),
             " "
         );
-        assert_eq!(sp.between(&seg(Mode::Zh, "「"), &seg(Mode::En, "a")), "");
-        assert_eq!(sp.between(&seg(Mode::Ja, "々"), &seg(Mode::En, "a")), " ");
+        assert_eq!(sp.between(&seg(Lang::Zh, "「"), &seg(Lang::En, "a")), "");
+        assert_eq!(sp.between(&seg(Lang::Ja, "々"), &seg(Lang::En, "a")), " ");
     }
 
     #[test]
     fn assembler_keeps_per_segment_variants() {
         let a = Assembler::default();
         let segs = vec![
-            OutSegment::new("私", Mode::Ja).with_variant(Variant::JaShinjitai),
-            OutSegment::new("use", Mode::En).with_variant(Variant::English),
-            OutSegment::new("臺灣", Mode::Zh).with_variant(Variant::ZhHant),
-            OutSegment::new("and", Mode::En).with_variant(Variant::English),
+            OutSegment::new("私", Lang::Ja).with_variant(Variant::JaShinjitai),
+            OutSegment::new("use", Lang::En).with_variant(Variant::English),
+            OutSegment::new("臺灣", Lang::Zh).with_variant(Variant::ZhHant),
+            OutSegment::new("and", Lang::En).with_variant(Variant::English),
         ];
         let got = a
             .assemble(
@@ -736,9 +736,9 @@ mod tests {
     fn assembler_punctuation_follows_segment_language() {
         let a = Assembler::default();
         let segs = vec![
-            OutSegment::new("你好,世界", Mode::Zh),
-            OutSegment::new("Hello, world!", Mode::En),
-            OutSegment::new("これは,ペン", Mode::Ja),
+            OutSegment::new("你好,世界", Lang::Zh),
+            OutSegment::new("Hello, world!", Lang::En),
+            OutSegment::new("これは,ペン", Lang::Ja),
         ];
         let got = a.assemble(&segs, default_options()).expect("assemble");
         assert_eq!(got, "你好，世界 Hello, world!これは、ペン");
@@ -770,8 +770,8 @@ mod tests {
     fn assembler_reports_segment_index() {
         let a = Assembler::default();
         let segs = vec![
-            OutSegment::new("ok", Mode::En).with_variant(Variant::English),
-            OutSegment::new("國", Mode::Ja).with_variant(Variant::JaKyujitai),
+            OutSegment::new("ok", Lang::En).with_variant(Variant::English),
+            OutSegment::new("國", Lang::Ja).with_variant(Variant::JaKyujitai),
         ];
         let err = a
             .assemble(&segs, default_options())
@@ -784,9 +784,9 @@ mod tests {
     fn assembler_skips_empty_segments_and_handles_empty_input() {
         let a = Assembler::default();
         let segs = vec![
-            OutSegment::new("私", Mode::Ja),
-            OutSegment::new("", Mode::En),
-            OutSegment::new("is", Mode::En),
+            OutSegment::new("私", Lang::Ja),
+            OutSegment::new("", Lang::En),
+            OutSegment::new("is", Lang::En),
         ];
         assert_eq!(
             a.assemble(&segs, default_options()).expect("assemble"),

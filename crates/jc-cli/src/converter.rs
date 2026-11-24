@@ -487,7 +487,7 @@ fn segment(start: usize, end: usize) -> jc_core::segment::Segment {
     jc_core::segment::Segment::new(
         start,
         end,
-        jc_core::lang::Mode::Ja,
+        jc_core::Lang::Ja,
         jc_core::segment::Script::Kana,
     )
 }
@@ -664,7 +664,7 @@ pub fn convert(
     } else {
         data::disable_select_model();
     }
-    let english = mode == Some(jc_core::Mode::En);
+    let english = mode.is_some();
     if pick.is_some() && (english || is_zhuyin(reading)) {
         return Err(CliError::Usage("--pick 只支援日文轉換".to_string()));
     }

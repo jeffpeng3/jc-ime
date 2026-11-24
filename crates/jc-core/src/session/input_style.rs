@@ -508,11 +508,6 @@ impl Session {
             }
             return true;
         }
-        if self.full_width && key.code == KeyCode::Space && self.config.mode == Mode::En {
-            // 英文模式的組字就是原始輸入；全形空白照樣接在尾巴。
-            self.raw.push('\u{3000}');
-            return true;
-        }
         // 微軟風格：反引號是標點前導，不開符號選單。
         if matches!(self.config.mode, Mode::Zh | Mode::Mixed)
             && self.style.rules.punctuation == "microsoft"
@@ -526,25 +521,11 @@ impl Session {
             KeyCode::Char(ch) => key.text.unwrap_or(ch),
             _ => return false,
         };
-        if self.config.mode == Mode::En {
-            if !self.full_width || !single_printable(ch) {
-                return false;
-            }
-            let wide = self.full_width_text(&ch.to_string());
-            // 英文模式的組字就是原始輸入；直接接在尾巴才不會被字面插到前面。
-            self.raw.push_str(&wide);
-            return true;
-        }
         // 微軟風格：半形原字元。
         if self.style.rules.punctuation == "microsoft" && microsoft_raw_punctuation(ch) {
             if self.full_width {
                 let wide = self.full_width_text(&ch.to_string());
-                if self.english_word_pending() {
-                    let text = format!("{}{}", self.current_text(), wide);
-                    self.commit_style_text(text);
-                } else {
-                    self.insert_style_literal(&wide);
-                }
+                self.insert_style_literal(&wide);
                 return true;
             }
             if !self.composing() {
@@ -613,13 +594,6 @@ impl Session {
             return true;
         }
         false
-    }
-
-    /// 英文模式是否有一個還沒定案的英文詞。
-    ///
-    /// 本埠的英文模式把整段輸入放在 `raw`；有內容就是待定詞。
-    fn english_word_pending(&self) -> bool {
-        self.config.mode == Mode::En && !self.raw.is_empty()
     }
 }
 
@@ -726,25 +700,24 @@ mod tests {
         }
     }
 
-    /// 對照 `TestMicrosoftWidthIsStateAndIncludesEnglish`：全形是工作階段狀態，
-    /// 英文模式也吃全形。
+    /// 全形是工作階段狀態，混合組字中的英數字也吃全形。
+    ///
+    /// 英文模式已移到外殼；核心只剩混打，因此等價測試改成在組字中打入
+    /// 全形英數字，確認它接在同一段組字後面。
     #[test]
     fn test_microsoft_width_is_state_and_includes_english() {
         let mut s = style_session("microsoft");
         s.press(Key::new(KeyCode::Space, None, true));
         assert!(s.full_width(), "Shift＋空白切全形");
-        s.set_mode(Mode::En);
-        // 本埠英文模式把待定輸入留在組字區，組字字串會逐鍵累加；上游是每鍵
-        // 立即送出，所以這裡不能沿用上游「預覽只等於本鍵」的斷言。
-        for (key, want) in [('a', "ａ"), ('A', "ａＡ"), ('1', "ａＡ１")] {
+        type_syllable(&mut s, "ㄨㄛˇ");
+        for (key, want) in [('@', "我＠"), ('#', "我＠＃")] {
             let snap = s.press(Key::char(key, false));
             assert_eq!(snap.preedit, want, "{key:?}");
         }
         s.press(Key::new(KeyCode::Space, None, false));
-        assert_eq!(enter(&mut s), "ａＡ１\u{3000}", "全形空白也在組字裡");
+        assert_eq!(enter(&mut s), "我＠＃\u{3000}", "全形空白也留在組字裡");
         s.press(Key::new(KeyCode::Space, None, true));
         assert!(!s.full_width(), "再按一次切回半形");
-        s.set_mode(Mode::Mixed);
         type_syllable(&mut s, "ㄨㄛˇ");
         let snap = s.press(Key::new(KeyCode::Space, None, true));
         assert_eq!(snap.preedit, "我", "切字寬不動組字");
@@ -846,14 +819,18 @@ mod tests {
         assert_eq!(enter(&mut s), "景 ＼");
     }
 
-    /// 對照 `TestChewingWidthAndHorizontalNavigation` 的英文全形表。
+    /// 對照 `TestChewingWidthAndHorizontalNavigation` 的全形表。
+    ///
+    /// 英文模式已移除；等價測試在混合組字中打同一個鍵，確認新酷音的全形
+    /// 對照表仍套用到字面。
     #[test]
     fn test_chewing_english_width_table() {
         let mut s = style_session("chewing");
         s.press(Key::new(KeyCode::Space, None, true));
-        s.set_mode(Mode::En);
-        let snap = s.press(Key::char('[', false));
-        assert_eq!(snap.preedit, "〔", "新酷音的英文全形表");
+        type_syllable(&mut s, "ㄨㄛˇ");
+        let snap = s.press(Key::char('@', false));
+        assert_eq!(snap.preedit, "我＠", "新酷音的全形表");
+        assert_eq!(enter(&mut s), "我＠");
     }
 
     /// 對照 `TestShiftSymbolHalfwidthOffKeepsFullWidth`：設定關閉時照舊打全形。

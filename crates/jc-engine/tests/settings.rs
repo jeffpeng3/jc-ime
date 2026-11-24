@@ -39,7 +39,7 @@ fn print_settings_merges_file_and_cli() {
     assert!(output.status.success(), "{output:?}");
     let value: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("--print-settings 必須輸出 JSON");
-    assert_eq!(value["mode"], "en", "CLI --mode 蓋過混打設定");
+    assert_eq!(value["mode"], "mixed", "英文已併入混打");
     assert_eq!(value["selection"], "statistical");
     assert_eq!(value["neural"], false);
     assert_eq!(value["punct_mark"], "，");

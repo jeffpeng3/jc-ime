@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::candidate::CandidateSource;
-use crate::lang::Mode;
+use crate::lang::Lang;
 use crate::lattice::{Edge, Lattice, LexEntry, Lexicon};
 use crate::score::{ScoreContext, Scorer};
 use crate::segment::{Script, Segment};
@@ -78,7 +78,7 @@ pub enum EngineError {
     InvalidReading(String),
     /// 目前模式不支援這個操作。
     #[error("模式 {0:?} 不支援這個操作")]
-    UnsupportedMode(Mode),
+    UnsupportedMode(Lang),
     /// 找不到必要的資料檔。
     #[error("找不到資料：{0}")]
     MissingData(String),
@@ -742,7 +742,7 @@ impl<'a> Decoder<'a> {
     /// 把片段路徑轉成對外 [`Conversion`]。
     ///
     /// 位元組位移以詞格讀音依序相接計算。
-    pub fn conversion(&self, lat: &Lattice, segs: &[Seg], mode: Mode) -> Conversion {
+    pub fn conversion(&self, lat: &Lattice, segs: &[Seg], mode: Lang) -> Conversion {
         let mut offsets = Vec::with_capacity(lat.len() + 1);
         let mut cursor = 0usize;
         offsets.push(0);
@@ -751,8 +751,8 @@ impl<'a> Decoder<'a> {
             offsets.push(cursor);
         }
         let script = match mode {
-            Mode::Zh => Script::Bopomofo,
-            Mode::Ja => Script::Kana,
+            Lang::Zh => Script::Bopomofo,
+            Lang::Ja => Script::Kana,
             _ => Script::Other,
         };
         let mut surface = String::new();
@@ -883,7 +883,7 @@ mod tests {
     fn conversion_keeps_surface_segments_and_cost() {
         let c = Conversion {
             surface: "わたし".to_string(),
-            segments: vec![Segment::new(0, 9, Mode::Ja, Script::Kana)],
+            segments: vec![Segment::new(0, 9, Lang::Ja, Script::Kana)],
             cost: 42,
         };
         assert_eq!(c.surface, "わたし");
@@ -893,7 +893,7 @@ mod tests {
 
     #[test]
     fn engine_error_messages_include_details() {
-        let e = EngineError::UnsupportedMode(Mode::En);
+        let e = EngineError::UnsupportedMode(Lang::En);
         assert_eq!(e.to_string(), "模式 En 不支援這個操作");
 
         let e = EngineError::InvalidReading("ㄅ".to_string());
@@ -1019,7 +1019,7 @@ mod tests {
         let d = Decoder::new(&lex, &ctx);
         let lat = build(&["ㄧㄥ", "ㄍㄞ"], &lex, &ctx);
         let segs = vec![Seg::new("應該", 0, 2)];
-        let c = d.conversion(&lat, &segs, Mode::Zh);
+        let c = d.conversion(&lat, &segs, Lang::Zh);
         assert_eq!(c.surface, "應該");
         assert_eq!(c.segments.len(), 1);
         assert_eq!(c.segments[0].start, 0);

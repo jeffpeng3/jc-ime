@@ -614,13 +614,12 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     }))
 }
 
-/// 解析 `--mode`；只接受四種輸入模式。
+/// 解析 `--mode`；`en` 併入混打，舊值仍可解析。
 fn parse_mode(value: &str) -> Result<Mode, String> {
     match value {
         "zh" => Ok(Mode::Zh),
         "ja" => Ok(Mode::Ja),
-        "mixed" => Ok(Mode::Mixed),
-        "en" => Ok(Mode::En),
+        "mixed" | "en" => Ok(Mode::Mixed),
         other => Err(format!("--mode 只接受 zh、ja、mixed、en，收到 {other}")),
     }
 }

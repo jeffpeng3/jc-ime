@@ -1323,18 +1323,25 @@ mod tests {
     }
 
     #[test]
-    fn toggle_request_switches_english_and_restores_previous_mode() {
+    fn toggle_request_keeps_core_in_mixed_and_preserves_composition() {
         let config = SessionConfig::new(jc_core::Mode::Mixed);
         let mut engine = Engine::with_session(Session::new(config));
         hello(&mut engine);
+        type_syllable(&mut engine, "ㄨㄛˇ");
+        let before = engine.handle(Request::Snapshot);
+        assert!(matches!(before, Response::State { .. }));
         assert_eq!(engine.mode(), jc_core::Mode::Mixed);
         assert!(matches!(
             engine.handle(Request::Toggle),
             Response::State { .. }
         ));
-        assert_eq!(engine.mode(), jc_core::Mode::En);
-        engine.handle(Request::Toggle);
-        assert_eq!(engine.mode(), jc_core::Mode::Mixed);
+        assert_eq!(engine.mode(), jc_core::Mode::Mixed, "切英文由外殼處理");
+        assert_eq!(
+            engine.handle(Request::Commit),
+            Response::Committed {
+                text: "ㄨㄛˇ".into()
+            }
+        );
     }
 
     #[test]

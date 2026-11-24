@@ -8,9 +8,7 @@
 
 use super::*;
 
-pub(super) use crate::symbols::{
-    clean_recent, contains, tab_items, width_variant, MAX_RECENT, RECENT, TABS,
-};
+pub(super) use crate::symbols::{clean_recent, contains, tab_items, MAX_RECENT, RECENT, TABS};
 
 /// 表情分頁的顯示名稱（上游 `paletteNames`）。
 ///

@@ -1557,15 +1557,17 @@ impl TextService_Impl {
             {
                 return true;
             }
+            // 英文由外殼直接放行：引擎只處理注音與日文，不再收到英文鍵。
+            // 樣式鍵（Shift＋空白、全形）已在上面的分支處理。
+            if english {
+                return false;
+            }
             if st.composing {
                 let vocab = st.vocab_keys();
                 return keys::composing_wants(
                     english,
                     st.styled_key(vk, lparam, vocab, english).as_deref(),
                 );
-            }
-            if english {
-                return false;
             }
             if japanese {
                 if keys::is_keypad(vk) || keys::named(vk).is_some() {

@@ -279,7 +279,6 @@ impl Session {
                     }
                 }
             }
-            Mode::En => self.raw.push(ch),
             Mode::Mixed => {
                 self.mixed_cursor = Self::MIXED_CURSOR_END;
                 // 純注音組字走注音狀態機，與舊的純注音模式一致；按鍵打不成
@@ -616,7 +615,6 @@ impl Session {
                 self.pending_commit = Some(text);
                 self.clear_composition();
             }
-            Mode::En => self.raw.push(' '),
             Mode::Mixed => {
                 self.mixed_cursor = Self::MIXED_CURSOR_END;
                 self.ascii.space(&self.lexicon);
@@ -735,7 +733,7 @@ impl Session {
         for clause in &result.clauses {
             let start = base.len();
             base.push_str(&clause.surface);
-            segments.push(Segment::new(start, base.len(), Mode::Ja, Script::Kana));
+            segments.push(Segment::new(start, base.len(), Lang::Ja, Script::Kana));
         }
         let covered: usize = result
             .clauses
@@ -745,7 +743,7 @@ impl Session {
         if covered < units.len() {
             let start = base.len();
             base.extend(units[covered..].iter().map(Unit::as_str));
-            segments.push(Segment::new(start, base.len(), Mode::Ja, Script::Kana));
+            segments.push(Segment::new(start, base.len(), Lang::Ja, Script::Kana));
         }
         self.base = base;
         self.segments = segments;
@@ -790,9 +788,6 @@ impl Session {
                     self.sync_ja_run_keys();
                 }
                 self.leave_empty_japanese_run();
-            }
-            Mode::En => {
-                self.raw.pop();
             }
             Mode::Mixed => {
                 if self.zh_lane {
@@ -1439,10 +1434,6 @@ impl Session {
                 self.note_learning_event();
                 self.learn_ja_candidate(index);
             }
-            Mode::En => {
-                self.note_learning_event();
-                self.learn_en_candidate(index);
-            }
             Mode::Mixed => {
                 self.note_learning_event();
                 self.learn_mixed_languages();
@@ -1524,28 +1515,6 @@ impl Session {
                     .note_passive(&candidate.surface, &candidate.reading);
             }
         }
-    }
-
-    /// 把一次英文候選記進個人學習。
-    ///
-    /// 接受修正時寫入「打錯 → 修正」的證據；選回原字或其他候選就對學過的
-    /// 修正記一次跳過。連續 [`crate::personal::SKIP_LIMIT`] 次後降權，下一次
-    /// 手選修正會清掉跳過計數。前綴補完不算拼字修正，不寫入這張表。
-    pub(super) fn learn_en_candidate(&mut self, index: usize) {
-        if !self.config.learning {
-            return;
-        }
-        let Some(candidate) = self.candidates.get(index).cloned() else {
-            return;
-        };
-        let wrong = self.raw.trim().to_string();
-        if crate::learn_guard::is_sensitive(&wrong)
-            || crate::learn_guard::is_sensitive(&candidate.surface)
-        {
-            log::debug!("學習守門：英文候選像敏感資料，跳過寫入");
-            return;
-        }
-        self.learn_english_choice(&wrong, &candidate.surface);
     }
 
     /// 記錄一次英文選取：修正或跳過。
@@ -1719,7 +1688,6 @@ impl Session {
         self.literal.clear();
         self.literal_anchor = 0;
         self.literal_offset = 0;
-        self.raw.clear();
         self.candidates.clear();
         self.highlighted = 0;
         self.candidate_window = false;
@@ -1881,7 +1849,6 @@ impl Session {
         match self.config.mode {
             Mode::Zh => self.rebuild_zh(),
             Mode::Ja => self.rebuild_ja(),
-            Mode::En => self.rebuild_en(),
             Mode::Mixed => {
                 if self.zh_lane {
                     self.rebuild_zh();
@@ -1915,9 +1882,9 @@ impl Session {
         let scorer = zh_scorer(&self.ctx, self.zh_lm.as_deref());
         let decoder = zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
         let (segs, _) = decoder.best(&lattice, &self.locks, false);
-        let conversion = decoder.conversion(&lattice, &segs, Mode::Zh);
+        let conversion = decoder.conversion(&lattice, &segs, Lang::Zh);
         self.base = conversion.surface;
-        self.segments = Self::segments_of(&segs, Mode::Zh, Script::Bopomofo);
+        self.segments = Self::segments_of(&segs, Lang::Zh, Script::Bopomofo);
         self.literal_offset = if self.literal_anchor == 0 {
             0
         } else {
@@ -1950,12 +1917,12 @@ impl Session {
             let index = dictionary_at.unwrap_or(0);
             if let Some(best) = hypotheses.get(index) {
                 self.base = best.text.clone();
-                self.segments = Self::segments_of(&best.segments, Mode::Zh, Script::Bopomofo);
+                self.segments = Self::segments_of(&best.segments, Lang::Zh, Script::Bopomofo);
             }
         } else if self.base == literal {
             if let Some(best) = dictionary_at.and_then(|index| hypotheses.get(index)) {
                 self.base = best.text.clone();
-                self.segments = Self::segments_of(&best.segments, Mode::Zh, Script::Bopomofo);
+                self.segments = Self::segments_of(&best.segments, Lang::Zh, Script::Bopomofo);
             }
         }
         self.last_hypotheses = hypotheses.clone();
@@ -2023,7 +1990,7 @@ impl Session {
                 if first.surface.chars().next().is_some_and(is_han) {
                     self.base = first.surface.clone();
                     self.segments =
-                        vec![Segment::new(0, self.base.len(), Mode::Zh, Script::Bopomofo)];
+                        vec![Segment::new(0, self.base.len(), Lang::Zh, Script::Bopomofo)];
                 }
             }
         }
@@ -2077,7 +2044,7 @@ impl Session {
             self.segments.push(Segment::new(
                 start,
                 start + self.pending.len(),
-                Mode::Zh,
+                Lang::Zh,
                 Script::Bopomofo,
             ));
         }
@@ -2369,7 +2336,7 @@ impl Session {
         self.base = replaced.clone().unwrap_or(baseline);
         self.segments = if replaced.is_some() {
             // 神經輸出沒有詞邊界；整段當一個文節，避免片段範圍對不上。
-            vec![Segment::new(0, self.base.len(), Mode::Ja, Script::Kana)]
+            vec![Segment::new(0, self.base.len(), Lang::Ja, Script::Kana)]
         } else {
             best.conversion().segments
         };
@@ -2486,7 +2453,7 @@ impl Session {
                 let tail: String = units[covered..].iter().map(Unit::as_str).collect();
                 let start = base.len();
                 base.push_str(&tail);
-                segments.push(Segment::new(start, base.len(), Mode::Ja, Script::Kana));
+                segments.push(Segment::new(start, base.len(), Lang::Ja, Script::Kana));
             }
             display = base.clone();
         } else {
@@ -2553,61 +2520,10 @@ impl Session {
         self.sync_composition_ja();
     }
 
-    pub(super) fn rebuild_en(&mut self) {
-        self.base = self.raw.clone();
-        if self.raw.is_empty() {
-            return;
-        }
-        let limit = self.max_candidates();
-        let mut seen: Vec<String> = Vec::new();
-        // 同一個拼法有學過的修正時，修正直接排第一；原字仍在候選裡。
-        if let Some(learned) = self.personal.english_correction(&self.raw) {
-            let learned = learned.to_string();
-            seen.push(learned.to_lowercase());
-            self.candidates.push(Candidate::new(
-                learned,
-                self.raw.clone(),
-                0,
-                CandidateSource::Personal,
-            ));
-        }
-        seen.push(self.raw.to_lowercase());
-        self.candidates.push(Candidate::new(
-            self.raw.clone(),
-            self.raw.clone(),
-            0,
-            CandidateSource::Literal,
-        ));
-        if let Some(full) = symbols::width_variant(&self.raw) {
-            if full != self.raw {
-                seen.push(full.to_lowercase());
-                self.candidates.push(Candidate::new(
-                    full,
-                    self.raw.clone(),
-                    1,
-                    CandidateSource::Literal,
-                ));
-            }
-        }
-        // 學過的修正先排，內建前綴補完次之，拼字建議接在後面；打對的詞不會
-        // 有建議。
-        let extra =
-            super::mixed::english_candidates(&self.personal, self.english(), &self.raw, limit);
-        for candidate in extra {
-            let key = candidate.surface.to_lowercase();
-            if seen.contains(&key) {
-                continue;
-            }
-            seen.push(key);
-            self.candidates.push(candidate);
-        }
-        self.candidates.truncate(limit);
-    }
-
     /// 把解碼片段轉成輸出字串上的位元組範圍。
     pub(super) fn segments_of(
         segs: &[crate::decode::Seg],
-        mode: Mode,
+        mode: Lang,
         script: Script,
     ) -> Vec<Segment> {
         let mut at = 0usize;
@@ -2631,7 +2547,7 @@ impl Session {
         let scorer = zh_scorer(&self.ctx, self.zh_lm.as_deref());
         let decoder = zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
         let (segs, _) = decoder.best(&lattice, &Locks::new(), false);
-        Some(decoder.conversion(&lattice, &segs, Mode::Zh).surface)
+        Some(decoder.conversion(&lattice, &segs, Lang::Zh).surface)
     }
 }
 

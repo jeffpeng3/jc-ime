@@ -54,7 +54,7 @@ fn press(session: &mut Session, keys: &str) -> String {
 
 #[test]
 fn tone7_key_stays_within_budget() {
-    let Some(mut session) = real_session(Mode::Zh) else {
+    let Some(mut session) = real_session(Mode::Mixed) else {
         eprintln!("缺少 build-zh-bigram，跳過延遲測試");
         return;
     };
@@ -73,7 +73,7 @@ fn tone7_key_stays_within_budget() {
 
 #[test]
 fn tone7_without_bigram_stays_within_budget() {
-    let Some(mut session) = real_session_with_lm(Mode::Zh, false) else {
+    let Some(mut session) = real_session_with_lm(Mode::Mixed, false) else {
         eprintln!("缺少 build-zh-bigram，跳過無 bigram 延遲測試");
         return;
     };
@@ -92,7 +92,7 @@ fn tone7_without_bigram_stays_within_budget() {
 
 #[test]
 fn tone7_fourth_syllable_never_reverts_both_characters() {
-    let Some(mut session) = real_session(Mode::Zh) else {
+    let Some(mut session) = real_session(Mode::Mixed) else {
         eprintln!("缺少 build-zh-bigram，跳過重算測試");
         return;
     };
@@ -107,7 +107,7 @@ fn tone7_fourth_syllable_never_reverts_both_characters() {
 
 #[test]
 fn tone7_then_au4_does_not_panic() {
-    let Some(mut session) = real_session(Mode::Zh) else {
+    let Some(mut session) = real_session(Mode::Mixed) else {
         eprintln!("缺少 build-zh-bigram，跳過 panic 回歸測試");
         return;
     };

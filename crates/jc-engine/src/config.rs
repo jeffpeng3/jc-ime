@@ -31,7 +31,6 @@ pub fn mode_str(mode: Mode) -> &'static str {
         Mode::Zh => "zh",
         Mode::Ja => "ja",
         Mode::Mixed => "mixed",
-        Mode::En => "en",
     }
 }
 

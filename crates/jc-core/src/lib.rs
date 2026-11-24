@@ -39,7 +39,7 @@ pub use composition::{
 };
 pub use decode::{Conversion, EngineError};
 pub use key::{Key, KeyCode};
-pub use lang::Mode;
+pub use lang::{Lang, Mode};
 pub use mixed::{MixedResult, MixedSegment, Router};
 pub use output::Snapshot;
 pub use segment::{Script, Segment};

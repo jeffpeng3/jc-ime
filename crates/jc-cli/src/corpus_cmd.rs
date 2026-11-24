@@ -23,7 +23,7 @@ use jc_core::mixed_latin::{self, LexiconAdapter, Options as SplitOptions, Split,
 use jc_core::zh::keyboard::Keyboard;
 use jc_core::zh::pinyin::is_legal_base;
 use jc_core::zh::syllable::{class_of, Class, Syllable};
-use jc_core::{Mode, Script};
+use jc_core::Script;
 
 use crate::cli::CliError;
 use crate::data;
@@ -1151,9 +1151,9 @@ impl Case {
                             Lang::Sym
                         } else {
                             match segment.mode {
-                                Mode::Ja => Lang::Ja,
-                                Mode::Zh => Lang::Zh,
-                                Mode::En | Mode::Mixed => Lang::En,
+                                jc_core::Lang::Ja => Lang::Ja,
+                                jc_core::Lang::Zh => Lang::Zh,
+                                jc_core::Lang::En | jc_core::Lang::Mixed => Lang::En,
                             }
                         };
                         Some(Span {
@@ -1599,12 +1599,12 @@ fn b_json(input: &str, result: &MixedResult) -> serde_json::Value {
     })
 }
 
-fn mode_name(mode: Mode) -> &'static str {
+fn mode_name(mode: jc_core::Lang) -> &'static str {
     match mode {
-        Mode::Zh => "zh",
-        Mode::Ja => "ja",
-        Mode::En => "en",
-        Mode::Mixed => "mixed",
+        jc_core::Lang::Zh => "zh",
+        jc_core::Lang::Ja => "ja",
+        jc_core::Lang::En => "en",
+        jc_core::Lang::Mixed => "mixed",
     }
 }
 

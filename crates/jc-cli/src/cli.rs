@@ -838,7 +838,8 @@ fn parse_convert(args: &[String]) -> Result<Command, CliError> {
 /// 解析 `convert --mode`；目前只支援英文候選。
 fn parse_convert_mode(value: &str) -> Result<Mode, CliError> {
     match value {
-        "en" => Ok(Mode::En),
+        // 英文直出已併入 Mixed；`--mode en` 保留為英文候選的除錯入口。
+        "en" => Ok(Mode::Mixed),
         other => Err(CliError::Usage(format!(
             "convert --mode 只接受 en，收到 {other:?}"
         ))),

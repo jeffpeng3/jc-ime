@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use jc_core::mixed::{self, Router};
 use jc_core::mixed_latin::{self, LexiconAdapter, Options};
-use jc_core::Mode;
+use jc_core::Lang;
 
 use crate::cli::CliError;
 use crate::data;
@@ -199,7 +199,7 @@ struct Report {
 
 /// 一個輸出片段。
 struct SegmentView {
-    mode: Mode,
+    mode: Lang,
     script: jc_core::segment::Script,
     input: String,
     surface: String,
@@ -280,12 +280,12 @@ fn atom_json(atom: &mixed::AtomView) -> serde_json::Value {
     })
 }
 
-fn mode_name(mode: Mode) -> &'static str {
+fn mode_name(mode: Lang) -> &'static str {
     match mode {
-        Mode::Zh => "zh",
-        Mode::Ja => "ja",
-        Mode::En => "en",
-        Mode::Mixed => "mixed",
+        jc_core::Lang::Zh => "zh",
+        jc_core::Lang::Ja => "ja",
+        jc_core::Lang::En => "en",
+        jc_core::Lang::Mixed => "mixed",
     }
 }
 
