@@ -76,6 +76,11 @@ fn has_bopomofo(text: &str) -> bool {
         .any(|ch| ('\u{3100}'..='\u{312f}').contains(&ch))
 }
 
+fn has_kana(text: &str) -> bool {
+    text.chars()
+        .any(|ch| ('\u{3040}'..='\u{30ff}').contains(&ch))
+}
+
 /// 一次長串量測的結果。
 struct Typing {
     last: Duration,
@@ -109,11 +114,39 @@ fn measure_shape(shape: Shape, n: usize) -> Option<Typing> {
     })
 }
 
-/// 32／64／128／256 的每鍵耗時表；`--nocapture` 才看得到。
+fn type_keys(keys: &str) -> Option<String> {
+    let mut session = real_session(Mode::Mixed)?;
+    let mut preedit = String::new();
+    for ch in keys.chars() {
+        preedit = session.press(Key::char(ch, false)).preedit;
+    }
+    Some(preedit)
+}
+
+/// 長英文詞不能因為尾巴視窗被切成かな或注音。
+#[test]
+fn long_english_word_stays_literal() {
+    let word = "pneumonoultramicroscopicsilicovolcanoconiosis";
+    for keys in [
+        format!("{}{word}", "z".repeat(100)),
+        format!("{} {word}", "z".repeat(100)),
+        format!("{}{word}", "z".repeat(64)),
+    ] {
+        let Some(preedit) = type_keys(&keys) else {
+            eprintln!("缺少 build-zh-bigram，跳過長英文詞測試");
+            return;
+        };
+        assert_eq!(preedit, keys, "長英文詞要原樣字面");
+        assert!(!has_kana(&preedit), "不得出現假名：{preedit:?}");
+        assert!(!has_bopomofo(&preedit), "不得出現注音：{preedit:?}");
+    }
+}
+
+/// 20／32／64／128／256／512／1024 的每鍵耗時表；`--nocapture` 才看得到。
 #[test]
 fn long_run_latency_table() {
     for shape in [Shape::Lower, Shape::Mixed] {
-        for n in [32, 64, 128, 256] {
+        for n in [20, 32, 64, 128, 256, 512, 1024] {
             let Some(typing) = measure_shape(shape, n) else {
                 eprintln!("缺少 build-zh-bigram，跳過長串延遲表");
                 return;
@@ -175,6 +208,37 @@ fn mixed_punctuation_long_run_cost_stays_flat() {
         );
     }
     let _ = (small, large);
+}
+
+/// 短字串與超長字串都要維持字面且成本有界。
+///
+/// 20 字沒有長 run，走原本的完整規劃；512／1024 字只規劃 16 字尾巴。
+#[test]
+fn short_and_very_long_compositions_stay_flat() {
+    for shape in [Shape::Lower, Shape::Mixed] {
+        for n in [20, 512, 1024] {
+            let Some(typing) = measure_shape(shape, n) else {
+                eprintln!("缺少 build-zh-bigram，跳過短／超長字串測試");
+                return;
+            };
+            assert_eq!(
+                typing.preedit,
+                sample_text(shape, n),
+                "{} {n} 字要完整字面",
+                shape.name()
+            );
+            #[cfg(not(debug_assertions))]
+            {
+                let budget = Duration::from_millis(1);
+                assert!(
+                    typing.last < budget,
+                    "{} {n} 字最後一鍵 {:?}，超過 {budget:?}",
+                    shape.name(),
+                    typing.last
+                );
+            }
+        }
+    }
 }
 
 /// 純小寫長串的既有快速路徑不能被混合路徑拖慢，也不能被改寫。
