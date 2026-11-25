@@ -60,6 +60,10 @@ fn state(preedit: &str) -> Response {
     Response::state(jc_core::Snapshot::from_preedit(preedit))
 }
 
+fn state_handled(preedit: &str, handled: bool) -> Response {
+    Response::state_with_handled(jc_core::Snapshot::from_preedit(preedit), Some(handled))
+}
+
 #[test]
 fn stdio_round_trip_and_clean_shutdown() {
     let mut engine = EngineProcess::spawn();
@@ -100,13 +104,60 @@ fn stdio_round_trip_and_clean_shutdown() {
         engine.call(&Request::Key {
             key: Key::new(KeyCode::Backspace, None, false)
         }),
-        state("ㄇ")
+        state_handled("ㄇ", true)
     );
     assert_eq!(
         engine.call(&Request::Commit),
         Response::Committed { text: "ㄇ".into() }
     );
     assert_eq!(engine.call(&Request::Snapshot), state(""));
+
+    assert_eq!(engine.call(&Request::Shutdown), state(""));
+    engine.expect_eof();
+    assert_eq!(engine.wait(), 0, "Shutdown 應以 0 結束");
+}
+
+#[test]
+fn backspace_emptying_composition_is_still_handled() {
+    let mut engine = EngineProcess::spawn();
+    assert_eq!(
+        engine.call(&Request::Hello {
+            protocol: PROTOCOL_VERSION,
+            client: "integration".into(),
+        }),
+        Response::Ready {
+            protocol: PROTOCOL_VERSION,
+            engine: format!("jc-engine {}", env!("CARGO_PKG_VERSION")),
+            session: 1,
+            bindings: [
+                ("emoji_palette".to_string(), "ctrl+alt+.".to_string()),
+                ("symbol_menu".to_string(), "ctrl+alt+,".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        }
+    );
+
+    assert_eq!(
+        engine.call(&Request::Key {
+            key: Key::char('ㄇ', false)
+        }),
+        state("ㄇ")
+    );
+    assert_eq!(
+        engine.call(&Request::Key {
+            key: Key::new(KeyCode::Backspace, None, false)
+        }),
+        state_handled("", true),
+        "刪掉組字最後一個字元的那一鍵仍是 handled"
+    );
+    assert_eq!(
+        engine.call(&Request::Key {
+            key: Key::new(KeyCode::Backspace, None, false)
+        }),
+        state(""),
+        "沒有組字時不搶應用程式的刪除鍵"
+    );
 
     assert_eq!(engine.call(&Request::Shutdown), state(""));
     engine.expect_eof();

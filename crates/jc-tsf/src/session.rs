@@ -483,8 +483,10 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
     let all_english = !segments.is_empty() && segments.iter().all(|s| s.mode == "english");
     let japanese = segments.iter().any(|s| s.mode == "japanese");
     let pending = suggestion.is_some();
-    // 引擎可以明確說「這次沒處理」（例如候選 index 越界）；有值時尊重它，
-    // 沒有才照舊由內容推斷。
+    // 引擎可以明確說「這次沒處理」（例如候選 index 越界）；有值時尊重它。
+    // 組字中的 Backspace／Delete 即使把 preedit 刪空，引擎也會明確回
+    // `handled = true`，這裡不能改用 preedit 猜，否則那一鍵會被放行給應用程式。
+    // 只有舊引擎沒帶 `handled` 時才退回內容推斷。
     let handled = handled.unwrap_or(!preedit.is_empty() || !candidates.is_empty() || pending);
 
     let items: Vec<Value> = candidates

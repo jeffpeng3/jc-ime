@@ -666,12 +666,19 @@ impl Engine {
                 lock(&self.shared).last_key = Some(Instant::now());
                 let logged = Some(Request::Key { key });
                 self.with_current(logged, |session| {
+                    // 這一鍵進來前是否在組字。刪除鍵把組字刪光時 preedit 會變空，
+                    // 外殼不能再靠「preedit 非空」推斷這一鍵有沒有被吃掉。
+                    let composing = !session.snapshot().preedit.is_empty();
+                    let deleting = matches!(key.code, KeyCode::Backspace | KeyCode::Delete);
                     let snapshot = session.press(key);
                     if enters {
                         let text = session.commit();
                         if !text.is_empty() {
                             return Response::Committed { text };
                         }
+                    }
+                    if composing && deleting {
+                        return Response::state_with_handled(snapshot, Some(true));
                     }
                     state(snapshot)
                 })
@@ -1452,6 +1459,93 @@ mod tests {
             key: Key::new(KeyCode::Backspace, None, false),
         });
         assert_eq!(engine.composition(), "注");
+    }
+
+    #[test]
+    fn test_backspace_emptying_composition_is_still_handled() {
+        let mut engine = Engine::new();
+        hello(&mut engine);
+        engine.handle(Request::Literal {
+            text: "ab".into(),
+            session: 0,
+        });
+        assert_eq!(engine.composition(), "ab");
+
+        let Response::State {
+            preedit, handled, ..
+        } = engine.handle(Request::Key {
+            key: Key::new(KeyCode::Backspace, None, false),
+        })
+        else {
+            panic!("組字中 Backspace 應回 State");
+        };
+        assert_eq!(preedit, "a");
+        assert_eq!(handled, Some(true), "組字中按 Backspace 要明確回 handled");
+
+        let Response::State {
+            preedit, handled, ..
+        } = engine.handle(Request::Key {
+            key: Key::new(KeyCode::Backspace, None, false),
+        })
+        else {
+            panic!("組字中 Backspace 應回 State");
+        };
+        assert_eq!(preedit, "");
+        assert_eq!(handled, Some(true), "刪掉最後一個字元的那一鍵仍是 handled");
+        assert_eq!(engine.composition(), "");
+
+        let Response::State { handled, .. } = engine.handle(Request::Key {
+            key: Key::new(KeyCode::Backspace, None, false),
+        }) else {
+            panic!("沒有組字時 Backspace 應回 State");
+        };
+        assert_ne!(handled, Some(true), "沒有組字時不能搶應用程式的刪除鍵");
+    }
+
+    #[test]
+    fn test_delete_emptying_composition_is_still_handled() {
+        let mut engine = Engine::new();
+        hello(&mut engine);
+        type_syllable(&mut engine, "ㄨㄛˇ");
+        type_syllable(&mut engine, "ㄊㄞˊ");
+        assert_eq!(engine.composition(), "ㄨㄛˇㄊㄞˊ");
+
+        // Delete 刪游標後的字；先把游標移到兩個音節之間。
+        engine.handle(Request::Key {
+            key: Key::new(KeyCode::ArrowLeft, None, false),
+        });
+        let Response::State {
+            preedit, handled, ..
+        } = engine.handle(Request::Key {
+            key: Key::new(KeyCode::Delete, None, false),
+        })
+        else {
+            panic!("組字中 Delete 應回 State");
+        };
+        assert_eq!(preedit, "ㄨㄛˇ");
+        assert_eq!(handled, Some(true), "組字中按 Delete 要明確回 handled");
+
+        engine.handle(Request::Key {
+            key: Key::new(KeyCode::ArrowLeft, None, false),
+        });
+        let Response::State {
+            preedit, handled, ..
+        } = engine.handle(Request::Key {
+            key: Key::new(KeyCode::Delete, None, false),
+        })
+        else {
+            panic!("組字中 Delete 應回 State");
+        };
+        assert_eq!(preedit, "");
+        assert_eq!(handled, Some(true), "刪掉最後一個字元的那一鍵仍是 handled");
+        assert_eq!(engine.composition(), "");
+
+        let Response::State { handled, .. } = engine.handle(Request::Key {
+            key: Key::new(KeyCode::Delete, None, false),
+        }) else {
+            panic!("沒有組字時 Delete 應回 State");
+        };
+        assert_ne!(handled, Some(true), "沒有組字時不能搶應用程式的刪除鍵");
     }
 
     #[test]

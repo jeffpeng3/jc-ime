@@ -73,6 +73,10 @@ key = 單一字元
 3. 未命中 → 照原本流程（Ctrl＋標點、Ctrl+Space、Shift 切換等），不搶按鍵。
 4. 只有 `alt` 的組合若沒命中，回 `handled = Some(false)`，讓外殼明確放行。
 
+`handled` 的語意是「這一鍵被輸入法吃掉」，不是「還有組字」。組字中按
+Backspace／Delete，即使把組字刪光，那一鍵仍回 `handled = Some(true)`；
+沒有組字時才維持 `None`，讓外殼放行給應用程式。
+
 ## TSF 轉發
 
 `crates/jc-tsf/src/service.rs`、`session.rs`：
