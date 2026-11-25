@@ -238,8 +238,8 @@ fn prefix_single(key: char) -> Option<&'static str> {
 /// 微軟注音前導表的多變體鍵；第一項是預設插入值。
 fn prefix_variants(key: char) -> Option<&'static [&'static str]> {
     match key {
-        '[' => Some(&["［", "「", "『", "【", "《"]),
-        ']' => Some(&["］", "」", "』", "】", "》"]),
+        '[' => Some(&["［", "「", "『", "【", "〔", "︹", "︻", "﹁", "﹃", "﹝"]),
+        ']' => Some(&["］", "」", "』", "】", "〕", "︺", "︼", "﹂", "﹄", "﹞"]),
         '-' => Some(&["－", "…", "→", "←"]),
         '<' => Some(&["＜", "〈", "《"]),
         '>' => Some(&["＞", "〉", "》"]),
@@ -247,11 +247,11 @@ fn prefix_variants(key: char) -> Option<&'static [&'static str]> {
     }
 }
 
-/// 給定已插入的預設變體，找回整組候選；逐字元候選窗用得到。
+/// 給定已插入的變體，找回整組候選；逐字元候選窗用得到。
 pub(super) fn prefix_variants_for_surface(surface: &str) -> Option<&'static [&'static str]> {
-    ['[', ']', '-', '<', '>'].into_iter().find_map(|key| {
-        prefix_variants(key).filter(|variants| variants.first().copied() == Some(surface))
-    })
+    ['[', ']', '-', '<', '>']
+        .into_iter()
+        .find_map(|key| prefix_variants(key).filter(|variants| variants.contains(&surface)))
 }
 
 /// 微軟參考風格反引號前導打出的全形標點。
@@ -1401,7 +1401,11 @@ mod tests {
             .iter()
             .map(|candidate| candidate.surface.as_str())
             .collect();
-        assert_eq!(surfaces, ["［", "「", "『", "【", "《"]);
+        assert_eq!(
+            surfaces,
+            ["［", "「", "『", "【", "〔", "︹", "︻", "﹁", "﹃", "﹝"],
+            "[ 的變體要完整對齊微軟注音"
+        );
 
         // ← 回到符號前，再按兩下 ↓ 選第二個變體。
         let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
@@ -1411,6 +1415,53 @@ mod tests {
         let snap = s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(snap.preedit, "「", "↓ 換到下一個變體再 Enter");
         assert!(!snap.navigating);
+    }
+
+    /// `]` 的變體清單也完整對齊微軟注音。
+    #[test]
+    fn test_backtick_prefix_variants_for_right_bracket() {
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        let snap = s.press(Key::char(']', false));
+        let surfaces: Vec<&str> = snap
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        assert_eq!(
+            surfaces,
+            ["］", "」", "』", "】", "〕", "︺", "︼", "﹂", "﹄", "﹞"]
+        );
+    }
+
+    /// 選過第二個變體後，游標回去再 ↓ 仍能重新打開整組候選。
+    #[test]
+    fn test_backtick_prefix_reopens_variants_after_switch() {
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        s.press(Key::char('[', false));
+        // 選「」：← 回到符號前，↓ 開窗，再一次 ↓ 到第二項。
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(snap.preedit, "「");
+        assert_eq!(snap.cursor_rune, 1, "選完游標在符號右側");
+
+        // ← 回去再 ↓：整組 `[` 變體都要重新出現。
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        let surfaces: Vec<&str> = snap
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        for want in ["［", "「", "『", "【", "〔", "︹", "︻", "﹁", "﹃", "﹝"] {
+            assert!(
+                surfaces.contains(&want),
+                "{want} 不在重新打開的候選：{surfaces:?}"
+            );
+        }
     }
 
     /// 連按兩下反引號是 ‵。
