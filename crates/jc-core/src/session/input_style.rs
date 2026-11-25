@@ -1516,36 +1516,44 @@ mod tests {
         assert_eq!(s.commit(), "；［］");
     }
 
-    /// 前導符號與注音音節之後再套用多變體候選：前面的字面不能被整段蓋掉。
+    /// 注音音節之後的連續前導符號：套用變體時不能蓋掉整段字面。
     #[test]
     fn test_prefix_symbol_then_zh_syllable() {
         let mut s = plain_session();
         s.press(Key::char('`', false));
         s.press(Key::char(';', false));
         type_syllable(&mut s, "ㄨㄛˇ");
+        assert_eq!(s.preedit(), "；我", "前導符號與注音字都在");
+        // 注音片段會切開字面；再累積兩段前導符號，才會落進同一個字面 run。
+        s.press(Key::char('`', false));
+        s.press(Key::char(';', false));
         s.press(Key::char('`', false));
         let snap = s.press(Key::char('[', false));
-        assert_eq!(snap.preedit, "；我［", "前導符號與注音字都在");
+        assert_eq!(snap.preedit, "；我；［", "注音字與兩段前導符號都在");
         s.press(Key::new(KeyCode::Down, None, false));
         let snap = s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(snap.preedit, "；我「", "只把游標所在的符號換成變體");
-        assert_eq!(s.commit(), "；我「");
+        assert_eq!(snap.preedit, "；我；「", "只把游標所在的符號換成變體");
+        assert_eq!(s.commit(), "；我；「");
     }
 
-    /// 前導符號與英文之後再套用多變體候選：前面的字面不能被整段蓋掉。
+    /// 英文之後的連續前導符號：套用變體時不能蓋掉整段字面。
     #[test]
     fn test_prefix_symbol_then_english() {
         let mut s = plain_session();
         s.press(Key::char('`', false));
         s.press(Key::char(';', false));
         type_keys(&mut s, "hello");
+        assert_eq!(s.preedit(), "；hello", "前導符號與英文都在");
+        // 英文片段會切開字面；再累積兩段前導符號，才會落進同一個字面 run。
+        s.press(Key::char('`', false));
+        s.press(Key::char(';', false));
         s.press(Key::char('`', false));
         let snap = s.press(Key::char('[', false));
-        assert_eq!(snap.preedit, "；hello［", "前導符號與英文都在");
+        assert_eq!(snap.preedit, "；hello；［", "英文與兩段前導符號都在");
         s.press(Key::new(KeyCode::Down, None, false));
         let snap = s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(snap.preedit, "；hello「", "只把游標所在的符號換成變體");
-        assert_eq!(s.commit(), "；hello「");
+        assert_eq!(snap.preedit, "；hello；「", "只把游標所在的符號換成變體");
+        assert_eq!(s.commit(), "；hello；「");
     }
 
     /// Esc 取消前導，不留字。
