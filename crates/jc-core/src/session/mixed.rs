@@ -1214,23 +1214,23 @@ impl Session {
                     });
                 }
             }
-            let (typed_start, typed_end, rune_len) =
-                if raw.is_ascii() && raw.chars().count() == rune_len {
-                    // 英文字面一鍵一字，直接對到同一個按鍵。
-                    let at = raw
-                        .char_indices()
-                        .nth(inside)
-                        .map(|(byte, _)| byte)
-                        .unwrap_or(raw.len());
-                    let next = raw[at..]
-                        .chars()
-                        .next()
-                        .map(|ch| at + ch.len_utf8())
-                        .unwrap_or(raw.len());
-                    (span.0 + at, span.0 + next, 1)
-                } else {
-                    (span.0, span.1, rune_len)
-                };
+            let (typed_start, typed_end, rune_len) = if raw.chars().count() == rune_len {
+                // 字面一鍵一字時，候選只作用在游標那一個字元；連續前導符號
+                // 或多字字面不能整段被一個候選取代。
+                let at = raw
+                    .char_indices()
+                    .nth(inside)
+                    .map(|(byte, _)| byte)
+                    .unwrap_or(raw.len());
+                let next = raw[at..]
+                    .chars()
+                    .next()
+                    .map(|ch| at + ch.len_utf8())
+                    .unwrap_or(raw.len());
+                (span.0 + at, span.0 + next, 1)
+            } else {
+                (span.0, span.1, rune_len)
+            };
             return Some(MixedTarget {
                 typed: (typed_start, typed_end),
                 raw,

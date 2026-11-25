@@ -1486,6 +1486,74 @@ mod tests {
         assert_eq!(snap.preedit, "`q", "反引號與按鍵都留在字面");
     }
 
+    /// 連續兩段前導符號：組字與提交都要保留兩段。
+    #[test]
+    fn test_two_prefix_symbols_commit_both() {
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        s.press(Key::char(';', false));
+        s.press(Key::char('`', false));
+        let snap = s.press(Key::char('[', false));
+        assert_eq!(snap.preedit, "；［");
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(snap.preedit, "；［");
+        assert_eq!(s.commit(), "；［");
+    }
+
+    /// 連續三段前導符號；包含多變體鍵。
+    #[test]
+    fn test_three_prefix_symbols_commit_all() {
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        s.press(Key::char(';', false));
+        s.press(Key::char('`', false));
+        s.press(Key::char('[', false));
+        s.press(Key::char('`', false));
+        let snap = s.press(Key::char(']', false));
+        assert_eq!(snap.preedit, "；［］");
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(snap.preedit, "；［］");
+        assert_eq!(s.commit(), "；［］");
+    }
+
+    /// 前導符號後面接注音音節：字面與轉換後的字都要留下。
+    #[test]
+    fn test_prefix_symbol_then_zh_syllable() {
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        s.press(Key::char(';', false));
+        type_syllable(&mut s, "ㄨㄛˇ");
+        let snap = s.press(Key::new(KeyCode::Space, None, false));
+        assert!(
+            snap.preedit.contains('；'),
+            "組字含前導符號：{:?}",
+            snap.preedit
+        );
+        assert!(
+            snap.preedit.contains('我'),
+            "組字含注音轉出的字：{:?}",
+            snap.preedit
+        );
+        let committed = s.commit();
+        assert!(committed.contains('；'), "提交含前導符號：{committed:?}");
+        assert!(
+            committed.contains('我'),
+            "提交含注音轉出的字：{committed:?}"
+        );
+    }
+
+    /// 前導符號後面接英文：兩段都要提交。
+    #[test]
+    fn test_prefix_symbol_then_english() {
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        s.press(Key::char(';', false));
+        type_keys(&mut s, "hello");
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(snap.preedit, "");
+        assert_eq!(s.commit(), "；hello");
+    }
+
     /// Esc 取消前導，不留字。
     #[test]
     fn test_backtick_prefix_escape_cancels() {
