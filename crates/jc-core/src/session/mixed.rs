@@ -88,10 +88,10 @@ fn ascii_letters(text: &str) -> bool {
 
 /// 連續可列印 ASCII run 達到這個長度就只規劃尾巴。
 ///
-/// 英文詞表窗口是 48 個字元，64 已超過窗口，前段必定是字面英文；門檻
-/// 取在使用者開始感覺變慢之前，第 64 鍵起就只重算尾巴。純小寫、英數與
-/// 標點混雜的長 run 共用這個門檻。
-const LONG_LITERAL_RUN: usize = 64;
+/// 24 比一般英文詞長，也遠低於最長英文單字（45），足以讓長英文詞整段字面，
+/// 不被切分器誤判成かな。純小寫、英數與標點混雜的長 run 共用這個門檻；
+/// 已完成的注音音節另由 `zh_chain_start` 整條拉回尾巴，不受門檻影響。
+const LONG_LITERAL_RUN: usize = 24;
 /// 長 run 每次重新規劃的尾巴長度（rune）。
 ///
 /// 尾巴只需要容納「一個注音音節＋一點英文詞邊界」，不需要整個英文詞窗口：
@@ -113,7 +113,7 @@ fn printable_ascii_run(text: &str) -> bool {
 /// 純小寫長 run 是原本的快速路徑；英數、標點或大小寫混雜的長 run 同樣不會
 /// 因為每鍵重跑 DP 而變慢，也避免 `; ' , .` 被當成注音韻母。
 fn long_literal_keys(text: &str) -> bool {
-    text.len() > LONG_LITERAL_RUN && printable_ascii_run(text)
+    text.len() >= LONG_LITERAL_RUN && printable_ascii_run(text)
 }
 
 /// `raw` 加上任何一個聲調是否組得成詞典解釋得了的音節。
@@ -208,6 +208,112 @@ fn merge_adjacent_en_plans(plans: &mut Vec<crate::mixed::Plan>) {
     *plans = merged;
 }
 
+/// 把多音節的注音片段拆成一個音節一個片段。
+///
+/// 尾巴的注音鏈如果整條交給解碼器一起算，每多一個音節就會重跑一次大詞格；
+/// 實測三個音節要 3ms。拆成單音節後每個片段各自轉字，成本固定且已顯示的
+/// 漢字不會因為下一個音節而重算。
+fn split_zh_plans_by_syllable(
+    plans: Vec<crate::mixed::Plan>,
+    text: &str,
+) -> Vec<crate::mixed::Plan> {
+    let mut out = Vec::with_capacity(plans.len());
+    for plan in plans {
+        let Some(reading) = plan.zh.as_deref() else {
+            out.push(plan);
+            continue;
+        };
+        let readings: Vec<&str> = reading.split_whitespace().collect();
+        let Some(literal) = text.get(plan.start..plan.end) else {
+            out.push(plan);
+            continue;
+        };
+        let keys = zh_key_syllable_spans(literal);
+        if readings.len() <= 1 || readings.len() != keys.len() {
+            out.push(plan);
+            continue;
+        }
+        for (index, (reading, (start, end))) in readings.iter().zip(keys.iter()).enumerate() {
+            out.push(crate::mixed::Plan {
+                start: plan.start + start,
+                end: plan.start + end,
+                mode: plan.mode,
+                script: plan.script,
+                kana: plan.kana.clone(),
+                kana_ok: plan.kana_ok,
+                verbatim: plan.verbatim,
+                zh: Some((*reading).to_string()),
+                zh_done: vec![plan.zh_completed(index)],
+            });
+        }
+    }
+    out
+}
+
+/// 取計畫在 `text[from..to]` 範圍內的注音讀音；非注音片段跨界時回傳 `None`。
+fn plan_readings(
+    plans: &[crate::mixed::Plan],
+    text: &str,
+    from: usize,
+    to: usize,
+) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    for plan in plans {
+        if plan.end <= from {
+            continue;
+        }
+        if plan.start >= to {
+            break;
+        }
+        if let Some(reading) = plan.zh.as_deref() {
+            let readings: Vec<&str> = reading.split_whitespace().collect();
+            if plan.start >= from && plan.end <= to {
+                out.extend(readings.into_iter().map(str::to_string));
+                continue;
+            }
+            // 片段跨過邊界時只有注音可以按音節切。
+            if plan.mode != Lang::Zh {
+                return None;
+            }
+            let literal = text.get(plan.start..plan.end)?;
+            let keys = zh_key_syllable_spans(literal);
+            if keys.len() != readings.len() {
+                return None;
+            }
+            let local_from = from.saturating_sub(plan.start);
+            let local_to = (to - plan.start).min(plan.end - plan.start);
+            for (reading, (start, end)) in readings.iter().zip(keys.iter()) {
+                if *start >= local_from && *end <= local_to {
+                    out.push((*reading).to_string());
+                }
+            }
+        } else if plan.start < from || plan.end > to {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+/// 一起規劃的結果是否完整保留注音鏈的讀音。
+///
+/// `together` 是「注音鏈＋尾碼」的計畫，`chain` 是只規劃注音鏈的計畫；
+/// 兩者在 `chain_len` 之前的讀音必須相同，否則尾碼已經把注音鏈重切成
+/// 別的語言（`ji3s` 會被看成整串英文）。
+fn plans_keep_chain(
+    together: &[crate::mixed::Plan],
+    chain: &[crate::mixed::Plan],
+    text: &str,
+    chain_len: usize,
+) -> bool {
+    let Some(chain_readings) = plan_readings(chain, text, 0, chain_len) else {
+        return false;
+    };
+    if chain_readings.is_empty() {
+        return false;
+    }
+    plan_readings(together, text, 0, chain_len).is_some_and(|readings| readings == chain_readings)
+}
+
 /// 長小寫 run 尾巴接一個完整注音音節時的切點（前段字元數, 音節）。
 ///
 /// `text` 要含聲調鍵或一聲空白。前段必須是超過門檻的純小寫字面英文，
@@ -217,27 +323,6 @@ fn long_run_zh_boundary(
     text: &str,
     pieces: &[AsciiPiece],
     lexicon: &dyn Lexicon,
-) -> Option<(usize, Syllable)> {
-    long_run_zh_boundary_with(text, pieces, lexicon, false)
-}
-
-/// 混合英數、標點的長 run 版本：前段只要是可列印 ASCII 就能凍結。
-///
-/// 尾巴（`body`）仍只接受小寫字母，`; ' , .` 與數字一律不進注音解碼，
-/// 隨機長串因此不會冒出 `ㄎㄨㄑㄩ`；`z…zsu3` 這種真的注音尾巴照樣切開。
-fn long_run_zh_boundary_mixed(
-    text: &str,
-    pieces: &[AsciiPiece],
-    lexicon: &dyn Lexicon,
-) -> Option<(usize, Syllable)> {
-    long_run_zh_boundary_with(text, pieces, lexicon, true)
-}
-
-fn long_run_zh_boundary_with(
-    text: &str,
-    pieces: &[AsciiPiece],
-    lexicon: &dyn Lexicon,
-    allow_mixed_prefix: bool,
 ) -> Option<(usize, Syllable)> {
     let tone_key = text.chars().next_back()?;
     let (body_end, symbol) = if tone_key.is_whitespace() {
@@ -252,16 +337,8 @@ fn long_run_zh_boundary_with(
     let low = body_end.saturating_sub(ZH_SUFFIX_KEYS);
     for start in low..body_end {
         let prefix = &text[..start];
-        let prefix_ok = if allow_mixed_prefix {
-            // 前段只會被凍結成字面，空白與標點都可以留在裡面。
-            prefix.len() >= LONG_LITERAL_RUN
-                && prefix
-                    .bytes()
-                    .all(|byte| byte.is_ascii_graphic() || byte == b' ')
-        } else {
-            prefix.len() >= LONG_LITERAL_RUN && prefix.bytes().all(|byte| byte.is_ascii_lowercase())
-        };
-        if !prefix_ok {
+        if prefix.len() < LONG_LITERAL_RUN || !prefix.bytes().all(|byte| byte.is_ascii_lowercase())
+        {
             continue;
         }
         let body = &text[start..body_end];
@@ -273,6 +350,104 @@ fn long_run_zh_boundary_with(
         }
     }
     None
+}
+
+/// 尾巴以一個完成的注音音節結尾時，回傳它的起點（`end` 不含）。
+///
+/// 結尾可以是聲調鍵，或當一聲用的空白；空白也可能只是音節之間的隔點，
+/// 這時往左跳過空白再看前一個音節。
+fn completed_syllable_start(
+    text: &str,
+    end: usize,
+    pieces: &[AsciiPiece],
+    lexicon: &dyn Lexicon,
+) -> Option<usize> {
+    if end == 0 {
+        return None;
+    }
+    let last = text.as_bytes()[end - 1] as char;
+    if last == ' ' {
+        if let Some(start) = zh_syllable_start(text, end - 1, TONE1, pieces, lexicon) {
+            return Some(start);
+        }
+        return completed_syllable_start(text, end - 1, pieces, lexicon);
+    }
+    let symbol = Keyboard::standard().symbol(last)?;
+    if class_of(symbol) != Class::Tone {
+        return None;
+    }
+    zh_syllable_start(text, end - 1, symbol, pieces, lexicon)
+}
+
+/// `text[..body_end]` 結尾、加上 `tone` 後能成音節的起點。
+///
+/// 同一串按鍵可能有多種合法切法（`xji3` 可以是 `x`＋我或裸）。先找成本最低
+/// 的讀音，再從「成本不超過最低成本 1.5 倍」的候選裡取最長音節：這樣
+/// `ji3`（我）會贏過 `xji3`（裸），不會把前面的英文 `x` 吃掉。鏈內實際
+/// 切法仍交給 `plan_input`。
+fn zh_syllable_start(
+    text: &str,
+    body_end: usize,
+    tone: char,
+    pieces: &[AsciiPiece],
+    lexicon: &dyn Lexicon,
+) -> Option<usize> {
+    let low = body_end.saturating_sub(ZH_SUFFIX_KEYS);
+    let mut candidates: Vec<(usize, i32)> = Vec::new();
+    for start in low..body_end {
+        let body = &text[start..body_end];
+        if body.is_empty() || !body.bytes().all(|byte| byte.is_ascii_lowercase()) {
+            continue;
+        }
+        let Some(syllable) = mixed_reading(body, tone, pieces, lexicon) else {
+            continue;
+        };
+        let cost = lexicon
+            .lookup(syllable.as_str())
+            .iter()
+            .map(|entry| entry.cost)
+            .min()
+            .unwrap_or(i32::MAX / 2);
+        candidates.push((start, cost));
+    }
+    let cheapest = candidates.iter().map(|(_, cost)| *cost).min()?;
+    candidates
+        .into_iter()
+        .filter(|(_, cost)| {
+            let cost = i64::from(*cost);
+            cost * 2 <= i64::from(cheapest) * 3
+        })
+        .map(|(start, _)| start)
+        .min()
+}
+
+/// 尾巴連續已完成注音音節的（起點, 終點）。
+///
+/// 從字尾往回找最近的一個完成音節，再往左吃相鄰音節。字尾可以還帶著下一個
+/// 未完成的音節或英文詞，那段會單獨規劃，不會把已顯示的漢字打回原始按鍵：
+/// `z…zji3` 打完 `s`、`su` 時 `ji3` 仍在鏈裡。
+fn zh_chain_span(
+    text: &str,
+    pieces: &[AsciiPiece],
+    lexicon: &dyn Lexicon,
+) -> Option<(usize, usize)> {
+    let mut chain_end = None;
+    for end in (1..=text.len()).rev() {
+        if completed_syllable_start(text, end, pieces, lexicon).is_some() {
+            chain_end = Some(end);
+            break;
+        }
+    }
+    let chain_end = chain_end?;
+    let mut start = completed_syllable_start(text, chain_end, pieces, lexicon)?;
+    // 再往左吃相鄰的完成音節（`ji3su3`、`ji3 su3`），直到接不上為止。
+    while let Some(prev) = completed_syllable_start(text, start, pieces, lexicon) {
+        if prev >= start {
+            break;
+        }
+        start = prev;
+    }
+    Some((start, chain_end))
 }
 
 /// 英數混打的待定按鍵：累積原始按鍵，聲調或空白才決定是注音還是英文。
@@ -2253,8 +2428,40 @@ impl Session {
         let split_lex = &adapter as &dyn crate::mixed_latin::SplitLexicon;
 
         // 長字面 run 一律只規劃尾巴；短組字維持原本的完整規劃。
-        if let Some(tail_start) = self.long_run_tail_start(text) {
-            return self.frozen_prefix_plans(text, tail_start, lookup, &cfg, split_lex);
+        if last_long_printable_run(text).is_some() {
+            // 已完成的注音鏈優先：整條留在尾巴，後面的未完成按鍵分開規劃。
+            if let Some((chain_start, chain_end)) =
+                zh_chain_span(text, self.ascii.pieces(), &self.lexicon)
+            {
+                // 音節後面還接著一長串同一個 token（`z100+su3+z100`）時，那是
+                // run 中間的音節，不是尾巴，整段維持字面。容忍一個英文詞的
+                // 長度，`z100+ji3+pneumono…` 的「我」才不會被後面的詞打回按鍵。
+                let suffix = &text[chain_end..];
+                let continues_run = suffix.len() > crate::mixed_latin::MAX_ENGLISH_CHARS
+                    && suffix
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| ch.is_ascii_alphanumeric());
+                if !continues_run {
+                    if chain_start > 0 && chain_start < text.len() {
+                        return self.chain_prefix_plans(
+                            text,
+                            chain_start,
+                            chain_end,
+                            lookup,
+                            &cfg,
+                            split_lex,
+                        );
+                    }
+                    // 整串都是注音鏈，沒有可凍結的前段；交給完整規劃。
+                    let plans = crate::mixed::plan_input(text, lookup, &cfg, Some(split_lex));
+                    let plans = crate::mixed::visible_plans(plans, text);
+                    return self.apply_literal_spans(plans);
+                }
+            }
+            if let Some(tail_start) = self.long_run_tail_start(text) {
+                return self.frozen_prefix_plans(text, tail_start, lookup, &cfg, split_lex);
+            }
         }
         // 撇號不是任何注音鍵，含撇號的英數 run 一定是字面（`abc;def'ghi`）。
         // 不交給切分器拆，才不會把中間的 `;` `,` `.` 當成韻母。
@@ -2283,6 +2490,61 @@ impl Session {
             plan.end += tail_start;
             plans.push(plan);
         }
+        let mut plans = crate::mixed::visible_plans(plans, text);
+        merge_adjacent_en_plans(&mut plans);
+        self.apply_literal_spans(plans)
+    }
+
+    /// 前段凍結、已完成注音鏈照舊轉字，鏈後面的內容單獨規劃。
+    ///
+    /// 鏈後面的未完成音節或英文詞不再和注音鏈一起進 DP，`ji3s` 不會因為
+    /// 尾巴多一個 `s` 就整串退回字面。鏈後面若是超過門檻的長英文詞，直接
+    /// 凍結字面，避免被誤判成かな。
+    fn chain_prefix_plans(
+        &self,
+        text: &str,
+        chain_start: usize,
+        chain_end: usize,
+        lookup: &dyn crate::mixed::Lookup,
+        cfg: &crate::mixed::Config,
+        split_lex: &dyn crate::mixed_latin::SplitLexicon,
+    ) -> Vec<crate::mixed::Plan> {
+        let mut plans = vec![literal_en_plan(0, chain_start)];
+        let add = |plans: &mut Vec<crate::mixed::Plan>, from: usize, to: usize| {
+            for mut plan in crate::mixed::plan_input(&text[from..to], lookup, cfg, Some(split_lex))
+            {
+                plan.start += from;
+                plan.end += from;
+                plans.push(plan);
+            }
+        };
+        let chain_len = chain_end - chain_start;
+        let chain_plans =
+            crate::mixed::plan_input(&text[chain_start..chain_end], lookup, cfg, Some(split_lex));
+        let suffix = &text[chain_end..];
+        if suffix.is_empty() {
+            add(&mut plans, chain_start, chain_end);
+        } else if suffix.len() > LONG_LITERAL_RUN && suffix.is_ascii() {
+            // 長英文詞直接凍結，不讓它被切分器誤判成かな。
+            add(&mut plans, chain_start, chain_end);
+            plans.push(literal_en_plan(chain_end, text.len()));
+        } else {
+            // 尾碼和注音鏈一起規劃時，注音鏈的切點必須原樣保留；保留不了
+            // （`ji3s` 會整串變英文）就退回「鏈＋尾碼分開規劃」。
+            let together =
+                crate::mixed::plan_input(&text[chain_start..], lookup, cfg, Some(split_lex));
+            if plans_keep_chain(&together, &chain_plans, &text[chain_start..], chain_len) {
+                for mut plan in together {
+                    plan.start += chain_start;
+                    plan.end += chain_start;
+                    plans.push(plan);
+                }
+            } else {
+                add(&mut plans, chain_start, chain_end);
+                add(&mut plans, chain_end, text.len());
+            }
+        }
+        let plans = split_zh_plans_by_syllable(plans, text);
         let mut plans = crate::mixed::visible_plans(plans, text);
         merge_adjacent_en_plans(&mut plans);
         self.apply_literal_spans(plans)
@@ -2445,14 +2707,6 @@ impl Session {
         } else if let Some((start, end)) = printable_run_at(text, tail_start) {
             if end - start > PLAN_TAIL_CHARS {
                 tail_start = end;
-            }
-        }
-        // 完成的注音音節不能被切開。
-        if let Some((zh_start, _)) =
-            long_run_zh_boundary_mixed(text, self.ascii.pieces(), &self.lexicon)
-        {
-            if zh_start > run_start && zh_start < tail_start {
-                tail_start = zh_start;
             }
         }
         // UTF-8 邊界保險；目前呼叫端都是 ASCII，仍不讓切點落在字元中間。
@@ -3225,6 +3479,8 @@ mod tests {
         lex.push(LexEntry::new("你", "ㄋㄧˇ", 0, 0));
         lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
         lex.push(LexEntry::new("是", "ㄕˋ", 0, 0));
+        // `xji3` 的較長切法；成本高，切點應選 `ji3`（我）而不是裸。
+        lex.push(LexEntry::new("裸", "ㄌㄨㄛˇ", 1000, 0));
         let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
         Session::new(config)
@@ -3240,6 +3496,32 @@ mod tests {
                 s.snapshot().preedit,
                 format!("{}{want}", "z".repeat(100)),
                 "尾巴 {suffix}"
+            );
+        }
+    }
+
+    /// 連續注音鏈不能因為尾巴繼續打字而退回原始按鍵。
+    #[test]
+    fn test_long_run_zh_chain_never_reverts() {
+        let z = "z".repeat(100);
+        let a = "a".repeat(100);
+        for (keys, want) in [
+            (format!("{z}ji3su3"), format!("{z}我你")),
+            (format!("{z}ji3su3g4"), format!("{z}我你是")),
+            (format!("{a}xji3su3"), format!("{a}x我你")),
+            (format!("{z}ji3"), format!("{z}我")),
+            (format!("{z}su3"), format!("{z}你")),
+            // 下一個音節還沒打完時，已顯示的漢字不能消失。
+            (format!("{z}ji3s"), format!("{z}我s")),
+            (format!("{z}ji3su"), format!("{z}我ㄋㄧ")),
+        ] {
+            let mut s = long_run_zh_session();
+            mixed_type(&mut s, &keys);
+            assert_eq!(s.snapshot().preedit, want, "{keys:?}");
+            assert!(
+                !s.snapshot().preedit.contains("ji3"),
+                "{keys:?} 退回原始按鍵：{:?}",
+                s.snapshot().preedit
             );
         }
     }
