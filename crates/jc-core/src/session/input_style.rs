@@ -22,6 +22,16 @@ use crate::zh::syllable::{class_of, Class, TONE1};
 /// 外殼送來的是按鍵實際產生的字元，核心不必另外知道 Shift 有沒有按著。
 const SHIFTED_SYMBOLS: &str = "~!@#$%^&*()_+{}|:\"<>?";
 
+/// `SpaceSelects` 舊設定已停用：空白鍵只插入空格，候選改由 ↓ 開啟。
+///
+/// `InputStyle::preset` 與 `jc-engine` 套用設定時都會呼叫；只記一次 warning。
+pub fn warn_space_selects_ignored() {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        log::warn!("space_selects 已停用：空白鍵只插入空格，候選改由 ↓ 開啟");
+    });
+}
+
 /// 一次輸入風格設定的集合。
 ///
 /// 上游把 `inputstyle.Rules` 與幾個舊設定分開放在 `Session` 上；這裡把同一組
@@ -48,13 +58,8 @@ impl InputStyle {
     /// 代號不存在時回傳 `None`；不認得的平台沿用 Linux 預設。
     pub fn preset(id: &str) -> Option<Self> {
         let preset = crate::inputstyle::get(id)?;
-        // `SpaceSelects` 已停用：空白鍵只插入空格，候選改由 ↓ 開啟。
-        // 舊設定讀到就忽略，只記一次 warning。
-        static SPACE_SELECTS_WARNED: std::sync::Once = std::sync::Once::new();
         if preset.behavior.space_selects {
-            SPACE_SELECTS_WARNED.call_once(|| {
-                log::warn!("space_selects 已停用：空白鍵只插入空格，候選改由 ↓ 開啟");
-            });
+            warn_space_selects_ignored();
         }
         Some(Self {
             rules: preset.rules,

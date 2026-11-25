@@ -27,7 +27,8 @@ mod segments;
 pub mod symbols;
 
 pub use input_style::{
-    full_width_idle_keys, halfwidth_shift_keys, idle_keys, zhuyin_key_action, InputStyle, KeyAction,
+    full_width_idle_keys, halfwidth_shift_keys, idle_keys, warn_space_selects_ignored,
+    zhuyin_key_action, InputStyle, KeyAction,
 };
 pub use neural::{
     ContextChars, NeuralConfig, NeuralDecision, NeuralEngine, NeuralError, NeuralInput,

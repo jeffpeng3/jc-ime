@@ -309,7 +309,11 @@ pub fn session_config(mut base: SessionConfig, effective: &EffectiveSettings) ->
     base.ja_rerank = effective.ja_rerank;
     base.ja_live.enabled = effective.ja_live;
     base.style.mixed_input = effective.mixed_input;
-    base.style.space_inserts_space = !effective.space_selects;
+    if effective.space_selects {
+        // 舊設定讀到就忽略；空白鍵固定只插入空格。
+        jc_core::session::warn_space_selects_ignored();
+    }
+    base.style.space_inserts_space = true;
     base.style.selection_keys = effective.selection_keys.clone();
     base.style.emoji_shortcut = effective.emoji_shortcut.clone();
     base.style.shift_symbol_halfwidth = effective.shift_symbol_halfwidth;
