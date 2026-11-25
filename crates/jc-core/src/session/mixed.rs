@@ -2140,9 +2140,10 @@ impl Session {
 
     /// 把使用者固定成字面的按鍵範圍強制轉成英文字面片段。
     ///
-    /// 選回原始按鍵（`ji3`）或無聲調按鍵（`ji`）後，管線不能再把它解成注音。
-    /// 範圍以 `AsciiInput::typed` 的位元組位移表示；與片段有重疊時整段固定，
-    /// 這樣後續按鍵才能接在同一個字面片段後面。
+    /// 選回原始按鍵（`ji3`）、無聲調按鍵（`ji`），或游標離開未完成的注音
+    /// 時，管線不能再把它解成注音或日文。範圍以 `AsciiInput::typed` 的
+    /// 位元組位移表示；注音片段若只有尾巴落在字面範圍，會在音節邊界切開，
+    /// 前面的已完成音節仍照常轉字。
     fn apply_literal_spans(&self, plans: Vec<crate::mixed::Plan>) -> Vec<crate::mixed::Plan> {
         if self.literal_spans.is_empty() {
             return plans;
@@ -2156,28 +2157,110 @@ impl Session {
         if spans.is_empty() {
             return plans;
         }
-        plans
-            .into_iter()
-            .map(|plan| {
-                let hit = spans
-                    .iter()
-                    .any(|(start, end)| *start < plan.end && plan.start < *end);
-                if !hit {
-                    return plan;
-                }
-                crate::mixed::Plan {
-                    start: plan.start,
-                    end: plan.end,
-                    mode: Lang::En,
-                    script: Script::Latin,
-                    kana: String::new(),
-                    kana_ok: false,
-                    verbatim: true,
-                    zh: None,
-                    zh_done: Vec::new(),
-                }
-            })
-            .collect()
+        let text = self.ascii.typed();
+        let mut out = Vec::with_capacity(plans.len());
+        for plan in plans {
+            let hits: Vec<(usize, usize)> = spans
+                .iter()
+                .copied()
+                .filter(|(start, end)| *start < plan.end && plan.start < *end)
+                .collect();
+            if hits.is_empty() {
+                out.push(plan);
+                continue;
+            }
+            match self.split_zh_plan_for_literals(&plan, &hits, text) {
+                Some(parts) => out.extend(parts),
+                None => out.push(Self::literal_plan(plan.start, plan.end)),
+            }
+        }
+        out
+    }
+
+    /// 只有尾巴被固定成字面的注音片段：依音節邊界切成「注音＋字面」。
+    ///
+    /// 切點對不上音節邊界時回傳 `None`，呼叫端維持整段字面的舊行為。
+    fn split_zh_plan_for_literals(
+        &self,
+        plan: &crate::mixed::Plan,
+        hits: &[(usize, usize)],
+        text: &str,
+    ) -> Option<Vec<crate::mixed::Plan>> {
+        let literal = text.get(plan.start..plan.end)?;
+        let readings: Vec<&str> = plan.zh.as_deref()?.split_whitespace().collect();
+        let keys = zh_key_syllable_spans(literal);
+        if readings.is_empty() || readings.len() != keys.len() {
+            return None;
+        }
+        let mut cuts = vec![plan.start, plan.end];
+        for (start, end) in hits {
+            cuts.push((*start).max(plan.start));
+            cuts.push((*end).min(plan.end));
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        let mut out = Vec::new();
+        for pair in cuts.windows(2) {
+            let (start, end) = (pair[0], pair[1]);
+            if start >= end {
+                continue;
+            }
+            let indices: Vec<usize> = keys
+                .iter()
+                .enumerate()
+                .filter(|(_, (ks, ke))| plan.start + ks >= start && plan.start + ke <= end)
+                .map(|(index, _)| index)
+                .collect();
+            let (Some(first), Some(last)) = (indices.first(), indices.last()) else {
+                return None;
+            };
+            if plan.start + keys[*first].0 != start || plan.start + keys[*last].1 != end {
+                return None;
+            }
+            let literal_hit = hits
+                .iter()
+                .any(|(hit_start, hit_end)| *hit_start <= start && end <= *hit_end);
+            if literal_hit {
+                out.push(Self::literal_plan(start, end));
+            } else {
+                out.push(crate::mixed::Plan {
+                    start,
+                    end,
+                    mode: plan.mode,
+                    script: plan.script,
+                    kana: plan.kana.clone(),
+                    kana_ok: plan.kana_ok,
+                    verbatim: plan.verbatim,
+                    zh: Some(
+                        indices
+                            .iter()
+                            .map(|index| readings[*index])
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    ),
+                    zh_done: indices
+                        .iter()
+                        .map(|index| plan.zh_completed(*index))
+                        .collect(),
+                });
+            }
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// 一段照字面輸出的計畫。
+    fn literal_plan(start: usize, end: usize) -> crate::mixed::Plan {
+        crate::mixed::Plan {
+            start,
+            end,
+            mode: Lang::En,
+            script: Script::Latin,
+            kana: String::new(),
+            kana_ok: false,
+            verbatim: true,
+            zh: None,
+            zh_done: Vec::new(),
+        }
     }
 
     /// 長小寫 run 的凍結切點；沒有可凍結的前段時回傳 `None`。
@@ -3724,6 +3807,69 @@ mod tests {
         let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(cursor_lexicon()));
         Session::new(config)
+    }
+
+    /// 真實機器會載入日文解碼器；游標移動時不能讓待定注音被判成日文。
+    fn pending_session() -> Session {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(cursor_lexicon()));
+        config.ja = Some(test_ja_decoder());
+        Session::new(config)
+    }
+
+    #[test]
+    fn test_pending_syllable_degrades_to_raw_keys_on_cursor_move() {
+        let mut s = pending_session();
+        mixed_type(&mut s, "ji");
+        assert_eq!(s.snapshot().preedit, "ㄨㄛ");
+        let snap = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(snap.preedit, "ji", "待定音節要凍結成原始按鍵");
+        assert_eq!(snap.cursor_rune, 0);
+        assert!(
+            snap.segments.iter().all(|segment| segment.mode != Lang::Ja),
+            "游標移動不能生出日文片段：{:?}",
+            snap.segments
+        );
+    }
+
+    #[test]
+    fn test_pending_syllable_degrades_for_su() {
+        let mut s = pending_session();
+        mixed_type(&mut s, "su");
+        assert_eq!(s.snapshot().preedit, "ㄋㄧ");
+        let snap = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(snap.preedit, "su", "`su` 要留在原始按鍵");
+        assert_eq!(snap.cursor_rune, 0);
+        assert!(
+            snap.segments.iter().all(|segment| segment.mode != Lang::Ja),
+            "`su` 不能變成す：{:?}",
+            snap.segments
+        );
+    }
+
+    #[test]
+    fn test_pending_tail_degrades_after_completed_syllable() {
+        let mut s = pending_session();
+        mixed_type(&mut s, "w96j");
+        assert_eq!(s.snapshot().preedit, "台ㄨ");
+        let snap = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(snap.preedit, "台j", "已完成的台保留，尾巴 j 凍結成字面");
+        assert_eq!(snap.cursor_rune, 1, "游標停在凍結尾巴的左緣");
+    }
+
+    #[test]
+    fn test_cursor_move_does_not_create_japanese_reading() {
+        for (keys, want) in [("ji", "ji"), ("su", "su")] {
+            let mut s = pending_session();
+            mixed_type(&mut s, keys);
+            let snap = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+            assert_eq!(snap.preedit, want, "{keys}");
+            assert!(
+                !snap.segments.iter().any(|segment| segment.mode == Lang::Ja),
+                "{keys} 移動游標後不該有日文片段：{:?}",
+                snap.segments
+            );
+        }
     }
 
     #[test]

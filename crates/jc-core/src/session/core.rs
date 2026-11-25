@@ -439,6 +439,63 @@ impl Session {
         self.rebuild();
     }
 
+    /// 把未完成的注音凍結成原始按鍵字面，再交回混打管線。
+    ///
+    /// 游標離開待定音節時用。原始按鍵記在 `literal_spans`，混打規劃不會再
+    /// 把它讀成日文或英文；已完成的音節照常重播。回傳凍結前已完成音節的
+    /// rune 數，讓呼叫端把游標放到待定尾巴的左緣。
+    pub(super) fn freeze_pending_zhuyin_for_mixed(&mut self) -> usize {
+        let keyboard = self.zh.keyboard();
+        let mut keys = String::new();
+        for syllable in &self.syllables {
+            if let Ok(syllable_keys) = keyboard.keys(syllable) {
+                keys.push_str(&syllable_keys);
+            }
+        }
+        let completed_runes: usize = self
+            .syllables
+            .iter()
+            .map(|syllable| self.decode_syllable(syllable).chars().count())
+            .sum();
+        let pending_start = keys.len();
+        let pending = std::mem::take(&mut self.zh_pending_keys);
+        keys.push_str(&pending);
+        keys.push_str(&self.literal);
+        keys.push_str(&self.literal_tail);
+        self.zh.reset();
+        self.zh_lane = false;
+        self.syllables.clear();
+        self.cursor = 0;
+        self.locks.clear();
+        self.composition.clear();
+        self.edit = None;
+        self.keep_candidates = false;
+        self.highlighted = 0;
+        self.candidate_window = false;
+        self.navigating = false;
+        self.segment_manual = None;
+        self.last_hypotheses.clear();
+        self.pending.clear();
+        self.base.clear();
+        self.segments.clear();
+        self.literal.clear();
+        self.literal_anchor = 0;
+        self.literal_offset = 0;
+        self.literal_tail.clear();
+        self.pending_tone = None;
+        self.ascii.replay(&keys, &self.lexicon);
+        self.literal_spans.clear();
+        if !pending.is_empty() {
+            let end = pending_start + pending.len();
+            if end <= self.ascii.typed().len() {
+                self.literal_spans.push((pending_start, end));
+            }
+        }
+        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.rebuild();
+        completed_runes
+    }
+
     /// 把純注音組字整段交回混打管線，不附加額外按鍵。
     pub(super) fn flush_zh_lane_for_mixed(&mut self) {
         let keyboard = self.zh.keyboard();
@@ -1577,9 +1634,11 @@ impl Session {
         }
         if self.in_zh_lane() && (!self.zh_pending_keys.is_empty() || !self.zh.pending().is_empty())
         {
-            // 注音還沒打完就移動游標：待定音節退化成原始字母，再照樣移動。
-            self.flush_zh_lane_for_mixed();
-            self.navigate_mixed(delta);
+            // 注音還沒打完就移動游標：待定音節凍結成原始按鍵字面，不能被
+            // 混打管線重新讀成日文或英文。游標停在凍結尾巴的左緣。
+            let completed = self.freeze_pending_zhuyin_for_mixed();
+            let len = self.base_with_highlight().chars().count();
+            self.move_mixed_cursor_to(if delta < 0 { completed } else { len });
             return;
         }
         if self.in_zh_lane() && self.candidate_window && !self.navigating {
