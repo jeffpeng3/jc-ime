@@ -667,8 +667,11 @@ impl Engine {
                 let logged = Some(Request::Key { key });
                 self.with_current(logged, |session| {
                     // 這一鍵進來前是否在組字。刪除鍵把組字刪光時 preedit 會變空，
-                    // 外殼不能再靠「preedit 非空」推斷這一鍵有沒有被吃掉。
-                    let composing = !session.snapshot().preedit.is_empty();
+                    // 外殼不能再靠「preedit 非空」推斷這一鍵有沒有被吃掉。候選窗／
+                    // 選單開著時 preedit 也是空，所以要和 TSF 的 `composing()` 一樣
+                    // 把 candidates 算進來。
+                    let before = session.snapshot();
+                    let composing = !before.preedit.is_empty() || !before.candidates.is_empty();
                     let deleting = matches!(key.code, KeyCode::Backspace | KeyCode::Delete);
                     let snapshot = session.press(key);
                     if enters {
@@ -1546,6 +1549,114 @@ mod tests {
             panic!("沒有組字時 Delete 應回 State");
         };
         assert_ne!(handled, Some(true), "沒有組字時不能搶應用程式的刪除鍵");
+    }
+
+    #[test]
+    fn test_backspace_closes_menu_without_deleting_document_text() {
+        let mut engine = engine_with_settings(None);
+        hello(&mut engine);
+        let response = engine.handle(Request::Key {
+            key: Key::char(',', false).with_ctrl().with_alt(),
+        });
+        assert_eq!(handled(&response), Some(true));
+        let Response::State {
+            preedit,
+            candidates,
+            ..
+        } = &response
+        else {
+            panic!("開選單應回 State");
+        };
+        assert_eq!(preedit, "", "選單開著時 preedit 是空的");
+        assert!(!candidates.is_empty(), "選單要有候選");
+        let id = engine.current_session();
+        assert!(
+            engine.local.sessions[&id].menu_tab().is_some(),
+            "引擎要真的開選單"
+        );
+
+        let response = engine.handle(Request::Key {
+            key: Key::new(KeyCode::Backspace, None, false),
+        });
+        assert_eq!(
+            handled(&response),
+            Some(true),
+            "選單開著時的 Backspace 是輸入法吃掉的一鍵"
+        );
+        let Response::State {
+            preedit,
+            candidates,
+            ..
+        } = response
+        else {
+            panic!("關選單應回 State");
+        };
+        assert_eq!(preedit, "", "關選單不能改動 preedit");
+        assert!(candidates.is_empty(), "Backspace 應關掉選單");
+        assert!(
+            engine.local.sessions[&id].menu_tab().is_none(),
+            "Backspace 後選單要關閉"
+        );
+    }
+
+    #[test]
+    fn test_delete_closes_menu_without_forward_delete() {
+        let mut engine = engine_with_settings(None);
+        hello(&mut engine);
+        let response = engine.handle(Request::Key {
+            key: Key::char(',', false).with_ctrl().with_alt(),
+        });
+        assert_eq!(handled(&response), Some(true));
+        let Response::State {
+            preedit,
+            candidates,
+            ..
+        } = &response
+        else {
+            panic!("開選單應回 State");
+        };
+        assert_eq!(preedit, "");
+        assert!(!candidates.is_empty());
+        let id = engine.current_session();
+        assert!(engine.local.sessions[&id].menu_tab().is_some());
+
+        let response = engine.handle(Request::Key {
+            key: Key::new(KeyCode::Delete, None, false),
+        });
+        assert_eq!(
+            handled(&response),
+            Some(true),
+            "選單開著時的 Delete 是輸入法吃掉的一鍵"
+        );
+        let Response::State {
+            preedit,
+            candidates,
+            ..
+        } = response
+        else {
+            panic!("關選單應回 State");
+        };
+        assert_eq!(preedit, "", "關選單不能改動 preedit");
+        assert!(candidates.is_empty(), "Delete 應關掉選單");
+        assert!(
+            engine.local.sessions[&id].menu_tab().is_none(),
+            "Delete 後選單要關閉"
+        );
+    }
+
+    #[test]
+    fn test_backspace_without_composition_or_menu_is_not_handled() {
+        let mut engine = engine_with_settings(None);
+        hello(&mut engine);
+        assert_eq!(engine.composition(), "");
+        let response = engine.handle(Request::Key {
+            key: Key::new(KeyCode::Backspace, None, false),
+        });
+        assert_ne!(
+            handled(&response),
+            Some(true),
+            "沒有組字也沒有選單時不能搶應用程式的刪除鍵"
+        );
     }
 
     #[test]
