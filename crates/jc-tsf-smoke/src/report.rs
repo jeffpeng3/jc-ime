@@ -28,6 +28,11 @@ pub const INFO: &str = "[INFO]";
 /// JSON schema 的識別字；格式改動時要一起改。
 pub const SCHEMA: &str = "jc-ime-doctor/1";
 
+/// 檢查 13 的 id。
+pub const UI_PROBE_ID: &str = "ui.probe";
+/// 檢查 13 的標題。
+pub const UI_PROBE_TITLE: &str = "UI 探針";
+
 /// 單項檢查的狀態。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -77,6 +82,65 @@ pub struct Check {
     /// 最近一次慢請求的輸入長度（位元組）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_slow_input_len: Option<usize>,
+    /// 檢查 13（UI 探針）的 cell；只有那一項會填。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui_probe: Option<UiProbeCells>,
+}
+
+/// 檢查 13 回報的 cell。
+///
+/// 人類輸出與 JSON 共用同一組值；`candidate_rect` 用 `l,t,r,b` 字串，
+/// 沒有看到候選窗時是空字串。`latency_ms` 是送出最後一個鍵到第一次看到
+/// 可見候選窗的毫秒數，沒看到時記 0。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UiProbeCells {
+    /// `interactive` 或 `headless`。
+    pub desktop: String,
+    /// 組字字串；取不到時是空字串。
+    pub composition: String,
+    /// 是否看到可見的候選窗。
+    pub candidate_visible: bool,
+    /// 候選窗的 `l,t,r,b`；沒有時是空字串。
+    pub candidate_rect: String,
+    /// 第一次看到候選窗的延遲（毫秒）。
+    pub latency_ms: u64,
+    /// 按 Esc 之後候選窗是否消失。
+    pub escape_hides: bool,
+}
+
+impl UiProbeCells {
+    /// 無互動桌面時的 cell：什麼都沒驗到。
+    pub fn headless() -> Self {
+        Self {
+            desktop: "headless".to_string(),
+            composition: String::new(),
+            candidate_visible: false,
+            candidate_rect: String::new(),
+            latency_ms: 0,
+            escape_hides: false,
+        }
+    }
+
+    /// 互動桌面但還沒開始量測時的 cell。
+    pub fn interactive() -> Self {
+        Self {
+            desktop: "interactive".to_string(),
+            ..Self::headless()
+        }
+    }
+
+    /// 一行 `key=value` 摘要，供 `detail` 使用。
+    pub fn detail(&self) -> String {
+        format!(
+            "desktop={}；composition={}；candidate_visible={}；candidate_rect={}；latency_ms={}；escape_hides={}",
+            self.desktop,
+            self.composition,
+            self.candidate_visible,
+            self.candidate_rect,
+            self.latency_ms,
+            self.escape_hides
+        )
+    }
 }
 
 /// JSON 的 `summary` 物件。
@@ -159,6 +223,19 @@ impl Report {
     /// 記一項無法判定。
     pub fn skip(&mut self, id: &str, title: &str, detail: impl Into<String>) {
         self.push(id, title, Status::Skip, detail.into(), None);
+    }
+
+    /// 記檢查 13（UI 探針）並附上 cell。
+    pub fn ui_probe(
+        &mut self,
+        status: Status,
+        detail: impl Into<String>,
+        fix: Option<String>,
+        cells: UiProbeCells,
+    ) {
+        self.push(UI_PROBE_ID, UI_PROBE_TITLE, status, detail.into(), fix);
+        let check = self.checks.last_mut().expect("剛加入一項檢查");
+        check.ui_probe = Some(cells);
     }
 
     /// 印一行輔助資訊，不計入任何計數。
@@ -263,6 +340,7 @@ impl Report {
             last_slow_op: None,
             last_slow_ms: None,
             last_slow_input_len: None,
+            ui_probe: None,
         });
     }
 
@@ -440,5 +518,75 @@ mod tests {
         assert_eq!(check["last_slow_op"], "key");
         assert_eq!(check["last_slow_ms"], 412);
         assert_eq!(check["last_slow_input_len"], 37);
+    }
+
+    #[test]
+    fn headless_ui_probe_cells_are_empty() {
+        let cells = UiProbeCells::headless();
+        assert_eq!(cells.desktop, "headless");
+        assert_eq!(cells.composition, "");
+        assert!(!cells.candidate_visible);
+        assert_eq!(cells.candidate_rect, "");
+        assert_eq!(cells.latency_ms, 0);
+        assert!(!cells.escape_hides);
+        assert_eq!(UiProbeCells::interactive().desktop, "interactive");
+    }
+
+    #[test]
+    fn ui_probe_check_serializes_cells_and_keeps_ok() {
+        let mut report = Report::new(false);
+        report.ui_probe(
+            Status::Skip,
+            "desktop=headless（沒有互動桌面）",
+            None,
+            UiProbeCells::headless(),
+        );
+        let value: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+        let check = &value["checks"][0];
+        assert_eq!(check["id"], UI_PROBE_ID);
+        assert_eq!(check["title"], UI_PROBE_TITLE);
+        assert_eq!(check["status"], "skip");
+        assert_eq!(check["ui_probe"]["desktop"], "headless");
+        assert_eq!(check["ui_probe"]["candidate_visible"], false);
+        assert_eq!(check["ui_probe"]["latency_ms"], 0);
+        assert_eq!(value["ok"], true);
+
+        let mut failed = Report::new(false);
+        failed.ui_probe(
+            Status::Fail,
+            "候選窗沒有出現",
+            Some("看 tsf.log".to_string()),
+            UiProbeCells {
+                desktop: "interactive".to_string(),
+                composition: "ㄨ".to_string(),
+                candidate_visible: false,
+                candidate_rect: String::new(),
+                latency_ms: 2001,
+                escape_hides: false,
+            },
+        );
+        let value: serde_json::Value = serde_json::from_str(&failed.to_json()).unwrap();
+        let check = &value["checks"][0];
+        assert_eq!(check["status"], "fail");
+        assert_eq!(check["fix"], "看 tsf.log");
+        assert_eq!(check["ui_probe"]["composition"], "ㄨ");
+        assert_eq!(check["ui_probe"]["latency_ms"], 2001);
+        assert_eq!(value["ok"], false);
+    }
+
+    #[test]
+    fn ui_probe_cells_detail_lists_every_cell() {
+        let cells = UiProbeCells {
+            desktop: "interactive".to_string(),
+            composition: "ㄨㄛ".to_string(),
+            candidate_visible: true,
+            candidate_rect: "10,20,110,60".to_string(),
+            latency_ms: 87,
+            escape_hides: true,
+        };
+        assert_eq!(
+            cells.detail(),
+            "desktop=interactive；composition=ㄨㄛ；candidate_visible=true；candidate_rect=10,20,110,60；latency_ms=87；escape_hides=true"
+        );
     }
 }

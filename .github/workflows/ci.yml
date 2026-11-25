@@ -1092,6 +1092,52 @@ jobs:
           }
           Write-Host "jc-tsf-smoke（doctor）通過"
 
+      # 前 12 項都是註冊表、檔案、COM 與 pipe 層；候選窗有沒有真的畫出來只有
+      # 檢查 13 驗得到。GitHub 的 Windows runner 是 Session 0，探針會回
+      # desktop=headless；那時只留 warning，不讓 job 紅。真的看到候選窗卻
+      # 位置不對或 Esc 關不掉，才讓這步失敗。
+      - name: UI 探針（候選窗）
+        shell: pwsh
+        env:
+          # 候選窗失敗時，DLL 會把原因寫進 tsf.log。
+          JC_TSF_LOG: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $exe = Join-Path $env:JC_INSTALL_DIR 'jc-tsf-smoke.exe'
+          $jsonPath = Join-Path $env:RUNNER_TEMP 'ui-probe.json'
+          $errPath = Join-Path $env:RUNNER_TEMP 'ui-probe.err.log'
+
+          # stdout 只有 jc-ime-doctor/1 JSON；人類可讀的逐項輸出走 stderr。
+          & $exe --check ui-probe --json 2> $errPath |
+            Set-Content -Path $jsonPath -Encoding UTF8
+          $code = $LASTEXITCODE
+          if (Test-Path $errPath) { Get-Content $errPath -Encoding UTF8 | Write-Host }
+          if (-not (Test-Path $jsonPath)) { throw "UI 探針沒有輸出 JSON（exit $code）" }
+
+          $report = Get-Content $jsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          $check = @($report.checks | Where-Object { $_.id -eq 'ui.probe' }) |
+            Select-Object -First 1
+          if (-not $check) { throw "UI 探針的 JSON 缺少 ui.probe（exit $code）" }
+
+          $cells = $check.ui_probe
+          Write-Host ("ui.probe status={0} desktop={1} composition={2} candidate_visible={3} candidate_rect={4} latency_ms={5} escape_hides={6}" -f $check.status, $cells.desktop, $cells.composition, $cells.candidate_visible, $cells.candidate_rect, $cells.latency_ms, $cells.escape_hides)
+
+          if ($check.status -eq 'fail' -or $code -eq 1) {
+            throw "UI 探針失敗（exit $code）：$($check.detail)"
+          }
+          if ($code -ne 0) {
+            throw "UI 探針的結束碼不是 0／1：$code；$($check.detail)"
+          }
+          if ($check.status -eq 'skip' -or $cells.desktop -eq 'headless') {
+            Write-Host '::warning::CI runner 沒有互動桌面，跳過 UI 探針'
+            exit 0
+          }
+          if ($check.status -ne 'pass') {
+            throw "UI 探針的 status 不是 pass／skip：$($check.status)"
+          }
+          Write-Host 'UI 探針通過：候選窗出現、位置合理、Esc 後消失'
+
       # 失敗時手動再跑一次 user-install，並把使用者語言清單整個倒出來。
       # InstallLayoutOrTip 的字串格式不對時會回 TRUE 但什麼都不寫，只有實際
       # 跑一次加完整 dump 才分得出是「沒呼叫到」還是「呼叫了沒效果」。
@@ -1289,6 +1335,8 @@ jobs:
             ${{ runner.temp }}/smoke.err.log
             ${{ runner.temp }}/doctor-last.txt
             ${{ runner.temp }}/tsf.log
+            ${{ runner.temp }}/ui-probe.json
+            ${{ runner.temp }}/ui-probe.err.log
 
 
   # 與 build-windows 相同：只 needs check-tag，與測試並行起步。

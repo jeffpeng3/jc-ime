@@ -19,15 +19,23 @@ thiserror = { workspace = true }
 sha2 = "0.10"
 windows = { version = "0.62", features = [
   "Win32_Foundation",
+  # ClientToScreen：把 EDIT 的插入點換成螢幕座標。
+  "Win32_Graphics_Gdi",
   "Win32_Storage_FileSystem",
   "Win32_System_Com",
   "Win32_System_LibraryLoader",
   # CONNECT_E_ADVISELIMIT：TIP 已被 msctf 激活的判定。
   "Win32_System_Ole",
   "Win32_System_Registry",
+  # GetProcessWindowStation／GetUserObjectInformationW：確認是互動式 WinSta0。
+  "Win32_System_StationsAndDesktops",
+  # GetCurrentProcessId：只認本行程的候選窗。
+  "Win32_System_Threading",
   # ITfInputProcessorProfileMgr::GetActiveProfile 與 TF_INPUTPROCESSORPROFILE。
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_TextServices",
+  # 檢查 13：host 視窗、EDIT、FindWindowW 與訊息迴圈。
+  "Win32_UI_WindowsAndMessaging",
 ] }
 jc-proto = { path = "../jc-proto" }
 jc-windows = { path = "../jc-windows" }

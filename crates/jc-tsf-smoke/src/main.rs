@@ -4,7 +4,7 @@
 //! pipe 都是 Windows 專屬；Linux 上建置出來的 `main` 只是印一行訊息後以 2 結束，
 //! 供 `cargo check --workspace --all-targets` 驗證型別。
 //!
-//! 十二項檢查、`--json` schema、結束碼與每個失敗項目的修復指令見
+//! 十三項檢查、`--json` schema、結束碼與每個失敗項目的修復指令見
 //! `docs/port/tsf-smoke.md`。
 
 use std::process::ExitCode;
@@ -32,6 +32,8 @@ mod product;
 mod registry;
 #[cfg(windows)]
 mod tsf_profile;
+#[cfg(windows)]
+mod ui_probe;
 
 #[cfg(windows)]
 fn main() -> ExitCode {

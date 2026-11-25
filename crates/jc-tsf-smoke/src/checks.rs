@@ -1,9 +1,9 @@
-//! 十二項安裝診斷的流程。
+//! 十三項安裝診斷的流程。
 //!
 //! 順序固定為：DLL 載入 → 類廠 → 介面 vtable／物件身分 → `ITfThreadMgr` →
 //! `Activate` → 引擎 pipe → 註冊探測 → 安裝檔案 → machine profile 機碼 →
-//! 使用者啟用（TSF API）→ 使用者語言清單 → 引擎細節。前一步失敗時後面盡量改成
-//! `[SKIP]`，不要連鎖製造假失敗。
+//! 使用者啟用（TSF API）→ 使用者語言清單 → 引擎細節 → UI 探針。前一步失敗時
+//! 後面盡量改成 `[SKIP]`，不要連鎖製造假失敗。
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -27,8 +27,12 @@ use crate::install;
 use crate::product;
 use crate::profile::{self, UserProfileVerdict};
 use crate::registry;
-use crate::report::{self, Report};
+use crate::report::{self, Report, Status};
 use crate::tsf_profile;
+use crate::ui_probe;
+
+/// UI 探針失敗時的修復建議。
+const UI_PROBE_FIX: &str = "啟動 jc-engine（候選字來自引擎），設定 JC_TSF_LOG=1 後重跑並看 %LOCALAPPDATA%\\jc-ime\\tsf.log；確認 jc-tip-register.exe user-install 已完成";
 
 /// 執行全部檢查，回傳行程結束碼。
 pub fn run(args: Vec<String>) -> std::process::ExitCode {
@@ -42,10 +46,21 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
     };
 
     let mut report = Report::new(options.json);
-    report.heading(format!("jc-ime 安裝診斷（{}）", product::DISPLAY_NAME));
-    report.heading(
-        "不需要管理員；只讀機碼與 TSF API。唯一的寫入是在本行程 ActivateProfile，不改系統或使用者的預設輸入法。",
-    );
+    match options.only {
+        Some(CheckFilter::UiProbe) => {
+            report.heading(format!("jc-ime UI 探針（{}）", product::DISPLAY_NAME));
+            report.heading(
+                "需要已安裝並啟用的 jc 注音與互動桌面；只把按鍵送到本行程建立的 EDIT，\
+                 不改系統或使用者的預設輸入法。",
+            );
+        }
+        None => {
+            report.heading(format!("jc-ime 安裝診斷（{}）", product::DISPLAY_NAME));
+            report.heading(
+                "不需要管理員；只讀機碼與 TSF API。唯一的寫入是在本行程 ActivateProfile，不改系統或使用者的預設輸入法。",
+            );
+        }
+    }
     report.heading("");
 
     // TSF 的 COM 物件是 apartment-threaded；先初始化再建立任何物件。
@@ -56,6 +71,21 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
         report::hex(com.0 as u32)
     ));
     let com_ready = com.is_ok();
+
+    // --check ui-probe／--ui-probe：只跑檢查 13，不碰 DLL 載入與其他 12 項。
+    if options.only == Some(CheckFilter::UiProbe) {
+        if com_ready {
+            check_ui_probe(&mut report);
+        } else {
+            report.skip("ui.probe", "UI 探針", "COM 沒有初始化，無法建立 TSF 物件");
+        }
+        if com_ready {
+            // SAFETY: 上面的 CoInitializeEx 成功，配對呼叫一次。
+            unsafe { CoUninitialize() };
+        }
+        report.finish();
+        return exit_code(&report);
+    }
 
     let clsid_text = product::registry_key(&product::CLSID_JC_TSF);
     let profile_text = product::registry_key(&product::GUID_PROFILE_JC_TSF);
@@ -530,6 +560,13 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
         );
     }
 
+    // ── 13. UI 探針 ─────────────────────────────────────────────────
+    if com_ready {
+        check_ui_probe(&mut report);
+    } else {
+        report.skip("ui.probe", "UI 探針", "COM 沒有初始化，無法建立 TSF 物件");
+    }
+
     // 放掉所有 COM 參照後再看一次：S_OK 代表沒有漏掉的引用。
     drop(text_service);
     drop(thread_mgr);
@@ -550,10 +587,37 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
     }
 
     report.finish();
+    exit_code(&report)
+}
+
+/// 把報表轉成行程結束碼：有 `[FAIL]` 才是 1。
+fn exit_code(report: &Report) -> std::process::ExitCode {
     if report.failed() == 0 {
         std::process::ExitCode::SUCCESS
     } else {
         std::process::ExitCode::FAILURE
+    }
+}
+
+/// 檢查 13：真的開視窗、送注音、確認候選窗出現與消失。
+///
+/// 沒有互動桌面時 `ui_probe::run` 回 `Headless`，這裡記成 `[SKIP]`，
+/// 不讓 CI runner 因為 Session 0 而變紅。
+fn check_ui_probe(report: &mut Report) {
+    let outcome = ui_probe::run();
+    match outcome.verdict {
+        ui_probe::Verdict::Headless | ui_probe::Verdict::Unavailable => {
+            report.ui_probe(Status::Skip, outcome.detail, None, outcome.cells)
+        }
+        ui_probe::Verdict::Pass => {
+            report.ui_probe(Status::Pass, outcome.detail, None, outcome.cells)
+        }
+        ui_probe::Verdict::Fail => report.ui_probe(
+            Status::Fail,
+            outcome.detail,
+            Some(UI_PROBE_FIX.to_string()),
+            outcome.cells,
+        ),
     }
 }
 
@@ -953,6 +1017,13 @@ fn qi<T: Interface>(unknown: &IUnknown, name: &str, cells: &mut Vec<String>) -> 
     }
 }
 
+/// 只跑哪一項檢查。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckFilter {
+    /// 檢查 13：UI 探針。
+    UiProbe,
+}
+
 /// 命令列選項。
 #[derive(Debug, PartialEq, Eq)]
 struct Options {
@@ -960,6 +1031,8 @@ struct Options {
     dll: Option<String>,
     /// stdout 只輸出 JSON。
     json: bool,
+    /// 只跑指定的檢查；`None` 代表 13 項全跑。
+    only: Option<CheckFilter>,
 }
 
 /// 命令列解析結果。
@@ -977,6 +1050,7 @@ enum Cli {
 fn parse_args(args: &[String]) -> Cli {
     let mut dll = None;
     let mut json = false;
+    let mut only = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -988,6 +1062,26 @@ fn parse_args(args: &[String]) -> Cli {
                 json = true;
                 index += 1;
             }
+            "--ui-probe" => {
+                only = Some(CheckFilter::UiProbe);
+                index += 1;
+            }
+            "--check" => match args.get(index + 1) {
+                Some(name) => match check_filter(name) {
+                    Some(filter) => {
+                        only = Some(filter);
+                        index += 2;
+                    }
+                    None => {
+                        eprintln!("--check 只支援 ui-probe（也接受 13 與 ui.probe）：{name}");
+                        return Cli::Error;
+                    }
+                },
+                None => {
+                    eprintln!("--check 需要一個檢查 id");
+                    return Cli::Error;
+                }
+            },
             "--dll" => match args.get(index + 1) {
                 Some(path) => {
                     dll = Some(path.clone());
@@ -1009,16 +1103,26 @@ fn parse_args(args: &[String]) -> Cli {
             }
         }
     }
-    Cli::Run(Options { dll, json })
+    Cli::Run(Options { dll, json, only })
+}
+
+/// 把 `--check` 的值轉成檢查；目前只開放 UI 探針。
+fn check_filter(name: &str) -> Option<CheckFilter> {
+    match name {
+        "ui-probe" | "ui.probe" | "13" => Some(CheckFilter::UiProbe),
+        _ => None,
+    }
 }
 
 /// 印出用法。
 fn print_usage() {
-    println!("用法：jc-tsf-smoke.exe [--json] [--dll <path>]");
+    println!("用法：jc-tsf-smoke.exe [--json] [--dll <path>] [--check ui-probe | --ui-probe]");
     println!();
     println!("  --json          stdout 只輸出一個 jc-ime-doctor/1 JSON 物件；診斷訊息走 stderr");
     println!("  --dll <path>   指定 jc-tsf.dll。預設依序找 JC_TSF_DLL、執行檔同目錄、");
     println!("                 LoadLibraryW 的標準搜尋路徑");
+    println!("  --check <id>   只跑指定檢查；目前支援 ui-probe（也接受 13、ui.probe）");
+    println!("  --ui-probe     同 --check ui-probe：開視窗、打注音、驗候選窗出現與消失");
     println!("  --help         印出這份說明");
     println!();
     println!("環境變數：");
@@ -1026,6 +1130,7 @@ fn print_usage() {
     println!("  JC_IME_PIPE    覆寫引擎 pipe 名稱（預設讀 HKCU\\Software\\jc-ime\\EnginePipe）");
     println!();
     println!("結束碼：0 全部通過或只有警告；1 有 [FAIL]；2 參數錯誤。");
+    println!("UI 探針在沒有互動桌面時回 inconclusive（[SKIP]），不算失敗。");
 }
 
 #[cfg(test)]
@@ -1040,6 +1145,7 @@ mod tests {
             Cli::Run(Options {
                 dll: Some(r"C:\a\jc-tsf.dll".to_string()),
                 json: false,
+                only: None,
             })
         );
 
@@ -1049,6 +1155,7 @@ mod tests {
             Cli::Run(Options {
                 dll: Some(r"C:\b\jc-tsf.dll".to_string()),
                 json: false,
+                only: None,
             })
         );
 
@@ -1057,6 +1164,7 @@ mod tests {
             Cli::Run(Options {
                 dll: None,
                 json: false,
+                only: None,
             })
         );
     }
@@ -1073,8 +1181,52 @@ mod tests {
             Cli::Run(Options {
                 dll: Some(r"C:\a\jc-tsf.dll".to_string()),
                 json: true,
+                only: None,
             })
         );
+    }
+
+    #[test]
+    fn parse_args_accepts_ui_probe_shortcuts() {
+        for args in [
+            vec!["--check".to_string(), "ui-probe".to_string()],
+            vec!["--check".to_string(), "ui.probe".to_string()],
+            vec!["--check".to_string(), "13".to_string()],
+            vec!["--ui-probe".to_string()],
+        ] {
+            assert_eq!(
+                parse_args(&args),
+                Cli::Run(Options {
+                    dll: None,
+                    json: false,
+                    only: Some(CheckFilter::UiProbe),
+                }),
+                "{args:?}"
+            );
+        }
+
+        let json = vec![
+            "--ui-probe".to_string(),
+            "--json".to_string(),
+            "--dll".to_string(),
+            r"C:\a\jc-tsf.dll".to_string(),
+        ];
+        assert_eq!(
+            parse_args(&json),
+            Cli::Run(Options {
+                dll: Some(r"C:\a\jc-tsf.dll".to_string()),
+                json: true,
+                only: Some(CheckFilter::UiProbe),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_args_rejects_unknown_check() {
+        let args = vec!["--check".to_string(), "profile.user".to_string()];
+        assert_eq!(parse_args(&args), Cli::Error);
+        let missing = vec!["--check".to_string()];
+        assert_eq!(parse_args(&missing), Cli::Error);
     }
 
     #[test]
