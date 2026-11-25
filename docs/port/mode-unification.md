@@ -1,6 +1,6 @@
 # mode 收斂：core 只剩 Mixed，En 留在 TSF
 
-狀態：設計，尚未實作。2026-11-24。
+狀態：已實作；2026-11-24 設計，2026-11-26 補上現況與已知限制。
 
 ## 為什麼
 
@@ -36,6 +36,17 @@
 現在的 `toggle_english()` 走 `set_mode(Mode::En)`，而 `set_mode()` 會
 `clear_composition()`——實機症狀是「切英文，打到一半的字全部消失」。這一條要在
 `Mode::En` 移出 core 的階段一起改，見 `/tmp/opencode/task-toggle-keeps-buffer.md`。
+
+## 現況（2026-11-26）
+
+- 中英模式完全由 TSF 外殼保存。`Session::toggle()` 只改本機狀態與 langbar，
+  不再送 `{"op":"toggle"}`；Shift 本身不產生 IPC。
+- 組字中切英文後，英文字母以 `literal` 接在中文組字後面，Enter 一起送出。
+- 已知限制：`mode_memory=shared` 時，引擎仍有自己的模式記憶。切換視窗或焦點後，
+  引擎回報的中文模式可能把外殼剛切好的英文模式蓋回去。Windows 預設的 native
+  模式記憶不會走到這條路徑。
+- 要修這個限制需要一個輕量的模式同步 op；但單按 Shift 的切換不能依賴引擎連線
+  成功，所以不能在 Shift 路徑直接補送請求。
 
 ## 分階段
 

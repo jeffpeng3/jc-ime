@@ -71,9 +71,10 @@ Go 版設定程式是 Tauri（`ref/0c-ime/platforms/settings`）：Rust 外殼�
 `ja-rerank`、`ja-input-method`、`ja-ambiguous`、`mode-memory`。其中前七項的 JSON
 欄位保留給舊檔相容，只有 `mixed_input` 從 JSON 契約整個移除。
 
-中英切換固定為單按左／右 Shift：TSF 送 `{"op":"toggle"}`，引擎在目前語言與
-純英文 En 之間切換，再按一次回到原本的 Mixed 或 Ja。中文使用者一律用混打模式，
-舊設定檔的 `mixed_input` 直接忽略，不寫回。
+中英切換固定為單按左／右 Shift：TSF 只改外殼保存的中英模式並更新輸入指示器，
+不再送 `{"op":"toggle"}`；再按一次回到原本的模式。中文使用者一律用混打模式，
+舊設定檔的 `mixed_input` 直接忽略，不寫回。`mode_memory=shared` 時換焦點可能被
+引擎的中文模式蓋回，見 `docs/port/mode-unification.md`。
 | 資料 | 資料根目錄、設定檔、manifest、模型 | n/a | 唯讀再加「重新檢查」按鈕 |
 
 ### 模型頁的狀態判斷
