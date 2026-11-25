@@ -980,6 +980,14 @@ impl Engine {
         self.sync_settings();
     }
 
+    /// 設定 watcher 的起始戳記。
+    ///
+    /// `main` 在 `config::load` 當下就記下戳記；資料載入可能花十幾秒，若用
+    /// `set_settings` 當下的 stat 當基準，啟動期間的變更會被 watcher 漏掉。
+    pub fn set_settings_stamp(&self, stamp: Option<(u64, u64)>) {
+        lock(&self.shared).settings_stamp = stamp;
+    }
+
     /// 啟動每秒 stat 設定檔的 watcher；沒有設定檔時什麼都不做。
     pub fn watch_settings(&self) {
         config_watch::spawn(Arc::clone(&self.shared));
@@ -2134,5 +2142,79 @@ mod tests {
         assert_eq!(info.settings_revision, 1, "失敗不得 +1");
         assert_eq!(info.bindings["symbol_menu"], "ctrl+alt+,");
         assert!(info.settings_error.is_some());
+    }
+
+    #[test]
+    fn bad_chord_reload_keeps_old_bindings_and_reports_error() {
+        let dir = temp_data_dir("reload-bad-chord");
+        let path = dir.join("settings.json");
+        write_keybinds(&path, "ctrl+alt+s", "ctrl+alt+.");
+        let mut engine = engine_with_settings(Some(path.clone()));
+        hello(&mut engine);
+        assert_eq!(engine.reload_settings().expect("第一次重載"), 1);
+
+        // 合法 JSON，但 chord 沒有 ctrl／alt；熱重載必須保留舊表。
+        write_keybinds(&path, "a", "shift+b");
+        assert!(engine.reload_settings().is_err());
+
+        let Response::Health { info } = engine.handle(Request::Health) else {
+            panic!("health 應回 Health");
+        };
+        assert_eq!(info.settings_revision, 1, "失敗不得 +1");
+        assert_eq!(info.bindings["symbol_menu"], "ctrl+alt+s");
+        assert!(info.settings_error.is_some(), "要回報壞 chord");
+
+        let old = engine.handle(Request::Key {
+            key: Key::char('s', false).with_ctrl().with_alt(),
+        });
+        assert_eq!(handled(&old), Some(true), "舊 chord 仍要可用");
+        let bad = engine.handle(Request::Key {
+            key: Key::char('a', false),
+        });
+        assert_ne!(handled(&bad), Some(true), "壞 chord 不能被啟用");
+    }
+
+    #[test]
+    fn watcher_picks_up_change_made_during_startup_load() {
+        let dir = temp_data_dir("startup-change");
+        let path = dir.join("settings.json");
+        write_keybinds(&path, "ctrl+alt+,", "ctrl+alt+.");
+        // 模擬 main：設定檔在資料載入前先讀，戳記也那時就記下。
+        let loaded = config::load(Some(&path), None, "linux");
+        let effective = config::effective(&loaded.settings, &config::Overrides::default(), "linux");
+        let mut engine = Engine::new();
+        engine.set_settings(
+            effective,
+            Some(path.clone()),
+            "linux",
+            config::Overrides::default(),
+        );
+        engine.set_settings_stamp(loaded.stamp);
+
+        // 資料載入的十幾秒內使用者改檔；watcher 起跑後要補上這一次。
+        write_keybinds(&path, "ctrl+alt+shift+s", "ctrl+alt+.");
+        engine.watch_settings();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while engine.settings_revision() == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(engine.settings_revision(), 1, "啟動期間的變更不得漏掉");
+        engine.handle(Request::Shutdown);
+    }
+
+    #[test]
+    fn bound_chord_during_composition_opens_menu_without_committing() {
+        let mut engine = engine_with_settings(None);
+        hello(&mut engine);
+        type_syllable(&mut engine, "ㄇㄚ");
+        assert_eq!(engine.composition(), "ㄇㄚ");
+
+        let response = engine.handle(Request::Key {
+            key: Key::char(',', false).with_ctrl().with_alt(),
+        });
+        assert_eq!(handled(&response), Some(true));
+        assert_eq!(engine.composition(), "ㄇㄚ", "快捷鍵不能先提交組字");
+        let id = engine.current_session();
+        assert!(engine.local.sessions[&id].menu_tab().is_some());
     }
 }

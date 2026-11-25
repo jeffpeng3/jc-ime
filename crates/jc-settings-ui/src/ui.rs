@@ -46,7 +46,7 @@ fn header(view: &SettingsView, cx: &App) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
     let mut banner = v_flex().gap_1();
     banner = banner.child(
-        Label::new("設定檔儲存後，執行中的引擎會在 1 秒內熱重載；不需要重啟。")
+        Label::new("設定檔儲存後，引擎會在 1 秒內熱重載；快捷鍵表最多 5 秒或下次取得焦點時更新。")
             .id("banner-effect")
             .text_sm()
             .text_color(muted),

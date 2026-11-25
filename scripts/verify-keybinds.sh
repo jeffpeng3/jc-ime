@@ -160,9 +160,42 @@ new_state = key(client, "s", ctrl=True, alt=True)
 check(new_state.get("handled") is True, "新鍵 ctrl+alt+s handled=true")
 check(bool(new_state.get("candidates")), "新鍵也真的開符號選單")
 
+stable = after
+bad = {
+    "keybinds": {
+        "symbol_menu": "a",
+        "emoji_palette": "ctrl+alt+.",
+    }
+}
+tmp = settings_path + ".new"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(bad, handle)
+os.replace(tmp, settings_path)
+print("ok: 已改寫 settings.json（合法 JSON，但 symbol_menu=a 缺修飾鍵）")
+
+time.sleep(1.5)
+health = call(client, {"op": "health"})
+deadline = time.monotonic() + 3.0
+while not health["info"].get("settings_error") and time.monotonic() < deadline:
+    time.sleep(0.1)
+    health = call(client, {"op": "health"})
+check(
+    health["info"].get("settings_revision", 0) == stable,
+    "壞 chord 不增加 revision",
+)
+check(
+    health["info"]["bindings"]["symbol_menu"] == "ctrl+alt+s",
+    "壞 chord 保留舊綁定",
+)
+check(bool(health["info"].get("settings_error")), "health 回報 settings_error")
+
+still = key(client, "s", ctrl=True, alt=True)
+check(still.get("handled") is True, "壞 chord 之後舊 chord 仍 handled=true")
+check(bool(still.get("candidates")), "舊 chord 仍真的開符號選單")
+
 call(client, {"op": "shutdown"})
 client.close()
-print("PASS: 快捷鍵與熱重載驗證通過")
+print("PASS: 快捷鍵、熱重載與壞 chord 保留舊設定驗證通過")
 PY
 
 wait "$pid"

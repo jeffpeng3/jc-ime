@@ -58,8 +58,10 @@ CLI 對照：`jc-cli eval ja --no-live` 走 `sentence`，其餘日文評測預�
    `Session::apply_config` 把新設定套到自己的 session；只換設定與衍生狀態，
    不清組字。
 4. 成功才把 `settings_revision` +1，並在 log 印「重新載入設定（revision N）」。
-   失敗時保留舊設定、記 warning，revision 不變，錯誤放在
-   `HealthInfo.settings_error`。
+   讀檔失敗、JSON 壞掉或 chord 不合法（例如沒有 Ctrl／Alt）時保留舊設定、
+   記 warning，revision 不變，錯誤放在 `HealthInfo.settings_error`。
+5. watcher 第一次 `stat` 的基準是 `config::load` 當下的戳記，不是資料載入完成
+   後的 `stat`；啟動載入期間改的檔案會在 watcher 起跑後補上。
 
 `Request::ApplySettings` 不再只設 `settings_pending`，而是立即走同一條重載
 路徑並回傳新的 `HealthInfo`。沒有 TSF 連線時熱重載也照常運作。
@@ -72,8 +74,10 @@ CLI 對照：`jc-cli eval ja --no-live` 走 `sentence`，其餘日文評測預�
 | `settings_revision` | 每次成功套用 +1；TSF 用它判斷是否要換本地 bindings |
 | `settings_error` | 最近一次重載失敗的原因；成功後清空 |
 
-TSF 只在 `Ready`、`OnSetFocus` 與最多每 5 秒一次的 `Health` 輪詢更新本地
-bindings；`settings_revision` 沒變就不換表。連不上引擎時沿用上一次的表。
+TSF 在 `Ready` 拿到 bindings；`OnSetFocus`／`OnSetThreadFocus` 各刷新一次，
+按鍵路徑最多每 5 秒用一次 `Health` 輪詢。只有 `settings_revision` 變了才換表；
+連不上引擎時沿用上一次的表。因此改快捷鍵後，引擎 1 秒內套用，TSF 的本地表
+最多 5 秒或下一次取得焦點時跟上。
 
 ## 設定欄位 → 行為
 

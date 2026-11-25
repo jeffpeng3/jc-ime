@@ -61,6 +61,10 @@ pub struct LoadedSettings {
     pub state: FileState,
     /// 退回預設或原樣保留的說明，呼叫端逐條記警告。
     pub warnings: Vec<String>,
+    /// `keybinds` 解析失敗的原因；啟動時已退回預設，熱重載據此保留舊設定。
+    pub keybind_error: Option<String>,
+    /// 讀取設定檔當下的戳記；watcher 用它當基準，避免啟動期間的變更被漏掉。
+    pub stamp: Option<(u64, u64)>,
 }
 
 /// 讀取設定檔。
@@ -77,8 +81,12 @@ pub fn load(explicit: Option<&Path>, data_root: Option<&Path>, goos: &str) -> Lo
             settings: Settings::default_for_platform(goos),
             state: FileState::Missing,
             warnings: Vec::new(),
+            keybind_error: None,
+            stamp: None,
         };
     };
+    // 先取戳記再讀檔：讀取期間若檔案又被改，watcher 第一次 tick 會看到差異。
+    let stamp = crate::config_watch::stamp(&path);
     let report = settings::read(&path, goos);
     let mut warnings = Vec::new();
     match report.state {
@@ -95,9 +103,12 @@ pub fn load(explicit: Option<&Path>, data_root: Option<&Path>, goos: &str) -> Lo
         }
     }
     let mut settings = report.settings;
-    // 快捷鍵解析失敗時整份沿用預設，不讓引擎起不來。
+    // 啟動時快捷鍵解析失敗就整份沿用預設，不讓引擎起不來；錯誤另外留給
+    // 熱重載判斷，避免執行中改壞 chord 時被當成成功而清掉使用者的綁定。
+    let mut keybind_error = None;
     if let Err(err) = settings.keybinds.chords() {
         warnings.push(format!("keybinds：{err}；整份改用預設綁定"));
+        keybind_error = Some(err.to_string());
         settings.keybinds = Keybinds::default();
     }
     LoadedSettings {
@@ -105,6 +116,8 @@ pub fn load(explicit: Option<&Path>, data_root: Option<&Path>, goos: &str) -> Lo
         settings,
         state: report.state,
         warnings,
+        keybind_error,
+        stamp,
     }
 }
 

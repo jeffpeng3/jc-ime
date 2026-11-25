@@ -272,6 +272,7 @@ fn run(options: Options) -> anyhow::Result<()> {
     }
     let mut engine = Engine::with_factory(factory, personal_dir);
     engine.set_settings(effective, loaded.path.clone(), goos, overrides);
+    engine.set_settings_stamp(loaded.stamp);
     engine.watch_settings();
     engine.set_extra_caps(shell_caps);
     engine.set_start_mode(start_mode);

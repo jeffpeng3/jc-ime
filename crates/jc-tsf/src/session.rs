@@ -2704,6 +2704,8 @@ mod tests {
             _ => Some(json!({"ok": true})),
         });
         let mut s = Session::with_client(client);
+        // 英文模式由外殼保存；快捷鍵比對不依賴中英模式。
+        s.english = true;
         let key = jc_proto::Key::char(',', false).with_ctrl().with_alt();
         let snapshot = s.key_chord(&key);
         assert!(snapshot.ok && snapshot.handled);
@@ -2732,12 +2734,14 @@ mod tests {
         let (client, st) = mock_client(|_request, _st| Some(json!({"ok": true})));
         let mut s = Session::with_client(client);
         s.bindings.insert("symbol_menu".into(), "ctrl+alt+,".into());
+        s.english = true;
         let before = st.lock().unwrap().requests.len();
+        assert_eq!(s.binding_for("ctrl+alt+,"), Some("symbol_menu"));
         assert_eq!(s.binding_for("ctrl+alt+x"), None);
         assert_eq!(
             st.lock().unwrap().requests.len(),
             before,
-            "本地比對不得產生 IPC"
+            "本地比對不得產生按鍵 IPC"
         );
     }
 

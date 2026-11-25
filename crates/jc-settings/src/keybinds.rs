@@ -15,6 +15,8 @@ pub enum ChordError {
     Empty,
     /// 只有按鍵，沒有任何修飾鍵。
     NoModifier,
+    /// 只有 Shift；會吃掉一般大寫輸入。
+    ShiftOnly,
     /// 修飾鍵或按鍵名稱不認得。
     UnknownKey {
         /// 原始片段。
@@ -31,7 +33,10 @@ impl fmt::Display for ChordError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => write!(f, "快捷鍵不可為空"),
-            Self::NoModifier => write!(f, "快捷鍵至少要有一個修飾鍵（ctrl、alt 或 shift）"),
+            Self::NoModifier => write!(f, "快捷鍵需要 Ctrl 或 Alt（不能是純按鍵）"),
+            Self::ShiftOnly => {
+                write!(f, "快捷鍵不能只用 Shift；請加上 Ctrl 或 Alt")
+            }
             Self::UnknownKey { key } => write!(f, "不認得的按鍵 {key:?}；可用單一字元或 f1..f12"),
             Self::DuplicateChord { chord } => {
                 write!(f, "同一個快捷鍵 {chord} 綁定了多個動作")
@@ -56,7 +61,7 @@ pub struct Chord {
 }
 
 impl Chord {
-    /// 解析 `ctrl+alt+,` 這種字串；大小寫不敏感，但至少要有一個修飾鍵。
+    /// 解析 `ctrl+alt+,` 這種字串；大小寫不敏感，且必須有 Ctrl 或 Alt。
     pub fn parse(text: &str) -> Result<Self, ChordError> {
         let text = text.trim();
         if text.is_empty() {
@@ -84,6 +89,9 @@ impl Chord {
         }
         if !(ctrl || alt || shift) {
             return Err(ChordError::NoModifier);
+        }
+        if !ctrl && !alt {
+            return Err(ChordError::ShiftOnly);
         }
         let key = normalize_key(parts[parts.len() - 1])?;
         Ok(Self {
@@ -295,6 +303,17 @@ mod tests {
     }
 
     #[test]
+    fn shift_only_chord_is_rejected() {
+        assert_eq!(Chord::parse("shift+a"), Err(ChordError::ShiftOnly));
+        let mut keybinds = Keybinds::default();
+        assert_eq!(
+            keybinds.set("symbol_menu", "shift+a"),
+            Err(ChordError::ShiftOnly)
+        );
+        assert_eq!(keybinds, Keybinds::default(), "失敗時不改內容");
+    }
+
+    #[test]
     fn unknown_key_is_rejected() {
         assert!(matches!(
             Chord::parse("ctrl+not-a-key"),
@@ -346,6 +365,12 @@ mod tests {
         assert!(settings
             .set("keybind-symbol-menu", "not-a-chord", "linux")
             .is_err());
+        assert!(
+            settings
+                .set("keybind-symbol-menu", "shift+a", "linux")
+                .is_err(),
+            "Shift-only chord 會吃掉大寫字母"
+        );
         assert!(
             settings
                 .set("keybind-emoji-palette", "ctrl+shift+s", "linux")

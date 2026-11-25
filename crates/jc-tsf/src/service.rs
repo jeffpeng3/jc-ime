@@ -1568,15 +1568,25 @@ impl TextService_Impl {
         toggle
     }
 
+    /// 這一鍵是否命中目前綁定；先做最多 5 秒一次的 bindings 更新。
+    ///
+    /// 只回傳 chord，不在這裡送按鍵；送給引擎是 `OnKeyDown` 的事。
+    fn bound_chord(&self, vk: u32, lparam: isize) -> Option<String> {
+        self.state.borrow_mut().session.maybe_refresh_bindings();
+        let chord = keys::chord(vk, lparam)?;
+        self.state
+            .borrow()
+            .session
+            .binding_for(&chord)
+            .map(|_| chord)
+    }
+
     fn wants_key(&self, vk: u32, lparam: isize) -> bool {
         let available_seen: Cell<Option<bool>> = Cell::new(None);
         let wants = (|| -> bool {
-            // 先更新 bindings（最多 5 秒一次），再只用本地表比對；未命中不產生 IPC。
-            self.state.borrow_mut().session.maybe_refresh_bindings();
-            if let Some(chord) = keys::chord(vk, lparam) {
-                if self.state.borrow().session.binding_for(&chord).is_some() {
-                    return true;
-                }
+            // 先查快捷鍵（最多 5 秒更新一次 bindings）；未命中才走其他按鍵政策。
+            if self.bound_chord(vk, lparam).is_some() {
+                return true;
             }
             if keys::modifier_down() && self.state.borrow_mut().ctrl_punct_key(vk, lparam).is_some()
             {
@@ -2078,6 +2088,17 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 );
                 return Ok(true.into());
             }
+            // 快捷鍵必須早於 commit_before_host_key 與 english_key_policy：
+            // 組字中不能先提交，英文模式也不能被補全政策吃掉。
+            if self.bound_chord(vk, lparam.0).is_some() {
+                self.state.borrow_mut().key_tested.record(vk, true);
+                zlog!(
+                    "OnTestKeyDown vk={}({}) 結束：綁定快捷鍵 -> 吃",
+                    vk,
+                    vk_label(vk)
+                );
+                return Ok(true.into());
+            }
             if self.commit_before_host_key(pic.as_ref(), vk, lparam.0, true) {
                 zlog!(
                     "OnTestKeyDown vk={}({}) 結束：攔下重排 -> 吃",
@@ -2210,22 +2231,20 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 self.state.borrow_mut().eaten.insert(vk);
                 return Ok(true.into());
             }
-            if let Some(chord) = keys::chord(vk, lparam.0) {
-                if self.state.borrow().session.binding_for(&chord).is_some() {
-                    if let Some(key) = keys::chord_key(vk, lparam.0) {
-                        let eaten = self.handle_chord(pic.as_ref(), &key);
-                        if eaten {
-                            self.state.borrow_mut().eaten.insert(vk);
-                        }
-                        zlog!(
-                            "OnKeyDown vk={}({}) 結束：綁定 chord={} eaten={}",
-                            vk,
-                            vk_label(vk),
-                            chord,
-                            eaten
-                        );
-                        return Ok(eaten.into());
+            if let Some(chord) = self.bound_chord(vk, lparam.0) {
+                if let Some(key) = keys::chord_key(vk, lparam.0) {
+                    let eaten = self.handle_chord(pic.as_ref(), &key);
+                    if eaten {
+                        self.state.borrow_mut().eaten.insert(vk);
                     }
+                    zlog!(
+                        "OnKeyDown vk={}({}) 結束：綁定 chord={} eaten={}",
+                        vk,
+                        vk_label(vk),
+                        chord,
+                        eaten
+                    );
+                    return Ok(eaten.into());
                 }
             }
             self.commit_before_host_key(pic.as_ref(), vk, lparam.0, false);

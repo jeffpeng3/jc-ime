@@ -155,14 +155,14 @@ pub const JA: [Opt; 3] = [
 pub const INPUT: [Opt; 3] = [
     Opt {
         key: "space-selects",
-        title: "空白選字",
-        help: "空白鍵選第一個候選；關閉時空白鍵只送出空白。",
+        title: "空白鍵",
+        help: "空白只插入空格；候選由 ↓ 開啟。",
         kind: Kind::Switch,
     },
     Opt {
         key: "keybind-symbol-menu",
         title: "符號選單快捷鍵",
-        help: "例如 ctrl+alt+,；至少要有一個修飾鍵，儲存後引擎會熱重載。",
+        help: "例如 ctrl+alt+,；必須有 Ctrl 或 Alt，儲存後引擎會熱重載。",
         kind: Kind::Text,
     },
     Opt {

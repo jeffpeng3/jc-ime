@@ -97,6 +97,13 @@ pub(crate) fn reload(shared: &Arc<Mutex<Registry>>) -> Result<u64, String> {
         lock(shared).settings_error = Some(error.clone());
         return Err(error);
     }
+    // chord 壞掉時 `config::load` 會退回預設；熱重載不能把這當成成功，
+    // 否則使用者的自訂綁定會被默默換掉。保留 registry 舊值並回報錯誤。
+    if let Some(err) = loaded.keybind_error {
+        let error = format!("keybinds：{err}");
+        lock(shared).settings_error = Some(error.clone());
+        return Err(error);
+    }
     let effective = config::effective(&loaded.settings, &overrides, &goos);
     let keymap = effective
         .keybinds

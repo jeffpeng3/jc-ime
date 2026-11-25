@@ -35,7 +35,7 @@ impl Status {
     pub fn message(&self) -> Option<String> {
         match self {
             Status::Idle => None,
-            Status::Saved => Some("已儲存；執行中的引擎會在 1 秒內熱重載。".to_string()),
+            Status::Saved => Some("已儲存；引擎會在 1 秒內熱重載，快捷鍵表最多 5 秒。".to_string()),
             Status::Failed(reason) => Some(reason.clone()),
         }
     }
