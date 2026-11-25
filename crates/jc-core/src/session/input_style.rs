@@ -48,13 +48,21 @@ impl InputStyle {
     /// 代號不存在時回傳 `None`；不認得的平台沿用 Linux 預設。
     pub fn preset(id: &str) -> Option<Self> {
         let preset = crate::inputstyle::get(id)?;
+        // `SpaceSelects` 已停用：空白鍵只插入空格，候選改由 ↓ 開啟。
+        // 舊設定讀到就忽略，只記一次 warning。
+        static SPACE_SELECTS_WARNED: std::sync::Once = std::sync::Once::new();
+        if preset.behavior.space_selects {
+            SPACE_SELECTS_WARNED.call_once(|| {
+                log::warn!("space_selects 已停用：空白鍵只插入空格，候選改由 ↓ 開啟");
+            });
+        }
         Some(Self {
             rules: preset.rules,
             selection_keys: preset.behavior.selection_keys,
             shift_symbol_halfwidth: false,
             mixed_input: preset.behavior.mixed_input,
             emoji_shortcut: preset.behavior.emoji_shortcut,
-            space_inserts_space: !preset.behavior.space_selects,
+            space_inserts_space: true,
         })
     }
 
@@ -745,9 +753,9 @@ mod tests {
         s.press(Key::char('`', false));
         assert_eq!(enter(&mut s), "我`", "Enter 保留反引號");
 
-        // 前導只作用一次：送出行為後 `,` 回到注音鍵。
+        // 前導只作用一次：送出行為後 `,` 回到字面標點。
         let snap = s.press(Key::char(',', false));
-        assert_eq!(snap.preedit, "ㄝ", "前導用完就消失");
+        assert_eq!(snap.preedit, ",", "前導用完就消失");
     }
 
     /// 對照 `TestMicrosoftObservedRawAndPrefixPunctuation` 的前導表。
@@ -933,7 +941,7 @@ mod tests {
         ] {
             let mut s = many_session(keys);
             type_syllable(&mut s, "ㄕˋ");
-            s.press(Key::new(KeyCode::ArrowRight, None, false));
+            s.press(Key::new(KeyCode::Down, None, false));
             let candidates = s.candidates().to_vec();
             s.press(Key::char('9', false));
             assert_eq!(
@@ -961,7 +969,7 @@ mod tests {
         ] {
             let mut s = many_session(keys);
             type_syllable(&mut s, "ㄕˋ");
-            s.press(Key::new(KeyCode::ArrowRight, None, false));
+            s.press(Key::new(KeyCode::Down, None, false));
             let candidates = s.candidates().to_vec();
             s.press(Key::char(pressed, false));
             assert_eq!(

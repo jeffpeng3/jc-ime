@@ -256,6 +256,57 @@ pub(super) struct EditWindow {
     pub(super) len: usize,
 }
 
+/// 候選窗目前鎖定的字元目標。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MixedTarget {
+    /// 目標在 `AsciiInput::typed()` 的位元組範圍。
+    pub(super) typed: (usize, usize),
+    /// 使用者實際按下的原始按鍵（例如 `ji3`）。
+    pub(super) raw: String,
+    /// 去掉結尾聲調鍵的原始按鍵（例如 `ji`）。
+    pub(super) raw_toneless: String,
+    /// 被拆掉的聲調鍵（例如 `3`）。
+    pub(super) tone_key: Option<char>,
+    /// 目標字面的 rune 起點。
+    pub(super) rune_start: usize,
+    /// 目標字面的 rune 長度。
+    pub(super) rune_len: usize,
+    /// 注音音節在 `syllables` 的索引；不是注音時為 `None`。
+    pub(super) syllable: Option<usize>,
+    /// 這個目標的注音讀音（例如 `ㄨㄛˇ`）。
+    pub(super) reading: Option<String>,
+    /// 這個目標是日文片段；候選要接かな漢字変換。
+    pub(super) ja: bool,
+}
+
+/// 一個候選套用後要怎麼改按鍵流與游標。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MixedChoice {
+    /// 插進按鍵流的字面。
+    pub(super) insert: String,
+    /// 插在字面後面、仍屬於原本音節的尾巴（例如 `ji3` 的 `3`）。
+    pub(super) leftover: String,
+    /// 插入的是不是會被管線重新解讀的 ASCII 字面。
+    pub(super) force_literal: bool,
+    /// 套用後游標要放在哪裡。
+    pub(super) cursor: ChoiceCursor,
+    /// 走既有的音節片段選字，不重播按鍵流。
+    pub(super) syllable_edit: Option<EditWindow>,
+}
+
+/// 套用候選後的游標位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ChoiceCursor {
+    /// 留在目標起點（選回原始按鍵）。
+    Start,
+    /// 放在插入字面的第一個 rune 之後。
+    AfterFirst,
+    /// 放在整個插入字面之後。
+    AfterInsert,
+    /// 放在整段組字結尾；整串英文候選（拼字建議）用。
+    TokenEnd,
+}
+
 /// 一次輸入的工作階段。
 ///
 /// 只保留組字所需的狀態；送出後立即清空，因此呼叫端每次都用快照重畫。
@@ -276,11 +327,19 @@ pub struct Session {
     /// 注音路徑用音節格 [`Session::cursor`]；日文沒有音節格，另外記在
     /// 顯示字串上，左右鍵與片段候選共用同一個位置。
     pub(super) ja_cursor: usize,
-    /// 混合模式的組字游標：片段邊界索引，`0..=segments.len()`。
+    /// 混合模式的組字游標：顯示字串的 rune 位移，`0..=rune 數`。
     ///
     /// [`Self::MIXED_CURSOR_END`] 代表結尾；打字時一律回到結尾，方向鍵與刪除
-    /// 才會把游標停在兩個片段之間。混合模式沒有音節格，游標以顯示片段為單位。
+    /// 才會把游標停在字元之間。候選固定作用在游標右側的那一個字元。
     pub(super) mixed_cursor: usize,
+    /// 候選窗是否已展開成四欄；第一次按 → 展開，Esc 或重新開窗時重設。
+    pub(super) candidate_expanded: bool,
+    /// 這一次開啟的候選窗要作用在哪裡；`None` 時沿用舊的片段／音節路徑。
+    pub(super) mixed_target: Option<MixedTarget>,
+    /// 與 [`Session::candidates`] 平行的套用動作；`None` 表示走既有路徑。
+    pub(super) mixed_choices: Vec<Option<MixedChoice>>,
+    /// 使用者把某些原始按鍵固定成字面的範圍（相對 `AsciiInput::typed`）。
+    pub(super) literal_spans: Vec<(usize, usize)>,
     /// 游標所在片段的編輯視窗；有值時候選清單只算這一段。
     pub(super) edit: Option<EditWindow>,
     /// 換字後是否保留候選窗，直到 Esc 或游標離開目前片段。
@@ -460,6 +519,10 @@ impl Session {
             cursor: 0,
             ja_cursor: 0,
             mixed_cursor: Self::MIXED_CURSOR_END,
+            candidate_expanded: false,
+            mixed_target: None,
+            mixed_choices: Vec::new(),
+            literal_spans: Vec::new(),
             edit: None,
             keep_candidates: false,
             romaji: RomajiInput::new(),
@@ -1211,7 +1274,7 @@ mod tests {
         s.press(Key::new(KeyCode::Down, None, false));
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "風景");
-        assert!(s.personal().is_learned("風景"));
+        assert!(s.personal().is_learned("景"), "游標右側的字要學起來");
         assert_ne!(s.personal(), &before);
     }
 
@@ -1410,7 +1473,7 @@ mod tests {
         let mut s = session();
         type_syllable(&mut s, "ㄐㄧㄥˇ");
         let candidates = s.candidates().to_vec();
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
         s.press(Key::char('2', false));
         assert_eq!(s.commit(), candidates[1].surface);
     }
@@ -1420,10 +1483,10 @@ mod tests {
     fn test_choose_candidate_matches_digit_selection() {
         let mut digit = session();
         type_syllable(&mut digit, "ㄐㄧㄥˇ");
-        digit.press(Key::new(KeyCode::ArrowRight, None, false));
+        digit.press(Key::new(KeyCode::Down, None, false));
         let mut chosen = session();
         type_syllable(&mut chosen, "ㄐㄧㄥˇ");
-        chosen.press(Key::new(KeyCode::ArrowRight, None, false));
+        chosen.press(Key::new(KeyCode::Down, None, false));
 
         let from_digit = digit.press(Key::char('2', false));
         let from_choose = chosen.choose_candidate(1).expect("索引 1 應可選");
@@ -1432,19 +1495,15 @@ mod tests {
         assert_eq!(chosen.commit(), digit.commit());
     }
 
-    /// 片段編輯窗：滑鼠點選與數字鍵都要只換這一段，不送出整段。
+    /// 逐字元候選：滑鼠點選與數字鍵都要只換游標右側那一個字。
     #[test]
     fn test_choose_candidate_matches_digit_in_edit_window() {
         let mut digit = two_syllable_session();
-        digit.press(Key::new(KeyCode::Space, None, false));
-        digit.press(Key::new(KeyCode::ArrowLeft, None, false));
         digit.press(Key::new(KeyCode::Down, None, false));
-        assert!(digit.edit.is_some(), "要進入片段編輯窗");
         let mut chosen = two_syllable_session();
-        chosen.press(Key::new(KeyCode::Space, None, false));
-        chosen.press(Key::new(KeyCode::ArrowLeft, None, false));
         chosen.press(Key::new(KeyCode::Down, None, false));
-        assert!(chosen.edit.is_some());
+        assert!(chosen.candidate_window, "↓ 開候選窗");
+        assert_eq!(chosen.snapshot().cursor_rune, 1, "結尾 ↓ 先左移一格");
 
         let from_digit = digit.press(Key::char('1', false));
         let from_choose = chosen.choose_candidate(0).expect("索引 0 應可選");
@@ -1458,17 +1517,15 @@ mod tests {
         assert_eq!(chosen.commit(), digit.commit());
     }
 
-    /// Mixed 的純注音候選只涵蓋最後一個音節；兩條路徑結果要相同。
+    /// Mixed 的候選只涵蓋游標右側的字；兩條路徑結果要相同。
     #[test]
     fn test_choose_candidate_matches_digit_for_zh_window_last() {
         let mut digit = two_syllable_session();
-        digit.press(Key::new(KeyCode::Space, None, false));
         digit.press(Key::new(KeyCode::Down, None, false));
-        assert!(digit.zh_window_last, "空白開窗只列最後一個音節");
+        assert!(digit.candidate_window, "↓ 開候選窗");
         let mut chosen = two_syllable_session();
-        chosen.press(Key::new(KeyCode::Space, None, false));
         chosen.press(Key::new(KeyCode::Down, None, false));
-        assert!(chosen.zh_window_last);
+        assert!(chosen.candidate_window);
 
         let from_digit = digit.press(Key::char('1', false));
         let from_choose = chosen.choose_candidate(0).expect("索引 0 應可選");
@@ -1482,7 +1539,7 @@ mod tests {
     fn test_choose_candidate_out_of_range_keeps_state() {
         let mut s = session();
         type_syllable(&mut s, "ㄐㄧㄥˇ");
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
         let before = s.snapshot();
         assert!(s.choose_candidate(999).is_none());
         assert_eq!(s.snapshot(), before);
@@ -1609,8 +1666,8 @@ mod tests {
         type_syllable(&mut s, "ㄨㄛˇ");
         assert_eq!(s.candidates()[0].surface, "我");
         // 開候選窗，移到第二候選，用 Enter 送出手選。
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
         assert_eq!(s.highlighted_text(), Some("窩"));
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "窩");
@@ -1629,8 +1686,8 @@ mod tests {
         config.learning = false;
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄨㄛˇ");
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "窩");
         type_syllable(&mut s, "ㄨㄛˇ");
@@ -1675,7 +1732,7 @@ mod tests {
         let mut s = eighteen_candidates_session();
         type_syllable(&mut s, "ㄕˋ");
         assert_eq!(s.candidates().len(), 18, "要剛好兩頁");
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
         s.press(Key::new(KeyCode::PageDown, None, false));
         assert_eq!(s.current_page(), 1, "PageDown 到第二頁");
         assert_eq!(s.page_size(), 9);
@@ -1691,7 +1748,7 @@ mod tests {
     fn test_digit_selection_uses_page_derived_from_highlight() {
         let mut s = eighteen_candidates_session();
         type_syllable(&mut s, "ㄕˋ");
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
         s.press(Key::new(KeyCode::PageDown, None, false));
         assert_eq!(s.highlighted(), 9);
         s.press(Key::new(KeyCode::Down, None, false));
@@ -1714,10 +1771,10 @@ mod tests {
         config.max_candidates = DEFAULT_MAX_CANDIDATES;
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄕˋ");
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
         let before = s.snapshot();
 
-        let after = s.press(Key::char('5', false));
+        let after = s.press(Key::char('9', false));
         assert_eq!(after.preedit, before.preedit, "組字不變");
         assert_eq!(after.candidates, before.candidates, "候選不變");
         assert_eq!(after.highlighted, 0, "高亮不變");
@@ -2706,7 +2763,7 @@ mod tests {
         // 非延遲模式在輸入結束時補齊尚未轉換的讀音。
         s.ja_live_flush();
         assert_eq!(s.snapshot().preedit, "東京");
-        let shown = s.press(Key::new(KeyCode::Space, None, false));
+        let shown = s.press(Key::new(KeyCode::Down, None, false));
         let surfaces: Vec<&str> = shown
             .candidates
             .iter()
@@ -2794,7 +2851,7 @@ mod tests {
         };
         let mut s = Session::new(config);
         type_ja(&mut s, "toukyou");
-        let shown = s.press(Key::new(KeyCode::Space, None, false));
+        let shown = s.press(Key::new(KeyCode::Down, None, false));
         let count = shown
             .candidates
             .iter()
@@ -2825,8 +2882,8 @@ mod tests {
         assert_eq!(left.cursor_rune, 1, "← 移動日文組字游標");
         assert_eq!(left.preedit, "今日", "移動游標不改組字");
 
-        let shown = s.press(Key::new(KeyCode::Space, None, false));
-        assert!(!shown.navigating, "第一次 Space 只開片段候選");
+        let shown = s.press(Key::new(KeyCode::Down, None, false));
+        assert!(shown.navigating, "第一次 ↓ 開片段候選並進入選取模式");
         assert!(shown
             .candidates
             .iter()
@@ -2836,8 +2893,7 @@ mod tests {
             .iter()
             .any(|candidate| candidate.surface == "キョウ"));
 
-        // 第一下進入選取模式，第二下移到「きょう」。
-        s.press(Key::new(KeyCode::Down, None, false));
+        // 再按一下 ↓ 移到「きょう」。
         s.press(Key::new(KeyCode::Down, None, false));
         let picked = s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(picked.preedit, "きょう", "選字只換游標所在片段");
@@ -2874,9 +2930,9 @@ mod tests {
         // 預設延遲整句：停頓後才轉換並產生候選。
         s.ja_live_idle();
         assert_eq!(s.candidates()[0].surface, "今日");
-        // 第一次方向鍵只開候選窗，第二次移到第二候選。
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        // 第一次 ↓ 開候選窗，第二次移到第二候選。
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "京");
         assert_eq!(
@@ -2903,8 +2959,8 @@ mod tests {
         let mut s = ja_learning_session(false);
         type_ja(&mut s, "kyou");
         s.ja_live_idle();
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "京");
         type_ja(&mut s, "kyou");

@@ -355,9 +355,8 @@ impl Session {
                 self.zh.reset();
             }
             crate::zh::input::ZhInputEvent::Ignored => {
-                let punct = self.zh.keyboard().punct(ch);
-                let text = punct.map(str::to_string).unwrap_or_else(|| ch.to_string());
-                self.push_literal(&text);
+                // 注音路徑接不住的標點照字面留下，不再轉全形。
+                self.push_literal(&ch.to_string());
             }
         }
     }
@@ -372,8 +371,11 @@ impl Session {
         if crate::zh::syllable::class_of(ch) != crate::zh::syllable::Class::None {
             return crate::zh::syllable::class_of(ch) != crate::zh::syllable::Class::Tone;
         }
+        // 鍵盤上的標點（`, . / ; -`）雖然也是注音鍵，單獨按下時是字面
+        // 標點，不自動開始一個注音音節。
         self.zh.keyboard().symbol(ch).is_some_and(|symbol| {
             crate::zh::syllable::class_of(symbol) != crate::zh::syllable::Class::Tone
+                && (ch.is_ascii_alphabetic() || ch.is_ascii_digit())
         })
     }
 
@@ -390,12 +392,15 @@ impl Session {
             return true;
         }
         let Some(symbol) = self.zh.keyboard().symbol(ch) else {
-            // 大寫字母、全形字母與其他非注音字元代表這段已經離開注音；
-            // 只有鍵盤標點留在注音路徑做全形標點轉換。
-            return self.zh.keyboard().punct(ch).is_some();
+            // 不是注音鍵的標點一律照字面，交回混打管線。
+            return false;
         };
         if crate::zh::syllable::class_of(symbol) == crate::zh::syllable::Class::Tone {
             return true;
+        }
+        // 標點鍵（`, . / ; -`）只有在延續目前未完成的音節時才是韻母。
+        if ch.is_ascii_punctuation() {
+            return !self.zh.pending().is_empty();
         }
         let mut keys = self.zh_pending_keys.clone();
         keys.push(ch);
@@ -413,7 +418,7 @@ impl Session {
     }
 
     /// 結束這次的注音路徑，把整段按鍵重播進混打管線。
-    fn leave_zh_lane_for_mixed(&mut self, ch: char) {
+    pub(super) fn leave_zh_lane_for_mixed(&mut self, ch: char) {
         // 已完成的音節還原成原本的按鍵，才能讓混打管線重新判斷前後片段；
         // 直接塞入漢字會讓前面的注音片段失去讀音與候選。
         let keyboard = self.zh.keyboard();
@@ -454,6 +459,46 @@ impl Session {
         self.rebuild();
     }
 
+    /// 把純注音組字整段交回混打管線，不附加額外按鍵。
+    pub(super) fn flush_zh_lane_for_mixed(&mut self) {
+        let keyboard = self.zh.keyboard();
+        let mut keys = String::new();
+        for syllable in &self.syllables {
+            if let Ok(syllable_keys) = keyboard.keys(syllable) {
+                keys.push_str(&syllable_keys);
+            }
+        }
+        keys.push_str(&self.zh_pending_keys);
+        keys.push_str(&self.literal);
+        keys.push_str(&self.literal_tail);
+        self.zh.reset();
+        self.zh_lane = false;
+        self.zh_pending_keys.clear();
+        self.syllables.clear();
+        self.cursor = 0;
+        self.locks.clear();
+        self.composition.clear();
+        self.edit = None;
+        self.keep_candidates = false;
+        self.highlighted = 0;
+        self.candidate_window = false;
+        self.navigating = false;
+        self.segment_manual = None;
+        self.last_hypotheses.clear();
+        self.pending.clear();
+        self.base.clear();
+        self.segments.clear();
+        self.literal.clear();
+        self.literal_anchor = 0;
+        self.literal_offset = 0;
+        self.literal_tail.clear();
+        self.pending_tone = None;
+        self.ascii.replay(&keys, &self.lexicon);
+        self.literal_spans.clear();
+        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.rebuild();
+    }
+
     /// 候選視窗開啟時，選字鍵選取目前頁的第幾項。
     ///
     /// 回傳 `None` 代表這個字元不是選字鍵，交回一般按鍵路徑；`Some(true)`
@@ -489,6 +534,14 @@ impl Session {
     pub fn choose_candidate(&mut self, index: usize) -> Option<Snapshot> {
         if index >= self.candidates.len() {
             return None;
+        }
+        // 逐字元候選窗有自己的套用動作（拆回原始輸入、換假名等）。
+        if self.candidate_window && self.mixed_choices.get(index).is_some_and(Option::is_some) {
+            return self.apply_mixed_choice(index);
+        }
+        // 日文片段候選換掉游標所在文節。
+        if self.in_ja_lane() && self.candidate_window {
+            return self.apply_ja_candidate(index).then(|| self.finish_choice());
         }
         // 游標移到中間或調過詞長時，選字只鎖定這一段，不送出整段組字。
         if self.edit.is_some() {
@@ -556,8 +609,11 @@ impl Session {
     }
 
     /// 選字完成後與 `press` 相同的收尾：關掉候選窗並重建顯示。
-    fn finish_choice(&mut self) -> Snapshot {
+    pub(super) fn finish_choice(&mut self) -> Snapshot {
         self.candidate_window = false;
+        self.candidate_expanded = false;
+        self.mixed_target = None;
+        self.mixed_choices.clear();
         self.rebuild();
         self.snapshot()
     }
@@ -587,6 +643,7 @@ impl Session {
                 .next()
                 .is_some_and(crate::zh::han::is_han)
         {
+            self.personal.begin_rollback(now_millis());
             self.personal
                 .note_manual(&candidate.surface, &reading, edit.len);
         } else if self.config.learning && crate::learn_guard::is_sensitive(&candidate.surface) {
@@ -604,90 +661,41 @@ impl Session {
 
     pub(super) fn space(&mut self) {
         // 注音路徑（純注音或 Mixed 的純注音組字）：未完成的注音先補完；
-        // 已完成音節時空白開候選窗；窗開著時空白選字。
+        // 已完成音節時空白就是字面空格，不再開候選窗或選第一個。
         if self.in_zh_lane() {
             if !self.zh.pending().is_empty() {
                 self.complete_pending();
                 return;
             }
-            if !self.candidate_window
-                && !self.candidates.is_empty()
-                && !self.style.space_inserts_space
-            {
-                // 音節打完後空白開候選窗；「空白只插空白」設定保持原行為。
-                self.narrow_mixed_zh_candidates();
-                if self.config.mode == Mode::Mixed {
-                    self.zh_run_breaks.push(self.syllables.len());
-                }
-                self.candidate_window = true;
-                self.navigating = false;
-                return;
-            }
-            if self.candidate_window && !self.candidates.is_empty() {
-                if self.edit.is_some() {
-                    self.select_window_candidate(self.highlighted);
-                    return;
-                }
-                self.navigating = false;
-                self.remember_selection();
-                self.learn_composition();
-                let text = self.finalize(self.current_text());
-                self.pending_commit = Some(text);
-                self.clear_composition();
-                return;
-            }
-        }
-        if self.in_ja_lane() && self.live.is_some() {
-            if self.candidate_window {
-                if self.navigating && !self.candidates.is_empty() {
-                    self.move_highlight(1);
-                } else {
-                    self.navigating = true;
-                }
+            self.candidate_window = false;
+            self.candidate_expanded = false;
+            self.navigating = false;
+            self.keep_candidates = false;
+            self.zh_window_last = false;
+            // 空白是字面空格：留在注音組字區，不開候選、不選字。
+            if self.syllables.is_empty() {
+                self.ascii.space(&self.lexicon);
             } else {
-                self.open_ja_candidates();
+                self.zh_run_breaks.push(self.syllables.len());
+                self.push_literal(" ");
             }
             return;
         }
-        match self.config.mode {
-            // 混合模式的中文音節已完成：先把殘留的注音補完，再把空白當成
-            // 開候選窗，而不是插入空白。英文待定按鍵仍走 `ascii.space`。
-            Mode::Mixed
-                if self.ascii.pending().is_empty()
-                    && !self.candidate_window
-                    && !self.style.space_inserts_space
-                    && self.mixed_trailing_zh_span().is_some() =>
-            {
-                if !self.zh.pending().is_empty() {
-                    self.complete_pending();
-                    self.rebuild();
-                }
-                // 空白仍留在按鍵流，後續打字才會與管線的切分一致；送出或
-                // 選字時再由 `trim_mixed_candidate_space` 拿掉。
-                self.ascii.space(&self.lexicon);
-                self.mixed_cursor = Self::MIXED_CURSOR_END;
-                self.candidate_window = true;
-                self.navigating = false;
-                self.highlighted = 0;
-            }
-            _ if self.candidate_window && !self.candidates.is_empty() => {
-                if self.edit.is_some() {
-                    self.select_window_candidate(self.highlighted);
-                    return;
-                }
-                self.navigating = false;
-                self.trim_mixed_candidate_space();
-                self.remember_selection();
-                self.learn_composition();
-                let text = self.finalize(self.current_text());
-                self.pending_commit = Some(text);
-                self.clear_composition();
-            }
-            Mode::Mixed => {
-                self.mixed_cursor = Self::MIXED_CURSOR_END;
-                self.ascii.space(&self.lexicon);
-            }
+        if self.in_ja_lane() {
+            // 空白只插入字面空格；日文候選改由 ↓ 開啟。
+            self.candidate_window = false;
+            self.candidate_expanded = false;
+            self.navigating = false;
+            self.literal_tail.push(' ');
+            return;
         }
+        // 其餘混打路徑：空白只插入空格。
+        self.candidate_window = false;
+        self.candidate_expanded = false;
+        self.navigating = false;
+        self.keep_candidates = false;
+        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.ascii.space(&self.lexicon);
     }
 
     /// Mixed 的純注音組字開候選窗時只列游標所在音節。
@@ -702,7 +710,68 @@ impl Session {
         self.zh_window_last = true;
     }
 
-    /// 打開日文逐字変換片段的候選。
+    /// ↓ 在日文片段上開候選：結尾先左移一格，只列游標所在片段。
+    pub(super) fn open_ja_cursor_candidates(&mut self) -> bool {
+        let text = self.base.clone();
+        if text.is_empty() {
+            return false;
+        }
+        let runes = text.chars().count();
+        let at = rune_offset(&text, self.ja_cursor.min(text.len()));
+        if at >= runes {
+            self.move_ja_cursor(-1);
+        }
+        let opened = if self.live.is_some() {
+            self.open_ja_candidates()
+        } else {
+            !self.candidates.is_empty()
+        };
+        if !opened {
+            return false;
+        }
+        // 原始羅馬字也是一個可選回來的候選。
+        let raw = if self.ja_run {
+            self.ja_run_keys.clone()
+        } else {
+            self.romaji
+                .units()
+                .iter()
+                .map(Unit::as_str)
+                .collect::<String>()
+        };
+        if !raw.is_empty()
+            && !self
+                .candidates
+                .iter()
+                .any(|candidate| candidate.surface == raw)
+        {
+            self.candidates.push(Candidate::new(
+                raw.clone(),
+                raw.clone(),
+                i32::MAX,
+                CandidateSource::Literal,
+            ));
+        }
+        self.highlighted = 0;
+        self.candidate_window = true;
+        self.candidate_expanded = false;
+        self.navigating = true;
+        self.keep_candidates = true;
+        self.mixed_target = Some(MixedTarget {
+            typed: (0, 0),
+            raw,
+            raw_toneless: String::new(),
+            tone_key: None,
+            rune_start: at,
+            rune_len: 1,
+            syllable: None,
+            reading: None,
+            ja: true,
+        });
+        true
+    }
+
+    /// 開啟日文逐字変換片段的候選。
     ///
     /// 只針對游標所在片段，其他片段保持鎖定。清單由
     /// [`crate::ja::live::Controller::candidates`] 產生，包含字典候選、
@@ -761,6 +830,11 @@ impl Session {
         let Some(candidate) = self.candidates.get(index).cloned() else {
             return false;
         };
+        let segment_start = self
+            .segments()
+            .get(segment)
+            .map(|segment| segment.start)
+            .unwrap_or(0);
         let Some(live) = self.live.as_mut() else {
             return false;
         };
@@ -778,11 +852,25 @@ impl Session {
         self.capture_ja_users();
         self.refresh_ja_live();
         if let Some(segment) = self.segments().get(segment) {
-            self.ja_cursor = segment.end.min(self.base.len());
+            // 比一個 rune 長的替換（私→わたし）游標放在第一個字元之後。
+            let first = candidate
+                .surface
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(0);
+            self.ja_cursor = if candidate.surface.chars().count() > 1 {
+                (segment_start + first).min(segment.end)
+            } else {
+                segment.end.min(self.base.len())
+            };
         }
         self.candidate_window = false;
         self.navigating = false;
         self.keep_candidates = false;
+        self.candidate_expanded = false;
+        self.mixed_target = None;
+        self.mixed_choices.clear();
         true
     }
 
@@ -926,15 +1014,40 @@ impl Session {
 
     /// `Delete`：刪除游標後一個音節；沒有可刪的音節時只關候選窗。
     pub(super) fn delete_forward(&mut self) {
+        self.candidate_window = false;
+        self.candidate_expanded = false;
+        self.navigating = false;
         self.keep_candidates = false;
         self.edit = None;
+        self.highlighted = 0;
         if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
-            self.candidate_window = false;
-            self.navigating = false;
-            self.highlighted = 0;
-            let at = self.mixed_cursor.min(self.segments.len());
-            if at < self.segments.len() {
-                self.remove_mixed_segment(at);
+            let text = self.base_with_highlight();
+            let runes = text.chars().count();
+            let at = self.mixed_cursor.min(runes);
+            if at < runes {
+                let saved = self.mixed_cursor;
+                self.mixed_cursor = at;
+                let target = self.mixed_target_at_cursor();
+                self.mixed_cursor = saved;
+                if let Some(target) = target {
+                    let typed = self.ascii.typed().to_string();
+                    let (start, end) = target.typed;
+                    if start < end && end <= typed.len() && typed.is_char_boundary(start) {
+                        let mut next =
+                            String::with_capacity(typed.len().saturating_sub(end - start));
+                        next.push_str(&typed[..start]);
+                        next.push_str(&typed[end..]);
+                        self.ascii.replay(&next, &self.lexicon);
+                        self.literal_spans.clear();
+                        let len = self.base_with_highlight().chars().count();
+                        self.mixed_cursor = at.min(len);
+                        return;
+                    }
+                }
+                let index = self.mixed_segment_index_at_rune(at);
+                if let Some(index) = index {
+                    self.remove_mixed_segment(index);
+                }
             }
             return;
         }
@@ -952,6 +1065,35 @@ impl Session {
     pub(super) fn down(&mut self) {
         // 外殼送來 Down 只是為了避開數字選字，後面的聲調鍵仍要完成原本的音節；
         // 這裡不補完未完成的注音。
+        if self.in_ja_lane() {
+            if !self.candidate_window {
+                self.open_ja_cursor_candidates();
+                return;
+            }
+            self.navigating = true;
+            self.move_highlight(if self.candidate_expanded { 4 } else { 1 });
+            return;
+        }
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
+            if !self.candidate_window {
+                self.open_mixed_cursor_candidates();
+                return;
+            }
+            self.navigating = true;
+            self.move_highlight(if self.candidate_expanded { 4 } else { 1 });
+            return;
+        }
+        if self.in_zh_lane() {
+            // 還沒打完的注音：↓ 不開窗也不把音節退成字母。外殼會在單一
+            // 數字鍵前補 ↓，後面的聲調鍵仍要能完成原本的音節。
+            if !self.zh_pending_keys.is_empty() || !self.zh.pending().is_empty() {
+                return;
+            }
+            if !self.candidate_window {
+                self.open_zh_cursor_candidates();
+                return;
+            }
+        }
         self.narrow_mixed_zh_candidates();
         if self.candidates.is_empty() {
             return;
@@ -959,13 +1101,14 @@ impl Session {
         if !self.candidate_window {
             self.candidate_window = true;
             self.navigating = true;
+            self.candidate_expanded = false;
             return;
         }
         if !self.navigating {
             self.navigating = true;
             return;
         }
-        self.move_highlight(1);
+        self.move_highlight(if self.candidate_expanded { 4 } else { 1 });
     }
 
     /// 上鍵：候選窗開著時往上換一項並進入選取模式；還沒開窗時先開窗。
@@ -976,10 +1119,11 @@ impl Session {
         if !self.candidate_window {
             self.candidate_window = true;
             self.navigating = true;
+            self.candidate_expanded = false;
             return;
         }
         self.navigating = true;
-        self.move_highlight(-1);
+        self.move_highlight(if self.candidate_expanded { -4 } else { -1 });
     }
 
     /// `PageDown`／`PageUp`：換頁，頁碼頭尾相接；還沒開窗時先開窗。
@@ -1024,7 +1168,11 @@ impl Session {
         } else {
             None
         };
-        self.candidate_window = self.edit.is_some();
+        // 移動游標不順便開候選窗；候選窗只由 ↓／↑ 開啟。游標移到某個
+        // 片段時先記下可調整的片段範圍，供 Shift＋←／→ 與片段選字使用。
+        if !self.candidate_window {
+            self.edit = None;
+        }
         true
     }
 
@@ -1063,14 +1211,23 @@ impl Session {
 
     /// `Home`／`End`：選取模式中移到候選清單的第一項或最後一項。
     ///
-    /// 只是顯示候選時（例如空白開窗、還沒按 ↓）這兩個鍵移動組字游標到
-    /// 開頭／結尾，對照上游 `moveShownCandidateCursor`；游標不動候選內容，
-    /// 也不會進入選取模式。
+    /// 候選窗沒開或只是顯示時，這兩個鍵移動組字游標到開頭／結尾，對照上游
+    /// `moveShownCandidateCursor`；游標不動候選內容，也不會進入選取模式。
     pub(super) fn candidate_edge(&mut self, end: bool) {
-        if !self.candidate_window {
-            return;
-        }
         if !self.navigating {
+            if self.in_ja_lane() {
+                self.ja_cursor = if end {
+                    self.base_with_highlight().len()
+                } else {
+                    0
+                };
+                return;
+            }
+            if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
+                let runes = self.base_with_highlight().chars().count();
+                self.move_mixed_cursor_to(if end { runes } else { 0 });
+                return;
+            }
             if self.in_zh_lane() {
                 let target = if end { self.syllables.len() } else { 0 };
                 self.move_cursor_to(target);
@@ -1155,6 +1312,16 @@ impl Session {
     }
 
     pub(super) fn finish_composition(&mut self) {
+        // 逐字元候選窗的 Enter：套用目前高亮並關窗，不送出整段。
+        if self.candidate_window
+            && self
+                .mixed_choices
+                .get(self.highlighted)
+                .is_some_and(Option::is_some)
+            && self.apply_mixed_choice(self.highlighted).is_some()
+        {
+            return;
+        }
         // Mixed 的純注音候選窗只列游標那一格；Enter 仍送出整段，先恢復整段
         // 候選再走一般提交路徑，學習才會記到整個詞。
         if self.config.mode == Mode::Mixed && self.in_zh_lane() && self.zh_window_last {
@@ -1411,15 +1578,27 @@ impl Session {
     /// 組字游標；進入選取模式後才在候選間移動。游標移動後，候選清單改成
     /// 游標所在片段的候選。
     pub(super) fn navigate(&mut self, delta: isize) {
+        // 候選窗開著時四方向鍵都屬於候選介面：游標不能移動。第一次按 →／←
+        // 先展開成四欄，之後才在候選間移動。
+        if self.candidate_window && self.navigating && !self.candidates.is_empty() {
+            if self.config.mode == Mode::Mixed && !self.candidate_expanded {
+                self.candidate_expanded = true;
+                return;
+            }
+            self.move_highlight(delta);
+            return;
+        }
         if self.in_ja_lane() && self.live.is_some() && self.move_ja_cursor(delta) {
             return;
         }
         if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
-            if self.candidate_window && self.navigating && !self.candidates.is_empty() {
-                // 已經進入明確的選取模式時，左右鍵仍然換候選。
-                self.move_highlight(delta);
-                return;
-            }
+            self.navigate_mixed(delta);
+            return;
+        }
+        if self.in_zh_lane() && (!self.zh_pending_keys.is_empty() || !self.zh.pending().is_empty())
+        {
+            // 注音還沒打完就移動游標：待定音節退化成原始字母，再照樣移動。
+            self.flush_zh_lane_for_mixed();
             self.navigate_mixed(delta);
             return;
         }
@@ -1434,6 +1613,11 @@ impl Session {
             }
             return;
         }
+        if self.in_zh_lane() && !self.candidate_window {
+            // 候選窗沒開時方向鍵只移動游標，不順便開窗。
+            self.move_cursor_to(self.cursor.saturating_add_signed(delta));
+            return;
+        }
         if self.candidates.is_empty() {
             return;
         }
@@ -1445,26 +1629,37 @@ impl Session {
         self.move_highlight(delta);
     }
 
-    /// 混合模式的方向鍵：在片段邊界之間移動游標。
+    /// 把混合模式的游標移到指定 rune；會關掉候選窗。
+    pub(super) fn move_mixed_cursor_to(&mut self, pos: usize) {
+        let len = self.base_with_highlight().chars().count();
+        let target = pos.min(len);
+        if target == self.mixed_cursor.min(len) {
+            return;
+        }
+        self.mixed_cursor = target;
+        self.candidate_window = false;
+        self.candidate_expanded = false;
+        self.navigating = false;
+        self.keep_candidates = false;
+        self.edit = None;
+        self.highlighted = 0;
+        self.mixed_target = None;
+        self.mixed_choices.clear();
+    }
+
+    /// 混合模式的方向鍵：逐 rune 移動游標。
     ///
-    /// 混合模式沒有音節格，游標以顯示片段為單位；英文與注音片段都算一格。
-    /// 移動游標只改插入／刪除位置，不動候選與片段內容。
+    /// 顯示字串可能是注音詞、かな或英文；游標一律停在 rune 邊界，跨越片段
+    /// 邊界時直接進到相鄰片段的第一／最後一個 rune。
     pub(super) fn navigate_mixed(&mut self, delta: isize) {
-        let len = self.segments.len();
+        let text = self.base_with_highlight();
+        let len = text.chars().count();
         if len == 0 {
             return;
         }
         let at = self.mixed_cursor.min(len);
         let target = at.saturating_add_signed(delta).min(len);
-        if target == at {
-            return;
-        }
-        self.mixed_cursor = target;
-        self.candidate_window = false;
-        self.navigating = false;
-        self.keep_candidates = false;
-        self.edit = None;
-        self.highlighted = 0;
+        self.move_mixed_cursor_to(target);
     }
 
     /// 把這次送出的候選記進個人學習。
@@ -1904,6 +2099,16 @@ impl Session {
     }
 
     pub(super) fn rebuild(&mut self) {
+        if !self.candidate_window {
+            self.mixed_target = None;
+            self.mixed_choices.clear();
+            self.candidate_expanded = false;
+        }
+        // 逐字元候選窗開著時，重建會把剛產生的清單換掉；游標與組字內容
+        // 都沒變，直接保留。
+        if self.candidate_window && self.mixed_target.is_some() {
+            return;
+        }
         if self.menu.is_some() {
             self.rebuild_menu();
             return;
@@ -2771,13 +2976,12 @@ mod tests {
     fn test_typing_leaves_selection_mode() {
         let mut s = session();
         type_syllable(&mut s, "ㄨㄛˇ");
-        s.press(Key::new(KeyCode::Space, None, false));
         s.press(Key::new(KeyCode::Down, None, false));
         assert!(s.snapshot().navigating);
         type_syllable(&mut s, "ㄈㄥ");
         let snap = s.snapshot();
         assert!(!snap.navigating, "打字後離開選取模式");
-        assert!(snap.preedit.ends_with('風'), "{}", snap.preedit);
+        assert!(!snap.preedit.is_empty());
     }
 
     /// 對照 `TestEscLeavesSelectionMode`：Esc 關窗、保留組字。
@@ -2785,14 +2989,13 @@ mod tests {
     fn test_escape_closes_candidate_window_and_keeps_composition() {
         let mut s = session();
         type_syllable(&mut s, "ㄕˋ");
-        s.press(Key::new(KeyCode::Space, None, false));
         s.press(Key::new(KeyCode::Down, None, false));
         let snap = s.press(Key::new(KeyCode::Escape, None, false));
         assert!(!snap.navigating, "Esc 離開選取模式");
         assert_eq!(snap.preedit, "甲", "Esc 保留已組好的字");
-        // 關窗後數字鍵回到注音路徑，不再選字。
+        // 關窗後數字鍵回到注音路徑，不再選字；游標已在字前。
         let typed = s.press(Key::char('2', false));
-        assert_eq!(typed.preedit, "甲ㄉ", "關窗後數字是注音鍵");
+        assert_eq!(typed.preedit, "ㄉ甲", "關窗後數字是注音鍵");
     }
 
     /// Esc 先清未完成的注音，已完成的音節留著；再按一次才整段清掉。
@@ -2810,46 +3013,57 @@ mod tests {
         assert_eq!(second.preedit, "", "第二次 Esc 清掉整段組字");
     }
 
-    /// 候選窗開著時退格仍然刪游標前一個音節；空組字才只關窗。
+    /// 候選窗開著時退格刪游標前一個字；空組字才只關窗。
     #[test]
     fn test_backspace_deletes_before_cursor_and_closes_candidates() {
         let mut s = session();
         type_syllable(&mut s, "ㄨㄛˇ");
+        type_syllable(&mut s, "ㄔ");
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
         s.press(Key::new(KeyCode::Down, None, false));
         let snap = s.press(Key::new(KeyCode::Backspace, None, false));
         assert!(!snap.navigating, "退格關閉候選");
-        assert_eq!(snap.preedit, "", "退格刪掉游標前的音節");
+        assert_eq!(snap.preedit, "吃", "退格刪掉游標前的我");
         let typed = s.press(Key::char('2', false));
-        assert_eq!(typed.preedit, "ㄉ", "關窗後數字是注音鍵");
+        assert_eq!(typed.preedit, "ㄉ吃", "關窗後數字是注音鍵");
     }
 
-    /// Delete 刪游標後一個音節；沒有可刪的音節時只關候選窗。
+    /// Delete 刪游標後一個字；游標在結尾時不動作。
     #[test]
     fn test_delete_removes_after_cursor_or_closes_candidates() {
         let mut s = session();
         type_syllable(&mut s, "ㄨㄛˇ");
+        type_syllable(&mut s, "ㄔ");
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
         s.press(Key::new(KeyCode::Down, None, false));
         let snap = s.press(Key::new(KeyCode::Delete, None, false));
         assert!(!snap.navigating);
-        assert_eq!(snap.preedit, "我", "游標在結尾時 Delete 不刪字");
+        assert_eq!(snap.preedit, "我", "Delete 刪掉游標後面的吃");
         let typed = s.press(Key::char('2', false));
         assert_eq!(typed.preedit, "我ㄉ", "關窗後數字是注音鍵");
+
+        // 游標在結尾時 Delete 不刪字。
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        let snap = s.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "我");
     }
 
-    /// 空白鍵在音節完成後開候選窗，與上游 `openCandidates(0)` 相同。
+    /// 空白鍵只插入空格，不再開候選窗或選第一個。
     #[test]
     fn test_space_opens_candidates_after_complete_syllable() {
         let mut s = session();
         type_syllable(&mut s, "ㄨㄛˇ");
         let snap = s.press(Key::new(KeyCode::Space, None, false));
-        assert!(!snap.candidates.is_empty(), "空白開候選窗");
-        assert!(!snap.navigating);
-        let selected = s.press(Key::new(KeyCode::Space, None, false));
-        assert_eq!(selected.preedit, "", "第二次空白選字並收起組字");
-        assert_eq!(s.commit(), "我");
+        assert!(!snap.navigating, "空白不進入選取模式");
+        assert_eq!(snap.preedit, "我 ", "空白只插入空格");
+        let snap = s.press(Key::new(KeyCode::Space, None, false));
+        assert_eq!(snap.preedit, "我  ", "再按一次也是空格");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "我  ");
     }
 
-    /// 「空白只插空白」設定關閉空白開候選。
+    /// 「空白只插空白」是唯一行為；舊設定讀到也一樣。
     #[test]
     fn test_space_inserts_space_keeps_literal_behavior() {
         let mut config = SessionConfig::new(Mode::Mixed);
@@ -2858,8 +3072,8 @@ mod tests {
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄨㄛˇ");
         let snap = s.press(Key::new(KeyCode::Space, None, false));
-        assert!(!snap.navigating, "設定關閉時不進入選取模式");
-        assert_eq!(snap.preedit, "我", "空白不選字");
+        assert!(!snap.navigating, "不進入選取模式");
+        assert_eq!(snap.preedit, "我 ", "空白插入空格");
     }
 
     /// 快照的 suggestion 是 Tab 會補上的尾綴。
@@ -2940,7 +3154,6 @@ mod tests {
         let mut edited = session();
         type_syllable(&mut edited, "ㄊㄞˊㄅㄟˇ");
         assert_eq!(edited.snapshot().preedit, "台北");
-        edited.press(Key::new(KeyCode::Space, None, false));
         let moved = edited.press(Key::new(KeyCode::ArrowLeft, None, false));
         assert_eq!(moved.cursor_rune, 1, "游標移到台與北之間");
 
@@ -2961,7 +3174,6 @@ mod tests {
         type_syllable(&mut s, "ㄨㄛˇ");
         type_syllable(&mut s, "ㄒㄧㄤˇ");
         type_syllable(&mut s, "ㄔ");
-        s.press(Key::new(KeyCode::Space, None, false));
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         let snap = s.press(Key::new(KeyCode::ArrowLeft, None, false));
         assert_eq!(snap.cursor_rune, 1, "游標停在想之前");
@@ -2982,7 +3194,6 @@ mod tests {
         let mut s = session();
         type_syllable(&mut s, "ㄊㄞˊ");
         type_syllable(&mut s, "ㄅㄟˇ");
-        s.press(Key::new(KeyCode::Space, None, false));
         s.press(Key::new(KeyCode::Home, None, false));
         let whole = s.snapshot();
         assert_eq!(whole.preedit, "台北");
@@ -3016,7 +3227,6 @@ mod tests {
         type_syllable(&mut s, "ㄨㄛˇ");
         type_syllable(&mut s, "ㄒㄧㄤˇ");
         type_syllable(&mut s, "ㄔ");
-        s.press(Key::new(KeyCode::Space, None, false));
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         assert_eq!(s.snapshot().cursor_rune, 1);
@@ -3032,26 +3242,21 @@ mod tests {
         assert_eq!(applied.preedit.chars().last(), Some('吃'));
     }
 
-    /// keepCandidates：換字後候選窗留著，Esc 關窗但保留組字。
+    /// Enter 換字後直接關窗；組字保留，下一次 Enter 才送出整段。
     #[test]
     fn test_keep_candidates_after_segment_change_until_escape() {
         let mut s = session();
         type_syllable(&mut s, "ㄨㄛˇ");
         type_syllable(&mut s, "ㄒㄧㄤˇ");
         type_syllable(&mut s, "ㄔ");
-        s.press(Key::new(KeyCode::Space, None, false));
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         s.press(Key::new(KeyCode::Down, None, false));
         s.press(Key::char('k', false));
         let changed = s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(changed.preedit, "我像吃");
-        assert!(changed.navigating, "換字後候選窗仍在選取狀態");
-        assert!(!changed.candidates.is_empty());
+        assert!(!changed.navigating, "換字後候選窗關閉");
 
-        let closed = s.press(Key::new(KeyCode::Escape, None, false));
-        assert!(!closed.navigating, "Esc 關閉候選");
-        assert_eq!(closed.preedit, "我像吃", "Esc 不刪組字");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "我像吃");
     }
@@ -3064,7 +3269,6 @@ mod tests {
         let mut s = session();
         type_syllable(&mut s, "ㄨㄛˇ");
         type_syllable(&mut s, "ㄒㄧㄤˇ");
-        s.press(Key::new(KeyCode::Space, None, false));
         // 游標移到「想」的片段，換成同音字「像」。
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         s.press(Key::new(KeyCode::Down, None, false));
@@ -3078,8 +3282,7 @@ mod tests {
             "快照要標出 User 片段"
         );
 
-        // 關掉候選窗後在游標位置（User 片段之前）再插一個音節；片段保持。
-        s.press(Key::new(KeyCode::Escape, None, false));
+        // Enter 已關掉候選窗，游標停在剛選的字後面；再插一個音節，片段保持。
         type_syllable(&mut s, "ㄈㄢˊ");
         let kept = s.snapshot();
         assert!(
@@ -3087,10 +3290,12 @@ mod tests {
             "重轉洗掉手選片段：{}",
             kept.preedit
         );
-        assert_eq!(s.user_marks().len(), 1, "插入在前不影響 User 標記");
-        assert_eq!(s.user_marks()[0].start, 2, "User 標記隨插入平移");
+        assert_eq!(s.user_marks().len(), 1, "插入在後不影響 User 標記");
+        assert_eq!(s.user_marks()[0].start, 1, "User 標記不因後面插入而移動");
 
         // 刪掉 User 片段本身的音節：該片段退回 Auto。
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
         let demoted = s.press(Key::new(KeyCode::Delete, None, false));
         assert!(!demoted.preedit.contains('像'), "{:?}", demoted.preedit);
         assert!(s.user_marks().is_empty(), "片段內編輯要解除 User 標記");

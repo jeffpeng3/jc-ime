@@ -138,12 +138,8 @@ impl Session {
             return byte.min(text.len());
         }
         if self.config.mode == Mode::Mixed {
-            let segments = self.segments();
-            let at = self.mixed_cursor.min(segments.len());
-            return segments
-                .get(at)
-                .map(|segment| segment.start.min(text.len()))
-                .unwrap_or(text.len());
+            let at = self.mixed_cursor.min(text.chars().count());
+            return byte_at_rune(&text, at);
         }
         text.len()
     }
@@ -1044,8 +1040,8 @@ mod tests {
         type_syllable(&mut s, "ㄨㄛˇ");
         type_syllable(&mut s, "ㄒㄧㄤˇ");
         type_syllable(&mut s, "ㄔ");
-        let shown = s.press(Key::new(KeyCode::Space, None, false));
-        assert!(!shown.navigating, "空白只顯示候選");
+        let shown = s.snapshot();
+        assert!(!shown.navigating, "候選只是顯示");
         assert_eq!(shown.preedit, "我想吃");
         assert_eq!(shown.cursor_rune, 3, "游標本來在結尾");
 
@@ -1069,7 +1065,7 @@ mod tests {
         type_syllable(&mut s, "ㄨㄛˇ");
         type_syllable(&mut s, "ㄒㄧㄤˇ");
         type_syllable(&mut s, "ㄔ");
-        let shown = s.press(Key::new(KeyCode::Space, None, false));
+        let shown = s.snapshot();
         assert!(!shown.navigating);
         assert_eq!(shown.cursor_rune, 3);
 
@@ -1093,7 +1089,6 @@ mod tests {
         type_syllable(&mut s, "ㄈㄥ");
         type_syllable(&mut s, "ㄐㄧㄥˇ");
         assert_eq!(s.snapshot().preedit, "風景");
-        s.press(Key::new(KeyCode::Space, None, false));
         let home = s.press(Key::new(KeyCode::Home, None, false));
         assert_eq!(home.cursor_rune, 0);
         let end = s.press(Key::new(KeyCode::End, None, false));

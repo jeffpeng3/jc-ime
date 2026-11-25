@@ -928,11 +928,38 @@ impl Session {
         self.ja_run_keys.clear();
     }
 
-    /// 混合模式的 Backspace：刪掉游標前一個片段。
-    /// 片段已經是使用者看到的字（`台`、`hello`），不再退回注音或逐字母刪。
-    /// 游標在結尾時就是刪最右邊那一段。沒有游標前的片段時回傳 `false`，
-    /// 交給呼叫端的舊路徑處理。
+    /// 混合模式的 Backspace：刪掉游標左邊一個字元。
+    ///
+    /// 游標以 rune 為單位；中文一個字背後的整个音節按鍵一起刪，英文只刪一個
+    /// 字母。沒有可刪的目標時才退回舊的整片段路徑。
     pub(super) fn backspace_mixed(&mut self) -> bool {
+        let text = self.base_with_highlight();
+        let runes = text.chars().count();
+        if runes == 0 {
+            return false;
+        }
+        let cursor = self.mixed_cursor.min(runes);
+        if cursor == 0 {
+            return false;
+        }
+        let saved = self.mixed_cursor;
+        self.mixed_cursor = cursor - 1;
+        let target = self.mixed_target_at_cursor();
+        self.mixed_cursor = saved;
+        if let Some(target) = target {
+            let typed = self.ascii.typed().to_string();
+            let (start, end) = target.typed;
+            if start < end && end <= typed.len() && typed.is_char_boundary(start) {
+                let mut next = String::with_capacity(typed.len().saturating_sub(end - start));
+                next.push_str(&typed[..start]);
+                next.push_str(&typed[end..]);
+                self.ascii.replay(&next, &self.lexicon);
+                self.literal_spans.clear();
+                let len = self.base_with_highlight().chars().count();
+                self.mixed_cursor = (cursor - 1).min(len);
+                return true;
+            }
+        }
         let len = self.segments.len();
         let at = self.mixed_cursor.min(len);
         if at == 0 {
@@ -947,6 +974,7 @@ impl Session {
             return false;
         }
         self.ascii.replay(&typed, &self.lexicon);
+        self.literal_spans.clear();
         self.mixed_cursor = Self::MIXED_CURSOR_END;
         true
     }
@@ -1053,35 +1081,6 @@ impl Session {
         None
     }
 
-    /// 尾巴連續注音片段在按鍵流中的範圍；沒有時回傳 `None`。
-    ///
-    /// 跟 [`Session::mixed_typed_spans`] 共用同一份切分結果，只用來把選到的
-    /// 中文候選換回按鍵流，不會跨過英文或記號片段。
-    pub(super) fn mixed_trailing_zh_span(&self) -> Option<(usize, usize)> {
-        let text = self.latin_run_text()?;
-        let plans = self.incremental_latin_split_for(text)?;
-        let rendered = self.render_latin_plans(text, &plans);
-        // 先去掉尾端空白（開候選窗時留下的按鍵），再從尾端往回收注音片段。
-        let last = plans.iter().zip(&rendered).rposition(|(_, item)| {
-            !item.surface.is_empty() && !item.surface.chars().all(char::is_whitespace)
-        })?;
-        let mut span: Option<(usize, usize)> = None;
-        for (plan, item) in plans.iter().zip(rendered).take(last + 1) {
-            if item.surface.is_empty() {
-                continue;
-            }
-            if plan.zh.is_some() {
-                span = Some(match span {
-                    Some((start, _)) => (start, plan.end),
-                    None => (plan.start, plan.end),
-                });
-            } else {
-                span = None;
-            }
-        }
-        span
-    }
-
     /// 把選到的中文候選換進按鍵流，取代游標所在的那一個注音音節。
     ///
     /// 候選字面不是按鍵，放進按鍵流後由管線當固定字面保留；後續打字不會再
@@ -1104,6 +1103,612 @@ impl Session {
         }
         self.ascii.replay(&next, &self.lexicon);
         self.mixed_cursor = Self::MIXED_CURSOR_END;
+        true
+    }
+
+    /// 游標右側 rune 所屬的片段索引。
+    pub(super) fn mixed_segment_index_at_rune(&self, rune: usize) -> Option<usize> {
+        let text = self.base_with_highlight();
+        let byte = Self::rune_byte(&text, rune);
+        self.segments()
+            .iter()
+            .position(|segment| segment.start <= byte && byte < segment.end)
+    }
+
+    /// 字串中第 `rune` 個字元的位元組位移；超出長度時夾在結尾。
+    fn rune_byte(text: &str, rune: usize) -> usize {
+        text.char_indices()
+            .nth(rune)
+            .map(|(byte, _)| byte)
+            .unwrap_or(text.len())
+    }
+
+    /// 游標右側那一個字元的候選目標。
+    ///
+    /// 游標在整段結尾時由呼叫端先左移一格；這裡只處理 `0..rune 數`。
+    pub(super) fn mixed_target_at_cursor(&self) -> Option<MixedTarget> {
+        let text = self.base_with_highlight();
+        let runes = text.chars().count();
+        let rune_start = self.mixed_cursor.min(runes);
+        if rune_start >= runes {
+            return None;
+        }
+        let byte = Self::rune_byte(&text, rune_start);
+        if !text.is_char_boundary(byte) {
+            return None;
+        }
+        let segments = self.segments();
+        let spans = self.mixed_typed_spans();
+        let typed = self.ascii.typed().to_string();
+        let plans = self.plan_latin_text(&typed);
+        for (plan_index, (index, segment)) in segments.iter().enumerate().enumerate() {
+            let plan = plans.get(plan_index);
+            if byte < segment.start || byte >= segment.end {
+                continue;
+            }
+            let span = spans.get(index).copied().unwrap_or((0, 0));
+            let raw = typed.get(span.0..span.1).unwrap_or_default().to_string();
+            let rune_len = text[segment.start..segment.end].chars().count();
+            let inside = text[segment.start..byte].chars().count();
+            // 固定成字面的原始按鍵整段都是一個可拆回的單位；其他片段從游標
+            // 所在的那一個 rune 開始切，英文才停得進 `hel|lo`。
+            let forced = self
+                .literal_spans
+                .iter()
+                .any(|&(start, end)| start <= span.0 && span.1 <= end);
+            let whole = forced && inside == 0;
+            if whole {
+                let (toneless, tone) = split_tone_key(&raw);
+                let reading = zh_reading_from_keys(&toneless);
+                return Some(MixedTarget {
+                    typed: (span.0, span.1),
+                    raw,
+                    raw_toneless: toneless,
+                    tone_key: tone,
+                    rune_start,
+                    rune_len,
+                    syllable: None,
+                    reading,
+                    ja: false,
+                });
+            }
+            // 注音片段：找到游標所在的那一個音節，候選只作用在它身上。
+            if let Some(plan) = plan {
+                if plan.mode == Lang::Zh {
+                    if let Some(reading) = plan.zh.as_deref() {
+                        let readings: Vec<&str> = reading.split_whitespace().collect();
+                        let keys = zh_key_syllable_spans(&raw);
+                        let at = inside.min(readings.len().saturating_sub(1));
+                        if let (Some(reading), Some(&(start, end))) =
+                            (readings.get(at), keys.get(at))
+                        {
+                            let syllable_raw = &raw[start..end];
+                            let (toneless, tone) = split_tone_key(syllable_raw);
+                            return Some(MixedTarget {
+                                typed: (span.0 + start, span.0 + end),
+                                raw: syllable_raw.to_string(),
+                                raw_toneless: toneless,
+                                tone_key: tone,
+                                rune_start,
+                                rune_len: 1,
+                                syllable: None,
+                                reading: Some((*reading).to_string()),
+                                ja: false,
+                            });
+                        }
+                    }
+                }
+                if plan.mode == Lang::Ja && inside == 0 {
+                    return Some(MixedTarget {
+                        typed: (span.0, span.1),
+                        raw,
+                        raw_toneless: String::new(),
+                        tone_key: None,
+                        rune_start,
+                        rune_len,
+                        syllable: None,
+                        reading: Some(plan.kana.clone()),
+                        ja: true,
+                    });
+                }
+            }
+            let (typed_start, typed_end, rune_len) =
+                if raw.is_ascii() && raw.chars().count() == rune_len {
+                    // 英文字面一鍵一字，直接對到同一個按鍵。
+                    let at = raw
+                        .char_indices()
+                        .nth(inside)
+                        .map(|(byte, _)| byte)
+                        .unwrap_or(raw.len());
+                    let next = raw[at..]
+                        .chars()
+                        .next()
+                        .map(|ch| at + ch.len_utf8())
+                        .unwrap_or(raw.len());
+                    (span.0 + at, span.0 + next, 1)
+                } else {
+                    (span.0, span.1, rune_len)
+                };
+            return Some(MixedTarget {
+                typed: (typed_start, typed_end),
+                raw,
+                raw_toneless: String::new(),
+                tone_key: None,
+                rune_start,
+                rune_len,
+                syllable: None,
+                reading: None,
+                ja: false,
+            });
+        }
+        None
+    }
+
+    /// 候選窗要作用在游標右側的字元；結尾先左移一格。
+    ///
+    /// 只有按 ↓ 會走到這裡。回傳是否有可開的候選。
+    pub(super) fn open_mixed_cursor_candidates(&mut self) -> bool {
+        let text = self.base_with_highlight();
+        let runes = text.chars().count();
+        if runes == 0 {
+            return false;
+        }
+        // 整段都是英文待定詞時，候選是整串的拼字建議與補全，不是單一字母；
+        // 套用時替換整個詞，游標留在結尾。
+        let raw = self.ascii.typed().to_string();
+        if !self.in_zh_lane()
+            && !self.in_ja_lane()
+            && self.ascii.pending() == raw
+            && self.literal_spans.is_empty()
+            && !self.candidates.is_empty()
+        {
+            let choices: Vec<Option<MixedChoice>> = self
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    Some(MixedChoice {
+                        insert: candidate.surface.clone(),
+                        leftover: String::new(),
+                        force_literal: true,
+                        cursor: ChoiceCursor::TokenEnd,
+                        syllable_edit: None,
+                    })
+                })
+                .collect();
+            self.mixed_choices = choices;
+            self.mixed_target = Some(MixedTarget {
+                typed: (0, raw.len()),
+                raw: raw.clone(),
+                raw_toneless: raw.clone(),
+                tone_key: None,
+                rune_start: 0,
+                rune_len: runes,
+                syllable: None,
+                reading: None,
+                ja: false,
+            });
+            self.highlighted = 0;
+            self.candidate_window = true;
+            self.candidate_expanded = false;
+            self.navigating = true;
+            self.keep_candidates = true;
+            return true;
+        }
+        if self.mixed_cursor.min(runes) >= runes {
+            self.mixed_cursor = runes - 1;
+        }
+        let Some(target) = self.mixed_target_at_cursor() else {
+            return false;
+        };
+        let (candidates, choices) = self.mixed_candidates_for(&target);
+        if candidates.is_empty() {
+            return false;
+        }
+        self.candidates = candidates;
+        self.mixed_choices = choices;
+        self.mixed_target = Some(target);
+        self.highlighted = 0;
+        self.candidate_window = true;
+        self.candidate_expanded = false;
+        self.navigating = true;
+        self.keep_candidates = true;
+        true
+    }
+
+    /// 為一個字元目標產生候選與套用動作。
+    fn mixed_candidates_for(
+        &self,
+        target: &MixedTarget,
+    ) -> (Vec<Candidate>, Vec<Option<MixedChoice>>) {
+        let text = self.base_with_highlight();
+        let start = Self::rune_byte(&text, target.rune_start);
+        let end = text[start..]
+            .chars()
+            .take(target.rune_len)
+            .map(char::len_utf8)
+            .sum::<usize>()
+            + start;
+        let surface = text[start..end].to_string();
+        let mut out: Vec<(Candidate, MixedChoice)> = Vec::new();
+        // 字面片段：只列這一個字元（英文 `hello` 的 `o`），不往左組詞。
+        if target.reading.is_none() && !target.ja {
+            out.push((
+                Candidate::new(
+                    surface.clone(),
+                    surface.clone(),
+                    0,
+                    CandidateSource::Literal,
+                ),
+                MixedChoice {
+                    insert: surface.clone(),
+                    leftover: String::new(),
+                    force_literal: false,
+                    cursor: ChoiceCursor::AfterInsert,
+                    syllable_edit: None,
+                },
+            ));
+            if let Some(full) = crate::symbols::width_variant(&surface) {
+                if full != surface {
+                    out.push((
+                        Candidate::new(full.clone(), surface.clone(), 1, CandidateSource::Literal),
+                        MixedChoice {
+                            insert: full,
+                            leftover: String::new(),
+                            force_literal: false,
+                            cursor: ChoiceCursor::AfterInsert,
+                            syllable_edit: None,
+                        },
+                    ));
+                }
+            }
+            return split_choices(out);
+        }
+        // 日文片段：かな漢字変換的漢字假設＋かな＋原始羅馬字。
+        if target.ja {
+            if let Some(kana) = target.reading.as_deref() {
+                if let Some(decoder) = self.config.ja.clone() {
+                    let chars: Vec<char> = kana.chars().collect();
+                    let results = decoder.results(
+                        &chars,
+                        &JaContext::default(),
+                        self.max_candidates().max(1),
+                    );
+                    for result in results {
+                        let conversion = result.conversion();
+                        let surface = conversion.surface.clone();
+                        if out
+                            .iter()
+                            .any(|(candidate, _)| candidate.surface == surface)
+                        {
+                            continue;
+                        }
+                        out.push((
+                            Candidate::new(
+                                surface.clone(),
+                                kana.to_string(),
+                                conversion.cost,
+                                CandidateSource::Lexicon,
+                            ),
+                            MixedChoice {
+                                insert: surface.clone(),
+                                leftover: String::new(),
+                                force_literal: false,
+                                cursor: if surface.chars().count() > 1
+                                    && surface.chars().all(is_kana)
+                                {
+                                    ChoiceCursor::AfterFirst
+                                } else {
+                                    ChoiceCursor::AfterInsert
+                                },
+                                syllable_edit: None,
+                            },
+                        ));
+                    }
+                }
+                for (surface, cursor) in [
+                    (kana.to_string(), ChoiceCursor::AfterFirst),
+                    (target.raw.clone(), ChoiceCursor::Start),
+                ] {
+                    if surface.is_empty()
+                        || out
+                            .iter()
+                            .any(|(candidate, _)| candidate.surface == surface)
+                    {
+                        continue;
+                    }
+                    out.push((
+                        Candidate::new(
+                            surface.clone(),
+                            kana.to_string(),
+                            0,
+                            CandidateSource::Literal,
+                        ),
+                        MixedChoice {
+                            insert: surface,
+                            leftover: String::new(),
+                            force_literal: false,
+                            cursor,
+                            syllable_edit: None,
+                        },
+                    ));
+                }
+            }
+            return split_choices(out);
+        }
+        // 注音音節：詞典候選＋注音本身＋原始按鍵＋無聲調按鍵＋日文解讀。
+        if let Some(reading) = target.reading.as_deref() {
+            for candidate in self.zh_syllable_candidates(reading) {
+                out.push((
+                    candidate.clone(),
+                    MixedChoice {
+                        insert: candidate.surface.clone(),
+                        leftover: String::new(),
+                        force_literal: false,
+                        cursor: ChoiceCursor::AfterInsert,
+                        syllable_edit: target.syllable.map(|start| EditWindow { start, len: 1 }),
+                    },
+                ));
+            }
+            push_decomposition(
+                &mut out,
+                reading,
+                &target.raw,
+                &target.raw_toneless,
+                target.tone_key,
+            );
+        }
+        split_choices(out)
+    }
+
+    /// 一個注音讀音的詞典候選；不改動工作階段。
+    fn zh_syllable_candidates(&self, reading: &str) -> Vec<Candidate> {
+        let units = [reading];
+        let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) else {
+            return Vec::new();
+        };
+        let scorer = super::core::zh_scorer(&self.ctx, self.zh_lm.as_deref());
+        let decoder = super::core::zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
+        let (mut hypotheses, _) =
+            decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
+        if self.config.learning {
+            self.personal.rank_hypotheses(&mut hypotheses, reading);
+        }
+        let literal = reading.to_string();
+        let mut out: Vec<Candidate> = Vec::new();
+        for hypothesis in hypotheses {
+            if hypothesis.text == literal {
+                continue;
+            }
+            if out
+                .iter()
+                .any(|candidate| candidate.surface == hypothesis.text)
+            {
+                continue;
+            }
+            out.push(Candidate::new(
+                hypothesis.text,
+                reading.to_string(),
+                hypothesis.cost,
+                CandidateSource::Lexicon,
+            ));
+        }
+        out.truncate(self.max_candidates().max(1));
+        out
+    }
+
+    /// 把候選套用動作寫進按鍵流；`None` 表示這一個候選不存在。
+    pub(super) fn apply_mixed_choice(&mut self, index: usize) -> Option<Snapshot> {
+        let choice = self.mixed_choices.get(index).cloned().flatten()?;
+        let target = self.mixed_target.clone()?;
+        if let Some(edit) = choice.syllable_edit {
+            self.edit = Some(edit);
+            self.mixed_target = None;
+            self.mixed_choices.clear();
+            let applied = self.select_window_candidate(index);
+            self.candidate_window = false;
+            self.candidate_expanded = false;
+            self.navigating = false;
+            self.keep_candidates = false;
+            self.edit = None;
+            if applied {
+                // 選字後游標往右一格；比一個 rune 長的替換放到第一個字元之後。
+                self.cursor = (edit.start + 1).min(self.syllables.len());
+            }
+            return Some(self.finish_choice());
+        }
+        if let Some(index) = target.syllable {
+            self.mixed_target = None;
+            self.mixed_choices.clear();
+            self.candidate_expanded = false;
+            if self.materialize_zh_choice(index, &choice) {
+                return Some(self.snapshot());
+            }
+            return None;
+        }
+        let typed = self.ascii.typed().to_string();
+        let (start, end) = target.typed;
+        if start > end || end > typed.len() || !typed.is_char_boundary(start) {
+            return None;
+        }
+        let mut next =
+            String::with_capacity(typed.len() + choice.insert.len() + choice.leftover.len());
+        next.push_str(&typed[..start]);
+        next.push_str(&choice.insert);
+        next.push_str(&choice.leftover);
+        next.push_str(&typed[end..]);
+        self.ascii.replay(&next, &self.lexicon);
+        self.literal_spans.clear();
+        if choice.force_literal {
+            let span = (start, start + choice.insert.len() + choice.leftover.len());
+            self.literal_spans.push(span);
+        }
+        self.mixed_target = None;
+        self.mixed_choices.clear();
+        self.candidate_window = false;
+        self.candidate_expanded = false;
+        self.navigating = false;
+        self.keep_candidates = false;
+        self.highlighted = 0;
+        self.rebuild();
+        let rune_start = target
+            .rune_start
+            .min(self.base_with_highlight().chars().count());
+        let cursor = match choice.cursor {
+            ChoiceCursor::Start => rune_start,
+            ChoiceCursor::AfterFirst => rune_start + 1,
+            ChoiceCursor::AfterInsert => rune_start + choice.insert.chars().count(),
+            ChoiceCursor::TokenEnd => self.base_with_highlight().chars().count(),
+        };
+        self.mixed_cursor = cursor.min(self.base_with_highlight().chars().count());
+        Some(self.snapshot())
+    }
+
+    /// ↓ 在純注音組字上開候選：只列游標右側那一個音節。
+    pub(super) fn open_zh_cursor_candidates(&mut self) -> bool {
+        if !self.zh_pending_keys.is_empty() || !self.zh.pending().is_empty() {
+            // 未完成的音節退化成原始字母，交給混打管線；下一次 ↓ 再開。
+            if !self.zh_pending_keys.is_empty() {
+                let ch = self.zh_pending_keys.chars().next().unwrap_or(' ');
+                self.leave_zh_lane_for_mixed(ch);
+            }
+            return false;
+        }
+        if self.syllables.is_empty() {
+            return false;
+        }
+        if self.cursor >= self.syllables.len() {
+            self.cursor = self.syllables.len() - 1;
+        }
+        let index = self.cursor.min(self.syllables.len().saturating_sub(1));
+        let syllable = self.syllables[index].clone();
+        let reading = syllable.as_str().to_string();
+        let raw = self
+            .zh
+            .keyboard()
+            .keys(&syllable)
+            .unwrap_or_else(|_| reading.clone());
+        let (raw_toneless, tone_key) = split_tone_key(&raw);
+        let rune_start: usize = self.syllables[..index]
+            .iter()
+            .map(|syllable| self.decode_syllable(syllable).chars().count())
+            .sum();
+        let target = MixedTarget {
+            typed: (0, 0),
+            raw: raw.clone(),
+            raw_toneless: raw_toneless.clone(),
+            tone_key,
+            rune_start,
+            rune_len: 1,
+            syllable: Some(index),
+            reading: Some(reading.clone()),
+            ja: false,
+        };
+        let (mut candidates, mut choices) = {
+            let mut out: Vec<(Candidate, MixedChoice)> = Vec::new();
+            for candidate in self.zh_syllable_candidates(&reading) {
+                out.push((
+                    candidate.clone(),
+                    MixedChoice {
+                        insert: candidate.surface.clone(),
+                        leftover: String::new(),
+                        force_literal: false,
+                        cursor: ChoiceCursor::AfterInsert,
+                        syllable_edit: Some(EditWindow {
+                            start: index,
+                            len: 1,
+                        }),
+                    },
+                ));
+            }
+            push_decomposition(&mut out, &reading, &raw, &raw_toneless, tone_key);
+            split_choices(out)
+        };
+        if candidates.is_empty() {
+            return false;
+        }
+        // 字典候選走片段選字，拆回字面的選項重播整段按鍵。
+        candidates.truncate(self.max_candidates().max(1));
+        choices.truncate(candidates.len());
+        self.candidates = candidates;
+        self.mixed_choices = choices;
+        self.mixed_target = Some(target);
+        self.edit = Some(EditWindow {
+            start: index,
+            len: 1,
+        });
+        self.highlighted = 0;
+        self.candidate_window = true;
+        self.candidate_expanded = false;
+        self.navigating = true;
+        self.keep_candidates = true;
+        true
+    }
+
+    /// 把純注音組字的一個音節換成字面並退出注音路徑。
+    fn materialize_zh_choice(&mut self, index: usize, choice: &MixedChoice) -> bool {
+        let keyboard = self.zh.keyboard();
+        let mut keys = String::new();
+        let mut span = (0usize, 0usize);
+        for (at, syllable) in self.syllables.iter().enumerate() {
+            if at == index {
+                span.0 = keys.len();
+                keys.push_str(&choice.insert);
+                keys.push_str(&choice.leftover);
+                span.1 = keys.len();
+                continue;
+            }
+            if let Ok(syllable_keys) = keyboard.keys(syllable) {
+                keys.push_str(&syllable_keys);
+            }
+        }
+        keys.push_str(&self.zh_pending_keys);
+        keys.push_str(&self.literal);
+        keys.push_str(&self.literal_tail);
+        let before: String = self
+            .syllables
+            .iter()
+            .take(index)
+            .map(|syllable| self.decode_syllable(syllable))
+            .collect();
+        let rune_start = before.chars().count();
+        self.zh.reset();
+        self.zh_lane = false;
+        self.zh_pending_keys.clear();
+        self.syllables.clear();
+        self.cursor = 0;
+        self.locks.clear();
+        self.composition.clear();
+        self.edit = None;
+        self.keep_candidates = false;
+        self.highlighted = 0;
+        self.candidate_window = false;
+        self.candidate_expanded = false;
+        self.navigating = false;
+        self.segment_manual = None;
+        self.last_hypotheses.clear();
+        self.pending.clear();
+        self.base.clear();
+        self.segments.clear();
+        self.literal.clear();
+        self.literal_anchor = 0;
+        self.literal_offset = 0;
+        self.literal_tail.clear();
+        self.pending_tone = None;
+        self.ascii.replay(&keys, &self.lexicon);
+        self.literal_spans.clear();
+        if choice.force_literal {
+            self.literal_spans.push(span);
+        }
+        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.rebuild();
+        let len = self.base_with_highlight().chars().count();
+        let cursor = match choice.cursor {
+            ChoiceCursor::Start => rune_start,
+            ChoiceCursor::AfterFirst => rune_start + 1,
+            ChoiceCursor::AfterInsert => rune_start + choice.insert.chars().count(),
+            ChoiceCursor::TokenEnd => self.base_with_highlight().chars().count(),
+        };
+        self.mixed_cursor = cursor.min(len);
         true
     }
 
@@ -1489,7 +2094,8 @@ impl Session {
 
         let Some(tail_start) = self.long_run_tail_start(text) else {
             let plans = crate::mixed::plan_input(text, lookup, &cfg, Some(split_lex));
-            return crate::mixed::visible_plans(plans, text);
+            let plans = crate::mixed::visible_plans(plans, text);
+            return self.apply_literal_spans(plans);
         };
 
         let mut plans = Vec::new();
@@ -1502,7 +2108,49 @@ impl Session {
         }
         let mut plans = crate::mixed::visible_plans(plans, text);
         merge_adjacent_en_plans(&mut plans);
+        self.apply_literal_spans(plans)
+    }
+
+    /// 把使用者固定成字面的按鍵範圍強制轉成英文字面片段。
+    ///
+    /// 選回原始按鍵（`ji3`）或無聲調按鍵（`ji`）後，管線不能再把它解成注音。
+    /// 範圍以 `AsciiInput::typed` 的位元組位移表示；與片段有重疊時整段固定，
+    /// 這樣後續按鍵才能接在同一個字面片段後面。
+    fn apply_literal_spans(&self, plans: Vec<crate::mixed::Plan>) -> Vec<crate::mixed::Plan> {
+        if self.literal_spans.is_empty() {
+            return plans;
+        }
+        let spans: Vec<(usize, usize)> = self
+            .literal_spans
+            .iter()
+            .copied()
+            .filter(|(start, end)| start < end)
+            .collect();
+        if spans.is_empty() {
+            return plans;
+        }
         plans
+            .into_iter()
+            .map(|plan| {
+                let hit = spans
+                    .iter()
+                    .any(|(start, end)| *start < plan.end && plan.start < *end);
+                if !hit {
+                    return plan;
+                }
+                crate::mixed::Plan {
+                    start: plan.start,
+                    end: plan.end,
+                    mode: Lang::En,
+                    script: Script::Latin,
+                    kana: String::new(),
+                    kana_ok: false,
+                    verbatim: true,
+                    zh: None,
+                    zh_done: Vec::new(),
+                }
+            })
+            .collect()
     }
 
     /// 長小寫 run 的凍結切點；沒有可凍結的前段時回傳 `None`。
@@ -1802,6 +2450,208 @@ pub(super) fn english_candidates(
     learned
 }
 
+/// 把（候選, 動作）清單拆成候選與平行動作；同字面只留第一項。
+fn split_choices(out: Vec<(Candidate, MixedChoice)>) -> (Vec<Candidate>, Vec<Option<MixedChoice>>) {
+    let mut candidates = Vec::with_capacity(out.len());
+    let mut choices = Vec::with_capacity(out.len());
+    let mut seen: Vec<String> = Vec::new();
+    for (candidate, choice) in out {
+        if seen.contains(&candidate.surface) {
+            continue;
+        }
+        seen.push(candidate.surface.clone());
+        candidates.push(candidate);
+        choices.push(Some(choice));
+    }
+    (candidates, choices)
+}
+
+/// 把注音讀音、原始按鍵、無聲調按鍵與日文解讀排進候選。
+fn push_decomposition(
+    out: &mut Vec<(Candidate, MixedChoice)>,
+    reading: &str,
+    raw: &str,
+    raw_toneless: &str,
+    tone_key: Option<char>,
+) {
+    let push = |out: &mut Vec<(Candidate, MixedChoice)>, surface: String, choice: MixedChoice| {
+        if surface.is_empty() {
+            return;
+        }
+        if out
+            .iter()
+            .any(|(candidate, _)| candidate.surface == surface)
+        {
+            return;
+        }
+        out.push((
+            Candidate::new(surface, reading.to_string(), 0, CandidateSource::Literal),
+            choice,
+        ));
+    };
+    push(
+        out,
+        reading.to_string(),
+        MixedChoice {
+            insert: reading.to_string(),
+            leftover: String::new(),
+            force_literal: true,
+            cursor: ChoiceCursor::AfterInsert,
+            syllable_edit: None,
+        },
+    );
+    if !raw.is_empty() {
+        push(
+            out,
+            raw.to_string(),
+            MixedChoice {
+                insert: raw.to_string(),
+                leftover: String::new(),
+                force_literal: true,
+                cursor: ChoiceCursor::Start,
+                syllable_edit: None,
+            },
+        );
+    }
+    if !raw_toneless.is_empty() && raw_toneless != raw {
+        push(
+            out,
+            raw_toneless.to_string(),
+            MixedChoice {
+                insert: raw_toneless.to_string(),
+                leftover: tone_key.map(|key| key.to_string()).unwrap_or_default(),
+                force_literal: true,
+                cursor: ChoiceCursor::AfterInsert,
+                syllable_edit: None,
+            },
+        );
+    }
+    // 同一串按鍵在日文解讀下成立的かな；聲調鍵原樣留在後面。
+    if !raw_toneless.is_empty() {
+        let config = crate::mixed::Config::default();
+        if let Some((kana, pending)) = crate::mixed::kana_for(raw_toneless, &config, None) {
+            if !kana.is_empty() && pending.is_empty() {
+                let surface = format!(
+                    "{}{}",
+                    kana,
+                    tone_key.map(|key| key.to_string()).unwrap_or_default()
+                );
+                push(
+                    out,
+                    surface.clone(),
+                    MixedChoice {
+                        insert: surface,
+                        leftover: String::new(),
+                        force_literal: false,
+                        cursor: ChoiceCursor::AfterFirst,
+                        syllable_edit: None,
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// 把注音按鍵還原成讀音（例如 `ji3` 的 `ㄐㄧˇ`？否，`ji` 是 ㄨㄛ）。
+///
+/// 只接受類別遞增的完整音節；不是注音按鍵時回傳 `None`。
+fn zh_reading_from_keys(raw: &str) -> Option<String> {
+    let keyboard = Keyboard::standard();
+    let mut reading = String::new();
+    let mut last = Class::None;
+    for ch in raw.chars() {
+        let symbol = keyboard.symbol(ch)?;
+        let class = class_of(symbol);
+        if class == Class::None || class <= last {
+            return None;
+        }
+        reading.push(symbol);
+        last = class;
+    }
+    if reading.is_empty() {
+        return None;
+    }
+    Some(reading)
+}
+
+/// 把原始按鍵拆成無聲調按鍵與聲調鍵。
+fn split_tone_key(raw: &str) -> (String, Option<char>) {
+    let Some(last) = raw.chars().last() else {
+        return (String::new(), None);
+    };
+    let is_tone = Keyboard::standard()
+        .symbol(last)
+        .is_some_and(|symbol| class_of(symbol) == Class::Tone);
+    if !is_tone {
+        return (raw.to_string(), None);
+    }
+    let toneless: String = raw.chars().take(raw.chars().count() - 1).collect();
+    (toneless, Some(last))
+}
+
+/// 一段注音按鍵裡每個音節的位元組範圍。
+///
+/// 類別回到開頭（或遇到聲調鍵、空白）時開始下一個音節。長度對不上時整段
+/// 當成一個音節，呼叫端仍可運作。
+fn zh_key_syllable_spans(raw: &str) -> Vec<(usize, usize)> {
+    let keyboard = Keyboard::standard();
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut last = Class::None;
+    let mut tone_seen = false;
+    for (index, ch) in raw.char_indices() {
+        let next = index + ch.len_utf8();
+        if ch.is_whitespace() {
+            if start < index {
+                out.push((start, index));
+            }
+            start = next;
+            last = Class::None;
+            tone_seen = false;
+            continue;
+        }
+        let Some(symbol) = keyboard.symbol(ch) else {
+            // 非注音鍵把前一段收掉，自己不算音節。
+            if start < index {
+                out.push((start, index));
+            }
+            start = next;
+            last = Class::None;
+            tone_seen = false;
+            continue;
+        };
+        let class = class_of(symbol);
+        if class == Class::Tone {
+            if start < next {
+                out.push((start, next));
+            }
+            start = next;
+            last = Class::None;
+            tone_seen = true;
+            continue;
+        }
+        if class <= last && start < index {
+            out.push((start, index));
+            start = index;
+        }
+        last = class;
+        tone_seen = false;
+    }
+    let _ = tone_seen;
+    if start < raw.len() {
+        out.push((start, raw.len()));
+    }
+    if out.is_empty() && !raw.is_empty() {
+        out.push((0, raw.len()));
+    }
+    out
+}
+
+/// 平假名、片假名與半形片假名。
+fn is_kana(ch: char) -> bool {
+    matches!(ch as u32, 0x3040..=0x30ff | 0xff66..=0xff9d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2003,7 +2853,7 @@ mod tests {
         assert_eq!(snap.cursor_rune, 0);
     }
 
-    /// 英文字面片段也是整段刪，不是逐字母退。
+    /// 英文字面片段也是逐 rune 退格。
     #[test]
     fn test_mixed_backspace_deletes_whole_english_segment() {
         let mut lex = InMemoryLexicon::new();
@@ -2015,7 +2865,7 @@ mod tests {
         assert_eq!(s.snapshot().preedit, "我hello");
 
         let snap = s.press(Key::new(KeyCode::Backspace, None, false));
-        assert_eq!(snap.preedit, "我", "英文片段整段刪掉");
+        assert_eq!(snap.preedit, "我hell", "退格只刪游標前一個 rune");
     }
 
     /// 長串小寫字母不能停在詞表窗口；每個按鍵都要反映在 preedit。
@@ -2124,9 +2974,9 @@ mod tests {
         });
         mixed_type(&mut s, "w96");
         let space = s.press(Key::new(KeyCode::Space, None, false));
-        assert!(s.candidate_window, "空白開候選窗");
-        assert!(!space.navigating, "空白只顯示候選");
-        assert_eq!(space.preedit, "台", "空白不插入字面空白");
+        assert!(!s.candidate_window, "空白不開候選窗");
+        assert!(!space.navigating, "空白不進入選取模式");
+        assert_eq!(space.preedit, "台 ", "空白只插入字面空白");
     }
 
     /// 混合模式選中文候選只換結尾的注音片段，前面已固定的內容保留。
@@ -2198,7 +3048,7 @@ mod tests {
         assert!(after.contains("ㄖㄣ"), "bp6 要接成下一個音節：{after}");
     }
 
-    /// 混合模式的方向鍵在片段邊界之間移動，英文片段也算一格。
+    /// 混合模式的方向鍵逐 rune 移動，跨過片段邊界也照樣一格一格走。
     #[test]
     fn test_mixed_arrows_move_between_segments() {
         let mut lex = InMemoryLexicon::new();
@@ -2211,18 +3061,29 @@ mod tests {
         assert_eq!(typed.preedit, "我hello");
         assert_eq!(typed.cursor_rune, 6);
 
-        let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
-        assert_eq!(left.cursor_rune, 1, "← 移到英文片段開頭");
-        assert_eq!(left.preedit, "我hello", "移動游標不改內容");
-        let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
-        assert_eq!(left.cursor_rune, 0, "← 再移到注音片段開頭");
-        let right = s.press(Key::new(KeyCode::ArrowRight, None, false));
-        assert_eq!(right.cursor_rune, 1, "→ 回到英文片段開頭");
-        let right = s.press(Key::new(KeyCode::ArrowRight, None, false));
-        assert_eq!(right.cursor_rune, 6, "→ 回到整段結尾");
+        for (want, label) in [
+            (5, "← 進到英文片段結尾"),
+            (4, "← 逐字母"),
+            (3, "← 逐字母"),
+            (2, "← 逐字母"),
+            (1, "← 移到英文片段開頭"),
+            (0, "← 移到注音字"),
+        ] {
+            let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+            assert_eq!(left.cursor_rune, want, "{label}");
+            assert_eq!(left.preedit, "我hello", "移動游標不改內容");
+        }
+        for (want, label) in [(1, "→ 回到英文片段開頭"), (2, "→ 逐字母")] {
+            let right = s.press(Key::new(KeyCode::ArrowRight, None, false));
+            assert_eq!(right.cursor_rune, want, "{label}");
+        }
+        for _ in 0..4 {
+            s.press(Key::new(KeyCode::ArrowRight, None, false));
+        }
+        assert_eq!(s.snapshot().cursor_rune, 6, "→ 回到整段結尾");
     }
 
-    /// 游標停在英文片段前時，Delete 刪掉游標後那一段。
+    /// 游標停在英文片段前時，Delete 只刪游標後那一個 rune。
     #[test]
     fn test_mixed_delete_forward_removes_segment_after_cursor() {
         let mut lex = InMemoryLexicon::new();
@@ -2232,11 +3093,11 @@ mod tests {
         let mut s = Session::new(config);
         mixed_type(&mut s, "ji3hello");
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
-        assert_eq!(s.snapshot().cursor_rune, 1);
+        assert_eq!(s.snapshot().cursor_rune, 5);
 
         let snap = s.press(Key::new(KeyCode::Delete, None, false));
-        assert_eq!(snap.preedit, "我", "Delete 刪掉游標後的英文片段");
-        assert_eq!(snap.cursor_rune, 1);
+        assert_eq!(snap.preedit, "我hell", "Delete 刪掉游標後的 o");
+        assert_eq!(snap.cursor_rune, 5);
     }
 
     /// 對照 `language_learning.go`：混打送出時把注音片段記成中文、
@@ -2672,40 +3533,61 @@ mod tests {
         assert_eq!(s.commit(), "台灣仁");
     }
 
-    /// 游標停在片段邊界時，候選取游標左側片段的最後一個注音音節。
+    /// 游標停在字元邊界時，候選取游標右側那一個字元。
     #[test]
-    fn mixed_down_uses_syllable_left_of_cursor() {
+    fn mixed_down_targets_rune_right_of_cursor() {
         let mut lex = InMemoryLexicon::new();
         lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
-        lex.push(LexEntry::new("婐", "ㄨㄛˇ", 1, 0));
+        lex.push(LexEntry::new("台", "ㄊㄞˊ", 0, 0));
+        lex.push(LexEntry::new("颱", "ㄊㄞˊ", 1, 0));
         let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
         let mut s = Session::new(config);
-        mixed_type(&mut s, "ji3hello ");
-        assert_eq!(s.snapshot().preedit, "我hello ");
+        mixed_type(&mut s, "ji3w96");
+        assert_eq!(s.snapshot().preedit, "我台");
 
-        // ← 停在注音與英文片段的邊界（尾端空白自成一段）。
-        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        // ← 停在「台」前面，候選要針對右側的台。
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         assert_eq!(s.snapshot().cursor_rune, 1);
         s.press(Key::new(KeyCode::Down, None, false));
         let snap = s.snapshot();
-        assert!(!snap.candidates.is_empty(), "左側注音片段要有候選");
+        assert!(!snap.candidates.is_empty(), "右側注音字要有候選");
         for candidate in &snap.candidates {
-            assert_eq!(candidate.reading, "ㄨㄛˇ", "只取左側片段的那一個音節");
+            assert_eq!(candidate.reading, "ㄊㄞˊ", "只取右側那一個字元的讀音");
         }
 
         let index = s
             .candidates()
             .iter()
-            .position(|candidate| candidate.surface == "婐")
-            .expect("要有婐候選");
+            .position(|candidate| candidate.surface == "颱")
+            .expect("要有颱候選");
         assert!(index < PAGE_SIZE, "測試候選要在第一頁");
+        eprintln!(
+            "DBG before digit: index={} choices={:?} target={:?} cursor={} edit={:?}",
+            index,
+            s.mixed_choices
+                .iter()
+                .map(|c| c.as_ref().map(|c| (c.insert.clone(), c.syllable_edit)))
+                .collect::<Vec<_>>(),
+            s.mixed_target,
+            s.cursor,
+            s.edit
+        );
         let digit = char::from(b'1' + index as u8);
         s.press(Key::char(digit, false));
         let snap = s.snapshot();
-        assert_eq!(snap.preedit, "婐hello ", "只換游標所在的字，後面英文保留");
-        assert_eq!(snap.cursor_rune, 7, "選字後游標回到結尾");
+        eprintln!(
+            "DBG after digit: preedit={:?} cursor_rune={} mixed_cursor={} zh_lane={} cursor={} syl={:?} mixed_target={:?}",
+            snap.preedit,
+            snap.cursor_rune,
+            s.mixed_cursor,
+            s.zh_lane,
+            s.cursor,
+            s.syllables,
+            s.mixed_target
+        );
+        assert_eq!(snap.preedit, "我颱", "只換游標右側的字");
+        assert_eq!(snap.cursor_rune, 2, "選字後游標往右一格");
     }
 
     /// 統一管線的一致性：把注音讀音拆回大千按鍵流，逐鍵走 session 的增量
@@ -2756,9 +3638,7 @@ mod tests {
         let mut inputs = Vec::new();
         for left in &keys {
             for right in &keys {
-                for sep in ["", " "] {
-                    inputs.push(format!("{left}{sep}{right}"));
-                }
+                inputs.push(format!("{left}{right}"));
             }
         }
         // 大寫、全角與尾端標點。
@@ -2797,5 +3677,182 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 200, "property test 只跑了 {checked} 筆");
+    }
+
+    fn cursor_lexicon() -> InMemoryLexicon {
+        let mut lex = InMemoryLexicon::new();
+        for (surface, reading, cost) in [
+            ("我", "ㄨㄛˇ", 0),
+            ("窩", "ㄨㄛˇ", 8),
+            ("台", "ㄊㄞˊ", 0),
+            ("灣", "ㄨㄢˊ", 0),
+            ("人", "ㄖㄣˊ", 0),
+        ] {
+            lex.push(LexEntry::new(surface, reading, cost, 0));
+        }
+        lex
+    }
+
+    fn cursor_session() -> Session {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(cursor_lexicon()));
+        Session::new(config)
+    }
+
+    #[test]
+    fn test_cursor_moves_per_rune_for_zhuyin() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "w96j06bp6");
+        assert_eq!(s.snapshot().preedit, "台灣人");
+        assert_eq!(s.cursor(), 3);
+        for want in [2, 1, 0] {
+            let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+            assert_eq!(left.cursor_rune, want);
+            assert_eq!(s.cursor(), want);
+        }
+        for want in [1, 2, 3] {
+            let right = s.press(Key::new(KeyCode::ArrowRight, None, false));
+            assert_eq!(right.cursor_rune, want);
+        }
+    }
+
+    #[test]
+    fn test_cursor_moves_per_kana_and_letter() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "watashiwa");
+        assert_eq!(s.snapshot().preedit, "わたしわ");
+        assert_eq!(s.snapshot().cursor_rune, 4);
+        for want in [3, 2, 1, 0] {
+            let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+            assert_eq!(left.cursor_rune, want);
+        }
+        let mut s = cursor_session();
+        mixed_type(&mut s, "hello");
+        assert_eq!(s.snapshot().preedit, "hello");
+        for want in [4, 3, 2, 1, 0] {
+            let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+            assert_eq!(left.cursor_rune, want);
+        }
+    }
+
+    #[test]
+    fn test_down_lists_decomposition_for_zh_syllable() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3");
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        let surfaces: Vec<&str> = snap
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        for want in ["我", "ㄨㄛˇ", "ji3"] {
+            assert!(surfaces.contains(&want), "{want} 不在 {surfaces:?}");
+        }
+        assert_eq!(snap.highlighted, 0);
+        assert_eq!(snap.candidates[0].surface, "我", "詞典候選仍是預設");
+    }
+
+    #[test]
+    fn test_select_original_keys_then_japanese_reading() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3");
+        s.press(Key::new(KeyCode::Down, None, false));
+        let index = s
+            .candidates()
+            .iter()
+            .position(|candidate| candidate.surface == "ji3")
+            .expect("ji3 候選");
+        let snap = s.choose_candidate(index).expect("選回原始按鍵");
+        assert_eq!(snap.preedit, "ji3");
+        assert_eq!(snap.cursor_rune, 0, "選原始按鍵留在原位");
+
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        let surfaces: Vec<&str> = snap
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        assert!(surfaces.contains(&"じ3"), "日文解讀不在 {surfaces:?}");
+        let index = snap
+            .candidates
+            .iter()
+            .position(|candidate| candidate.surface == "じ3")
+            .expect("じ3 候選");
+        let snap = s.choose_candidate(index).expect("選日文解讀");
+        assert_eq!(snap.preedit, "じ3");
+        assert_eq!(snap.cursor_rune, 1);
+    }
+
+    #[test]
+    fn test_down_at_end_targets_last_character() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3hello");
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(snap.preedit, "我hello");
+        assert_eq!(snap.cursor_rune, 5, "↓ 先把游標左移到 o");
+        assert_eq!(snap.candidates[0].surface, "o", "候選是最後一個字元");
+    }
+
+    #[test]
+    fn test_down_opens_japanese_kanji_and_kana_candidates() {
+        use std::sync::Arc;
+        let entry = crate::ja::lexicon::JaEntry {
+            surface: "私".into(),
+            reading: "わたし".into(),
+            pos: "名詞,普通名詞,一般,*".into(),
+            conj_type: "*".into(),
+            conj_form: "*".into(),
+            cost: 0,
+            split: crate::ja::lexicon::Split::C,
+        };
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.ja = Some(Arc::new(crate::ja::decode::JaDecoder::new(Arc::new(
+            TestJaSource(vec![entry]),
+        ))));
+        let mut s = Session::new(config);
+        for ch in "watashi".chars() {
+            s.press(Key::char(ch, false));
+        }
+        s.ja_live_idle();
+        assert_eq!(s.snapshot().preedit, "私");
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(snap.highlighted, 0);
+        assert_eq!(snap.candidates[0].surface, "私", "漢字是預設");
+        assert!(snap
+            .candidates
+            .iter()
+            .any(|candidate| candidate.surface == "わたし"));
+        let index = snap
+            .candidates
+            .iter()
+            .position(|candidate| candidate.surface == "わたし")
+            .expect("假名候選");
+        let snap = s.choose_candidate(index).expect("選假名");
+        assert_eq!(snap.preedit, "わたし");
+        assert_eq!(snap.cursor_rune, 1, "游標在第一個假名之後");
+    }
+
+    #[test]
+    fn test_space_only_inserts_space_in_mixed() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3");
+        let snap = s.press(Key::new(KeyCode::Space, None, false));
+        assert!(!snap.navigating, "空白不開候選");
+        assert_eq!(snap.preedit, "我 ");
+    }
+
+    #[test]
+    fn test_candidate_arrows_do_not_move_cursor() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3");
+        let opened = s.press(Key::new(KeyCode::Down, None, false));
+        let cursor = opened.cursor_rune;
+        let right = s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(right.cursor_rune, cursor, "第一次 → 只展開");
+        let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(left.cursor_rune, cursor, "← 仍在候選介面");
+        let closed = s.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(closed.cursor_rune, cursor);
+        assert!(!closed.navigating);
     }
 }

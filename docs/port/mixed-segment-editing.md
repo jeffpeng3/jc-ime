@@ -56,42 +56,66 @@ Mixed 的顯示、送出與片段都以同一條管線為準：`crate::mixed::pl
 
 | 按鍵 | 行為 | 理由 |
 |---|---|---|
-| Backspace | 刪游標前**一整個片段** | 使用者看到的是「台」或 `hello`，退回 `ㄊㄞ` 或 `hell` 會出現畫面上沒有的內容。Mixed 的顯示由按鍵流重算，退一個字元會讓同一個詞用比較短的按鍵重新解碼，看起來就是「刪不掉」。 |
-| Delete | 刪游標後**一整個片段** | 與 Backspace 對稱；游標在結尾時不動作。 |
-| 刪除後 | 游標停在被刪片段的位置；刪到尾巴時回到結尾 | 游標以片段邊界表示，刪掉最後一段後邊界就是新的結尾。 |
+| Backspace | 刪游標左邊**一個 rune** | 候選與游標都以字元為單位；英文 `hello` 可以停在 `hell`，注音字與かな也一樣。 |
+| Delete | 刪游標右邊**一個 rune** | 與 Backspace 對稱；游標在結尾時不動作。 |
+| 刪除後 | 游標留在原位 | 注音片段會用剩下的按鍵重新解碼；片段鎖定與聲調資訊保留在 `syllables`。 |
+| 候選窗開著時刪除 | 先關窗，再照上面的規則刪 | 不讓下一個數字被選字路徑吃掉。 |
 
-實作上先由 `mixed_typed_spans()` 找到該片段在 `typed` 的位元組範圍，整段移除後
-用 `AsciiInput::replay()` 重播剩下的按鍵，讓 `pending`／`pieces` 與按鍵流一致。
+實作上先由 `mixed_target_at_cursor()` 找到游標右側那一個字元在 `typed` 的位元組
+範圍，只移除那個範圍再 `AsciiInput::replay()`；字面片段與注音、かな走同一條路。
 重播規則與 `Session::press_char()` 相同：空白走 `space()`、聲調鍵先試 `tone()`、
 其餘照 `press()`；非 ASCII 的固定字面直接放回片段。
 
 ## 游標規則
 
-Mixed 沒有音節格，游標改用**片段邊界索引** `mixed_cursor`：
+Mixed 的游標是**顯示字串上的 rune 位移** `mixed_cursor`：
 
-- `0..=segments.len()` 是合法位置；`Session::MIXED_CURSOR_END`（`usize::MAX`）
+- 游標停在 `preedit` 的 rune 邊界，跨越片段邊界時直接進到相鄰片段的第一或
+  最後一個 rune；英文 `hello` 可以停在 `hel|lo`。
+- 打字、空白、完成音節後一律回到結尾；`Session::MIXED_CURSOR_END`（`usize::MAX`）
   代表整段結尾。
-- 打字、空白、完成音節後一律回到結尾；←／→ 一次移動一個片段，英文片段也算
-  一格。明確候選選取模式（↓／↑ 進入）中的左右鍵仍然換候選。
-- `Snapshot.cursor_rune`／`cursor_utf16` 由游標邊界對應到 `preedit` 的 rune／
-  UTF-16 位移；游標在整段結尾時就是字串長度。
-- 移動游標只改插入／刪除位置，不改片段內容與候選字面。
+- ←／→ 一次移動一個 rune。候選窗（↓／↑ 開啟）開著時，四方向鍵屬於候選介面，
+  游標不動；`Esc` 關窗後才恢復移動。
+- Home／End 在候選窗沒開時直接移到組字頭尾；選取模式中則是候選清單的第一／
+  最後一項。
+- `Snapshot.cursor_rune`／`cursor_utf16` 由 `mixed_cursor` 換算成 rune／UTF-16
+  位移；游標在整段結尾時就是字串長度。
+- 注音還沒打完時移動游標：待定音節退化成原始字母，交給混打管線重算，不擋住
+  游標。
 
 ## 候選
 
-注音音節完成、`ascii.pending()` 為空時，`rebuild_mixed_zh_candidates()` 取尾巴
-連續的注音 piece，用與注音模式相同的 `Lattice`＋`Decoder::nbest()` 產生候選。
+候選永遠作用在**游標右側的那一個字元**（caret 模型）：
 
-- `↓` 第一次只開窗並進入選取模式（`candidate_window = true`、
-  `navigating = true`），與注音模式一致。
-- 空白在 Mixed 遇到已完成的注音片段時，先把殘留注音補完，再把空白留在按鍵流
-  並開候選窗；第二次空白或 Enter 送出。
-- 數字選字只在 `navigating == true` 時生效。空白開窗後直接打數字仍照一般按鍵
-  處理，避免把下一個注音／英數吃掉；Tab 在 Mixed 會明確進入選取模式。
-- 選中文候選時只替換結尾的注音片段：`select_mixed_zh_candidate()` 把該段在
-  `typed` 的範圍換成候選字面再重播，前面已固定的英文、日文片段不受影響。
-- 開候選窗用的尾端空白不算內容，送出／選字前由
-  `trim_mixed_candidate_space()` 拿掉。
+- 只有 `↓`（或 `↑`／PageDown／PageUp）會開候選窗並進入選取模式。空白鍵只插入
+  一個字面空格，不開窗、不選第一個；舊的 `space_selects` 讀到也忽略。
+- 結尾是特例：游標在整段結尾按 `↓` 時先往左移一格，再開最後那個字元的候選。
+  因此 `我わたしhello|` 的候選是 `o`，不是整個 `hello`。
+- 版面直的、一頁 10 個。`Enter` 套用目前高亮並關窗；第一次按 `→` 展開成 4 欄，
+  之後 `↑`／`↓`／`←`／`→` 都在候選介面裡移動。`Esc` 關窗，游標恢復移動。
+- 選完後游標往右一格；比一個 rune 長的替換（例如「私」→「わたし」）游標放在
+  插入內容的第一個字元之後。
+- 數字選字只在 `navigating == true` 時生效；超出候選數時吃掉按鍵、不改狀態。
+- 滑鼠點選候選與 `Enter` 相同：套用並關窗。
+- 候選不往左組詞；`我hello` 在 `o` 上不會列出整串英文的拼字建議。整段都還是
+  英文待定詞時，候選是整串的拼字建議與補全。
+
+### 可拆回原始輸入
+
+以 `ji3` 打得「我」為例，游標停在「我」前面按 `↓`，候選清單會有：
+
+| 候選 | 來源 | 選了之後 |
+|---|---|---|
+| 我 | 詞典 | 保持「我」，游標往右一格 |
+| ㄨㄛˇ | 注音本身 | 換成字面注音，游標在注音後面 |
+| `ji3` | 使用者原始按鍵 | 換成字面 `ji3`，游標留在原位 |
+| `ji` | 去掉聲調的按鍵 | 拆成 `ji` ＋ 剩下的 `3`，游標停在 `ji` 之後 |
+| `じ3` | 同一串按鍵的日文解讀 | 換成 `じ3`，游標在 `じ` 之後 |
+
+實作在 `mixed_candidates_for()`：詞典候選走片段選字，注音、原始按鍵、無聲調
+按鍵與其他語言解讀都寫成 `MixedChoice`，套用時只重播那一個字元的按鍵範圍。
+日文片段則接 kana→漢字 的轉換：漢字是預設，かな與原始羅馬字都是候選。
+
 
 ## 日文推斷的結束條件
 
@@ -147,27 +171,29 @@ Mixed 沒有音節格，游標改用**片段邊界索引** `mixed_cursor`：
 | 測試 | 內容 |
 |---|---|
 | `test_mixed_backspace_deletes_converted_syllable` | `w96` → `台`，Backspace 後 preedit 清空、游標回 0。 |
-| `test_mixed_backspace_deletes_whole_english_segment` | `ji3hello` → Backspace 只留 `我`，不是 `我hell`。 |
+| `test_mixed_backspace_deletes_whole_english_segment` | `ji3hello` → Backspace 只留 `我hell`，逐 rune 退格。 |
 | `test_mixed_ja_run_falls_back_on_non_romaji_key` | `watashiwaw96j0` 不停在 `w`，有 `ㄊㄞ`，再打 `bp6` 仍能繼續。 |
-| `test_mixed_arrows_move_between_segments` | `我hello` 的 ←／→ 在 0、1、6 之間移動，英文片段也停得住。 |
-| `test_mixed_delete_forward_removes_segment_after_cursor` | 游標在英文片段前按 Delete 只刪該段。 |
-| `test_mixed_candidates_open_on_down_and_space` | `w96` 後 `candidates` 非空；↓ 開窗並 `navigating`，空白開窗不插空白。 |
+| `test_mixed_arrows_move_between_segments` | `我hello` 的 ← 從 6 逐格走到 0，→ 再逐格回結尾。 |
+| `test_mixed_delete_forward_removes_segment_after_cursor` | 游標在 `hell|o` 按 Delete 只刪 `o`。 |
+| `test_mixed_candidates_open_on_down_and_space` | `w96` 後 `candidates` 非空；↓ 開窗並 `navigating`，空白只插空格。 |
 | `test_mixed_selects_zh_candidate_in_place` | ↓ 後用數字選「颱」，只換結尾注音片段。 |
 | `test_mixed_unfinished_zhuyin_stays_bopomofo` | `saej`、`saej/` 停在原始注音；空白後才是「さ供」。 |
 | `test_mixed_unfinished_zhuyin_with_ja_decoder` | 載入日文解碼器時 `j` 停在 `さえj`，`/` 後仍是 `さㄍㄨㄥ`。 |
 | `test_mixed_unfinished_zhuyin_in_middle_stays_bopomofo` | `w96j0` 是 `台ㄨㄢ`、`j0w96` 是 `ㄨㄢ台`，中間與尾巴都不提早轉字。 |
+| `test_down_lists_decomposition_for_zh_syllable` | `ji3` 的候選同時有「我」、`ㄨㄛˇ`、`ji3`。 |
+| `test_select_original_keys_then_japanese_reading` | 選 `ji3` 留在原位；再把游標移到 `ji` 上，候選有 `じ3`。 |
+| `test_down_at_end_targets_last_character` | `我hello` 結尾按 ↓ 先左移，候選是 `o`。 |
+| `test_down_opens_japanese_kanji_and_kana_candidates` | `watashi` 預設「私」，候選有「わたし」。 |
 
-既有測試沒有放寬；`test_incremental_matches_router` 仍要求工作階段與
-`Router::convert` 對同一串按鍵逐段一致。
-
-這 7 條測試先在 `4f10d27` 上跑過，全部失敗（Backspace 留下「台」、英文只退到
-`我hell`、日文停在 `Mode::Ja`、游標停在 6、沒有候選），修完才轉綠。
+既有測試沒有放寬。`test_incremental_matches_router` 仍要求工作階段與
+`Router::convert` 對同一串按鍵逐段一致；「空白開候選／選第一個」與以片段為
+單位的箭頭、刪除斷言，已依新規格改成逐字元期望。
 
 ## 驗證
 
 本輪在 Linux（GB10）執行：
 
-- `mise exec -- cargo test -p jc-core`：lib 743 passed，integration 1＋97 passed。
+- `mise exec -- cargo test -p jc-core`：全部通過。
 - `mise exec -- cargo test --workspace`：全部通過。
 - `mise exec -- cargo clippy --workspace --all-targets -- -D warnings`：通過。
 - `mise exec -- cargo fmt --all -- --check`：通過。
