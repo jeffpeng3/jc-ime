@@ -958,7 +958,7 @@ jobs:
           Write-Host "$bigram 存在"
 
       # jc-tsf-smoke 現在是安裝診斷工具：--json 輸出 jc-ime-doctor/1，
-      # 內含 12 項檢查。除了結束碼，還要求關鍵項目的 status 不是 fail。
+      # 內含 13 項檢查。除了結束碼，還要求關鍵項目的 status 不是 fail。
       # 安裝器最後一步會用原使用者身分啟動引擎（[Run] 的 jc-engine.exe）。
       # 引擎要載入注音詞典與日文資料，實機約 4～6 秒；這裡等到 pipe 出現再跑
       # doctor，才驗得到「裝完就能打字」而不是「登入後才開始能用」。
@@ -1094,8 +1094,8 @@ jobs:
 
       # 前 12 項都是註冊表、檔案、COM 與 pipe 層；候選窗有沒有真的畫出來只有
       # 檢查 13 驗得到。GitHub 的 Windows runner 是 Session 0，探針會回
-      # desktop=headless；那時只留 warning，不讓 job 紅。真的看到候選窗卻
-      # 位置不對或 Esc 關不掉，才讓這步失敗。
+      # desktop=headless；那時只留 warning，不讓 job 紅。真的看到候選窗卻位置
+      # 不對、Enter 沒送出「我」或 Esc 關不掉，才讓這步失敗。
       - name: UI 探針（候選窗）
         shell: pwsh
         env:
@@ -1121,22 +1121,30 @@ jobs:
           if (-not $check) { throw "UI 探針的 JSON 缺少 ui.probe（exit $code）" }
 
           $cells = $check.ui_probe
-          Write-Host ("ui.probe status={0} desktop={1} composition={2} candidate_visible={3} candidate_rect={4} latency_ms={5} escape_hides={6}" -f $check.status, $cells.desktop, $cells.composition, $cells.candidate_visible, $cells.candidate_rect, $cells.latency_ms, $cells.escape_hides)
+          Write-Host ("ui.probe status={0} desktop={1} composition={2} candidate_visible={3} candidate_rect={4} latency_ms={5} escape_hides={6} committed_text={7}" -f $check.status, $cells.desktop, $cells.composition, $cells.candidate_visible, $cells.candidate_rect, $cells.latency_ms, $cells.escape_hides, $cells.committed_text)
 
-          if ($check.status -eq 'fail' -or $code -eq 1) {
-            throw "UI 探針失敗（exit $code）：$($check.detail)"
+          # 報告的頂層 status 才是「這份 JSON 有沒有真的驗過」：ok=true 也涵蓋
+          # skip，只看 ok 會把 inconclusive 當成通過。
+          switch ($report.status) {
+            'fail' { throw "UI 探針失敗（exit $code）：$($check.detail)" }
+            'skip' {
+              if ($cells.desktop -eq 'headless') {
+                Write-Host '::warning::CI runner 沒有互動桌面，跳過 UI 探針'
+              } else {
+                Write-Host "::warning::jc 注音未安裝或未為目前使用者啟用，跳過 UI 探針：$($check.detail)"
+              }
+              exit 0
+            }
+            'pass' { }
+            default { throw "UI 探針的報告 status 不是 pass／fail／skip：$($report.status)" }
           }
           if ($code -ne 0) {
-            throw "UI 探針的結束碼不是 0／1：$code；$($check.detail)"
-          }
-          if ($check.status -eq 'skip' -or $cells.desktop -eq 'headless') {
-            Write-Host '::warning::CI runner 沒有互動桌面，跳過 UI 探針'
-            exit 0
+            throw "UI 探針的結束碼不是 0：$code；$($check.detail)"
           }
           if ($check.status -ne 'pass') {
-            throw "UI 探針的 status 不是 pass／skip：$($check.status)"
+            throw "UI 探針的 status 不是 pass：$($check.status)"
           }
-          Write-Host 'UI 探針通過：候選窗出現、位置合理、Esc 後消失'
+          Write-Host 'UI 探針通過：j i 3 ↓ 讓候選窗出現、位置合理、Enter 送出「我」、Esc 後消失'
 
       # 失敗時手動再跑一次 user-install，並把使用者語言清單整個倒出來。
       # InstallLayoutOrTip 的字串格式不對時會回 TRUE 但什麼都不寫，只有實際
@@ -1321,7 +1329,7 @@ jobs:
           $global:LASTEXITCODE = 0
 
       # 失敗時把 log 留下來：install.log 有自訂動作的完整輸出，
-      # smoke.json 有 12 項 doctor 檢查的逐項結果。
+      # smoke.json 有 13 項 doctor 檢查的逐項結果。
       - name: 上傳失敗記錄
         if: failure()
         uses: actions/upload-artifact@v6

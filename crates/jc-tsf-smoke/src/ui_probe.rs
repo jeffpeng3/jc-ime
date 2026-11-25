@@ -2,19 +2,28 @@
 //!
 //! 前 12 項只看註冊表、檔案、COM 與 pipe，沒有任何一項證明候選窗真的畫在
 //! 螢幕上。這裡建一個 host 視窗加 `EDIT` 子視窗，把本 TIP 設成本行程的作用中
-//! 輸入法，用 `SendInput` 打 `j`、`i`、`3`，再用 `FindWindowExW` 輪詢候選窗：
+//! 輸入法，用 `SendInput` 打一次真正的注音：
 //!
-//! 1. 候選窗存在且 `IsWindowVisible` 為真。
-//! 2. `GetWindowRect` 非空、在虛擬螢幕範圍內。
-//! 3. 位置合理：與 `EDIT` 的插入點比較，`|dx| <= 300`、`dy` 在 `-80..=160`。
-//! 4. 送 `Esc` 後 1000ms 內候選窗不再可見（或已銷毀）。
+//! 1. `j`、`i`、`3` 組字，再按 `↓` 進入挑選；候選窗只在使用者開始挑選時才開
+//!    （`service.rs` 的 `composing && navigating`），只打字不會出現。
+//! 2. 每 20ms 用 `FindWindowExW` 找本行程的 `jcCandidateUiWindow`，最多等
+//!    2000ms，記錄第一次看到可見視窗的延遲。
+//! 3. 量 rect、插入點、虛擬螢幕與插入點所在 monitor 的 work area。
+//! 4. 按 `Enter` 提交，讀 EDIT 的文字；必須包含 `ji3` 的第一個候選「我」。
+//! 5. 重新打 `j`、`i`、`3`、`↓` 再開一次候選窗，按 `Esc`，最多等 1000ms 確認
+//!    消失。Esc 不能在 Enter 之後直接驗，那時視窗已經因為提交而關掉了。
+//! 6. 清理：`DestroyWindow`、`UnregisterClassW`，還原 profile 與語言。
+//!
+//! 判定規則（composition 非空、rect 在虛擬螢幕內、與 work area 相交、與插入點
+//! 的距離、Enter 的文字、Esc 後消失）放在 [`crate::ui_probe_rules`]；那裡不碰
+//! Win32，Linux 也能跑單元測試。
 //!
 //! 沒有互動桌面（Session 0、服務工作階段、鎖定中的桌面）時建視窗、取得前景
 //! 視窗或送按鍵會失敗；這種情況回 [`Verdict::Headless`]，由呼叫端記成 `[SKIP]`，
 //! **不算失敗**。本產品還沒安裝或沒為目前使用者啟用時回
 //! [`Verdict::Unavailable`]，同樣是 `[SKIP]`（檢查 10 已經會把這件事判成
-//! `[FAIL]`，不要重複紅）。其餘失敗一律 [`Verdict::Fail`]，detail 會帶實際
-//! rect、延遲與 `%LOCALAPPDATA%\jc-ime\tsf.log` 的建議。
+//! `[FAIL]`，不要重複紅）。其餘失敗一律 [`Verdict::Fail`]，detail 會帶 cell、
+//! 所有不成立的地方與 `%LOCALAPPDATA%\jc-ime\tsf.log` 的建議。
 //!
 //! 所有 TSF 狀態都只改本行程：`ActivateProfile` 帶 `TF_IPPMF_FORPROCESS`，
 //! 結束時把原本的 profile 與語言還原。
@@ -25,16 +34,22 @@ use windows::core::{w, Interface, PCWSTR};
 use windows::Win32::Foundation::{
     GetLastError, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
-use windows::Win32::Graphics::Gdi::ClientToScreen;
+use windows::Win32::Graphics::Gdi::{
+    ClientToScreen, GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::StationsAndDesktops::{
     GetProcessWindowStation, GetUserObjectInformationW, UOI_NAME,
 };
 use windows::Win32::System::Threading::GetCurrentProcessId;
+use windows::Win32::UI::HiDpi::{
+    GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MapVirtualKeyW, SendInput, SetFocus, HKL, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY, VK_3, VK_ESCAPE, VK_I, VK_J,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY, VK_3, VK_DOWN, VK_ESCAPE,
+    VK_I, VK_J, VK_RETURN,
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfInputProcessorProfileMgr,
@@ -53,6 +68,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::product;
 use crate::report::UiProbeCells;
+use crate::ui_probe_rules::{self, Observation, Rect};
 
 /// 探針 host 視窗的類別名稱；只在這個行程內註冊。
 const HOST_CLASS: PCWSTR = w!("jcUiProbeHost");
@@ -65,17 +81,11 @@ const CANDIDATE_WAIT: Duration = Duration::from_millis(2000);
 const ESCAPE_WAIT: Duration = Duration::from_millis(1000);
 /// 輪詢間隔。
 const POLL: Duration = Duration::from_millis(20);
-/// 候選窗左緣與插入點的容許水平差。
-const MAX_DX: i32 = 300;
-/// 候選窗上緣與插入點的容許垂直差（負值代表在插入點上方）。
-const MIN_DY: i32 = -80;
-/// 候選窗上緣與插入點的容許垂直差上限。
-const MAX_DY: i32 = 160;
 
 /// 檢查 13 的判定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// 候選窗出現、位置合理、Esc 後消失。
+    /// 候選窗出現、位置合理、Enter 送出「我」、Esc 後消失。
     Pass,
     /// 互動桌面上任一斷言不成立。
     Fail,
@@ -98,6 +108,8 @@ pub struct Outcome {
 
 /// 執行 UI 探針。呼叫端必須已經 `CoInitializeEx(APARTMENTTHREADED)`。
 pub fn run() -> Outcome {
+    enable_per_monitor_dpi();
+
     // Session 0 的服務工作階段也有桌面與視窗，但不在互動式 window station；
     // 只看 SetForegroundWindow 會誤判，先確認是 WinSta0。
     if !on_interactive_station() {
@@ -139,77 +151,79 @@ pub fn run() -> Outcome {
     host.focus();
     pump_for(Duration::from_millis(200));
 
-    let mut cells = UiProbeCells::interactive();
-    let mut problems = Vec::new();
+    let mut observation = Observation::empty();
+    let mut dpi = ui_probe_rules::BASE_DPI;
 
-    let mut last_key_at = Instant::now();
-    for (index, vk) in [VK_J, VK_I, VK_3].into_iter().enumerate() {
-        if !send_key(vk) {
-            // 輸入被系統擋掉（鎖定中的桌面、UIPI）不是產品的錯：回 inconclusive。
-            return headless(format!("SendInput(VK={:#04X}) 被系統拒絕", vk.0));
-        }
-        if index == 2 {
-            last_key_at = Instant::now();
-        }
-        pump_for(Duration::from_millis(60));
-    }
+    // 第一輪：j i 3 ↓，讓候選窗真的開起來。
+    match open_candidates() {
+        Ok((candidate, latency_ms)) => {
+            observation.latency_ms = latency_ms;
+            observation.composition = edit_text(host.edit);
+            observation.candidate_visible = candidate.is_some();
+            observation.screen = virtual_screen();
 
-    let (candidate, latency_ms) = wait_visible(last_key_at, CANDIDATE_WAIT);
-    cells.composition = edit_text(host.edit);
-    cells.candidate_visible = candidate.is_some();
-    cells.latency_ms = latency_ms;
+            if let Some(hwnd) = candidate {
+                observation.candidate_rect = window_rect(hwnd);
+                observation.caret = caret_screen(host.edit);
+                observation.work_area = observation.caret.and_then(monitor_work_area);
+                dpi = dpi_for(hwnd);
 
-    match candidate {
-        Some(hwnd) => {
-            let mut rect = RECT::default();
-            // SAFETY: hwnd 是剛找到的候選窗；rect 是本機可寫輸出。
-            if unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok() {
-                cells.candidate_rect =
-                    format!("{},{},{},{}", rect.left, rect.top, rect.right, rect.bottom);
-                check_rect(&mut problems, &rect, host.edit, &cells.candidate_rect);
-            } else {
-                problems.push("GetWindowRect(候選窗) 失敗".to_string());
+                // 端到端證明：候選窗開著時 Enter 要真的把「我」送進 EDIT。
+                if !send_key(VK_RETURN) {
+                    return headless("SendInput(VK_RETURN) 被系統拒絕");
+                }
+                pump_for(Duration::from_millis(200));
+                observation.committed_text = edit_text(host.edit);
+
+                // 第二輪：重新組字開窗再驗 Esc。Enter 之後視窗已經關了，
+                // 直接驗「消失」會得到假的 true。
+                match open_candidates() {
+                    Ok((Some(_), _)) => {
+                        observation.escape_verified = true;
+                        if !send_key(VK_ESCAPE) {
+                            return headless("SendInput(VK_ESCAPE) 被系統拒絕");
+                        }
+                        observation.escape_hides = wait_hidden(ESCAPE_WAIT);
+                    }
+                    Ok((None, _)) => {}
+                    Err(vk) => return headless(format!("SendInput(VK={:#04X}) 被系統拒絕", vk.0)),
+                }
             }
         }
-        None => problems.push(format!(
-            "{}ms 內沒有看到本行程可見的 jcCandidateUiWindow",
-            latency_ms
-        )),
+        Err(vk) => return headless(format!("SendInput(VK={:#04X}) 被系統拒絕", vk.0)),
     }
 
-    if send_key(VK_ESCAPE) {
-        cells.escape_hides = wait_hidden(ESCAPE_WAIT);
-        if !cells.escape_hides {
-            problems.push(format!(
-                "按 Esc 後 {}ms 內候選窗仍可見",
-                ESCAPE_WAIT.as_millis()
-            ));
-        }
-    } else {
-        problems.push("SendInput(VK_ESCAPE) 失敗".to_string());
-    }
-
-    let detail = if problems.is_empty() {
-        format!("{}；候選窗在插入點附近出現，Esc 後消失", cells.detail())
-    } else {
-        format!(
-            "{}；{}；詳細原因看 %LOCALAPPDATA%\\jc-ime\\tsf.log（設定 JC_TSF_LOG=1 後重跑）",
-            cells.detail(),
-            problems.join("；")
-        )
-    };
+    let problems = ui_probe_rules::problems(&observation, dpi);
+    let cells = ui_probe_rules::cells(&observation, "interactive");
 
     drop(session);
-    let verdict = if problems.is_empty() {
-        Verdict::Pass
+
+    if problems.is_empty() {
+        Outcome {
+            verdict: Verdict::Pass,
+            detail: format!(
+                "{}；候選窗在插入點附近出現、Enter 送出「{}」、Esc 後消失",
+                cells.detail(),
+                ui_probe_rules::EXPECTED_COMMIT
+            ),
+            cells,
+        }
     } else {
-        Verdict::Fail
-    };
-    Outcome {
-        verdict,
-        detail,
-        cells,
+        Outcome {
+            verdict: Verdict::Fail,
+            detail: fail_detail(&cells, &problems),
+            cells,
+        }
     }
+}
+
+/// 失敗說明：cell、所有不成立的地方、tsf.log 的位置。
+fn fail_detail(cells: &UiProbeCells, problems: &[String]) -> String {
+    format!(
+        "{}；{}；詳細原因看 %LOCALAPPDATA%\\jc-ime\\tsf.log（設定 JC_TSF_LOG=1 後重跑）",
+        cells.detail(),
+        problems.join("；")
+    )
 }
 
 /// 沒有互動桌面：`[SKIP]`，不算失敗。
@@ -239,12 +253,16 @@ fn interactive_fail(reason: String, cells: UiProbeCells) -> Outcome {
 }
 
 /// 本產品還沒安裝或沒為目前使用者啟用：`[SKIP]`，交給檢查 10 判定。
+///
+/// 這裡的訊息要和 [`headless`] 分開：CI 必須看得出是「沒有桌面」還是
+/// 「輸入法沒裝／沒啟用」，後者不能只印「沒有互動桌面」。
 fn unavailable(reason: String) -> Outcome {
     let cells = UiProbeCells::interactive();
     Outcome {
         verdict: Verdict::Unavailable,
         detail: format!(
-            "{}；{reason}；候選窗無法驗證，不算失敗（先以目前使用者執行 jc-tip-register.exe user-install）",
+            "{}；jc 注音未安裝或未為目前使用者啟用（{reason}）；候選窗無法驗證，\
+             不算失敗（先以目前使用者執行 jc-tip-register.exe user-install）",
             cells.detail()
         ),
         cells,
@@ -282,43 +300,14 @@ fn on_interactive_station() -> bool {
     }
 }
 
-/// 檢查候選窗的 rect：非空、在虛擬螢幕內、與插入點的距離合理。
-fn check_rect(problems: &mut Vec<String>, rect: &RECT, edit: HWND, rect_text: &str) {
-    if rect.right <= rect.left || rect.bottom <= rect.top {
-        problems.push(format!("候選窗 rect 是空的：{rect_text}"));
-    }
-
-    // SAFETY: 只查系統度量。
-    let (left, top, width, height) = unsafe {
-        (
-            GetSystemMetrics(SM_XVIRTUALSCREEN),
-            GetSystemMetrics(SM_YVIRTUALSCREEN),
-            GetSystemMetrics(SM_CXVIRTUALSCREEN),
-            GetSystemMetrics(SM_CYVIRTUALSCREEN),
-        )
-    };
-    if rect.left < left || rect.top < top || rect.right > left + width || rect.bottom > top + height
-    {
-        problems.push(format!(
-            "候選窗 rect 不在虛擬螢幕 ({left},{top},{},{}) 內：{rect_text}",
-            left + width,
-            top + height
-        ));
-    }
-
-    match caret_screen(edit) {
-        Some((x, y)) => {
-            let dx = rect.left - x;
-            let dy = rect.top - y;
-            if dx.abs() > MAX_DX || !(MIN_DY..=MAX_DY).contains(&dy) {
-                problems.push(format!(
-                    "候選窗位置不合理：rect={rect_text}、插入點=({x},{y})、dx={dx}、dy={dy}"
-                ));
-            }
-        }
-        None => {
-            problems.push("取不到 EDIT 插入點（GetCaretPos 與 client rect 都失敗）".to_string())
-        }
+/// 設成 per-monitor DPI aware，讓 rect 與插入點都用實體像素。
+///
+/// 失敗（manifest 已設定、系統太舊）不影響判定：呼叫端與候選窗仍在同一個
+/// 座標系。
+fn enable_per_monitor_dpi() {
+    // SAFETY: 只設定本行程的 DPI awareness，不改系統設定。
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 }
 
@@ -345,7 +334,85 @@ fn caret_screen(edit: HWND) -> Option<(i32, i32)> {
     None
 }
 
-/// 讀 EDIT 目前的文字，當成組字字串；取不到就回空字串。
+/// 視窗的螢幕 rect。
+fn window_rect(hwnd: HWND) -> Option<Rect> {
+    let mut rect = RECT::default();
+    // SAFETY: hwnd 是系統回傳的視窗；rect 是本機可寫輸出。
+    if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
+        return None;
+    }
+    Some(Rect {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    })
+}
+
+/// 整個虛擬螢幕的 rect。
+fn virtual_screen() -> Option<Rect> {
+    // SAFETY: 只查系統度量。
+    let (left, top, width, height) = unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )
+    };
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    Some(Rect {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+    })
+}
+
+/// 插入點所在 monitor 的 work area（不含工作列）。
+fn monitor_work_area(caret: (i32, i32)) -> Option<Rect> {
+    // SAFETY: 只查插入點最近的 monitor；info 是本機可寫輸出。
+    unsafe {
+        let monitor = MonitorFromPoint(
+            POINT {
+                x: caret.0,
+                y: caret.1,
+            },
+            MONITOR_DEFAULTTONEAREST,
+        );
+        if monitor.is_invalid() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return None;
+        }
+        Some(Rect {
+            left: info.rcWork.left,
+            top: info.rcWork.top,
+            right: info.rcWork.right,
+            bottom: info.rcWork.bottom,
+        })
+    }
+}
+
+/// 視窗所在 monitor 的 DPI；取不到時用 96。
+fn dpi_for(hwnd: HWND) -> u32 {
+    // SAFETY: 純查詢。
+    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    if dpi == 0 {
+        ui_probe_rules::BASE_DPI
+    } else {
+        dpi
+    }
+}
+
+/// 讀 EDIT 目前的文字，當成組字或提交結果；取不到就回空字串。
 fn edit_text(edit: HWND) -> String {
     let mut buffer = [0u16; 512];
     // SAFETY: buffer 是本機可寫陣列；回傳長度不會超過 buffer。
@@ -356,6 +423,25 @@ fn edit_text(edit: HWND) -> String {
     String::from_utf16_lossy(&buffer[..len as usize])
         .trim()
         .to_string()
+}
+
+/// 送出一輪注音並開候選窗：`j`、`i`、`3`、`↓`。
+///
+/// 回傳（第一次看到的候選窗, 延遲毫秒）；`SendInput` 被拒時回被拒的鍵。
+fn open_candidates() -> Result<(Option<HWND>, u64), VIRTUAL_KEY> {
+    let keys = [VK_J, VK_I, VK_3, VK_DOWN];
+    let last = keys.len() - 1;
+    let mut last_key_at = Instant::now();
+    for (index, vk) in keys.into_iter().enumerate() {
+        if !send_key(vk) {
+            return Err(vk);
+        }
+        if index == last {
+            last_key_at = Instant::now();
+        }
+        pump_for(Duration::from_millis(60));
+    }
+    Ok(wait_visible(last_key_at, CANDIDATE_WAIT))
 }
 
 /// 送出一個虛擬鍵的按下與放開。
@@ -585,6 +671,14 @@ unsafe extern "system" fn host_proc(
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
 }
 
+/// `Session::activate` 的失敗分類。
+enum ActivateFailure {
+    /// 本產品沒有為目前使用者啟用：`[SKIP]`。
+    NotEnabled(String),
+    /// 真的建立或激活失敗：`[FAIL]`。
+    Failed(String),
+}
+
 /// 本行程的 TSF 狀態：啟動 thread manager、把本 TIP 設成作用中 profile。
 struct Session {
     thread_mgr: ITfThreadMgr,
@@ -593,14 +687,6 @@ struct Session {
     previous: Option<TF_INPUTPROCESSORPROFILE>,
     /// 啟動前的執行緒語言設定（`GetCurrentLanguage`）。
     language_before: Option<u16>,
-}
-
-/// `Session::activate` 的失敗分類。
-enum ActivateFailure {
-    /// 本產品沒有為目前使用者啟用：`[SKIP]`。
-    NotEnabled(String),
-    /// 真的建立或激活失敗：`[FAIL]`。
-    Failed(String),
 }
 
 impl Session {

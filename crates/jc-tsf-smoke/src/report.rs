@@ -91,7 +91,8 @@ pub struct Check {
 ///
 /// 人類輸出與 JSON 共用同一組值；`candidate_rect` 用 `l,t,r,b` 字串，
 /// 沒有看到候選窗時是空字串。`latency_ms` 是送出最後一個鍵到第一次看到
-/// 可見候選窗的毫秒數，沒看到時記 0。
+/// 可見候選窗的毫秒數，沒看到時記 0。`committed_text` 是候選窗開著時按
+/// Enter 之後 EDIT 的文字，正常要含「我」。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UiProbeCells {
     /// `interactive` 或 `headless`。
@@ -106,6 +107,8 @@ pub struct UiProbeCells {
     pub latency_ms: u64,
     /// 按 Esc 之後候選窗是否消失。
     pub escape_hides: bool,
+    /// 候選窗開著時按 Enter 之後 EDIT 的文字。
+    pub committed_text: String,
 }
 
 impl UiProbeCells {
@@ -118,6 +121,7 @@ impl UiProbeCells {
             candidate_rect: String::new(),
             latency_ms: 0,
             escape_hides: false,
+            committed_text: String::new(),
         }
     }
 
@@ -132,13 +136,14 @@ impl UiProbeCells {
     /// 一行 `key=value` 摘要，供 `detail` 使用。
     pub fn detail(&self) -> String {
         format!(
-            "desktop={}；composition={}；candidate_visible={}；candidate_rect={}；latency_ms={}；escape_hides={}",
+            "desktop={}；composition={}；candidate_visible={}；candidate_rect={}；latency_ms={}；escape_hides={}；committed_text={}",
             self.desktop,
             self.composition,
             self.candidate_visible,
             self.candidate_rect,
             self.latency_ms,
-            self.escape_hides
+            self.escape_hides,
+            self.committed_text
         )
     }
 }
@@ -162,8 +167,23 @@ struct JsonReport<'a> {
     schema: &'static str,
     version: &'static str,
     ok: bool,
+    /// 整份報告的三態：`fail`（任一 fail）、`skip`（沒有 fail 但有 skip）、
+    /// `pass`（其他）。只看 `ok` 分不出「全部驗過」與「有項目沒驗到」。
+    status: Overall,
     summary: Summary,
     checks: &'a [Check],
+}
+
+/// 整份報告的狀態。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Overall {
+    /// 全部 pass 或 warn。
+    Pass,
+    /// 至少一項 fail。
+    Fail,
+    /// 沒有 fail，但至少一項 skip（無法驗證）。
+    Skip,
 }
 
 /// 累計各項結果並負責輸出。
@@ -253,6 +273,18 @@ impl Report {
         self.count(Status::Fail)
     }
 
+    /// 整份報告的三態。
+    pub fn overall(&self) -> Overall {
+        let summary = self.summary();
+        if summary.fail > 0 {
+            Overall::Fail
+        } else if summary.skip > 0 {
+            Overall::Skip
+        } else {
+            Overall::Pass
+        }
+    }
+
     /// 警告項數。
     pub fn warned(&self) -> usize {
         self.count(Status::Warn)
@@ -302,13 +334,14 @@ impl Report {
             schema: SCHEMA,
             version: env!("CARGO_PKG_VERSION"),
             ok: self.failed() == 0,
+            status: self.overall(),
             summary: self.summary(),
             checks: &self.checks,
         };
         // 這裡的欄位全部是可序列化的基本型別，不會失敗。
         serde_json::to_string_pretty(&document).unwrap_or_else(|error| {
             format!(
-                r#"{{"schema":"{SCHEMA}","version":"{}","ok":false,"summary":{{"pass":0,"warn":0,"fail":1,"skip":0}},"checks":[],"serialize_error":"{error}"}}"#,
+                r#"{{"schema":"{SCHEMA}","version":"{}","ok":false,"status":"fail","summary":{{"pass":0,"warn":0,"fail":1,"skip":0}},"checks":[],"serialize_error":"{error}"}}"#,
                 env!("CARGO_PKG_VERSION")
             )
         })
@@ -457,6 +490,7 @@ mod tests {
         assert_eq!(value["schema"], SCHEMA);
         assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(value["ok"], false);
+        assert_eq!(value["status"], "fail");
         assert_eq!(value["summary"]["pass"], 1);
         assert_eq!(value["summary"]["warn"], 1);
         assert_eq!(value["summary"]["fail"], 1);
@@ -495,6 +529,18 @@ mod tests {
         report.skip("b", "B", "skip");
         let value: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
         assert_eq!(value["ok"], true);
+        assert_eq!(value["status"], "skip", "有 skip 時只看 ok 會誤以為全驗過");
+    }
+
+    #[test]
+    fn status_is_pass_when_only_pass_and_warn() {
+        let mut report = Report::new(false);
+        report.pass("a", "A", "pass");
+        report.warn("b", "B", "warn");
+        assert_eq!(report.overall(), Overall::Pass);
+        let value: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+        assert_eq!(value["status"], "pass");
+        assert_eq!(value["ok"], true);
     }
 
     #[test]
@@ -529,6 +575,7 @@ mod tests {
         assert_eq!(cells.candidate_rect, "");
         assert_eq!(cells.latency_ms, 0);
         assert!(!cells.escape_hides);
+        assert_eq!(cells.committed_text, "");
         assert_eq!(UiProbeCells::interactive().desktop, "interactive");
     }
 
@@ -549,7 +596,9 @@ mod tests {
         assert_eq!(check["ui_probe"]["desktop"], "headless");
         assert_eq!(check["ui_probe"]["candidate_visible"], false);
         assert_eq!(check["ui_probe"]["latency_ms"], 0);
+        assert_eq!(check["ui_probe"]["committed_text"], "");
         assert_eq!(value["ok"], true);
+        assert_eq!(value["status"], "skip");
 
         let mut failed = Report::new(false);
         failed.ui_probe(
@@ -563,6 +612,7 @@ mod tests {
                 candidate_rect: String::new(),
                 latency_ms: 2001,
                 escape_hides: false,
+                committed_text: String::new(),
             },
         );
         let value: serde_json::Value = serde_json::from_str(&failed.to_json()).unwrap();
@@ -572,6 +622,7 @@ mod tests {
         assert_eq!(check["ui_probe"]["composition"], "ㄨ");
         assert_eq!(check["ui_probe"]["latency_ms"], 2001);
         assert_eq!(value["ok"], false);
+        assert_eq!(value["status"], "fail");
     }
 
     #[test]
@@ -583,10 +634,11 @@ mod tests {
             candidate_rect: "10,20,110,60".to_string(),
             latency_ms: 87,
             escape_hides: true,
+            committed_text: "我".to_string(),
         };
         assert_eq!(
             cells.detail(),
-            "desktop=interactive；composition=ㄨㄛ；candidate_visible=true；candidate_rect=10,20,110,60；latency_ms=87；escape_hides=true"
+            "desktop=interactive；composition=ㄨㄛ；candidate_visible=true；candidate_rect=10,20,110,60；latency_ms=87；escape_hides=true；committed_text=我"
         );
     }
 }

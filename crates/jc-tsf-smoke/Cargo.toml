@@ -33,6 +33,8 @@ windows = { version = "0.62", features = [
   "Win32_System_Threading",
   # ITfInputProcessorProfileMgr::GetActiveProfile 與 TF_INPUTPROCESSORPROFILE。
   "Win32_UI_Input_KeyboardAndMouse",
+  # 檢查 13：SetProcessDpiAwarenessContext／GetDpiForWindow。
+  "Win32_UI_HiDpi",
   "Win32_UI_TextServices",
   # 檢查 13：host 視窗、EDIT、FindWindowW 與訊息迴圈。
   "Win32_UI_WindowsAndMessaging",

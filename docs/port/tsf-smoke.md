@@ -110,7 +110,7 @@ release DLL 沒有這個符號是正常出貨狀態，診斷程式只會印一�
 | 10 | `profile.user` | `IsEnabledLanguageProfile`、`EnumLanguageProfiles(0x0404)`、`GetActiveProfile` | 已列舉**且**已啟用 | 列舉到的 profile 數、目前作用中的 profile GUID |
 | 11 | `profile.language_list` | `HKCU\Control Panel\International\User Profile` 的 `Languages` 與 `zh-Hant-TW\InputMethodTips` | 含 `zh-Hant-TW`，且含 `0404:{CLSID}{PROFILE}`（有無大括號都接受） | 兩個清單的項目數 |
 | 12 | `engine.detail` | 沿用檢查 6 的連線，再送 `Health` | 引擎健康且不在交接 | 引擎版本、協定、session、連線數、組字中、引擎 session 數、pid |
-| 13 | `ui.probe` | 開 host 視窗＋`EDIT`、`ActivateProfile`、`SendInput` 打 `j` `i` `3`，再用 `FindWindowExW(L"jcCandidateUiWindow")` 輪詢候選窗；最後送 `Esc` | 互動桌面上：候選窗可見、rect 在虛擬螢幕內、位置在插入點附近、`Esc` 後消失 | `desktop`、`composition`、`candidate_visible`、`candidate_rect`、`latency_ms`、`escape_hides`；沒有互動桌面時 `[SKIP]` |
+| 13 | `ui.probe` | 開 host 視窗＋`EDIT`、`ActivateProfile`、`SendInput` 打 `j` `i` `3` `↓` 開候選窗，再 `Enter` 提交；重新開窗後送 `Esc` | 互動桌面上：`composition` 非空、候選窗可見、rect 在虛擬螢幕內且與插入點 monitor 的 work area 相交、位置在插入點附近、`Enter` 後 EDIT 含「我」、`Esc` 後消失 | `desktop`、`composition`、`candidate_visible`、`candidate_rect`、`latency_ms`、`escape_hides`、`committed_text`；沒有互動桌面或 TIP 沒啟用時 `[SKIP]` |
 
 ### 檢查 3 的物件身分
 
@@ -217,27 +217,37 @@ Windows 各版本寫入的格式不完全一致，比對時接受有無大括號
 前 12 項都是註冊表、檔案、COM 與 pipe 層，沒有任何一項證明候選窗真的畫在
 螢幕上。檢查 13 走一次真正的前景輸入路徑：
 
-1. 註冊 `jcUiProbeHost` 類別，建立可見的 top-level 視窗與 `EDIT` 子視窗，
+1. `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`（失敗就算了），再註冊
+   `jcUiProbeHost` 類別，建立可見的 top-level 視窗與 `EDIT` 子視窗，
    `SetForegroundWindow` 給 host、`SetFocus` 給 EDIT。
 2. `ITfInputProcessorProfiles::GetCurrentLanguage` 記下目前語言，記下
    `GetActiveProfile` 的 profile，再用 `ActivateProfile(TF_IPPMF_FORPROCESS)`
    把本 TIP 設成本行程的作用中輸入法。
-3. 用 `SendInput` 送 `VK_J`、`VK_I`、`VK_3` 的按下與放開，每鍵之間抽訊息。
+3. 用 `SendInput` 送 `VK_J`、`VK_I`、`VK_3`、`VK_DOWN` 的按下與放開，每鍵之間
+   抽訊息。`↓` 是必要的：`jc-tsf` 只在 `composing && navigating` 時顯示候選窗，
+   只打字不會開。
 4. 最多等 2000ms，每 20ms 用 `FindWindowExW` 找**本行程**的
    `jcCandidateUiWindow`（同名視窗可能長在別的程序），記錄第一次看到可見視窗
    的延遲。
 5. 斷言：
+   - `composition`（EDIT 的組字文字）非空
    - `IsWindowVisible` 為真
-   - `GetWindowRect` 非空、在虛擬螢幕範圍內
+   - `GetWindowRect` 非空、在虛擬螢幕範圍內、與插入點所在 monitor 的 work area
+     相交
    - 與 EDIT 的插入點比較：`GetCaretPos` 轉螢幕座標（取不到就用 EDIT client
-     rect 的左下角），`|dx| <= 300`、`dy` 在 `-80..=160`
-6. 送 `Esc`，最多等 1000ms 確認候選窗不再可見（或已銷毀）。
-7. `DestroyWindow`、`UnregisterClassW`，還原 profile 與語言。
+     rect 的左下角），`|dx| <= 300`（依該 monitor 的 DPI 換算，300 DIP）、
+     `dy` 在 `-200..=160`（視窗翻到上方是正常的）
+6. 候選窗開著時送 `VK_RETURN`，讀 EDIT 的文字；必須包含 `ji3` 的第一個候選
+   「我」。這是端到端證明，不只是視窗出現。
+7. 重新送 `VK_J`、`VK_I`、`VK_3`、`VK_DOWN` 開第二次候選窗，再送 `Esc`，最多等
+   1000ms 確認不再可見。不能在 Enter 之後直接驗消失：那時視窗已經因為提交而
+   關掉了。
+8. `DestroyWindow`、`UnregisterClassW`，還原 profile 與語言。
 
 人類輸出與 JSON 的 `ui_probe` 物件用同一組 cell：
 
 ```text
-desktop=interactive；composition=ㄨㄛ；candidate_visible=true；candidate_rect=104,142,304,182；latency_ms=87；escape_hides=true
+desktop=interactive；composition=ㄨㄛˇ；candidate_visible=true；candidate_rect=104,142,304,182；latency_ms=87；escape_hides=true；committed_text=我
 ```
 
 判定：
@@ -246,11 +256,14 @@ desktop=interactive；composition=ㄨㄛ；candidate_visible=true；candidate_re
   或 `SendInput` 被系統拒絕（Session 0、服務工作階段、鎖定中的桌面）。記
   `[SKIP]`，**不算失敗**；`detail` 會寫出原因。
 - 本產品還沒安裝，或 `IsEnabledLanguageProfile=false`：記 `[SKIP]`，`detail`
-  指向 `user-install`。真正的安裝問題由檢查 10 判 `[FAIL]`，不重複紅。
+  寫明「jc 注音未安裝或未為目前使用者啟用」並指向 `user-install`。真正的安裝
+  問題由檢查 10 判 `[FAIL]`，不重複紅。
 - `desktop=interactive` 且任一斷言不成立：`[FAIL]`，`detail` 帶實際 rect、
-  延遲與 `%LOCALAPPDATA%\jc-ime\tsf.log` 的建議。
+  延遲、所有不成立的地方與 `%LOCALAPPDATA%\jc-ime\tsf.log` 的建議。
+- `committed_text` 是空的代表候選窗出現但 Enter 後 EDIT 沒收到文字，可能是
+  CUAS 或 TIP 插入路徑；`detail` 會直接寫出這句話（候選窗沒出現時只報逾時）。
 - 候選字來自引擎：引擎沒開時本項會失敗，先啟動 `jc-engine.exe` 再跑。
-- `composition` 是 EDIT 目前的文字（TSF 的組字內容），取不到時是空字串。
+- `composition` 是 EDIT 目前的組字文字，取不到時是空字串。
 
 `--check ui-probe`／`--ui-probe` 只跑這一項，適合在實機上手動驗一次；它不看
 `--dll`，TIP 是由 msctf 依註冊機碼載入的。
@@ -284,6 +297,7 @@ desktop=interactive；composition=ㄨㄛ；candidate_visible=true；candidate_re
   "schema": "jc-ime-doctor/1",
   "version": "0.1.24",
   "ok": false,
+  "status": "fail",
   "summary": { "pass": 1, "warn": 1, "fail": 2, "skip": 1 },
   "checks": [
     { "id": "dll.load", "title": "DLL 載入", "status": "pass", "detail": "C:\\Program Files\\jc-ime\\jc-tsf.dll；DllCanUnloadNow = 0x00000000" },
@@ -301,9 +315,12 @@ desktop=interactive；composition=ㄨㄛ；candidate_visible=true；candidate_re
 - `version` 是 `jc-tsf-smoke` 的 `CARGO_PKG_VERSION`；安裝後腳本用它記錄版本，
   JSON 解析失敗時才改讀執行檔的 PE 版本。
 - `ok` 等於「沒有任何 `fail`」；只有 `warn`／`skip` 時仍是 `true`。
+- 頂層 `status` 是三態：`fail`（任一 `fail`）、`skip`（沒有 `fail` 但有 `skip`）、
+  `pass`（其他）。`ok` 分不出「全部驗過」與「有項目沒驗到」，要驗有沒有真的
+  跑過就用 `status`。
 - `summary` 四個計數加起來等於 `checks` 的長度；上面的範例只列 5 項，完整執行
   固定 13 項。
-- `status` 只接受 `pass`、`warn`、`fail`、`skip`。
+- 每個檢查的 `status` 只接受 `pass`、`warn`、`fail`、`skip`。
 - 只有 `fail` 一定有 `fix`；其他狀態不輸出這個欄位。
 - 標題不含編號；人類輸出才由程式加 `1.`、`2.`……。
 - 檢查 13 多一個 `ui_probe` 物件（其他檢查沒有這個欄位）：
@@ -320,13 +337,15 @@ desktop=interactive；composition=ㄨㄛ；candidate_visible=true；candidate_re
     "candidate_visible": false,
     "candidate_rect": "",
     "latency_ms": 0,
-    "escape_hides": false
+    "escape_hides": false,
+    "committed_text": ""
   }
 }
 ```
 
 `candidate_rect` 是 `l,t,r,b` 字串，沒看到候選窗時是空字串；`latency_ms` 是送出
-最後一個鍵到第一次看到可見候選窗的毫秒數。
+最後一個鍵到第一次看到可見候選窗的毫秒數；`committed_text` 是候選窗開著時按
+`Enter` 之後 EDIT 的文字，正常要含「我」。
 
 PowerShell 直接解析：
 
@@ -348,6 +367,10 @@ Windows PowerShell 5.1 的管線預設不是 UTF-8；中文標題要正確顯示
 | `0` | 全部 `pass`，或只有 `warn`／`skip` |
 | `1` | 至少一項 `fail` |
 | `2` | 參數錯誤（`--dll` 沒給值、未知參數等） |
+
+JSON 的頂層 `status` 對應：有 `fail` 是 `fail`、沒有 `fail` 但有 `skip` 是
+`skip`、其他是 `pass`。CI 用 `status` 分辨「真的驗過」與「跳過」，不是只看
+`ok`。
 
 ## 每個 fail 的修復指令
 
@@ -396,7 +419,7 @@ jc-ime 安裝診斷（jc 注音）
 [PASS] 10. 使用者啟用：IsEnabledLanguageProfile=true；EnumLanguageProfiles(0x0404)=true（共 12 個 profile）；目前啟用 {C4E8D217-…}（本產品）
 [PASS] 11. 語言清單：Languages 3 項（含 zh-Hant-TW）；zh-Hant-TW\InputMethodTips 2 項（含 0404:{2F6B41D8-…}{C4E8D217-…}）
 [PASS] 12. 引擎細節：引擎 jc-engine 0.1.4；協定 3；session 1；健康狀態 正常；連線 1、組字中 0、引擎 session 數 1、pid 4242
-[PASS] 13. UI 探針：desktop=interactive；composition=ㄨㄛ；candidate_visible=true；candidate_rect=104,142,304,182；latency_ms=87；escape_hides=true；候選窗在插入點附近出現，Esc 後消失
+[PASS] 13. UI 探針：desktop=interactive；composition=ㄨㄛˇ；candidate_visible=true；candidate_rect=104,142,304,182；latency_ms=87；escape_hides=true；committed_text=我；候選窗在插入點附近出現、Enter 送出「我」、Esc 後消失
 [INFO] 釋放物件後 DllCanUnloadNow = 0x00000000（S_OK 代表沒有 refcount 洩漏）
 
 結果：13 通過、0 警告、0 失敗
@@ -410,7 +433,7 @@ jc-ime 安裝診斷（jc 注音）
 ```text
 [SKIP] 6. 引擎 pipe：pipe jc-ime-1001 不存在（引擎未啟動，或開機 Run 機碼還沒生效）；…；引擎未啟動或未安裝，只警告不判定失敗
 [SKIP] 12. 引擎細節：引擎連不上（pipe-missing）：pipe jc-ime-1001 不存在…；引擎未啟動時無法取得版本與健康狀態
-[FAIL] 13. UI 探針：desktop=interactive；composition=；candidate_visible=false；candidate_rect=；latency_ms=2000；escape_hides=true；2000ms 內沒有看到本行程可見的 jcCandidateUiWindow；詳細原因看 %LOCALAPPDATA%\jc-ime\tsf.log（設定 JC_TSF_LOG=1 後重跑）
+[FAIL] 13. UI 探針：desktop=interactive；composition=；candidate_visible=false；candidate_rect=；latency_ms=2000；escape_hides=false；committed_text=；組字字串是空的：EDIT 沒有收到 TSF 組字；2000ms 內沒有看到本行程可見的 jcCandidateUiWindow；詳細原因看 %LOCALAPPDATA%\jc-ime\tsf.log（設定 JC_TSF_LOG=1 後重跑）
        修復：啟動 jc-engine（候選字來自引擎）…
 
 結果：10 通過、0 警告、1 失敗、2 略過
@@ -503,6 +526,7 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼、沒有 Windows
 | n/a | `crates/jc-tsf-smoke/src/tsf_profile.rs`（`IsEnabledLanguageProfile`、`EnumLanguageProfiles`、`GetActiveProfile`） | rewritten |
 | n/a | `crates/jc-tsf-smoke/src/engine.rs`、`engine_failure.rs`（引擎 pipe、健康狀態、失敗分類） | rewritten；連線與握手交給 `jc-windows` |
 | n/a | `crates/jc-tsf-smoke/src/ui_probe.rs`（host 視窗、`SendInput`、候選窗輪詢） | 新增；沒有互動桌面時回 `[SKIP]` |
+| n/a | `crates/jc-tsf-smoke/src/ui_probe_rules.rs`（rect／插入點／提交文字／Esc 的判定） | 新增；純函式，Linux 也有單元測試 |
 | n/a | `crates/jc-tsf-smoke/src/report.rs`（人類輸出與 `jc-ime-doctor/1` JSON） | rewritten；Linux 也會編譯 |
 | n/a | `installer/post-install-doctor.ps1`（安裝後執行、log、剪貼簿與訊息框） | 新增；install-smoke 共用 |
 | n/a（Go 沒有 Windows 外殼） | `crates/jc-tsf/src/lib.rs` 的 `jc_test_key` | rewritten；`debug_assertions` 或 feature `test-export` 才編譯 |
@@ -523,7 +547,7 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼、沒有 Windows
 | `cargo clippy -p jc-tsf-smoke --all-targets -- -D warnings`（Linux） | 零警告 |
 | `cargo clippy -p jc-tsf-smoke --all-targets --target x86_64-pc-windows-msvc -- -D warnings` | 零警告 |
 | `cargo clippy -p jc-tsf-smoke --all-targets --target i686-pc-windows-msvc -- -D warnings` | 零警告 |
-| `cargo test -p jc-tsf-smoke`（Linux） | 25 passed |
+| `cargo test -p jc-tsf-smoke`（Linux） | 40 passed |
 
 實際的 `jc-tsf-smoke.exe` 必須在 Windows 上建置與執行；Linux 的 `cargo check`
 不連結，只驗證型別與純函式測試。
@@ -551,9 +575,12 @@ Go 參考實作（`/mnt/work/jc/ref/0c-ime`）沒有 TSF 外殼、沒有 Windows
 10. 引擎正在被真正的輸入法使用時，檢查 6／12 的行為（可能 `[SKIP]`）。
 11. `%ProgramData%` 被改到非預設位置時，檢查 8 的 `manifest.json` 是否找得到。
 12. 檢查 13 在真機上的實際行為：`SendInput` 的掃描碼是否讓 msctf 產生正確的
-    注音組字、候選窗 rect 與 `GetCaretPos` 的相對位置是否落在 `|dx| <= 300`／
-    `-80..=160` 內、`Esc` 後候選窗是否真的在 1000ms 內消失。CI runner 是
-    Session 0，只會走到 `desktop=headless` 的 `[SKIP]`。
+    注音組字、`↓` 是否真的讓候選窗出現、候選窗 rect 與 `GetCaretPos` 的相對
+    位置是否落在容許範圍內、`Enter` 是否送出「我」、`Esc` 後候選窗是否真的在
+    1000ms 內消失。CI runner 是 Session 0，只會走到 `desktop=headless` 的
+    `[SKIP]`。
+13. 150%／200% DPI 下 `SetProcessDpiAwarenessContext` 與 rect 斷言的實際值；
+    Linux 只驗到換算公式。
 
 ## 已知限制
 

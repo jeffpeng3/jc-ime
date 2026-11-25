@@ -15,6 +15,8 @@ mod engine_failure;
 mod profile;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod report;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod ui_probe_rules;
 
 #[cfg(windows)]
 mod checks;
