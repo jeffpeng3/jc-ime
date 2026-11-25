@@ -14,6 +14,9 @@ description = "TSF DLL 共用的 COM 註冊常式（只有 rlib，沒有 COM 匯
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
   "Win32_Foundation",
+  # RegCreateKeyExW 由 Win32_Security 開啟；少了它，單獨以 -p 建置本 crate
+  # 會編不過（只有和 jc-tsf 一起建置時才靠 feature 統一過關）。
+  "Win32_Security",
   "Win32_System_Com",
   "Win32_System_LibraryLoader",
   "Win32_System_Registry",
