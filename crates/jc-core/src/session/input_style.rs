@@ -173,6 +173,87 @@ fn microsoft_raw_punctuation(key: char) -> bool {
     matches!(key, '\\' | '\'' | '"' | '<' | '>' | '?')
 }
 
+/// 這一版保留、尚未實作的前導鍵。
+///
+/// 兩者目前都視為「非表內鍵」：反引號照字面送出，`u`／`b` 照一般注音鍵輸入。
+/// 未來實作時改寫 [`prefix_reserved_reason`] 與兩個 reserved 測試即可。
+const PREFIX_RESERVED: &[(char, &str)] = &[
+    // TODO(prefix-u): ` u 4e00 空白 → 一（Unicode 碼位）
+    ('u', "unicode"),
+    // TODO(prefix-b): ` b a440 空白 → 一（Big5 碼位）
+    ('b', "big5"),
+];
+
+/// 保留鍵的 TODO 字串；`None` 代表不是保留鍵。
+fn prefix_reserved_reason(key: char) -> Option<&'static str> {
+    PREFIX_RESERVED
+        .iter()
+        .find(|(reserved, _)| *reserved == key)
+        .map(|(_, reason)| *reason)
+}
+
+/// 微軟注音前導表的單一結果。
+fn prefix_single(key: char) -> Option<&'static str> {
+    Some(match key {
+        ',' => "，",
+        '.' => "。",
+        '\'' => "、",
+        ';' => "；",
+        ':' => "：",
+        '?' => "？",
+        '!' => "！",
+        '(' => "（",
+        ')' => "）",
+        '/' => "／",
+        '\\' => "＼",
+        '=' => "＝",
+        '~' => "～",
+        '"' => "＂",
+        '@' => "＠",
+        '#' => "＃",
+        '$' => "＄",
+        '%' => "％",
+        '^' => "︿",
+        '&' => "＆",
+        '*' => "＊",
+        '_' => "＿",
+        '{' => "｛",
+        '}' => "｝",
+        '|' => "｜",
+        '+' => "＋",
+        '0' => "０",
+        '1' => "１",
+        '2' => "２",
+        '3' => "３",
+        '4' => "４",
+        '5' => "５",
+        '6' => "６",
+        '7' => "７",
+        '8' => "８",
+        '9' => "９",
+        _ => return None,
+    })
+}
+
+/// 微軟注音前導表的多變體鍵；第一項是預設插入值。
+fn prefix_variants(key: char) -> Option<&'static [&'static str]> {
+    match key {
+        '[' => Some(&["［", "「", "『", "【", "《"]),
+        ']' => Some(&["］", "」", "』", "】", "》"]),
+        '-' => Some(&["－", "…", "→", "←"]),
+        '<' => Some(&["＜", "〈", "《"]),
+        '>' => Some(&["＞", "〉", "》"]),
+        _ => None,
+    }
+}
+
+/// 給定已插入的預設變體，找回整組候選；逐字元候選窗用得到。
+pub(super) fn prefix_variants_for_surface(surface: &str) -> Option<&'static [&'static str]> {
+    ['[', ']', '-', '<', '>'].into_iter().find_map(|key| {
+        prefix_variants(key).filter(|variants| variants.first().copied() == Some(surface))
+    })
+}
+
 /// 微軟參考風格反引號前導打出的全形標點。
 fn microsoft_prefix_punctuation(key: char) -> Option<&'static str> {
     match key {
@@ -382,7 +463,134 @@ impl Session {
     fn clear_prefix_mark(&mut self) {
         if self.literal.ends_with('`') {
             self.literal.pop();
+            return;
         }
+        let typed = self.ascii.typed().to_string();
+        if let Some(stripped) = typed.strip_suffix('`') {
+            let stripped = stripped.to_string();
+            self.ascii.replay(&stripped, &self.lexicon);
+            self.literal_spans.clear();
+        }
+    }
+
+    /// 開始反引號前導；中文組字要先交回混打管線，符號才會落在同一條流上。
+    pub(super) fn start_symbol_prefix(&mut self) {
+        self.candidate_window = false;
+        self.candidate_expanded = false;
+        self.navigating = false;
+        self.keep_candidates = false;
+        self.edit = None;
+        self.highlighted = 0;
+        if self.in_zh_lane() {
+            self.flush_zh_lane_for_mixed();
+            self.ascii.seed_literal("`");
+            self.mixed_cursor = Self::MIXED_CURSOR_END;
+            self.rebuild();
+        } else if self.in_ja_lane() {
+            self.literal_tail.push('`');
+        } else {
+            self.ascii.seed_literal("`");
+            self.mixed_cursor = Self::MIXED_CURSOR_END;
+            self.rebuild();
+        }
+        self.symbol_prefix = true;
+    }
+
+    /// 把前導打出的全形字接進按鍵流。
+    fn append_prefix_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if self.literal_tail.is_empty() {
+            self.ascii.seed_literal(text);
+            self.mixed_cursor = Self::MIXED_CURSOR_END;
+            self.rebuild();
+        } else {
+            self.literal_tail.push_str(text);
+        }
+    }
+
+    /// 前導表的多變體鍵：先插入預設值，再開候選窗列出其他變體。
+    ///
+    /// 游標停在插入的符號右側；此時方向鍵仍可離開，按 ← 回到符號前再 ↓
+    /// 就會重新打開同一組候選。
+    fn open_prefix_variants(&mut self, default: &str, variants: &'static [&'static str]) {
+        self.append_prefix_text(default);
+        let text = self.base_with_highlight();
+        let runes = text.chars().count();
+        if runes == 0 {
+            return;
+        }
+        self.mixed_cursor = runes - 1;
+        let Some(target) = self.mixed_target_at_cursor() else {
+            self.mixed_cursor = runes;
+            return;
+        };
+        let mut candidates = Vec::new();
+        let mut choices = Vec::new();
+        for surface in variants {
+            candidates.push(Candidate::new(
+                (*surface).to_string(),
+                (*surface).to_string(),
+                0,
+                CandidateSource::Literal,
+            ));
+            choices.push(Some(MixedChoice {
+                insert: (*surface).to_string(),
+                leftover: String::new(),
+                force_literal: false,
+                cursor: ChoiceCursor::AfterInsert,
+                syllable_edit: None,
+            }));
+        }
+        self.candidates = candidates;
+        self.mixed_choices = choices;
+        self.mixed_target = Some(target);
+        self.highlighted = 0;
+        self.candidate_window = true;
+        self.candidate_expanded = false;
+        self.navigating = false;
+        // 游標在符號右側。
+        self.mixed_cursor = runes;
+    }
+
+    /// 前導狀態下的下一個按鍵；回傳是否已處理。
+    pub(super) fn prefix_key(&mut self, key: &Key) -> bool {
+        if matches!(key.code, KeyCode::Escape | KeyCode::Backspace) {
+            self.symbol_prefix = false;
+            self.clear_prefix_mark();
+            return true;
+        }
+        let KeyCode::Char(ch) = key.code else {
+            // 空白、Enter 與具名鍵：反引號照字面送出，按鍵照常處理。
+            self.symbol_prefix = false;
+            return false;
+        };
+        let ch = key.text.unwrap_or(ch);
+        self.symbol_prefix = false;
+        if ch == '`' {
+            self.clear_prefix_mark();
+            self.append_prefix_text("‵");
+            return true;
+        }
+        if let Some(variants) = prefix_variants(ch) {
+            self.clear_prefix_mark();
+            let default = variants.first().copied().unwrap_or("");
+            self.open_prefix_variants(default, variants);
+            return true;
+        }
+        if let Some(punct) = prefix_single(ch) {
+            self.clear_prefix_mark();
+            self.append_prefix_text(punct);
+            return true;
+        }
+        if prefix_reserved_reason(ch).is_some() {
+            // TODO(prefix-u)／TODO(prefix-b)：保留語法尚未實作，照非表內鍵
+            // 處理，反引號與按鍵都留在字面。
+            return false;
+        }
+        // 非表內鍵：反引號留在組字區，這個鍵照常處理。
+        false
     }
 
     /// 風格要求的立即送出：先清空組字，下一次 [`Session::commit`] 取走。
@@ -837,12 +1045,12 @@ mod tests {
         assert_eq!(enter(&mut s), "我＠");
     }
 
-    /// 對照 `TestShiftSymbolHalfwidthOffKeepsFullWidth`：設定關閉時照舊打全形。
+    /// 一般標點與 Shift 符號照字面；「Shift 符號打半形」不再改變結果。
     #[test]
     fn test_shift_symbol_halfwidth_off_keeps_fullwidth() {
         let mut s = plain_session();
         let snap = s.press(Key::char('<', false));
-        assert_eq!(snap.preedit, "，");
+        assert_eq!(snap.preedit, "<");
     }
 
     /// 對照 `TestShiftSymbolHalfwidthTypesTheKey`：開啟後 Shift 符號打半形，
@@ -879,14 +1087,14 @@ mod tests {
         }
     }
 
-    /// 未按 Shift 的 `[ ] ' \` 照舊打全形。
+    /// 未按 Shift 的 `[ ] ' \` 也照字面；全形改由反引號前導打。
     #[test]
     fn test_shift_symbol_halfwidth_unshifted_keys_stay_fullwidth() {
-        for (key, full) in [('[', "「"), (']', "」"), ('\'', "、"), ('\\', "、")] {
+        for key in ['[', ']', '\'', '\\'] {
             let mut s = style_session("0c");
             s.style.shift_symbol_halfwidth = true;
             let snap = s.press(Key::char(key, false));
-            assert_eq!(snap.preedit, full, "{key:?} 照舊打全形");
+            assert_eq!(snap.preedit, key.to_string(), "{key:?} 照字面");
         }
     }
 
@@ -1000,7 +1208,7 @@ mod tests {
             ..InputStyle::default()
         };
         let mut s = Session::new(config);
-        let snap = s.press(Key::char('=', false));
+        let snap = s.open_emoji("emoji");
         let want = snap.candidates[4].surface.clone();
         s.press(Key::char('q', false));
         assert_eq!(s.commit(), want);
@@ -1034,9 +1242,9 @@ mod tests {
         let mut s = many_session("");
         s.style = InputStyle::preset("mcbopomofo").expect("預設存在");
         type_syllable(&mut s, "ㄕˋ");
-        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
         let snap = s.press(Key::char('0', false));
-        assert_eq!(snap.preedit, "是ㄢ", "0 回到注音鍵，離開選取模式");
+        assert_eq!(snap.preedit, "ㄢ是", "0 回到注音鍵，離開選取模式");
     }
 
     /// 閒置按鍵：注音鍵、標點與反引號都在清單內；@ 不在。
@@ -1121,5 +1329,144 @@ mod tests {
         assert_eq!(halfwidth_punct("？", '?'), "?");
         assert_eq!(halfwidth_punct("『", '{'), "{");
         assert_eq!(halfwidth_punct("……", '^'), "^");
+    }
+
+    /// 一般標點與 Shift 符號照字面插入，不轉全形、不開選單。
+    #[test]
+    fn test_mixed_punctuation_is_literal() {
+        for key in ",.';/\\\"!?:()[]{}<>=~".chars() {
+            let mut s = plain_session();
+            let snap = s.press(Key::char(key, false));
+            assert_eq!(snap.preedit, key.to_string(), "{key:?} 照字面");
+            assert!(!snap.navigating, "{key:?} 不開候選");
+        }
+        for key in "~!@#$%^&*()_+{}|:\"<>?".chars() {
+            let mut s = plain_session();
+            let snap = s.press(Key::char(key, false));
+            assert_eq!(snap.preedit, key.to_string(), "Shift 符號 {key:?}");
+        }
+    }
+
+    /// 反引號前導的完整單一表。
+    #[test]
+    fn test_backtick_prefix_single_table() {
+        for (key, want) in [
+            (',', "，"),
+            ('.', "。"),
+            ('\'', "、"),
+            (';', "；"),
+            (':', "："),
+            ('?', "？"),
+            ('!', "！"),
+            ('(', "（"),
+            (')', "）"),
+            ('/', "／"),
+            ('\\', "＼"),
+            ('=', "＝"),
+            ('~', "～"),
+            ('"', "＂"),
+            ('@', "＠"),
+            ('#', "＃"),
+            ('$', "＄"),
+            ('%', "％"),
+            ('^', "︿"),
+            ('&', "＆"),
+            ('*', "＊"),
+            ('_', "＿"),
+            ('{', "｛"),
+            ('}', "｝"),
+            ('|', "｜"),
+            ('+', "＋"),
+            ('0', "０"),
+            ('5', "５"),
+        ] {
+            let mut s = plain_session();
+            s.press(Key::char('`', false));
+            let snap = s.press(Key::char(key, false));
+            assert_eq!(snap.preedit, want, "`{key}");
+        }
+    }
+
+    /// 多變體鍵先插入預設值，游標停在符號右側；候選窗列出其他變體。
+    #[test]
+    fn test_backtick_prefix_multivariant_default_and_switch() {
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        let snap = s.press(Key::char('[', false));
+        assert_eq!(snap.preedit, "［", "先插入預設值");
+        assert_eq!(snap.cursor_rune, 1, "游標在符號右側");
+        assert!(!snap.navigating, "先顯示候選，不強制進入選取模式");
+        let surfaces: Vec<&str> = snap
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        assert_eq!(surfaces, ["［", "「", "『", "【", "《"]);
+
+        // ← 回到符號前，再按兩下 ↓ 選第二個變體。
+        let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(left.cursor_rune, 0);
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(snap.preedit, "「", "↓ 換到下一個變體再 Enter");
+        assert!(!snap.navigating);
+    }
+
+    /// 連按兩下反引號是 ‵。
+    #[test]
+    fn test_double_backtick_is_reversed_prime() {
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        let snap = s.press(Key::char('`', false));
+        assert_eq!(snap.preedit, "‵");
+    }
+
+    /// 非表內鍵：反引號照字面留下，按鍵照常處理。
+    #[test]
+    fn test_backtick_prefix_non_table_falls_through() {
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        let snap = s.press(Key::char('q', false));
+        assert_eq!(snap.preedit, "`q", "反引號與按鍵都留在字面");
+    }
+
+    /// Esc 取消前導，不留字。
+    #[test]
+    fn test_backtick_prefix_escape_cancels() {
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        let snap = s.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(snap.preedit, "");
+    }
+
+    /// `u` 是保留鍵；這一版反引號照字面、`u` 照一般注音鍵（TODO(prefix-u)）。
+    #[test]
+    fn prefix_u_is_reserved_and_falls_through_for_now() {
+        assert_eq!(prefix_reserved_reason('u'), Some("unicode"));
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        let snap = s.press(Key::char('u', false));
+        assert!(
+            snap.preedit.starts_with('`'),
+            "反引號照字面：{:?}",
+            snap.preedit
+        );
+        assert_ne!(snap.preedit, "`u 一", "尚未實作 Unicode 前導");
+    }
+
+    /// `b` 是保留鍵；這一版反引號照字面、`b` 照一般注音鍵（TODO(prefix-b)）。
+    #[test]
+    fn prefix_b_is_reserved_and_falls_through_for_now() {
+        assert_eq!(prefix_reserved_reason('b'), Some("big5"));
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        let snap = s.press(Key::char('b', false));
+        assert!(
+            snap.preedit.starts_with('`'),
+            "反引號照字面：{:?}",
+            snap.preedit
+        );
+        assert_ne!(snap.preedit, "`b 一", "尚未實作 Big5 前導");
     }
 }

@@ -267,19 +267,7 @@ impl Session {
         if !window {
             self.highlighted = 0;
         }
-        // 符號與表情選單：注音沒有未完成的音節時，反引號與等號直接開選單。
-        // 純注音與 Mixed 共用同一條路徑；microsoft 風格的反引號前導已在
-        // `style_key` 先處理。
-        if self.menu.is_none() && self.zh.pending().is_empty() && self.ascii.pending().is_empty() {
-            if ch == '`' {
-                self.open_menu(MenuKind::Symbols, 0);
-                return;
-            }
-            if ch == '=' {
-                self.open_menu(MenuKind::Emoji, self.palette_tab);
-                return;
-            }
-        }
+        // 符號與表情選單改由外殼或公開 API 開啟；一般標點與等號照字面。
         // 混打推斷出來的日文片段：羅馬字接不上的按鍵（數字、標點）結束推斷，
         // 把原始羅馬字按鍵交回混打重算，這個鍵也一起送。
         if self.in_ja_lane() {
@@ -315,14 +303,6 @@ impl Session {
                 if is_han(ch) {
                     self.push_literal(&ch.to_string());
                     return;
-                }
-                // 沒在組字時的鍵盤標點照注音的標點表打全形；注音鍵本身已在
-                // 上面走注音路徑。
-                if self.ascii.is_empty() && self.syllables.is_empty() {
-                    if let Some(punct) = self.zh.keyboard().punct(ch) {
-                        self.push_literal(punct);
-                        return;
-                    }
                 }
                 if !self.ascii.tone(ch, &self.lexicon) {
                     self.ascii.press(ch);

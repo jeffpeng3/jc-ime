@@ -701,6 +701,19 @@ impl Session {
         if !self.private {
             self.resolve_pending_learning(&key);
         }
+        // 反引號前導：只在中文組字路徑生效；英文由外殼直接放行。
+        if !key.ctrl {
+            if self.symbol_prefix {
+                if self.prefix_key(&key) {
+                    self.rebuild();
+                    return self.snapshot();
+                }
+            } else if key.code == KeyCode::Char('`') {
+                self.start_symbol_prefix();
+                self.rebuild();
+                return self.snapshot();
+            }
+        }
         if key.ctrl {
             self.pending_tone = None;
             self.press_ctrl(key);
@@ -2065,7 +2078,7 @@ mod tests {
     #[test]
     fn test_symbol_menu_tabs() {
         let mut s = session();
-        let snap = s.press(Key::char('`', false));
+        let snap = s.open_symbol_menu();
         assert_eq!(s.menu_tab(), Some("標點"));
         assert_eq!(snap.candidates[0].surface, "，");
         assert!(snap.candidates.len() > PAGE_SIZE);
@@ -2085,7 +2098,7 @@ mod tests {
         assert_eq!(s.menu_tab(), Some("注音"), "Shift＋Tab 往前");
 
         type_syllable(&mut s, "ㄨㄛˇ");
-        s.press(Key::char('`', false));
+        s.open_symbol_menu();
         assert_eq!(s.snapshot().preedit, "我", "開選單不動組字");
         s.press(Key::char('7', false)); // 標點分頁第 7 項是「；」
         assert_eq!(s.commit(), "我；");
@@ -2096,18 +2109,18 @@ mod tests {
     #[test]
     fn test_symbol_menu_recent_tab() {
         let mut s = session();
-        s.press(Key::char('`', false));
+        s.open_symbol_menu();
         s.press(Key::char('1', false)); // 「，」
         assert_eq!(s.commit(), "，");
         assert_eq!(s.symbol_recent(), ["，"]);
-        let snap = s.press(Key::char('`', false));
+        let snap = s.open_symbol_menu();
         assert_eq!(s.menu_tab(), Some(symbols::RECENT));
         assert_eq!(snap.candidates.len(), 1);
         assert_eq!(snap.candidates[0].surface, "，");
 
         // Esc 關閉選單，保留原本組字。
         type_syllable(&mut s, "ㄨㄛˇ");
-        s.press(Key::char('`', false));
+        s.open_symbol_menu();
         let snap = s.press(Key::new(KeyCode::Escape, None, false));
         assert_eq!(snap.preedit, "我");
         assert!(s.menu_tab().is_none(), "Esc 只關選單");
@@ -2130,12 +2143,12 @@ mod tests {
         }
     }
 
-    /// 對照 `TestPaletteDirectSelectionAndEscapes` 的等號選單：`=` 開表情，
-    /// Tab 換顏文字，選了就記下最近使用。
+    /// 對照 `TestPaletteDirectSelectionAndEscapes` 的表情選單：由外殼呼叫
+    /// `open_palette` 開啟，Tab 換顏文字，選了就記下最近使用。
     #[test]
     fn test_emoji_palette_selection_and_recent() {
         let mut s = session();
-        let snap = s.press(Key::char('=', false));
+        let snap = s.open_palette();
         assert_eq!(s.menu_tab(), Some("emoji"));
         assert_eq!(snap.candidates[0].surface, "=");
         assert_eq!(snap.candidates[1].surface, "😀");
@@ -2144,7 +2157,7 @@ mod tests {
         assert_eq!(s.commit(), "😀");
         assert_eq!(s.emoji_recent(), ["😀"]);
 
-        s.press(Key::char('=', false));
+        s.open_palette();
         assert_eq!(s.menu_tab(), Some("emoji"));
         assert_eq!(s.candidates()[1].surface, "😀", "最近使用的排前面");
 
@@ -2155,26 +2168,24 @@ mod tests {
         assert_eq!(s.emoji_recent(), ["😀", "(^_^)"]);
 
         // 下次直接開在上次選用的分頁。
-        s.press(Key::char('=', false));
+        s.open_palette();
         assert_eq!(s.menu_tab(), Some("kaomoji"));
     }
 
-    /// 對照 `TestPaletteDefaultEqualsChoiceAndOptOut`：等號本身是第一項，
-    /// 選它不會被記成最近使用的表情。
+    /// 等號是字面標點；選單第一項的「=」不會被記成最近使用的表情。
     #[test]
     fn test_emoji_palette_equals_is_literal() {
         let mut s = session();
-        s.press(Key::char('=', false));
+        let snap = s.press(Key::char('=', false));
+        assert_eq!(snap.preedit, "=", "一般標點照字面插入");
+        assert!(s.menu_tab().is_none(), "等號不再開表情選單");
+        assert_eq!(s.commit(), "=");
+
+        // 選單第一項仍是等號；選它不記最近使用。
+        s.open_palette();
         s.press(Key::char('1', false));
         assert_eq!(s.commit(), "=");
         assert!(s.emoji_recent().is_empty());
-
-        // 選單開著再按一次等號，直接留下半形等號。
-        s.press(Key::char('=', false));
-        let snap = s.press(Key::char('=', false));
-        assert_eq!(snap.preedit, "=");
-        assert!(snap.candidates.is_empty());
-        assert_eq!(s.commit(), "=");
     }
 
     /// 全形數字：混合模式的英數字面候選提供 `０-９` 變體。

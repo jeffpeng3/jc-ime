@@ -1361,6 +1361,33 @@ impl Session {
                     ));
                 }
             }
+            // 反引號前導的多變體符號：候選是同一組的其他寫法。
+            if let Some(variants) = super::input_style::prefix_variants_for_surface(&surface) {
+                for variant in variants {
+                    if *variant == surface
+                        || out
+                            .iter()
+                            .any(|(candidate, _)| candidate.surface == *variant)
+                    {
+                        continue;
+                    }
+                    out.push((
+                        Candidate::new(
+                            (*variant).to_string(),
+                            surface.clone(),
+                            1,
+                            CandidateSource::Literal,
+                        ),
+                        MixedChoice {
+                            insert: (*variant).to_string(),
+                            leftover: String::new(),
+                            force_literal: false,
+                            cursor: ChoiceCursor::AfterInsert,
+                            syllable_edit: None,
+                        },
+                    ));
+                }
+            }
             return split_choices(out);
         }
         // 日文片段：かな漢字変換的漢字假設＋かな＋原始羅馬字。

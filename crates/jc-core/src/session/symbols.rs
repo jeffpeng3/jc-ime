@@ -122,7 +122,7 @@ mod tests {
         let mut s = session();
         assert_eq!(s.menu_title(), None, "沒有選單就沒有提示列");
 
-        s.press(Key::char('`', false));
+        s.open_symbol_menu();
         assert_eq!(s.menu_title().as_deref(), Some("標點 · Tab → 括號引號"));
 
         s.press(Key::new(KeyCode::Tab, None, false));
@@ -143,10 +143,10 @@ mod tests {
 
         // 有最近使用時從「最近」開，下一個分頁是標點。
         s.press(Key::new(KeyCode::Escape, None, false));
-        s.press(Key::char('`', false));
+        s.open_symbol_menu();
         s.press(Key::char('1', false));
         assert_eq!(s.commit(), "，");
-        s.press(Key::char('`', false));
+        s.open_symbol_menu();
         assert_eq!(s.menu_tab(), Some(RECENT));
         assert_eq!(s.menu_title().as_deref(), Some("最近 · Tab → 標點"));
     }
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn test_palette_titles() {
         let mut s = session();
-        s.press(Key::char('=', false));
+        s.open_emoji("emoji");
         assert_eq!(s.menu_tab(), Some("emoji"));
         assert_eq!(s.menu_title().as_deref(), Some("Tab → 顏文字"));
 
@@ -240,7 +240,7 @@ mod tests {
         let unique: HashSet<&String> = s.symbol_recent().iter().collect();
         assert_eq!(unique.len(), MAX_RECENT, "不重複");
 
-        let snap = s.press(Key::char('`', false));
+        let snap = s.open_symbol_menu();
         assert_eq!(s.menu_tab(), Some(RECENT));
         assert_eq!(snap.candidates.len(), MAX_RECENT, "最近分頁只放一頁");
         assert_eq!(s.menu_title().as_deref(), Some("最近 · Tab → 標點"));
