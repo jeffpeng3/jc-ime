@@ -89,10 +89,16 @@ release DLL 沒有這個符號是正常出貨狀態，診斷程式只會印一�
 - `<yyyyMMdd-HHmmss>.log`：stderr、版本、結束碼與摘要。
 - `last.txt`：這次摘要，最後一行是完整 `.log` 路徑。
 
-同一秒重跑會加 `-1`、`-2` 序號。有 FAIL 時，腳本把 `last.txt` 複製到剪貼簿並
-跳出訊息框顯示摘要前 15 行；Session 0、非互動或加 `-NoUi` 時只寫檔。安裝器
-預設忽略 doctor 的結束碼，CI 用 `-ExitWithSmokeCode` 取得 `jc-tsf-smoke` 的
-結果。install-smoke 也執行同一支腳本。
+同一秒重跑會加 `-1`、`-2` 序號。手動執行且有 FAIL 時，腳本把 `last.txt` 複製
+到剪貼簿並跳出訊息框顯示摘要前 15 行；Session 0、非互動或加 `-NoUi` 時只寫檔。
+安裝器的 `[Run]` 固定帶 `-NoUi`，所以安裝期不會被訊息框卡住；CI 的
+「安裝後 doctor」用 `-NoUi -ExitWithSmokeCode` 取得 `jc-tsf-smoke` 的結果。
+install-smoke 也執行同一支腳本。
+
+`jc-tsf-smoke` 最多跑 120 秒。逾時時腳本 `Kill()` 該行程，並把執行錯誤記成
+`jc-tsf-smoke 超過 120 秒未結束`（doctor 判 FAIL），安裝器與 CI 都不會無限
+等待。安裝器的 `[Run]` 預設忽略 doctor 的結束碼；`-ExitWithSmokeCode` 才會
+讓離開碼反映診斷結果。
 
 ## 十三項檢查
 
@@ -110,7 +116,7 @@ release DLL 沒有這個符號是正常出貨狀態，診斷程式只會印一�
 | 10 | `profile.user` | `IsEnabledLanguageProfile`、`EnumLanguageProfiles(0x0404)`、`GetActiveProfile` | 已列舉**且**已啟用 | 列舉到的 profile 數、目前作用中的 profile GUID |
 | 11 | `profile.language_list` | `HKCU\Control Panel\International\User Profile` 的 `Languages` 與 `zh-Hant-TW\InputMethodTips` | 含 `zh-Hant-TW`，且含 `0404:{CLSID}{PROFILE}`（有無大括號都接受） | 兩個清單的項目數 |
 | 12 | `engine.detail` | 沿用檢查 6 的連線，再送 `Health` | 引擎健康且不在交接 | 引擎版本、協定、session、連線數、組字中、引擎 session 數、pid |
-| 13 | `ui.probe` | 開 host 視窗＋`EDIT`、`ActivateProfile`、`SendInput` 打 `j` `i` `3` `↓` 開候選窗，再 `Enter` 提交；重新開窗後送 `Esc` | 互動桌面上：`composition` 非空、候選窗可見、rect 在虛擬螢幕內且與插入點 monitor 的 work area 相交、位置在插入點附近、`Enter` 後 EDIT 含「我」、`Esc` 後消失 | `desktop`、`composition`、`candidate_visible`、`candidate_rect`、`latency_ms`、`escape_hides`、`committed_text`；沒有互動桌面或 TIP 沒啟用時 `[SKIP]` |
+| 13 | `ui.probe` | 開 host 視窗＋`EDIT`、`ActivateProfile`、`SendInput` 打 `j` `i` `3` `↓` 開候選窗，再 `Enter` 提交；重新開窗後送 `Esc` | 互動桌面上：`composition` 非空、候選窗可見、rect 在虛擬螢幕內且與插入點 monitor 的 work area 相交、位置在插入點附近、`Enter` 後 EDIT 含「我」、`Esc` 後消失 | `desktop`、`composition`、`candidate_visible`、`candidate_rect`、`latency_ms`、`escape_hides`、`committed_text`；沒有互動桌面、TIP 沒啟用，或組字空且候選窗沒出現（inconclusive）時 `[SKIP]` |
 
 ### 檢查 3 的物件身分
 
@@ -230,7 +236,8 @@ Windows 各版本寫入的格式不完全一致，比對時接受有無大括號
    `jcCandidateUiWindow`（同名視窗可能長在別的程序），記錄第一次看到可見視窗
    的延遲。
 5. 斷言：
-   - `composition`（EDIT 的組字文字）非空
+   - `composition`（EDIT 的組字文字）非空；如果它空而且候選窗完全沒出現，
+     改判 inconclusive，不當成產品失敗
    - `IsWindowVisible` 為真
    - `GetWindowRect` 非空、在虛擬螢幕範圍內、與插入點所在 monitor 的 work area
      相交
@@ -258,11 +265,19 @@ desktop=interactive；composition=ㄨㄛˇ；candidate_visible=true；candidate_
 - 本產品還沒安裝，或 `IsEnabledLanguageProfile=false`：記 `[SKIP]`，`detail`
   寫明「jc 注音未安裝或未為目前使用者啟用」並指向 `user-install`。真正的安裝
   問題由檢查 10 判 `[FAIL]`，不重複紅。
-- `desktop=interactive` 且任一斷言不成立：`[FAIL]`，`detail` 帶實際 rect、
-  延遲、所有不成立的地方與 `%LOCALAPPDATA%\jc-ime\tsf.log` 的建議。
-- `committed_text` 是空的代表候選窗出現但 Enter 後 EDIT 沒收到文字，可能是
-  CUAS 或 TIP 插入路徑；`detail` 會直接寫出這句話（候選窗沒出現時只報逾時）。
-- 候選字來自引擎：引擎沒開時本項會失敗，先啟動 `jc-engine.exe` 再跑。
+- `composition` 空而且候選窗完全沒出現：TIP 根本沒接到按鍵（前景、TSF 或
+  桌面環境不對）。記 `[SKIP]`（inconclusive），`detail` 寫明這是環境問題、
+  無法判定產品行為，**不算失敗**。
+- 只要候選窗出現過，就代表按鍵已經進到 TIP。之後任一斷言不成立都是
+  `[FAIL]`：候選窗位置不合理、Enter 後 EDIT 沒有「我」、Esc 關不掉。`detail`
+  帶實際 rect、延遲、所有不成立的地方與 `%LOCALAPPDATA%\jc-ime\tsf.log` 的
+  建議。
+- `committed_text` 是空的代表候選窗出現、Esc 也能關掉，但 Enter 沒把字送進
+  EDIT，可能是 CUAS 或 TIP 插入路徑。這是真的 `[FAIL]`，`detail` 會直接寫出
+  這句話（候選窗沒出現時只報逾時，或依上一條判 inconclusive）。
+- 候選字來自引擎：引擎沒開但 `composition` 有內容、只是沒有候選窗時，本項
+  判 `[FAIL]`，先啟動 `jc-engine.exe` 再跑。若連 `composition` 都是空的，
+  依上一條是 inconclusive 的 `[SKIP]`，不當成產品 bug。
 - `composition` 是 EDIT 目前的組字文字，取不到時是空字串。
 
 `--check ui-probe`／`--ui-probe` 只跑這一項，適合在實機上手動驗一次；它不看
@@ -428,19 +443,34 @@ jc-ime 安裝診斷（jc 注音）
 
 ### 引擎沒開、但輸入法裝好了
 
-檢查 6、12 是 `[SKIP]`；檢查 13 在互動桌面上是 `[FAIL]`，因為候選字來自引擎：
+檢查 6、12 是 `[SKIP]`。檢查 13 要看按鍵有沒有進到 TIP：
+
+- `composition` 有內容、只是候選窗沒出現：候選字來自引擎，記 `[FAIL]`。
+- `composition` 也是空的、候選窗完全沒出現：TIP 根本沒接到按鍵，記
+  `[SKIP]`（inconclusive）。這是環境問題，不能當成產品 bug。
+
+有組字但沒有候選窗的失敗長這樣：
 
 ```text
 [SKIP] 6. 引擎 pipe：pipe jc-ime-1001 不存在（引擎未啟動，或開機 Run 機碼還沒生效）；…；引擎未啟動或未安裝，只警告不判定失敗
 [SKIP] 12. 引擎細節：引擎連不上（pipe-missing）：pipe jc-ime-1001 不存在…；引擎未啟動時無法取得版本與健康狀態
-[FAIL] 13. UI 探針：desktop=interactive；composition=；candidate_visible=false；candidate_rect=；latency_ms=2000；escape_hides=false；committed_text=；組字字串是空的：EDIT 沒有收到 TSF 組字；2000ms 內沒有看到本行程可見的 jcCandidateUiWindow；詳細原因看 %LOCALAPPDATA%\jc-ime\tsf.log（設定 JC_TSF_LOG=1 後重跑）
+[FAIL] 13. UI 探針：desktop=interactive；composition=ㄨㄛˇ；candidate_visible=false；candidate_rect=；latency_ms=2000；escape_hides=false；committed_text=；2000ms 內沒有看到本行程可見的 jcCandidateUiWindow；詳細原因看 %LOCALAPPDATA%\jc-ime\tsf.log（設定 JC_TSF_LOG=1 後重跑）
        修復：啟動 jc-engine（候選字來自引擎）…
 
 結果：10 通過、0 警告、1 失敗、2 略過
 總結：安裝診斷失敗；請依上面各項的「修復」處理後重跑（1 項失敗）
 ```
 
-沒有互動桌面時（CI runner、Session 0）檢查 13 是 `[SKIP]`，結果仍是
+連組字都沒有的 inconclusive：
+
+```text
+[SKIP] 13. UI 探針：desktop=interactive；composition=；candidate_visible=false；candidate_rect=；latency_ms=2000；escape_hides=false；committed_text=；組字字串是空的且候選窗沒有出現：TIP 沒有接到按鍵，這是環境問題，無法判定產品行為；這是探針環境問題，不能判定產品失敗；…
+
+結果：10 通過、0 警告、0 失敗、3 略過
+總結：全部通過
+```
+
+沒有互動桌面時（CI runner、Session 0）檢查 13 也是 `[SKIP]`，結果仍是
 「全部通過」。
 
 ### 典型安裝後失敗

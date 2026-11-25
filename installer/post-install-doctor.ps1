@@ -15,6 +15,9 @@
     避免診斷結果讓安裝失敗。CI 要取得 jc-tsf-smoke 的結束碼時加
     -ExitWithSmokeCode。
 
+    jc-tsf-smoke 最多跑 120 秒；逾時就 Kill 並把執行錯誤記成 FAIL，不讓
+    安裝器或 CI 無限期等下去。
+
 .PARAMETER SmokeExe
     jc-tsf-smoke.exe 的路徑。預設找腳本同目錄。
 
@@ -147,10 +150,34 @@ try {
     [void]$process.Start()
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
-    $process.WaitForExit()
-    $stdout = $stdoutTask.Result
-    $stderr = $stderrTask.Result
-    $exitCode = $process.ExitCode
+
+    # 120 秒上限。沒有逾時時才讀 ExitCode；逾時一律記成執行失敗，避免
+    # jc-tsf-smoke 卡住時安裝器或 CI 跟著無限等待。
+    $timeoutMs = 120000
+    $exited = $process.WaitForExit($timeoutMs)
+    if (-not $exited) {
+        try {
+            $process.Kill()
+        }
+        catch { }
+        # 讓 Kill 完成，後續才能安全讀取已緩衝的 stdout／stderr。
+        [void]$process.WaitForExit(5000)
+        $runError = 'jc-tsf-smoke 超過 120 秒未結束'
+        $exitCode = 1
+    }
+
+    try {
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+    }
+    catch { }
+    try {
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+    }
+    catch { }
+
+    if ($exited) {
+        $exitCode = $process.ExitCode
+    }
 }
 catch {
     $runError = $_.Exception.Message

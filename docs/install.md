@@ -51,8 +51,9 @@ jc-ime-0.1.0-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\
    再執行 `user-cleanup-legacy` 清掉舊語言清單項目。不改你的預設輸入法。
 6. 建立開始功能表的「jc 注音設定」與「jc 注音授權」兩個捷徑。
 7. 以原使用者身分先啟動一次 `jc-engine.exe --supervise`，再執行
-   `post-install-doctor.ps1`，跑一次安裝診斷並把紀錄寫到
-   `%LOCALAPPDATA%\jc-ime\doctor\`；有 FAIL 時會提示，見〈安裝診斷（doctor）〉。
+   `post-install-doctor.ps1 -NoUi`，跑一次安裝診斷並把紀錄寫到
+   `%LOCALAPPDATA%\jc-ime\doctor\`。安裝期固定不跳訊息框，避免中斷靜默安裝；
+   `jc-tsf-smoke` 超過 120 秒會被中止並記成 FAIL。見〈安裝診斷（doctor）〉。
 
 從舊 MSI 升級時，安裝器會在複製檔案前先找舊的「jc 注音」MSI，停掉引擎與載入
 `jc-tsf.dll` 的行程，再執行 `msiexec /x` 移除舊版；找不到或移除失敗都不會中斷
@@ -86,12 +87,13 @@ jc-ime-0.1.0-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\
 
 ### 安裝診斷（doctor）
 
-`jc-tsf-smoke.exe` 就是 doctor：免管理員，載入 `jc-tsf.dll` 後跑 12 項檢查，
-涵蓋 DLL、COM、TSF 啟動、引擎 pipe、註冊機碼、使用者語言清單與引擎健康狀態。
+`jc-tsf-smoke.exe` 就是 doctor：免管理員，載入 `jc-tsf.dll` 後跑 13 項檢查，
+涵蓋 DLL、COM、TSF 啟動、引擎 pipe、註冊機碼、使用者語言清單、引擎健康狀態
+與候選窗 UI 探針。
 
 安裝完成後，安裝器會以 `runasoriginaluser` 自動執行
-`%ProgramFiles%\jc-ime\post-install-doctor.ps1`。這支腳本用 Windows PowerShell
-5.1 呼叫 `jc-tsf-smoke.exe --json`，並把結果保存到
+`%ProgramFiles%\jc-ime\post-install-doctor.ps1 -NoUi`。這支腳本用 Windows
+PowerShell 5.1 呼叫 `jc-tsf-smoke.exe --json`，並把結果保存到
 `%LOCALAPPDATA%\jc-ime\doctor\`：
 
 | 檔案 | 內容 |
@@ -100,9 +102,11 @@ jc-ime-0.1.0-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\
 | `<yyyyMMdd-HHmmss>.log` | stderr 加上人類可讀摘要、版本、結束碼與 log 路徑 |
 | `last.txt` | 這次的摘要；最後一行是同一筆 `.log` 的完整路徑 |
 
-同一秒內重跑不會覆蓋上一筆，撞名時會加上 `-1`、`-2` 等序號。**有 FAIL 時**，
-腳本會把 `last.txt` 複製到剪貼簿，並跳出訊息框顯示摘要前 15 行與 log 路徑。
-在 Session 0、非互動工作階段或 `-NoUi` 時只寫 log，不碰剪貼簿也不跳視窗。
+同一秒內重跑不會覆蓋上一筆，撞名時會加上 `-1`、`-2` 等序號。手動執行且有
+FAIL 時，腳本會把 `last.txt` 複製到剪貼簿，並跳出訊息框顯示摘要前 15 行與 log
+路徑。安裝器的 `[Run]` 固定帶 `-NoUi`，Session 0、非互動工作階段也一樣只寫
+log，不碰剪貼簿也不跳視窗，所以靜默安裝不會被訊息框卡住。`jc-tsf-smoke`
+最多跑 120 秒，逾時就中止並把 `jc-tsf-smoke 超過 120 秒未結束` 記成 FAIL。
 
 ```bat
 :: 手動重跑（使用目前使用者）
@@ -125,8 +129,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass ^
   改走 stderr。
 - `jc-tsf-smoke.exe` 的結束碼：`0` 全部通過或只有警告、`1` 至少一項 `[FAIL]`、
   `2` 參數錯誤。
-- 12 項的意義與每個失敗的修復指令見
-  [`port/tsf-smoke.md`](port/tsf-smoke.md)。
+- 13 項的意義與每個失敗的修復指令見
+  [`port/tsf-smoke.md`](port/tsf-smoke.md)。檢查 13 只在候選窗出現後才把
+  Enter 沒上屏、Esc 關不掉視為 FAIL；組字空且候選窗沒出現是 inconclusive
+  的 `[SKIP]`，代表 TIP 沒接到按鍵。
 
 `install-smoke` CI job 也執行同一支 `post-install-doctor.ps1`，加上 `-NoUi`
 與 `-ExitWithSmokeCode`，再從 `last.txt` 取 log 路徑、複製 `.log`／`.json`

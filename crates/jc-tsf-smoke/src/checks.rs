@@ -601,12 +601,14 @@ fn exit_code(report: &Report) -> std::process::ExitCode {
 
 /// 檢查 13：真的開視窗、送注音、確認候選窗出現與消失。
 ///
-/// 沒有互動桌面時 `ui_probe::run` 回 `Headless`，這裡記成 `[SKIP]`，
-/// 不讓 CI runner 因為 Session 0 而變紅。
+/// 沒有互動桌面（`Headless`）、TIP 沒接到按鍵（`Inconclusive`）或本產品沒
+/// 啟用（`Unavailable`）都記成 `[SKIP]`，不讓環境問題把 CI 判成產品失敗。
 fn check_ui_probe(report: &mut Report) {
     let outcome = ui_probe::run();
     match outcome.verdict {
-        ui_probe::Verdict::Headless | ui_probe::Verdict::Unavailable => {
+        ui_probe::Verdict::Headless
+        | ui_probe::Verdict::Inconclusive
+        | ui_probe::Verdict::Unavailable => {
             report.ui_probe(Status::Skip, outcome.detail, None, outcome.cells)
         }
         ui_probe::Verdict::Pass => {

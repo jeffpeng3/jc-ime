@@ -209,8 +209,13 @@ Filename: "{app}\jc-engine.exe"; Parameters: "--supervise --data ""{commonappdat
 
 ; 安裝完成後跑一次 doctor。runasoriginaluser 不能省：診斷要讀原使用者的
 ; 語言清單與 TSF 啟用狀態，log 與剪貼簿也必須落在原使用者的
-; %LOCALAPPDATA%。腳本在無互動工作階段（例如 CI service）會跳過訊息框。
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\post-install-doctor.ps1"""; Flags: runhidden waituntilterminated runasoriginaluser
+; %LOCALAPPDATA%。
+;
+; -NoUi 不能省：GitHub runner 是互動工作階段，doctor 只要有 FAIL 就會跳
+; MessageBox；[Run] 的 waituntilterminated 會永遠等不到關閉，安裝就卡住
+; （run 45624582847）。安裝期只負責留下紀錄，結果由 install-smoke 的
+; 「安裝後 doctor」以 -NoUi -ExitWithSmokeCode 斷言。
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\post-install-doctor.ps1"" -NoUi"; Flags: runhidden waituntilterminated runasoriginaluser
 
 Filename: "{app}\jc-settings-ui.exe"; Description: "{cm:OpenSettings}"; Flags: postinstall nowait skipifsilent unchecked
 

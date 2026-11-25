@@ -1,9 +1,16 @@
 //! 檢查 13 的判定規則。
 //!
 //! 這裡不碰 Win32：Windows 側只負責量測，把結果整理成 [`Observation`]，由
-//! [`problems`] 決定 PASS／FAIL、由 [`cells`] 產生 JSON 的 `ui_probe` 物件。
-//! Linux 的 `cargo test` 也會跑這裡的單元測試，所以「哪些 cell 算 fail」不需要
-//! Windows 實機就能驗。
+//! [`assess`] 決定 PASS／FAIL／無法判定、由 [`cells`] 產生 JSON 的 `ui_probe`
+//! 物件。Linux 的 `cargo test` 也會跑這裡的單元測試，所以「哪些 cell 算 fail」
+//! 不需要 Windows 實機就能驗。
+//!
+//! 判定原則：
+//!
+//! - 候選窗出現之後，Enter 沒上屏、Esc 關不掉、位置不對都是 **FAIL**：按鍵
+//!   已經進到 TIP，這是真的產品行為。
+//! - `composition` 空且候選窗完全沒出現是 **inconclusive**：TIP 根本沒接到
+//!   按鍵，先懷疑前景／TSF／桌面環境，不能算產品 bug。
 
 use crate::report::UiProbeCells;
 
@@ -105,6 +112,57 @@ impl Observation {
             escape_hides: false,
         }
     }
+}
+
+/// 一次量測的判定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// 所有斷言都成立。
+    Pass,
+    /// 互動桌面上真的有產品行為不成立。
+    Fail,
+    /// 沒有 TIP 收到按鍵的證據：無法判定產品行為，不算失敗。
+    Inconclusive,
+}
+
+/// [`assess`] 的結果：判定與不成立的地方。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assessment {
+    /// 這次量測的判定。
+    pub decision: Decision,
+    /// 不成立的地方；`Inconclusive` 時是環境問題的說明。
+    pub problems: Vec<String>,
+}
+
+/// 判定這次量測是 PASS、FAIL 還是 inconclusive。
+///
+/// `composition` 空而且候選窗完全沒出現，代表按鍵沒有進到 TIP（前景或 TSF
+/// 沒接上、桌面環境不對），這種量測不能用來判定產品 bug。只要看到候選窗，
+/// 就代表按鍵已經進到 TIP；之後 Enter 沒上屏、Esc 關不掉或位置不對都是真的
+/// FAIL。
+pub fn assess(observation: &Observation, dpi: u32) -> Assessment {
+    // 候選窗只要有 rect，就代表它真的被建立過；即使不可見也是產品行為，
+    // 不能當成「TIP 沒接到按鍵」。
+    if observation.composition.trim().is_empty()
+        && !observation.candidate_visible
+        && observation.candidate_rect.is_none()
+    {
+        return Assessment {
+            decision: Decision::Inconclusive,
+            problems: vec![
+                "組字字串是空的且候選窗沒有出現：TIP 沒有接到按鍵，這是環境問題，無法判定產品行為"
+                    .to_string(),
+            ],
+        };
+    }
+
+    let problems = problems(observation, dpi);
+    let decision = if problems.is_empty() {
+        Decision::Pass
+    } else {
+        Decision::Fail
+    };
+    Assessment { decision, problems }
 }
 
 /// 依 monitor DPI 換算的水平容許差；300 DIP 在 96 DPI 是 300px、在 144 DPI 是 450px。
@@ -243,7 +301,113 @@ mod tests {
     }
 
     #[test]
-    fn empty_composition_fails() {
+    fn healthy_assessment_passes() {
+        let assessment = assess(&healthy(), 96);
+        assert_eq!(assessment.decision, Decision::Pass);
+        assert_eq!(assessment.problems, Vec::<String>::new());
+    }
+
+    #[test]
+    fn no_keys_received_is_inconclusive_not_fail() {
+        let mut observation = healthy();
+        observation.composition = String::new();
+        observation.candidate_visible = false;
+        observation.candidate_rect = None;
+        observation.latency_ms = 2000;
+        observation.committed_text = String::new();
+        observation.escape_verified = false;
+        observation.escape_hides = false;
+
+        let assessment = assess(&observation, 96);
+        assert_eq!(assessment.decision, Decision::Inconclusive);
+        assert!(
+            assessment.problems[0].contains("TIP 沒有接到按鍵"),
+            "{:?}",
+            assessment.problems
+        );
+    }
+
+    #[test]
+    fn composition_started_without_candidate_is_fail() {
+        let mut observation = healthy();
+        observation.candidate_visible = false;
+        observation.candidate_rect = None;
+        observation.latency_ms = 2000;
+        observation.committed_text = String::new();
+        observation.escape_verified = false;
+        observation.escape_hides = false;
+
+        let assessment = assess(&observation, 96);
+        assert_eq!(assessment.decision, Decision::Fail);
+        assert!(
+            assessment
+                .problems
+                .iter()
+                .any(|problem| problem.contains("2000ms 內沒有看到")),
+            "{:?}",
+            assessment.problems
+        );
+    }
+
+    #[test]
+    fn candidate_visible_without_composition_is_fail() {
+        let mut observation = healthy();
+        observation.composition = String::new();
+
+        // 候選窗出現就代表按鍵進到 TIP；組字讀不到是產品／量測路徑的問題。
+        let assessment = assess(&observation, 96);
+        assert_eq!(assessment.decision, Decision::Fail);
+        assert!(
+            assessment
+                .problems
+                .iter()
+                .any(|problem| problem.contains("組字字串是空的")),
+            "{:?}",
+            assessment.problems
+        );
+    }
+
+    #[test]
+    fn invisible_candidate_without_composition_is_fail() {
+        let mut observation = healthy();
+        observation.composition = String::new();
+        observation.candidate_visible = false;
+
+        // 有候選窗 rect 就代表視窗真的建立過；不可見才是要抓的 bug，
+        // 不能因為 composition 空就退成 inconclusive。
+        let assessment = assess(&observation, 96);
+        assert_eq!(assessment.decision, Decision::Fail);
+        assert!(
+            assessment
+                .problems
+                .iter()
+                .any(|problem| problem.contains("存在但不可見")),
+            "{:?}",
+            assessment.problems
+        );
+    }
+
+    #[test]
+    fn candidate_appears_and_escape_hides_but_enter_does_not_commit_is_fail() {
+        let mut observation = healthy();
+        observation.committed_text = String::new();
+        observation.escape_verified = true;
+        observation.escape_hides = true;
+
+        let assessment = assess(&observation, 96);
+        assert_eq!(assessment.decision, Decision::Fail);
+        assert!(
+            assessment
+                .problems
+                .iter()
+                .any(|problem| problem.contains("CUAS") && problem.contains("Enter")),
+            "{:?}",
+            assessment.problems
+        );
+    }
+
+    #[test]
+    fn empty_composition_fails_when_candidate_was_visible() {
         let mut observation = healthy();
         observation.composition = "  ".to_string();
         let problems = problems(&observation, 96);

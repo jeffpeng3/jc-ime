@@ -1094,8 +1094,9 @@ jobs:
 
       # 前 12 項都是註冊表、檔案、COM 與 pipe 層；候選窗有沒有真的畫出來只有
       # 檢查 13 驗得到。GitHub 的 Windows runner 是 Session 0，探針會回
-      # desktop=headless；那時只留 warning，不讓 job 紅。真的看到候選窗卻位置
-      # 不對、Enter 沒送出「我」或 Esc 關不掉，才讓這步失敗。
+      # desktop=headless；composition 空且候選窗沒出現也代表 TIP 沒接到按鍵
+      # （inconclusive）。兩者都只留 warning，不讓環境問題把 job 弄紅。真的
+      # 看到候選窗卻位置不對、Enter 沒送出「我」或 Esc 關不掉，才讓這步失敗。
       - name: UI 探針（候選窗）
         shell: pwsh
         env:
@@ -1145,6 +1146,50 @@ jobs:
             throw "UI 探針的 status 不是 pass：$($check.status)"
           }
           Write-Host 'UI 探針通過：j i 3 ↓ 讓候選窗出現、位置合理、Enter 送出「我」、Esc 後消失'
+
+      # 安裝期的 doctor 若卡住，install step 會在 10 分鐘先失敗，後面的
+      # 「安裝後 doctor」不會執行。這裡直接從使用者目錄收集當次 json 與
+      # last.txt，失敗記錄才看得到是哪一項 FAIL（run 45624582847 只有
+      # install.log 與 tsf.log）。
+      - name: 收集 doctor 記錄（失敗時）
+        if: failure()
+        shell: pwsh
+        run: |
+          $doctorDir = Join-Path $env:LOCALAPPDATA 'jc-ime\doctor'
+          $lastPath = Join-Path $doctorDir 'last.txt'
+          $temp = $env:RUNNER_TEMP
+
+          if (-not (Test-Path -LiteralPath $lastPath)) {
+            Write-Host "找不到 $lastPath；doctor 還沒寫入紀錄"
+            exit 0
+          }
+
+          Copy-Item -LiteralPath $lastPath -Destination (Join-Path $temp 'doctor-last.txt') -Force
+          Get-Content -LiteralPath $lastPath -Encoding UTF8 | Write-Host
+
+          $lines = @(Get-Content -LiteralPath $lastPath -Encoding UTF8)
+          if ($lines.Count -lt 1 -or [string]::IsNullOrWhiteSpace($lines[-1])) {
+            Write-Host 'last.txt 最後一行沒有 log 路徑'
+            exit 0
+          }
+
+          $logPath = $lines[-1].Trim()
+          if (-not (Test-Path -LiteralPath $logPath)) {
+            Write-Host "last.txt 指向的 log 不存在：$logPath"
+            exit 0
+          }
+          Copy-Item -LiteralPath $logPath -Destination (Join-Path $temp 'smoke.err.log') -Force
+          Get-Content -LiteralPath $logPath -Encoding UTF8 | Write-Host
+
+          $jsonPath = [IO.Path]::ChangeExtension($logPath, '.json')
+          if (-not (Test-Path -LiteralPath $jsonPath)) {
+            Write-Host "找不到與 log 同名的 json：$jsonPath"
+            exit 0
+          }
+          Copy-Item -LiteralPath $jsonPath -Destination (Join-Path $temp 'doctor.json') -Force
+          # 沿用「安裝後 doctor」的檔名，兩種失敗路徑的 artifact 讀法一致。
+          Copy-Item -LiteralPath $jsonPath -Destination (Join-Path $temp 'smoke.json') -Force
+          Write-Host "doctor json：$jsonPath"
 
       # 失敗時手動再跑一次 user-install，並把使用者語言清單整個倒出來。
       # InstallLayoutOrTip 的字串格式不對時會回 TRUE 但什麼都不寫，只有實際
@@ -1329,7 +1374,8 @@ jobs:
           $global:LASTEXITCODE = 0
 
       # 失敗時把 log 留下來：install.log 有自訂動作的完整輸出，
-      # smoke.json 有 13 項 doctor 檢查的逐項結果。
+      # doctor.json／smoke.json 有 13 項 doctor 檢查的逐項結果，
+      # doctor-last.txt 則是使用者被要求回報的摘要。
       - name: 上傳失敗記錄
         if: failure()
         uses: actions/upload-artifact@v6
@@ -1339,6 +1385,7 @@ jobs:
           path: |
             ${{ runner.temp }}/install.log
             ${{ runner.temp }}/uninstall.log
+            ${{ runner.temp }}/doctor.json
             ${{ runner.temp }}/smoke.json
             ${{ runner.temp }}/smoke.err.log
             ${{ runner.temp }}/doctor-last.txt

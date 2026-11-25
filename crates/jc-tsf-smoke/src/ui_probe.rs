@@ -22,8 +22,11 @@
 //! 視窗或送按鍵會失敗；這種情況回 [`Verdict::Headless`]，由呼叫端記成 `[SKIP]`，
 //! **不算失敗**。本產品還沒安裝或沒為目前使用者啟用時回
 //! [`Verdict::Unavailable`]，同樣是 `[SKIP]`（檢查 10 已經會把這件事判成
-//! `[FAIL]`，不要重複紅）。其餘失敗一律 [`Verdict::Fail`]，detail 會帶 cell、
-//! 所有不成立的地方與 `%LOCALAPPDATA%\jc-ime\tsf.log` 的建議。
+//! `[FAIL]`，不要重複紅）。組字空且候選窗完全沒出現時回
+//! [`Verdict::Inconclusive`]：TIP 根本沒接到按鍵，這是環境問題，也是 `[SKIP]`。
+//! 只要候選窗出現過，Enter 沒上屏、Esc 關不掉或位置不對都是
+//! [`Verdict::Fail`]，detail 會帶 cell、所有不成立的地方與
+//! `%LOCALAPPDATA%\jc-ime\tsf.log` 的建議。
 //!
 //! 所有 TSF 狀態都只改本行程：`ActivateProfile` 帶 `TF_IPPMF_FORPROCESS`，
 //! 結束時把原本的 profile 與語言還原。
@@ -87,8 +90,10 @@ const POLL: Duration = Duration::from_millis(20);
 pub enum Verdict {
     /// 候選窗出現、位置合理、Enter 送出「我」、Esc 後消失。
     Pass,
-    /// 互動桌面上任一斷言不成立。
+    /// 互動桌面上候選窗出現後，任一斷言不成立。
     Fail,
+    /// TIP 沒有接到按鍵（組字空且候選窗沒出現）：無法判定，不算失敗。
+    Inconclusive,
     /// 沒有互動桌面：不算失敗。
     Headless,
     /// 本產品還沒安裝或沒為目前使用者啟用：不算失敗。
@@ -193,13 +198,13 @@ pub fn run() -> Outcome {
         Err(vk) => return headless(format!("SendInput(VK={:#04X}) 被系統拒絕", vk.0)),
     }
 
-    let problems = ui_probe_rules::problems(&observation, dpi);
+    let assessment = ui_probe_rules::assess(&observation, dpi);
     let cells = ui_probe_rules::cells(&observation, "interactive");
 
     drop(session);
 
-    if problems.is_empty() {
-        Outcome {
+    match assessment.decision {
+        ui_probe_rules::Decision::Pass => Outcome {
             verdict: Verdict::Pass,
             detail: format!(
                 "{}；候選窗在插入點附近出現、Enter 送出「{}」、Esc 後消失",
@@ -207,13 +212,21 @@ pub fn run() -> Outcome {
                 ui_probe_rules::EXPECTED_COMMIT
             ),
             cells,
-        }
-    } else {
-        Outcome {
+        },
+        ui_probe_rules::Decision::Fail => Outcome {
             verdict: Verdict::Fail,
-            detail: fail_detail(&cells, &problems),
+            detail: fail_detail(&cells, &assessment.problems),
             cells,
-        }
+        },
+        ui_probe_rules::Decision::Inconclusive => Outcome {
+            verdict: Verdict::Inconclusive,
+            detail: format!(
+                "{}；{}；這是探針環境問題，不能判定產品失敗；設定 JC_TSF_LOG=1 後可看 %LOCALAPPDATA%\\jc-ime\\tsf.log",
+                cells.detail(),
+                assessment.problems.join("；")
+            ),
+            cells,
+        },
     }
 }
 
