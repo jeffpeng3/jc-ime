@@ -1547,7 +1547,7 @@ impl Controller {
             });
             cursor = segment.start + segment.units;
         }
-        if cursor < reading.len() {
+        if cursor < chars.len() {
             let gap: String = chars[cursor..].iter().collect();
             let left = format!("{}{}", self.ctx.left, surface_of(&clauses));
             let started = self.now();

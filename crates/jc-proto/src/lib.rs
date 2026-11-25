@@ -293,6 +293,16 @@ pub enum Request {
     // 序列化／反序列化；T1a 送出的精簡 JSON（只帶 on／context_id 等）也收得下。
     /// 0c `ping`：最簡易的存活檢查。引擎回 [`Response::Acknowledged`]。
     Ping,
+    /// 閒置觸發：外殼計時器確認使用者停頓後送出，讓ライブ変換立刻完成這次轉換。
+    ///
+    /// 引擎對目前 session 呼叫 `ja_live_idle()`，回傳與 `key` 相同的
+    /// [`Response::State`]。沒有日文組字時是便宜的 no-op，直接回目前快照。
+    /// `session` 沿用 0c 信封的欄位；引擎以連線目前的 session 為準。
+    Idle {
+        /// 0c 信封帶來的 session id；省略代表 0。
+        #[serde(default, skip_serializing_if = "is_zero_u64")]
+        session: u64,
+    },
     /// 0c `health`：查版本與狀態，不含文字。引擎回 [`Response::Health`]。
     Health,
     /// 0c `apply_settings`：等所有輸入框組字完成後再套用設定。
@@ -938,6 +948,7 @@ mod tests {
                 r#"{"op":"output_simplified","on":true}"#,
             ),
             (Request::Select { index: 3 }, r#"{"op":"select","index":3}"#),
+            (Request::Idle { session: 4 }, r#"{"op":"idle","session":4}"#),
         ];
         for (request, expected) in cases {
             let text = serde_json::to_string(&request).unwrap();
@@ -967,6 +978,9 @@ mod tests {
 
         let request: Request = serde_json::from_str(r#"{"op":"select"}"#).unwrap();
         assert_eq!(request, Request::Select { index: 0 });
+
+        let request: Request = serde_json::from_str(r#"{"op":"idle"}"#).unwrap();
+        assert_eq!(request, Request::Idle { session: 0 });
     }
 
     #[test]

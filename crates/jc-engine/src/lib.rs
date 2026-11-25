@@ -514,6 +514,7 @@ impl Engine {
                         }
                     }
                     Request::Literal { text, .. } => state(session.literal(&text)),
+                    Request::Idle { .. } => state(session.ja_live_idle()),
                     Request::Toggle => state(session.toggle_english()),
                     Request::Commit => Response::Committed {
                         text: session.commit(),
@@ -700,6 +701,15 @@ impl Engine {
                 }
                 self.with_current(Some(Request::Toggle), |session| {
                     state(session.toggle_english())
+                })
+            }
+            Request::Idle { session } => {
+                if !self.hello {
+                    return not_handshaked();
+                }
+                // 外殼的停頓計時器：沒有日文組字時 ja_live_idle 只回目前快照。
+                self.with_current(Some(Request::Idle { session }), |session| {
+                    state(session.ja_live_idle())
                 })
             }
             Request::Snapshot => {
@@ -1212,6 +1222,7 @@ fn request_op(request: &Request) -> &'static str {
         Request::Hello { .. } => "hello",
         Request::Key { .. } => "key",
         Request::Literal { .. } => "literal",
+        Request::Idle { .. } => "idle",
         Request::Toggle => "toggle",
         Request::Snapshot => "snapshot",
         Request::Commit => "commit",
@@ -1375,6 +1386,18 @@ mod tests {
         );
         assert_eq!(engine.composition(), "");
         assert_eq!(engine.handle(Request::Snapshot), state_of(""));
+    }
+
+    /// 停頓觸發在沒有日文組字時只回目前快照，不改狀態。
+    #[test]
+    fn idle_without_japanese_composition_is_a_noop() {
+        let mut engine = Engine::new();
+        hello(&mut engine);
+        engine.handle(Request::Key {
+            key: Key::char('ㄇ', false),
+        });
+        let before = engine.handle(Request::Snapshot);
+        assert_eq!(engine.handle(Request::Idle { session: 0 }), before);
     }
 
     #[test]

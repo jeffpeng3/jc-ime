@@ -23,3 +23,21 @@
 
 `trigger`／`neural_scope`／`keep_tail` 仍保留給邊界觸發對照，預設不參與
 延遲整句路徑。完整數據見 `docs/reports/live-default-2026-11-20.md`。
+
+## 外殼觸發（`idle`）
+
+`jc-core` 只在使用者停頓後執行轉換；停頓本身由外殼計時器判斷。
+
+- TSF 在每次按鍵處理完、且引擎回應仍是組字中時，重排一個 300 ms 的
+  `WM_TIMER`。計時器掛在候選窗的訊息視窗上，與 `settle_focus` 共用訊息迴圈，
+  不另開執行緒。
+- 到期送出 `{"op":"idle","session":n}`。引擎對目前 session 呼叫
+  `Session::ja_live_idle()`，回傳與 `key` 相同的 `State`；外殼用既有的
+  `present` 套用，沒有第二條更新路徑。
+- 300 ms 沿用 `live::Config::idle_delay` 的預設值。外殼只提供固定節拍；真正
+  要不要轉換仍由引擎的 `enabled` 與 `deferred_sentence` 決定。
+- 下一次按鍵會用同一個 timer id 重設期限，所以連續輸入不會每字都多一次
+  IPC。候選窗開著（`navigating`）、組字結束與 Deactivate 都會取消計時器。
+- `idle` 歸類成互動請求，沿用 10 秒預算。計時器路徑不重試、不主動啟動引擎，
+  連不上就放棄這一次，下一次按鍵再重連。
+- 沒有日文組字時 `ja_live_idle()` 只回目前快照，是便宜的 no-op。

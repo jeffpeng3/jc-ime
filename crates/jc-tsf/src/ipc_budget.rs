@@ -19,7 +19,7 @@ pub const TEARDOWN_TIMEOUT_MS: u32 = 1_000;
 
 /// 互動請求的整體預算。
 ///
-/// `key`／`toggle`／`commit`／`snapshot` 可能牽涉組字與候選計算，10 秒是給慢機器
+/// `key`／`toggle`／`commit`／`snapshot`／`idle` 可能牽涉組字與候選計算，10 秒是給慢機器
 /// 的上限；不因為超過 1 秒就中止，因為中止會讓引擎狀態與外殼不同步。
 pub const HANDLE_TIMEOUT_MS: u32 = 10_000;
 
@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn interactive_requests_get_ten_seconds() {
-        for op in ["key", "toggle", "commit", "snapshot"] {
+        for op in ["key", "toggle", "commit", "snapshot", "idle"] {
             assert_eq!(
                 request_budget_ms(&json!({"op": op})),
                 HANDLE_TIMEOUT_MS,

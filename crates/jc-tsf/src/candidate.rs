@@ -30,6 +30,12 @@ const CLASS: windows_core::PCWSTR = w!("jcCandidateCallback");
 const SETTLE_FOCUS_TIMER: usize = 0x0c18;
 /// WM_TIMER 只在訊息佇列沒有其他訊息時才產生：宿主一連串的焦點變化都處理完才輪到它。
 const SETTLE_FOCUS_MS: u32 = 50;
+/// ライブ変換的停頓計時器：最後一鍵之後等多久才送 `idle`。
+///
+/// 300ms 沿用 `jc_core::ja::live::Config::idle_delay` 的預設值；外殼只負責
+/// 計時，轉換時機仍由核心的停頓設定決定。
+const JA_LIVE_IDLE_TIMER: usize = 0x0c19;
+const JA_LIVE_IDLE_MS: u32 = 300;
 
 /// windows-rs 0.62 在 32-bit target 把 `SetWindowLongPtrW` alias 成 `SetWindowLongW`
 /// （收 `i32`），64-bit 才是真函式（收 `isize`）。這兩個 helper 把差異封在這裡，
@@ -116,6 +122,20 @@ impl CandidateWindow {
             let _ = KillTimer(Some(self.hwnd), SETTLE_FOCUS_TIMER);
         }
     }
+
+    /// 重新起算ライブ変換的停頓；同一個 timer id 會覆蓋上一次的期限。
+    pub fn ja_live_idle_later(&self) {
+        unsafe {
+            let _ = SetTimer(Some(self.hwnd), JA_LIVE_IDLE_TIMER, JA_LIVE_IDLE_MS, None);
+        }
+    }
+
+    /// 取消ライブ変換的停頓：下一個按鍵、組字結束與 Deactivate 都用得到。
+    pub fn cancel_ja_live_idle(&self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), JA_LIVE_IDLE_TIMER);
+        }
+    }
 }
 
 impl Drop for CandidateWindow {
@@ -144,6 +164,15 @@ unsafe extern "system" fn callback(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         let _ = crate::guarded("SettleFocus", || {
             if let Some(service) = service_at(hwnd) {
                 service.settle_focus();
+            }
+            Ok(())
+        });
+        LRESULT(0)
+    } else if msg == WM_TIMER && wp.0 == JA_LIVE_IDLE_TIMER {
+        let _ = KillTimer(Some(hwnd), JA_LIVE_IDLE_TIMER);
+        let _ = crate::guarded("JaIdle", || {
+            if let Some(service) = service_at(hwnd) {
+                service.ja_live_idle();
             }
             Ok(())
         });

@@ -1138,7 +1138,9 @@ impl TextService_Impl {
             snapshot.composing(),
             snapshot.commit.chars().count()
         );
-        self.present(ctx, &snapshot)
+        let eaten = self.present(ctx, &snapshot);
+        self.schedule_ja_live_idle(&snapshot);
+        eaten
     }
 
     /// 把命中 bindings 的修飾鍵組合送給引擎；引擎回 handled=false 時放行。
@@ -1152,7 +1154,9 @@ impl TextService_Impl {
             snapshot.composing(),
             snapshot.text()
         );
-        self.present(ctx, &snapshot)
+        let eaten = self.present(ctx, &snapshot);
+        self.schedule_ja_live_idle(&snapshot);
+        eaten
     }
 
     /// 把字面文字送進引擎的 `literal` op，不重新規劃前面的注音。
@@ -1166,11 +1170,74 @@ impl TextService_Impl {
             snapshot.composing(),
             snapshot.text()
         );
-        self.present(ctx, &snapshot)
+        let eaten = self.present(ctx, &snapshot);
+        self.schedule_ja_live_idle(&snapshot);
+        eaten
+    }
+
+    /// 按鍵處理完後重排ライブ変換的停頓計時器。
+    ///
+    /// 只在回應仍是組字中時排；同一個 timer id 重設期限，所以連續輸入不會
+    /// 每字都多一次 IPC。候選窗開著（`navigating`／`shown`）或組字結束就取消。
+    /// 300ms 沿用 `jc_core::ja::live::Config::idle_delay` 的預設值。
+    fn schedule_ja_live_idle(&self, snapshot: &Snapshot) {
+        let st = self.state.borrow();
+        let Some(window) = st.callback.as_ref() else {
+            return;
+        };
+        if snapshot.ok && snapshot.composing() && !snapshot.navigating && st.shown.is_none() {
+            window.ja_live_idle_later();
+        } else {
+            window.cancel_ja_live_idle();
+        }
+    }
+
+    /// 取消排定的ライブ変換停頓；計時器在候選窗的訊息視窗上。
+    fn cancel_ja_live_idle(&self) {
+        if let Ok(st) = self.state.try_borrow() {
+            if let Some(window) = st.callback.as_ref() {
+                window.cancel_ja_live_idle();
+            }
+        }
+    }
+
+    /// 停頓計時器到期：送 `idle` 並用與按鍵相同的 `present` 套用結果。
+    ///
+    /// 候選窗開著、已經離開組字或沒有焦點時不送。連不上時 `Session::idle`
+    /// 直接回空快照，不重試；下一次按鍵會重連。
+    pub(crate) fn ja_live_idle(&self) {
+        let (composing, shown) = {
+            let st = self.state.borrow();
+            (st.composing, st.shown.is_some())
+        };
+        if !composing || shown {
+            zdebug!("ja idle 略過 composing={} shown={}", composing, shown);
+            return;
+        }
+        let Some(ctx) = self
+            .composition_context()
+            .or_else(|| self.focused_context())
+        else {
+            zdebug!("ja idle 略過：沒有組字 context");
+            return;
+        };
+        let snapshot = match self.state.try_borrow_mut() {
+            Ok(mut st) => st.session.idle(),
+            Err(_) => return,
+        };
+        zlog!(
+            "ja idle 引擎回 ok={} composing={} preedit={}",
+            snapshot.ok,
+            snapshot.composing(),
+            snapshot.text()
+        );
+        self.present(Some(&ctx), &snapshot);
     }
 
     /// 結束目前組字：commit（失焦、停用）或 cancel（應用程式自行終止組字）。
     fn finish(&self, ctx: Option<&ITfContext>, kind: &str) {
+        // 組字收尾後不再補送ライブ変換。
+        self.cancel_ja_live_idle();
         let (composing, completing) = {
             let st = self.state.borrow();
             (st.composing, st.completing.is_some())
@@ -1941,6 +2008,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             privacy::invalidate();
             let ctx = self.focused_context();
             self.finish(ctx.as_ref(), "commit");
+            self.cancel_ja_live_idle();
             self.forget_candidates();
             // 只清 UI／composition／callback，**不清 session，也不拆它的 IPC client**。
             // 這樣第二次 Activate 不會從零重建 worker，也不會踩到 TF_E_NOLOCK 後把 worker 拆掉。

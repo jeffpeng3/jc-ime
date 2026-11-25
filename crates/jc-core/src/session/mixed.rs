@@ -896,13 +896,15 @@ impl Session {
         self.ja_run_keys.clear();
     }
 
-    /// 日文推斷中退格後，把原始按鍵同步回目前的羅馬字狀態。
+    /// 日文組字中退格後，把原始按鍵同步回目前的羅馬字狀態。
     ///
     /// `romaji.backspace` 可能一次退掉一整組羅馬字（`kya` 是三個鍵），直接
     /// 砍一個字元會讓退回混打時重播錯的按鍵。用目前狀態反推最長的原始前綴；
     /// 找不到時清空，退回混打時就不會硬塞已刪除的按鍵。
+    ///
+    /// `ja_only`（日文主語言）也走同一條路徑：原始羅馬字要留著當退化候選。
     pub(super) fn sync_ja_run_keys(&mut self) {
-        if !self.ja_run {
+        if !self.in_ja_lane() {
             return;
         }
         let units = self.romaji.units().to_vec();

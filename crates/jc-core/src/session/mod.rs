@@ -2650,6 +2650,72 @@ mod tests {
         }
     }
 
+    /// 真實 ja pack 的ライブ変換 session：停頓後轉換，助詞讀音交替開啟。
+    fn real_ja_live_session() -> Option<Session> {
+        let path = jc_testdata::path("packs/ja-lexicon-mozc-v2.pack")?;
+        let decoder = crate::ja::decode::JaDecoder::open_with_context(&path)
+            .expect("載入 ja pack")
+            .with_particle_rewrite(true);
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.ja = Some(std::sync::Arc::new(decoder));
+        config.ja_only = true;
+        config.ja_live = live::Config {
+            enabled: true,
+            idle_delay: std::time::Duration::ZERO,
+            ..live::Config::default()
+        };
+        Some(Session::new(config))
+    }
+
+    /// 日文的 ↓ 不移動游標，候選窗列出整段組字。
+    #[test]
+    fn test_ja_down_keeps_cursor_and_lists_composition() {
+        let Some(mut s) = real_ja_live_session() else {
+            eprintln!("缺少測試資料：packs/ja-lexicon-mozc-v2.pack");
+            return;
+        };
+        type_ja(&mut s, "watashiwa");
+        assert_eq!(s.ja_live_idle().preedit, "私は");
+        let before = s.snapshot();
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(snap.cursor_rune, before.cursor_rune, "↓ 不移動游標");
+        assert!(s.candidate_window, "↓ 要開候選窗");
+        assert!(snap.navigating, "↓ 進入候選選取");
+        let surfaces: Vec<&str> = snap
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        assert!(surfaces.len() > 5, "要列整段候選：{surfaces:?}");
+        for want in ["私は", "わたしわ", "ワタシワ", "ﾜﾀｼﾜ", "watashiwa"] {
+            assert!(surfaces.contains(&want), "{want} 不在 {surfaces:?}");
+        }
+        // 整段候選要換掉整段，不能只換游標所在文節。
+        let index = surfaces
+            .iter()
+            .position(|surface| *surface == "わたしわ")
+            .expect("わたしわ 候選");
+        let chosen = s.choose_candidate(index).expect("選整段假名");
+        assert_eq!(chosen.preedit, "わたしわ");
+        assert!(!chosen.navigating);
+    }
+
+    /// 日文組字結尾按 → 只停在結尾，不開候選窗、不進入選取。
+    #[test]
+    fn test_ja_arrow_right_at_end_does_not_open_window() {
+        let Some(mut s) = real_ja_live_session() else {
+            eprintln!("缺少測試資料：packs/ja-lexicon-mozc-v2.pack");
+            return;
+        };
+        type_ja(&mut s, "watashiwa");
+        s.ja_live_idle();
+        let before = s.snapshot();
+        let snap = s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(snap.cursor_rune, before.cursor_rune, "→ 在結尾不移動游標");
+        assert!(!snap.navigating, "→ 在結尾不進入選取");
+        assert!(!s.candidate_window, "→ 在結尾不開候選窗");
+    }
+
     /// 使用者手選的片段在後續停頓重轉時保持不變。
     #[test]
     fn test_ja_deferred_sentence_keeps_user_segment_on_reconvert() {

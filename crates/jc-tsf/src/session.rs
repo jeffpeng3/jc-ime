@@ -595,6 +595,11 @@ pub fn to_jc_request(envelope: &Value) -> Value {
             // UnknownOp；那個請求又進了重播紀錄，之後每次 ensure_open 重播都會
             // 失敗，整個 session 就再也開不起來（實機：每個鍵都「server 不可用」）。
             "display" => json!({"op": "snapshot"}),
+            // 停頓觸發的ライブ変換：引擎沒有日文組字時回目前快照，是便宜的 no-op。
+            "idle" => json!({
+                "op": "idle",
+                "session": envelope["session"].as_u64().unwrap_or(0),
+            }),
             // 候選窗滑鼠點選：jc 有真正的 select op，index 是候選的絕對索引。
             // 舊路徑靠 fallback 會送出協定不認得的 op，引擎回 UnknownOp。
             "select" => json!({
@@ -1679,7 +1684,15 @@ impl Session {
     }
 
     /// 送出一個 proto.Request。連線中斷時自動重連、重開 session 並重播。
-    pub fn handle(&mut self, mut request: Value) -> Snapshot {
+    pub fn handle(&mut self, request: Value) -> Snapshot {
+        self.handle_retrying(request, true)
+    }
+
+    /// 送出一個請求；`retry` 為 `false` 時失敗只放棄這一次。
+    ///
+    /// 停頓計時器走不重試的路徑：計時器在 UI 執行緒上跑，不能因為引擎沒回應
+    /// 就連續重試或等重啟期限。下一次按鍵仍會走一般路徑重連。
+    fn handle_retrying(&mut self, mut request: Value, retry: bool) -> Snapshot {
         if self.private {
             request["private"] = Value::Bool(true);
         }
@@ -1721,16 +1734,25 @@ impl Session {
         loop {
             attempts += 1;
             if attempts > 3 {
+                if !retry {
+                    break;
+                }
                 wait_until = wait_until.or(self.client.restart_deadline());
                 if !wait_until.is_some_and(|until| Instant::now() < until) {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            if !self.client.connect() || !self.ensure_open() {
+            let connected = if retry {
+                self.client.connect()
+            } else {
+                // 計時器不主動啟動引擎，也不等重啟。
+                self.client.connect_existing()
+            };
+            if !connected || !self.ensure_open() {
                 // 引擎還活著只是這次沒回：不要在同一個按鍵上重試到整體期限，
                 // 直接放行，下一次按鍵重連後用 snapshot 對齊。
-                if self.note_transport_failure() {
+                if self.note_transport_failure() || !retry {
                     break;
                 }
                 continue;
@@ -1749,7 +1771,7 @@ impl Session {
                 .call(&json!({"op": "handle", "session": self.id, "req": request}));
             let Some(reply) = reply else {
                 zlog!("handle op={} 引擎沒有回應 attempt={}", kind, attempts);
-                if self.note_transport_failure() {
+                if self.note_transport_failure() || !retry {
                     break;
                 }
                 continue;
@@ -1761,6 +1783,9 @@ impl Session {
                     reply["error"].as_str().unwrap_or("?")
                 );
                 self.id = 0;
+                if !retry {
+                    break;
+                }
                 continue;
             }
             let mut s = parse(&reply);
@@ -1772,7 +1797,7 @@ impl Session {
             // 在組字中採用引擎回報的語言（給 UI 顯示用）。
             // Caps Lock 英文是暫時狀態，引擎才是權威（重連後設定可能已被關掉）；
             // 一般按鍵則一律用外殼記住的中英模式。
-            let adopt_engine_mode = (!matches!(kind.as_str(), "key" | "literal")
+            let adopt_engine_mode = (!matches!(kind.as_str(), "key" | "literal" | "idle")
                 || self.caps_english)
                 && s.commit.is_empty()
                 && !s.preedit.is_empty();
@@ -1883,6 +1908,18 @@ impl Session {
     /// 把字面文字原樣交給引擎接在目前組字後面。
     pub fn literal(&mut self, text: &str) -> Snapshot {
         self.handle(json!({"type": "literal", "text": text}))
+    }
+
+    /// 停頓後請引擎立刻做日文ライブ変換。
+    ///
+    /// 引擎對非日文組字是 no-op，回目前快照；外殼用同一條 `present` 套用。
+    /// 計時器路徑不重試、不主動啟動引擎，連不上就放棄這一次。
+    pub fn idle(&mut self) -> Snapshot {
+        if !self.client.connected() {
+            zlog!("idle 略過：沒有連線");
+            return Snapshot::default();
+        }
+        self.handle_retrying(json!({"type": "idle"}), false)
     }
 
     /// 為游標所在片段重開候選。
@@ -2504,6 +2541,20 @@ mod tests {
             jc_proto::Request::Key { key } => assert_eq!(key.code, jc_proto::KeyCode::Escape),
             other => panic!("應是 Escape：{other:?}"),
         }
+    }
+
+    #[test]
+    fn to_jc_request_maps_idle_to_idle_op() {
+        let envelope = json!({
+            "op": "handle",
+            "session": 4,
+            "req": {"type": "idle"},
+        });
+        let request = to_jc_request(&envelope);
+        assert_eq!(request["op"], "idle");
+        assert_eq!(request["session"], 4);
+        let parsed: jc_proto::Request = serde_json::from_value(request).unwrap();
+        assert_eq!(parsed, jc_proto::Request::Idle { session: 4 });
     }
 
     #[test]

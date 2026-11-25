@@ -788,27 +788,33 @@ impl Session {
         self.zh_window_last = true;
     }
 
-    /// ↓ 在日文片段上開候選：結尾先左移一格，只列游標所在片段。
+    /// ↓ 在日文片段上開候選：游標不動，列出整段組字。
     pub(super) fn open_ja_cursor_candidates(&mut self) -> bool {
         let text = self.base.clone();
         if text.is_empty() {
             return false;
         }
-        let runes = text.chars().count();
         let at = rune_offset(&text, self.ja_cursor.min(text.len()));
-        if at >= runes {
-            self.move_ja_cursor(-1);
-        }
+        // 日文的 ↓ 只開候選，不移動游標：延遲整句模式列出整段組字的轉換
+        // 結果，逐字変換模式仍只列游標所在片段。
+        let whole = self
+            .live
+            .as_ref()
+            .is_some_and(LiveController::sentence_mode);
         let opened = if self.live.is_some() {
-            self.open_ja_candidates()
+            if whole {
+                self.open_ja_all_candidates()
+            } else {
+                self.open_ja_candidates()
+            }
         } else {
             !self.candidates.is_empty()
         };
         if !opened {
             return false;
         }
-        // 原始羅馬字也是一個可選回來的候選。
-        let raw = if self.ja_run {
+        // 原始羅馬字也是一個可選回來的候選；`ja_only` 模式同樣保留按鍵。
+        let raw = if !self.ja_run_keys.is_empty() {
             self.ja_run_keys.clone()
         } else {
             self.romaji
@@ -841,11 +847,60 @@ impl Session {
             raw_toneless: String::new(),
             tone_key: None,
             rune_start: at,
-            rune_len: 1,
+            rune_len: if whole {
+                text.chars().count().max(1)
+            } else {
+                1
+            },
             syllable: None,
             reading: None,
             ja: true,
         });
+        true
+    }
+
+    /// 開啟整段日文組字的候選；日文的 ↓ 用，游標不動。
+    ///
+    /// [`Session::open_ja_candidates`] 只列游標所在片段；停頓轉換後使用者按 ↓
+    /// 想看到整句的替代寫法，所以這裡用整段讀音查一次候選，再把目前詞面排到
+    /// 最前面。
+    fn open_ja_all_candidates(&mut self) -> bool {
+        let Some(live) = self.live.as_ref() else {
+            return false;
+        };
+        let units = self.romaji.units().len();
+        if units == 0 {
+            return false;
+        }
+        let Ok(candidates) = live.candidates(crate::ja::decode::JaSpan::new(0, units)) else {
+            return false;
+        };
+        if candidates.is_empty() {
+            return false;
+        }
+        let mut list: Vec<Candidate> = candidates
+            .into_iter()
+            .map(|candidate| {
+                Candidate::new(
+                    candidate.surface,
+                    candidate.reading,
+                    candidate.cost,
+                    CandidateSource::Lexicon,
+                )
+            })
+            .collect();
+        if let Some(at) = list
+            .iter()
+            .position(|candidate| candidate.surface == self.base)
+        {
+            let current = list.remove(at);
+            list.insert(0, current);
+        }
+        self.candidates = list;
+        self.highlighted = 0;
+        self.candidate_window = true;
+        self.navigating = false;
+        self.keep_candidates = true;
         true
     }
 
@@ -902,6 +957,14 @@ impl Session {
 
     /// 把候選套到游標所在片段，其他片段不變。
     pub(super) fn apply_ja_candidate(&mut self, index: usize) -> bool {
+        // ↓ 開的是整段組字的候選時，選字換掉整段，不是只換游標所在文節。
+        if self
+            .mixed_target
+            .as_ref()
+            .is_some_and(|target| target.ja && target.rune_len > 1)
+        {
+            return self.apply_ja_whole_candidate(index);
+        }
         let Some(segment) = self.active_segment() else {
             return false;
         };
@@ -949,6 +1012,43 @@ impl Session {
         self.candidate_expanded = false;
         self.mixed_target = None;
         self.mixed_choices.clear();
+        true
+    }
+
+    /// 整段組字的候選：鎖定整段讀音後重新轉換，換掉整個詞面。
+    ///
+    /// 只有延遲整句模式會走到這裡（`↓` 用整段候選時）；逐字変換仍走片段路徑。
+    fn apply_ja_whole_candidate(&mut self, index: usize) -> bool {
+        let Some(candidate) = self.candidates.get(index).cloned() else {
+            return false;
+        };
+        let units = self.romaji.units().to_vec();
+        if units.is_empty() {
+            return false;
+        }
+        let reading: String = units.iter().map(Unit::as_str).collect();
+        let Some(live) = self.live.as_mut() else {
+            return false;
+        };
+        live.set_user_segments(vec![crate::ja::live::UserSegment {
+            start: 0,
+            units: units.len(),
+            reading: reading.clone(),
+            surface: candidate.surface.clone(),
+        }]);
+        let plan = live.convert_now();
+        self.learn_candidate(index);
+        self.capture_ja_users();
+        self.apply_live_plan(&plan, &units, &reading);
+        self.candidate_window = false;
+        self.navigating = false;
+        self.keep_candidates = false;
+        self.candidate_expanded = false;
+        self.candidates.clear();
+        self.highlighted = 0;
+        self.mixed_target = None;
+        self.mixed_choices.clear();
+        self.ja_cursor = self.base.len();
         true
     }
 
@@ -1666,7 +1766,17 @@ impl Session {
             self.move_highlight(delta);
             return;
         }
-        if self.in_ja_lane() && self.live.is_some() && self.move_ja_cursor(delta) {
+        if self.in_ja_lane() && self.live.is_some() {
+            if self.move_ja_cursor(delta) {
+                return;
+            }
+            // 游標已經在組字頭尾：方向鍵不開候選窗，也不留下選取狀態。
+            // 舊路徑會落到下面的 `navigating = true`，在結尾按 → 時跳出一個
+            // 只有目前詞面的候選窗。
+            self.candidate_window = false;
+            self.candidate_expanded = false;
+            self.navigating = false;
+            self.keep_candidates = false;
             return;
         }
         if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
