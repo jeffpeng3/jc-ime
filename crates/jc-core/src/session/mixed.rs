@@ -2984,6 +2984,9 @@ mod tests {
         lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
         let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        // 詞表要明確給：預設詞表依機器上有沒有英文資料包而不同，
+        // `hell` 不在內建原型裡，靠外部詞表才會過。
+        config.english = Some(std::sync::Arc::new(test_english(&["hello", "hell"])));
         let mut s = Session::new(config);
         mixed_type(&mut s, "ji3hello");
         assert_eq!(s.snapshot().preedit, "我hello");
@@ -3214,6 +3217,8 @@ mod tests {
         lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
         let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        // 同 `test_mixed_backspace_deletes_one_english_rune`：詞表要明確給。
+        config.english = Some(std::sync::Arc::new(test_english(&["hello", "hell"])));
         let mut s = Session::new(config);
         mixed_type(&mut s, "ji3hello");
         s.press(Key::new(KeyCode::ArrowLeft, None, false));

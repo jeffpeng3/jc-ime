@@ -1658,9 +1658,22 @@ impl Default for English {
 /// 全行程共用的英文查詢層：優先用系統上的英文資料包，載入不到才退回原型。
 ///
 /// 載入只做一次；之後所有 [`Router`] 與 [`AsciiPiece`] 都共用同一份唯讀詞表。
+#[cfg(not(test))]
 pub fn default_english() -> &'static English {
     static ENGLISH: OnceLock<English> = OnceLock::new();
     ENGLISH.get_or_init(English::load_default)
+}
+
+/// 測試專用的預設英文詞表：只用內建原型詞。
+///
+/// 單元測試不能讀 [`DEFAULT_DATA_ROOT`]；那台機器有沒有 `english/` 會讓
+/// 同一支測試在 CI 與本機得到不同結果（`test_mixed_backspace_deletes_one_
+/// english_rune` 就因此只在 Windows CI 紅）。要測完整詞表的行為，請在
+/// `SessionConfig::english` 明確指定。
+#[cfg(test)]
+pub fn default_english() -> &'static English {
+    static ENGLISH: OnceLock<English> = OnceLock::new();
+    ENGLISH.get_or_init(|| English::new(None))
 }
 
 impl Lookup for English {
