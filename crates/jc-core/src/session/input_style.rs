@@ -1453,7 +1453,7 @@ mod tests {
         assert_eq!(snap.preedit, "「");
         assert_eq!(snap.cursor_rune, 1, "選完游標在符號右側");
 
-        // ← 回去再 ↓：整組 `[` 變體都要重新出現。
+        // ← 回去再 ↓：整組 `[` 變體都要重新出現，目前變體排最前面。
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         let snap = s.press(Key::new(KeyCode::Down, None, false));
         let surfaces: Vec<&str> = snap
@@ -1461,12 +1461,11 @@ mod tests {
             .iter()
             .map(|candidate| candidate.surface.as_str())
             .collect();
-        for want in ["［", "「", "『", "【", "〔", "︹", "︻", "﹁", "﹃", "﹝"] {
-            assert!(
-                surfaces.contains(&want),
-                "{want} 不在重新打開的候選：{surfaces:?}"
-            );
-        }
+        assert_eq!(
+            surfaces,
+            ["「", "［", "『", "【", "〔", "︹", "︻", "﹁", "﹃", "﹝"],
+            "重開時目前變體排最前面，其餘照原順序"
+        );
     }
 
     /// 連按兩下反引號是 ‵。
