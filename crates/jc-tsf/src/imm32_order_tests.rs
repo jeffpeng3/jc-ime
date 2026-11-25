@@ -823,6 +823,26 @@ fn imm32_lone_modifiers_keep_the_composition() {
     assert_eq!(h.app.text(), "前");
 }
 
+#[test]
+fn imm32_shift_letter_appends_to_the_composition() {
+    // 實機：台ㄨㄢ 之後按 Shift+A，組字消失、A 變成文件的一般字元。
+    // 組字中的 Shift＋字母要走 literal，組字區變成「你A」，不得先提交。
+    let Some(mut h) = open_zhuyin(TS_SS_TRANSITORY) else {
+        return;
+    };
+    plain_keyboard();
+    h.view_is_app();
+    h.zhuyin("su3");
+    assert_eq!(h.doc.composing_text(), "你");
+    set_mods(false, false, false, true);
+    let eaten = h.press(0x41, scan_of(0x41), Act::Char('A'));
+    set_mods(false, false, false, false);
+    assert!(eaten, "Shift+A 由輸入法吃下");
+    assert!(h.composing(), "組字要留著");
+    assert_eq!(h.doc.composing_text(), "你A");
+    assert_eq!(h.app.text(), "前", "A 不得直接打進文件");
+}
+
 /// 組字中按 Ctrl+這一鍵，檢查走 #66 的流程：經相容層送出一次，佇列是 Char 在前、Key 在後（同 vk、同 lParam），
 /// 快捷鍵只觸發一次而且觸發時文件已含整段組字。`composed` 是按下之前的組字文字。
 fn assert_ctrl_shortcut_follows_text(h: &mut Host, vk: u32, composed: &str, tag: &str) {

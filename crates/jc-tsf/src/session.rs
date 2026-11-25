@@ -1094,6 +1094,8 @@ pub struct Session {
     bindings_revision: u64,
     /// 上次向引擎更新 bindings 的時間；最多 5 秒一次。
     bindings_at: Option<Instant>,
+    /// health／open 回報的中英切換鍵設定。Shift 放開時只讀快取，不產生 IPC。
+    shift_config: keys::ShiftConfig,
 }
 
 impl Session {
@@ -1148,6 +1150,7 @@ impl Session {
             bindings: BTreeMap::new(),
             bindings_revision: 0,
             bindings_at: None,
+            shift_config: keys::ShiftConfig::default(),
         }
     }
 
@@ -1171,6 +1174,17 @@ impl Session {
         if !self.japanese_cap {
             self.japanese = false;
         }
+        self.learn_shift_config(info);
+    }
+
+    /// 從 health／open 的 info 記下中英切換鍵設定。
+    ///
+    /// `Ready` 的 info 是空物件；不要因此把已學到的設定洗回預設值。
+    fn learn_shift_config(&mut self, info: &Value) {
+        if info.as_object().is_none_or(|info| info.is_empty()) {
+            return;
+        }
+        self.shift_config = keys::ShiftConfig::from_info(Some(info));
     }
 
     /// 從 Ready／Health 的回應學到 bindings 與設定版次。
@@ -1216,6 +1230,7 @@ impl Session {
         if reply["ok"] != true {
             return false;
         }
+        self.learn_shift_config(&reply["info"]);
         self.bindings_at = Some(Instant::now());
         let revision = reply["settings_revision"]
             .as_u64()
@@ -1261,7 +1276,10 @@ impl Session {
             self.client.release();
         }
         match reply.filter(|r| r["ok"] == true) {
-            Some(reply) => self.learn_simplified(&reply["info"]),
+            Some(reply) => {
+                self.learn_shift_config(&reply["info"]);
+                self.learn_simplified(&reply["info"])
+            }
             None => false,
         }
     }
@@ -1476,16 +1494,12 @@ impl Session {
     }
 
     /// 引擎目前載入的中英切換鍵設定。
-    pub fn shift_config(&mut self) -> keys::ShiftConfig {
-        if self.client.connected() {
-            self.client.alive();
-        }
-        let reply = self.client.call(&json!({"op": "health"}));
-        let info = reply
-            .as_ref()
-            .filter(|r| r["ok"] == true)
-            .map(|r| &r["info"]);
-        keys::ShiftConfig::from_info(info)
+    ///
+    /// 只讀 `health`／`open` 學到的快取。Shift 放開時會走這裡，不能在按鍵回呼
+    /// 裡送 health：引擎慢或暫時連不上時，一次探測就會讓整個 session 進入
+    /// 重啟等待，使用者只按了 Shift 卻看到「server 不可用」。
+    pub fn shift_config(&self) -> keys::ShiftConfig {
+        self.shift_config
     }
 
     /// 沒在組字時這個鍵要不要交給引擎。
@@ -1521,6 +1535,7 @@ impl Session {
                 .filter(|r| r["ok"] == true)
             {
                 Some(reply) => {
+                    self.learn_shift_config(&reply["info"]);
                     self.idle_info = Some(reply["info"].clone());
                     self.idle_generation = self.client.generation();
                 }
@@ -1930,10 +1945,34 @@ impl Session {
     }
 
     /// 單按 Shift 或輸入指示器按鈕切換中英。
+    ///
+    /// 中英模式由外殼保存，引擎的 `toggle` 只是回目前快照（no-op）。這裡只改
+    /// 本機狀態，不送 IPC、不提交組字：Shift 是修飾鍵，不該讓引擎慢或暫時
+    /// 連不上時把整個 session 判成掛掉，也不該讓進行中的組字消失。
     pub fn toggle(&mut self) -> Snapshot {
-        let restore = self.toggled;
-        let snapshot = self.handle(json!({"type": "toggle", "restore": restore}));
-        self.toggled = snapshot.ok;
+        let from_english = self.english;
+        self.base_english = !self.base_english;
+        self.english = self.base_english;
+        self.caps_english = false;
+        self.mode_known = true;
+        self.toggled = false;
+        // 英文補全的待選字不是文件裡的組字：切回中文時丟掉，不要重連後又
+        // 從重播紀錄長回來。中文組字則保留，切換不得提交或清掉它。
+        if from_english && self.english_state.english_pending {
+            self.log.clear();
+            self.cleared = None;
+            self.english_state = Snapshot::default();
+        }
+        let mut snapshot = self.english_state.clone();
+        snapshot.ok = true;
+        snapshot.handled = true;
+        snapshot.english = self.english;
+        snapshot.caps_english = false;
+        snapshot.caps_lock = false;
+        // 上一次快照可能帶著已送出的 commit；切換模式不能再送一次。
+        snapshot.commit.clear();
+        snapshot.notices.clear();
+        snapshot.bell = false;
         snapshot
     }
 
@@ -3455,16 +3494,64 @@ mod tests {
     }
 
     #[test]
-    fn immediate_toggle_back_restores_pending_zhuyin() {
+    fn shift_config_is_cached_and_toggle_sends_nothing() {
+        let (mut s, st) = toy_session();
+        st.lock().unwrap().info = json!({
+            "left_shift": "true",
+            "right_shift": "false",
+            "shift_tap_ms": "450",
+        });
+        let _ = s.learn_mode(true);
+        let before = st.lock().unwrap().requests.len();
+        let config = s.shift_config();
+        assert!(config.toggles(keys::Side::Left), "先從 health 學到設定");
+        assert!(!config.toggles(keys::Side::Right));
+        assert_eq!(config.tap_ms, 450);
+
+        let snap = s.toggle();
+        assert!(snap.ok && snap.english && snap.commit.is_empty());
+        assert_eq!(
+            st.lock().unwrap().requests.len(),
+            before,
+            "Shift 切換不得送任何 IPC"
+        );
+    }
+
+    #[test]
+    fn toggle_keeps_the_composition_without_asking_the_engine() {
+        let (mut s, st) = toy_session();
+        assert!(s.key("j").handled);
+        let before = st.lock().unwrap().requests.len();
+        let snap = s.toggle();
+        assert!(snap.ok && snap.english, "切到英文");
+        assert_eq!(snap.text(), "ㄨ", "組字留著");
+        assert!(snap.commit.is_empty(), "不得提交組字");
+        assert_eq!(
+            st.lock().unwrap().requests.len(),
+            before,
+            "toggle 只改外殼狀態"
+        );
+    }
+
+    #[test]
+    fn toggle_works_without_an_engine() {
+        let mut s = Session::new();
+        let snap = s.toggle();
+        assert!(snap.ok && s.english(), "連不上引擎時 Shift 仍要切英文");
+        assert_eq!(snap.commit, "");
+    }
+
+    #[test]
+    fn toggle_keeps_pending_zhuyin_without_committing() {
         let (mut s, _) = toy_session();
         s.key("j");
         let english = s.toggle();
         assert!(
-            english.english && !english.composing(),
-            "切到英文清掉未打完的注音（#90）"
+            english.english && english.composing() && english.commit.is_empty(),
+            "切到英文不提交、也不丟掉未打完的注音（#90）"
         );
         let back = s.toggle();
-        assert!(!back.english);
+        assert!(!back.english && back.text() == "ㄨ" && back.commit.is_empty());
         s.client.disconnect_for_test();
         let replayed = s.key("i");
         assert!(!replayed.english, "斷線重播後仍是注音");
@@ -3472,8 +3559,8 @@ mod tests {
         s.bypassed();
         let snap = s.toggle();
         assert!(
-            !snap.english && !snap.composing(),
-            "切換之間有交還宿主的按鍵就不放回"
+            !snap.english && snap.composing() && snap.commit.is_empty(),
+            "切換之間有交還宿主的按鍵也不提交組字"
         );
         s.reset();
     }

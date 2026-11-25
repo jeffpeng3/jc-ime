@@ -560,9 +560,10 @@ impl TextService_Impl {
 
     /// 輸入指示器按鈕的左鍵：切換中英。
     pub(crate) fn toggle_mode(&self) {
-        let ctx = self.focused_context();
         let snapshot = self.state.borrow_mut().session.toggle();
-        self.present(ctx.as_ref(), &snapshot);
+        if snapshot.ok {
+            self.sync_langbar();
+        }
     }
 
     /// 選單的「輸出簡體字」：請引擎即時切換，組字不動。
@@ -683,6 +684,10 @@ impl TextService_Impl {
     }
 
     fn sync_caps(&self, ctx: Option<&ITfContext>, vk: u32) {
+        // Shift／Ctrl／Alt／Win 本身不該為了 Caps Lock 同步去問引擎。
+        if keys::is_modifier(vk) && vk != keys::VK_CAPS_LOCK {
+            return;
+        }
         let on = keys::caps_lock_on();
         let snapshot = {
             let mut st = self.state.borrow_mut();
@@ -1638,7 +1643,7 @@ impl TextService_Impl {
         }
     }
 
-    fn shift_released(&self, ctx: Option<&ITfContext>, side: keys::Side) -> bool {
+    fn shift_released(&self, side: keys::Side) -> bool {
         let toggle = {
             let mut st = self.state.borrow_mut();
             let toggle = st.shift_toggles(side, keys::modifier_down(), keys::now_ms());
@@ -1647,7 +1652,9 @@ impl TextService_Impl {
         };
         if toggle {
             let snapshot = self.state.borrow_mut().session.toggle();
-            self.present(ctx, &snapshot);
+            if snapshot.ok {
+                self.sync_langbar();
+            }
         }
         toggle
     }
@@ -1656,6 +1663,11 @@ impl TextService_Impl {
     ///
     /// 只回傳 chord，不在這裡送按鍵；送給引擎是 `OnKeyDown` 的事。
     fn bound_chord(&self, vk: u32, lparam: isize) -> Option<String> {
+        // 修飾鍵本身沒有 chord。先擋掉再問 bindings：Shift／Ctrl 的按下與放開
+        // 不能觸發每 5 秒一次的 health，否則引擎慢一次就把整個 session 判成掛掉。
+        if keys::is_modifier(vk) {
+            return None;
+        }
         self.state.borrow_mut().session.maybe_refresh_bindings();
         let chord = keys::chord(vk, lparam)?;
         self.state
@@ -2227,6 +2239,21 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 );
                 return Ok(true.into());
             }
+            // Shift＋字母／數字在組字中一律走 literal：先於快捷鍵與
+            // commit_before_host_key，不能先提交，也不該為了查 bindings 送 IPC。
+            if self
+                .state
+                .borrow()
+                .shift_literal_key(vk, lparam.0)
+                .is_some()
+            {
+                zlog!(
+                    "OnTestKeyDown vk={}({}) 結束：Shift 字面 -> 吃",
+                    vk,
+                    vk_label(vk)
+                );
+                return Ok(true.into());
+            }
             // 快捷鍵必須早於 commit_before_host_key 與 english_key_policy：
             // 組字中不能先提交，英文模式也不能被補全政策吃掉。
             if self.bound_chord(vk, lparam.0).is_some() {
@@ -2249,19 +2276,6 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             }
             self.learn_mode(vk);
             self.sync_caps(pic.as_ref(), vk);
-            if self
-                .state
-                .borrow()
-                .shift_literal_key(vk, lparam.0)
-                .is_some()
-            {
-                zlog!(
-                    "OnTestKeyDown vk={}({}) 結束：Shift 字面 -> 吃",
-                    vk,
-                    vk_label(vk)
-                );
-                return Ok(true.into());
-            }
             let wants = match self.english_key_policy(pic.as_ref(), vk, lparam.0) {
                 Some(policy) => policy.eats(),
                 None => self.wants_key(vk, lparam.0),
@@ -2300,7 +2314,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 self.sync_caps(pic.as_ref(), 0);
             }
             if let Some(side) = keys::shift_side(vk, lparam.0) {
-                self.shift_released(pic.as_ref(), side);
+                self.shift_released(side);
                 return Ok(false.into());
             }
             Ok(self.state.borrow().eaten.contains(&vk).into())
@@ -2370,6 +2384,21 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 self.state.borrow_mut().eaten.insert(vk);
                 return Ok(true.into());
             }
+            // Shift＋字母／數字先走 literal：先於快捷鍵與 commit_before_host_key，
+            // 不能先提交組字，否則組字區會消失、A 變成應用程式直接打進文件。
+            // `if let` 會把 borrow 的臨時值延長到整個區塊；`handle_literal`
+            // 內要 `borrow_mut`，直接寫在條件裡會 panic（Shift＋`[` 曾因此
+            // 炸掉整個 OnKeyDown）。先取值再判斷。
+            let shift_literal = self.state.borrow().shift_literal_key(vk, lparam.0);
+            if let Some(text) = shift_literal {
+                zlog!(
+                    "OnKeyDown vk={}({}) 結束：Shift 字面={:?}",
+                    vk,
+                    vk_label(vk),
+                    text
+                );
+                return Ok(self.handle_literal(pic.as_ref(), &text).into());
+            }
             if let Some(chord) = self.bound_chord(vk, lparam.0) {
                 if let Some(key) = keys::chord_key(vk, lparam.0) {
                     let eaten = self.handle_chord(pic.as_ref(), &key);
@@ -2389,19 +2418,6 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             self.commit_before_host_key(pic.as_ref(), vk, lparam.0, false);
             self.learn_mode(vk);
             self.sync_caps(pic.as_ref(), vk);
-            // `if let` 會把 borrow 的臨時值延長到整個區塊；`handle_literal`
-            // 內要 `borrow_mut`，直接寫在條件裡會 panic（Shift＋`[` 曾因此
-            // 炸掉整個 OnKeyDown）。先取值再判斷。
-            let shift_literal = self.state.borrow().shift_literal_key(vk, lparam.0);
-            if let Some(text) = shift_literal {
-                zlog!(
-                    "OnKeyDown vk={}({}) 結束：Shift 字面={:?}",
-                    vk,
-                    vk_label(vk),
-                    text
-                );
-                return Ok(self.handle_literal(pic.as_ref(), &text).into());
-            }
             let literal_fallback = key_tested == Some(true) && {
                 let st = self.state.borrow();
                 !st.composing && !st.session.english()
@@ -2526,7 +2542,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 return Ok(false.into());
             }
             if let Some(side) = keys::shift_side(wparam.0 as u32, lparam.0) {
-                self.shift_released(pic.as_ref(), side);
+                self.shift_released(side);
                 return Ok(false.into());
             }
             Ok(self
