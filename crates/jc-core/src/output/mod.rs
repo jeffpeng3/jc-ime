@@ -486,6 +486,14 @@ impl Snapshot {
     pub fn is_empty(&self) -> bool {
         self.preedit.is_empty()
     }
+
+    /// 是否正在組字（含候選窗或選單開著、preedit 為空的情況）。
+    ///
+    /// 與外殼的 `composing()` 判定一致；候選窗開著時 preedit 可能為空，
+    /// 只看 [`Snapshot::preedit`] 會漏掉選取中的狀態。
+    pub fn composing(&self) -> bool {
+        !self.preedit.is_empty() || !self.candidates.is_empty()
+    }
 }
 
 #[cfg(test)]

@@ -671,10 +671,16 @@ impl Engine {
                     // 選單開著時 preedit 也是空，所以要和 TSF 的 `composing()` 一樣
                     // 把 candidates 算進來。
                     let before = session.snapshot();
-                    let composing = !before.preedit.is_empty() || !before.candidates.is_empty();
+                    let composing = before.composing();
                     let deleting = matches!(key.code, KeyCode::Backspace | KeyCode::Delete);
                     let snapshot = session.press(key);
                     if enters {
+                        // 候選窗開著時的 Enter 只套用高亮候選、關窗，組字還留著；
+                        // 這時 commit 會把整段組字直接送出去，等組字真的結束
+                        // （第二次 Enter 或沒有候選窗）才走原本的送出。
+                        if snapshot.composing() {
+                            return Response::state_with_handled(snapshot, Some(true));
+                        }
                         let text = session.commit();
                         if !text.is_empty() {
                             return Response::Committed { text };
@@ -1706,6 +1712,104 @@ mod tests {
             engine.handle(Request::Commit),
             Response::Committed { text: "我".into() }
         );
+    }
+
+    /// 建一個只認得「我」的引擎，讓 `ji3` 打出單一候選。
+    fn engine_with_wo_lexicon() -> Engine {
+        use jc_core::lattice::{InMemoryLexicon, LexEntry};
+
+        let mut lexicon = InMemoryLexicon::new();
+        lexicon.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
+        let config = SessionConfig {
+            zh_lexicon: Some(Arc::new(lexicon)),
+            ..Default::default()
+        };
+        Engine::with_session(Session::new(config))
+    }
+
+    fn type_wo(engine: &mut Engine) {
+        for ch in "ji3".chars() {
+            engine.handle(Request::Key {
+                key: Key::char(ch, false),
+            });
+        }
+    }
+
+    fn press_enter(engine: &mut Engine) -> Response {
+        engine.handle(Request::Key {
+            key: Key::new(KeyCode::Enter, None, false),
+        })
+    }
+
+    fn press_down(engine: &mut Engine) -> Response {
+        engine.handle(Request::Key {
+            key: Key::new(KeyCode::Down, None, false),
+        })
+    }
+
+    #[test]
+    fn test_enter_in_candidate_window_does_not_commit() {
+        let mut engine = engine_with_wo_lexicon();
+        hello(&mut engine);
+        type_wo(&mut engine);
+        press_down(&mut engine);
+        let Response::State {
+            preedit,
+            candidates,
+            navigating,
+            ..
+        } = engine.handle(Request::Snapshot)
+        else {
+            panic!("快照應是 State");
+        };
+        assert_eq!(preedit, "我");
+        assert!(!candidates.is_empty(), "↓ 要開候選窗");
+        assert!(navigating, "↓ 要進入選取模式");
+
+        let response = press_enter(&mut engine);
+        let Response::State {
+            preedit, handled, ..
+        } = response
+        else {
+            panic!("候選窗的第一次 Enter 應回 State，得到 {response:?}");
+        };
+        assert_eq!(handled, Some(true), "候選窗的 Enter 是輸入法吃掉的一鍵");
+        assert_eq!(preedit, "我", "Enter 只套用高亮候選，不能送出整段");
+        assert_eq!(engine.composition(), "我", "組字要留著");
+    }
+
+    #[test]
+    fn test_second_enter_commits_after_candidate_applied() {
+        let mut engine = engine_with_wo_lexicon();
+        hello(&mut engine);
+        type_wo(&mut engine);
+        press_down(&mut engine);
+        let first = press_enter(&mut engine);
+        assert!(matches!(first, Response::State { .. }));
+        let applied = engine.composition();
+        assert_eq!(applied, "我", "第一次 Enter 要套用高亮候選");
+
+        let response = press_enter(&mut engine);
+        let Response::Committed { text } = response else {
+            panic!("候選套用後再按 Enter 應送出，得到 {response:?}");
+        };
+        assert_eq!(text, applied, "第二次 Enter 要送出套用後的字");
+        assert_eq!(engine.composition(), "");
+    }
+
+    #[test]
+    fn test_enter_without_candidate_window_commits() {
+        let mut engine = engine_with_wo_lexicon();
+        hello(&mut engine);
+        type_wo(&mut engine);
+        assert_eq!(engine.composition(), "我");
+
+        let response = press_enter(&mut engine);
+        let Response::Committed { text } = response else {
+            panic!("沒有候選窗時 Enter 應直接送出，得到 {response:?}");
+        };
+        assert_eq!(text, "我");
+        assert_eq!(engine.composition(), "");
     }
 
     #[test]
