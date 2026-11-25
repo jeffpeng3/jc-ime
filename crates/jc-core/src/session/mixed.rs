@@ -2963,9 +2963,9 @@ mod tests {
         assert_eq!(snap.cursor_rune, 0);
     }
 
-    /// 英文字面片段也是逐 rune 退格。
+    /// 英文字面片段逐 rune 退格，不是整段刪。
     #[test]
-    fn test_mixed_backspace_deletes_whole_english_segment() {
+    fn test_mixed_backspace_deletes_one_english_rune() {
         let mut lex = InMemoryLexicon::new();
         lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
         let mut config = SessionConfig::new(Mode::Mixed);
@@ -3672,36 +3672,13 @@ mod tests {
             .position(|candidate| candidate.surface == "颱")
             .expect("要有颱候選");
         assert!(index < PAGE_SIZE, "測試候選要在第一頁");
-        eprintln!(
-            "DBG before digit: index={} choices={:?} target={:?} cursor={} edit={:?}",
-            index,
-            s.mixed_choices
-                .iter()
-                .map(|c| c.as_ref().map(|c| (c.insert.clone(), c.syllable_edit)))
-                .collect::<Vec<_>>(),
-            s.mixed_target,
-            s.cursor,
-            s.edit
-        );
         let digit = char::from(b'1' + index as u8);
         s.press(Key::char(digit, false));
         let snap = s.snapshot();
-        eprintln!(
-            "DBG after digit: preedit={:?} cursor_rune={} mixed_cursor={} zh_lane={} cursor={} syl={:?} mixed_target={:?}",
-            snap.preedit,
-            snap.cursor_rune,
-            s.mixed_cursor,
-            s.zh_lane,
-            s.cursor,
-            s.syllables,
-            s.mixed_target
-        );
         assert_eq!(snap.preedit, "我颱", "只換游標右側的字");
         assert_eq!(snap.cursor_rune, 2, "選字後游標往右一格");
     }
 
-    /// 統一管線的一致性：把注音讀音拆回大千按鍵流，逐鍵走 session 的增量
-    /// 路徑，結果必須與 `Router::convert` 相同。
     /// 統一管線的一致性：把注音讀音拆回大千按鍵流，逐鍵走 session 的增量
     /// 路徑，結果必須與 `Router::convert` 相同。
     #[test]
@@ -3750,6 +3727,23 @@ mod tests {
             for right in &keys {
                 inputs.push(format!("{left}{right}"));
             }
+        }
+        // 空白現在是字面空格；含空白的組合仍要與 Router 逐段一致。
+        //
+        // 例外：`Router::visible_plans` 仍會吃掉「兩個注音切分片段之間」的獨立
+        // 空白（舊的空白＝音節分隔規則），`ji3 ji3` 在 router 是 `我我`、在
+        // session 是 `我 我`。這組不可能逐段一致，改在空白兩側用英文字面，
+        // 並由 `test_space_between_zh_syllables_is_literal` 單獨鎖住 session
+        // 保留字面空白的行為。
+        for input in [
+            "hello world",
+            "hello  world",
+            "watashi desu",
+            "abc def",
+            "ABC DEF",
+            "hello, world",
+        ] {
+            inputs.push(input.to_string());
         }
         // 大寫、全角與尾端標點。
         for suffix in [".", "ABC", "ＡＢＣ", ",", "/"] {
@@ -4012,6 +4006,14 @@ mod tests {
         let snap = s.press(Key::new(KeyCode::Space, None, false));
         assert!(!snap.navigating, "空白不開候選");
         assert_eq!(snap.preedit, "我 ");
+    }
+
+    /// 兩個已完成的注音音節之間按空白，空白留字面，不吞成音節分隔。
+    #[test]
+    fn test_space_between_zh_syllables_is_literal() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3 ji3");
+        assert_eq!(s.snapshot().preedit, "我 我");
     }
 
     #[test]

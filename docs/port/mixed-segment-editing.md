@@ -171,7 +171,7 @@ Mixed 的游標是**顯示字串上的 rune 位移** `mixed_cursor`：
 | 測試 | 內容 |
 |---|---|
 | `test_mixed_backspace_deletes_converted_syllable` | `w96` → `台`，Backspace 後 preedit 清空、游標回 0。 |
-| `test_mixed_backspace_deletes_whole_english_segment` | `ji3hello` → Backspace 只留 `我hell`，逐 rune 退格。 |
+| `test_mixed_backspace_deletes_one_english_rune` | `ji3hello` → Backspace 只留 `我hell`，逐 rune 退格。 |
 | `test_mixed_ja_run_falls_back_on_non_romaji_key` | `watashiwaw96j0` 不停在 `w`，有 `ㄊㄞ`，再打 `bp6` 仍能繼續。 |
 | `test_mixed_arrows_move_between_segments` | `我hello` 的 ← 從 6 逐格走到 0，→ 再逐格回結尾。 |
 | `test_mixed_delete_forward_removes_segment_after_cursor` | 游標在 `hell|o` 按 Delete 只刪 `o`。 |
@@ -185,9 +185,15 @@ Mixed 的游標是**顯示字串上的 rune 位移** `mixed_cursor`：
 | `test_down_at_end_targets_last_character` | `我hello` 結尾按 ↓ 先左移，候選是 `o`。 |
 | `test_down_opens_japanese_kanji_and_kana_candidates` | `watashi` 預設「私」，候選有「わたし」。 |
 
-既有測試沒有放寬。`test_incremental_matches_router` 仍要求工作階段與
-`Router::convert` 對同一串按鍵逐段一致；「空白開候選／選第一個」與以片段為
-單位的箭頭、刪除斷言，已依新規格改成逐字元期望。
+舊測試的期望值有依新規格調整，沒有把斷言弱化成「非空」或「有就好」。
+`test_typing_leaves_selection_mode` 寫成精確的 `風我`；`test_incremental_matches_router`
+仍要求工作階段與 `Router::convert` 對同一串按鍵逐段一致，並保留含空白的輸入
+組合。「空白開候選／選第一個」與以片段為單位的箭頭、刪除斷言，已改成逐字元
+期望。
+
+注音＋空白＋注音的組合由 `test_space_between_zh_syllables_is_literal` 單獨
+鎖住（空白留字面）；`Router::visible_plans` 仍會吃掉兩個注音片段之間的空白，
+這一組不列入 session／router 逐段比對。
 
 ## 驗證
 

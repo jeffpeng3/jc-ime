@@ -3020,7 +3020,7 @@ mod tests {
         type_syllable(&mut s, "ㄈㄥ");
         let snap = s.snapshot();
         assert!(!snap.navigating, "打字後離開選取模式");
-        assert!(!snap.preedit.is_empty());
+        assert_eq!(snap.preedit, "風我");
     }
 
     /// 對照 `TestEscLeavesSelectionMode`：Esc 關窗、保留組字。
