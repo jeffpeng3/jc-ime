@@ -139,8 +139,17 @@ impl SettingsView {
     }
 
     /// 讀取一個設定鍵目前的值。
+    ///
+    /// 空字串代表設定檔沒有可用值（例如舊檔的 `keybinds` 成員是空字串），
+    /// 此時一律回到平台預設值。畫面上的每個欄位都走這裡，所以缺值不會只
+    /// 影響單一欄位；`Settings::default_for_platform` 是唯一的預設來源。
     pub fn value(&self, key: &str) -> String {
-        self.settings.value(key).unwrap_or_default()
+        let value = self.settings.value(key).unwrap_or_default();
+        if value.is_empty() {
+            self.defaults.value(key).unwrap_or_default()
+        } else {
+            value
+        }
     }
 
     /// 這個鍵是否由目前選用的輸入習慣固定。
@@ -267,6 +276,91 @@ mod tests {
             !report.settings.active_profile("linux").builtin,
             "預設檔改用自訂風格，不再需要按複製"
         );
+    }
+
+    /// UI 顯示的每個欄位都要等於平台預設值。
+    fn assert_matches_defaults(view: &SettingsView) {
+        let defaults = Settings::default_for_platform(view.goos);
+        for opt in crate::options::FUZZY
+            .iter()
+            .chain(crate::options::ZH.iter())
+            .chain(crate::options::JA.iter())
+            .chain(crate::options::INPUT.iter())
+        {
+            assert_eq!(
+                view.value(opt.key),
+                defaults.value(opt.key).unwrap_or_default(),
+                "{} 的顯示值不是預設值",
+                opt.key
+            );
+            assert!(!view.value(opt.key).is_empty(), "{} 顯示空白", opt.key);
+        }
+    }
+
+    #[test]
+    fn test_missing_file_shows_platform_defaults() {
+        let dir = TempDir::new("missing-defaults");
+        let path = dir.0.join("settings.json");
+        let view = view(&dir);
+        assert_matches_defaults(&view);
+        assert_eq!(view.value("keybind-symbol-menu"), "ctrl+alt+,");
+        assert_eq!(view.value("keybind-emoji-palette"), "ctrl+alt+.");
+
+        // 第一次儲存寫出完整預設，不是只寫改過的欄位。
+        let json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("讀回預設檔")).expect("解析預設檔");
+        let members = json.as_object().expect("設定檔是物件");
+        for key in ["selection", "space_selects", "keybinds", "input_profile"] {
+            assert!(members.contains_key(key), "第一次儲存缺少 {key}");
+        }
+        assert!(members.len() >= 40, "第一次儲存只寫了部分欄位");
+        assert_eq!(json["keybinds"]["symbol_menu"], "ctrl+alt+,");
+        assert_eq!(json["keybinds"]["emoji_palette"], "ctrl+alt+.");
+    }
+
+    #[test]
+    fn test_empty_object_file_shows_platform_defaults() {
+        let dir = TempDir::new("empty-object-defaults");
+        fs::write(dir.0.join("settings.json"), b"{}").expect("寫入空物件");
+        let view = view(&dir);
+        assert_matches_defaults(&view);
+    }
+
+    #[test]
+    fn test_file_without_keybinds_shows_default_chords() {
+        let dir = TempDir::new("no-keybinds-defaults");
+        fs::write(
+            dir.0.join("settings.json"),
+            br#"{"schema":1,"space_selects":false}"#,
+        )
+        .expect("寫入缺 keybinds 的設定");
+        let view = view(&dir);
+        assert_matches_defaults(&view);
+        assert_eq!(view.value("keybind-symbol-menu"), "ctrl+alt+,");
+        assert_eq!(view.value("keybind-emoji-palette"), "ctrl+alt+.");
+    }
+
+    #[test]
+    fn test_empty_keybind_values_show_default_chords() {
+        let dir = TempDir::new("empty-keybinds-defaults");
+        fs::write(
+            dir.0.join("settings.json"),
+            br#"{"keybinds":{"symbol_menu":"","emoji_palette":""}}"#,
+        )
+        .expect("寫入空 chord 的設定");
+        let view = view(&dir);
+        assert_matches_defaults(&view);
+        assert_eq!(view.value("keybind-symbol-menu"), "ctrl+alt+,");
+        assert_eq!(view.value("keybind-emoji-palette"), "ctrl+alt+.");
+
+        // 空 chord 補回預設後，欄位要能直接改成新的合法 chord。
+        let mut view = view;
+        view.apply("keybind-symbol-menu", "ctrl+shift+s");
+        assert!(matches!(view.status, Status::Saved), "空值修好後應可儲存");
+        assert_eq!(view.value("keybind-symbol-menu"), "ctrl+shift+s");
+        let report = read(&dir.0.join("settings.json"), "linux");
+        assert_eq!(report.settings.keybinds.symbol_menu, "ctrl+shift+s");
+        assert_eq!(report.settings.keybinds.emoji_palette, "ctrl+alt+.");
     }
 
     #[test]

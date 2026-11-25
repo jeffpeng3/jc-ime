@@ -206,9 +206,33 @@ impl Default for Keybinds {
 }
 
 impl Keybinds {
-    /// 從 JSON 讀取；缺欄位或不是物件時用預設值。
+    /// 從 JSON 讀取；缺欄位與空字串用預設值，其他原文保留給 `chords` 驗證。
+    ///
+    /// 空字串代表「沒有綁定」：它是合法的 JSON 字串，整份
+    /// `unwrap_or_default` 不會處理，逐欄位的 `serde(default)` 也留不住預設，
+    /// 因此舊檔或中斷的寫入會讓設定程式的欄位顯示空白。這裡逐欄位把空字串
+    /// 換回預設，非空但不合法的 chord 仍原樣保留，引擎熱重載才能回報錯誤
+    /// 並保留舊鍵表。
     pub fn from_json(value: &serde_json::Value) -> Self {
-        serde_json::from_value(value.clone()).unwrap_or_default()
+        let mut keybinds = Self::default();
+        let Some(members) = value.as_object() else {
+            return keybinds;
+        };
+        if let Some(raw) = members
+            .get("symbol_menu")
+            .and_then(serde_json::Value::as_str)
+            .filter(|raw| !raw.trim().is_empty())
+        {
+            keybinds.symbol_menu = raw.to_string();
+        }
+        if let Some(raw) = members
+            .get("emoji_palette")
+            .and_then(serde_json::Value::as_str)
+            .filter(|raw| !raw.trim().is_empty())
+        {
+            keybinds.emoji_palette = raw.to_string();
+        }
+        keybinds
     }
 
     /// 解析指定 action 的 chord。
@@ -338,6 +362,29 @@ mod tests {
         let keybinds = Keybinds::from_json(&serde_json::json!({"symbol_menu": "ctrl+shift+s"}));
         assert_eq!(keybinds.symbol_menu, "ctrl+shift+s");
         assert_eq!(keybinds.emoji_palette, "ctrl+alt+.");
+    }
+
+    #[test]
+    fn empty_chords_fall_back_per_field() {
+        let keybinds = Keybinds::from_json(&serde_json::json!({
+            "symbol_menu": "",
+            "emoji_palette": "   ",
+        }));
+        assert_eq!(keybinds, Keybinds::default(), "空字串用預設值");
+
+        let keybinds = Keybinds::from_json(&serde_json::json!({
+            "symbol_menu": "ctrl+shift+s",
+            "emoji_palette": "",
+        }));
+        assert_eq!(keybinds.symbol_menu, "ctrl+shift+s", "有效的欄位要保留");
+        assert_eq!(keybinds.emoji_palette, "ctrl+alt+.", "空字串用預設值");
+    }
+
+    #[test]
+    fn invalid_chord_text_is_kept_for_validation() {
+        let keybinds = Keybinds::from_json(&serde_json::json!({"symbol_menu": "a"}));
+        assert_eq!(keybinds.symbol_menu, "a", "非空值要留給 chords 回報錯誤");
+        assert_eq!(keybinds.chords(), Err(ChordError::NoModifier));
     }
 
     #[test]
