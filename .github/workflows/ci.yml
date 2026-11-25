@@ -862,6 +862,9 @@ jobs:
           "$hash  $(Split-Path -Leaf $setup)" |
             Set-Content -Path "$setup.sha256" -Encoding ascii
 
+          # 印出實際大小，方便之後比較體積變化（strip／LTO、payload 增減）。
+          Get-Item $setup | Select-Object Name, Length | Format-Table -AutoSize
+
       - name: 上傳 Windows artifact
         uses: actions/upload-artifact@v6
         with:
