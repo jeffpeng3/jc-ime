@@ -95,10 +95,24 @@ const LONG_LITERAL_RUN: usize = 64;
 const PLAN_TAIL_CHARS: usize = 64;
 /// 尾巴注音音節最多幾個按鍵。
 const ZH_SUFFIX_KEYS: usize = 8;
+/// 組字區的硬上限（位元組）：超過就只規劃尾巴，不再重算整串。
+///
+/// 512 遠大於任何正常中文詞句，也遠大於 TSF 一次組字的常見長度；超過代表
+/// 使用者貼上或按住鍵盤打了一大段英數，前段再怎麼重算都不會改變結果。留
+/// [`PLAN_TAIL_CHARS`] 給管線是為了讓最後一個注音音節仍能即時切換。
+const MAX_COMPOSITION_CHARS: usize = 512;
+
+/// 連續可列印 ASCII（不含空白）；長到超過門檻就整段視為字面。
+fn printable_ascii_run(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_graphic())
+}
 
 /// 是否需要跳過英文補全與注音前綴的昂貴查詢。
+///
+/// 純小寫長 run 是原本的快速路徑；英數、標點或大小寫混雜的長 run 同樣不會
+/// 因為每鍵重跑 DP 而變慢，也避免 `; ' , .` 被當成注音韻母。
 fn long_literal_keys(text: &str) -> bool {
-    text.len() > LONG_LITERAL_RUN && text.bytes().all(|byte| byte.is_ascii_lowercase())
+    text.len() > LONG_LITERAL_RUN && printable_ascii_run(text)
 }
 
 /// `raw` 加上任何一個聲調是否組得成詞典解釋得了的音節。
@@ -118,6 +132,17 @@ fn mixed_reading(
     let mut composer = compose_keys(raw)?;
     let syllable = composer.add(tone)?;
     reading_reachable(syllable.as_str(), pieces, lexicon).then_some(syllable)
+}
+
+/// `text` 結尾最後一段連續可列印 ASCII 的（起點, 終點）；允許尾端空白。
+fn last_printable_run(text: &str) -> Option<(usize, usize)> {
+    let end = text.trim_end_matches(' ').len();
+    let bytes = text.as_bytes();
+    let mut start = end;
+    while start > 0 && bytes[start - 1].is_ascii_graphic() {
+        start -= 1;
+    }
+    (end > start).then_some((start, end))
 }
 
 /// 長小寫 run 的凍結片段：整段照字面輸出英文。
@@ -165,6 +190,27 @@ fn long_run_zh_boundary(
     pieces: &[AsciiPiece],
     lexicon: &dyn Lexicon,
 ) -> Option<(usize, Syllable)> {
+    long_run_zh_boundary_with(text, pieces, lexicon, false)
+}
+
+/// 混合英數、標點的長 run 版本：前段只要是可列印 ASCII 就能凍結。
+///
+/// 尾巴（`body`）仍只接受小寫字母，`; ' , .` 與數字一律不進注音解碼，
+/// 隨機長串因此不會冒出 `ㄎㄨㄑㄩ`；`z…zsu3` 這種真的注音尾巴照樣切開。
+fn long_run_zh_boundary_mixed(
+    text: &str,
+    pieces: &[AsciiPiece],
+    lexicon: &dyn Lexicon,
+) -> Option<(usize, Syllable)> {
+    long_run_zh_boundary_with(text, pieces, lexicon, true)
+}
+
+fn long_run_zh_boundary_with(
+    text: &str,
+    pieces: &[AsciiPiece],
+    lexicon: &dyn Lexicon,
+    allow_mixed_prefix: bool,
+) -> Option<(usize, Syllable)> {
     let tone_key = text.chars().next_back()?;
     let (body_end, symbol) = if tone_key.is_whitespace() {
         (text.len() - tone_key.len_utf8(), TONE1)
@@ -178,8 +224,12 @@ fn long_run_zh_boundary(
     let low = body_end.saturating_sub(ZH_SUFFIX_KEYS);
     for start in low..body_end {
         let prefix = &text[..start];
-        if prefix.len() < LONG_LITERAL_RUN || !prefix.bytes().all(|byte| byte.is_ascii_lowercase())
-        {
+        let prefix_ok = if allow_mixed_prefix {
+            prefix.len() >= LONG_LITERAL_RUN && printable_ascii_run(prefix)
+        } else {
+            prefix.len() >= LONG_LITERAL_RUN && prefix.bytes().all(|byte| byte.is_ascii_lowercase())
+        };
+        if !prefix_ok {
             continue;
         }
         let body = &text[start..body_end];
@@ -2152,12 +2202,16 @@ impl Session {
         Some(out)
     }
 
-    /// 統一管線的規劃；長小寫 run 只規劃尾巴。
+    /// 統一管線的規劃；長字面 run 只規劃尾巴。
     ///
     /// 超過 [`LONG_LITERAL_RUN`] 的純小寫 run 前段已經確定是字面英文，
     /// 凍結成一個英文片段，只把最後 [`PLAN_TAIL_CHARS`] 個字元交給
     /// `plan_input`。尾巴若接完成的注音音節，切點退到音節開頭，聲調鍵
     /// 才能把 `200 個 z + su3` 切成字面英文加「你」。
+    ///
+    /// 英數與標點混雜的長 run 走 [`Session::mixed_long_run_plans`]：前段同樣
+    /// 凍結，`; ' , .` 不再有機會被當成注音韻母。超過
+    /// [`MAX_COMPOSITION_CHARS`] 時一律只規劃尾巴，成本不再隨組字長度上升。
     fn plan_latin_text(&self, text: &str) -> Vec<crate::mixed::Plan> {
         let english = self.english();
         let adapter = crate::mixed_latin::LexiconAdapter {
@@ -2169,16 +2223,48 @@ impl Session {
         let lookup = english as &dyn crate::mixed::Lookup;
         let split_lex = &adapter as &dyn crate::mixed_latin::SplitLexicon;
 
-        let Some(tail_start) = self.long_run_tail_start(text) else {
-            let plans = crate::mixed::plan_input(text, lookup, &cfg, Some(split_lex));
-            let plans = crate::mixed::visible_plans(plans, text);
-            return self.apply_literal_spans(plans);
-        };
+        // 純小寫快速路徑保持原樣，先走它，不為其他形狀多掃一次。
+        if let Some(tail_start) = self.long_run_tail_start(text) {
+            return self.frozen_prefix_plans(text, tail_start, lookup, &cfg, split_lex);
+        }
+        // 撇號不是任何注音鍵，含撇號的英數 run 一定是字面（`abc;def'ghi`）。
+        // 不交給切分器拆，才不會把中間的 `;` `,` `.` 當成韻母。
+        if text.is_ascii() && text.contains('\'') {
+            return self.frozen_prefix_plans(text, text.len(), lookup, &cfg, split_lex);
+        }
+        if let Some(plans) = self.mixed_long_run_plans(text, lookup, &cfg, split_lex) {
+            return plans;
+        }
+        // 硬上限：任何超過上限的 ASCII 組字都只算尾巴，即使沒有偵測到長 run。
+        if text.len() > MAX_COMPOSITION_CHARS && text.is_ascii() {
+            let mut tail_start = text.len().saturating_sub(PLAN_TAIL_CHARS);
+            if let Some((at, _)) =
+                long_run_zh_boundary_mixed(text, self.ascii.pieces(), &self.lexicon)
+            {
+                if at > tail_start {
+                    tail_start = at;
+                }
+            }
+            return self.frozen_prefix_plans(text, tail_start, lookup, &cfg, split_lex);
+        }
+        let plans = crate::mixed::plan_input(text, lookup, &cfg, Some(split_lex));
+        let plans = crate::mixed::visible_plans(plans, text);
+        self.apply_literal_spans(plans)
+    }
 
+    /// 前段凍結成字面、只規劃尾巴的計畫。
+    fn frozen_prefix_plans(
+        &self,
+        text: &str,
+        tail_start: usize,
+        lookup: &dyn crate::mixed::Lookup,
+        cfg: &crate::mixed::Config,
+        split_lex: &dyn crate::mixed_latin::SplitLexicon,
+    ) -> Vec<crate::mixed::Plan> {
         let mut plans = Vec::new();
         plans.push(literal_en_plan(0, tail_start));
-        let tail = &text[tail_start..];
-        for mut plan in crate::mixed::plan_input(tail, lookup, &cfg, Some(split_lex)) {
+        for mut plan in crate::mixed::plan_input(&text[tail_start..], lookup, cfg, Some(split_lex))
+        {
             plan.start += tail_start;
             plan.end += tail_start;
             plans.push(plan);
@@ -2186,6 +2272,45 @@ impl Session {
         let mut plans = crate::mixed::visible_plans(plans, text);
         merge_adjacent_en_plans(&mut plans);
         self.apply_literal_spans(plans)
+    }
+
+    /// 英數、標點混雜的長 run：前段凍結，只保留完成的注音尾巴。
+    ///
+    /// 隨機英數加 `; ' , .` 不會被切成注音；`…;su3` 這種尾巴仍是「你」。
+    /// 只處理從組字開頭延伸的字尾 run，其他形狀留給一般管線，避免猜錯前段。
+    fn mixed_long_run_plans(
+        &self,
+        text: &str,
+        lookup: &dyn crate::mixed::Lookup,
+        cfg: &crate::mixed::Config,
+        split_lex: &dyn crate::mixed_latin::SplitLexicon,
+    ) -> Option<Vec<crate::mixed::Plan>> {
+        if !text.is_ascii() {
+            return None;
+        }
+        let (run_start, run_end) = last_printable_run(text)?;
+        // 混合 run 從門檻本身（64）就凍結；純小寫仍維持 `>` 的既有行為。
+        if run_start != 0 || run_end - run_start < LONG_LITERAL_RUN {
+            return None;
+        }
+        // 純小寫 run 由既有的 `long_run_tail_start` 處理，這裡不重複。
+        if text[..run_end]
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase())
+        {
+            return None;
+        }
+        // 尾巴是完成的注音音節時切成字面＋注音；其餘整段字面。
+        if let Some((at, _)) = long_run_zh_boundary_mixed(text, self.ascii.pieces(), &self.lexicon)
+        {
+            if at > 0 && at < text.len() {
+                return Some(self.frozen_prefix_plans(text, at, lookup, cfg, split_lex));
+            }
+        }
+        let plans = vec![literal_en_plan(0, text.len())];
+        let mut plans = crate::mixed::visible_plans(plans, text);
+        merge_adjacent_en_plans(&mut plans);
+        Some(self.apply_literal_spans(plans))
     }
 
     /// 把使用者固定成字面的按鍵範圍強制轉成英文字面片段。
@@ -2329,6 +2454,8 @@ impl Session {
 
     /// 長小寫 run 的凍結切點；沒有可凍結的前段時回傳 `None`。
     fn long_run_tail_start(&self, text: &str) -> Option<usize> {
+        // 這條路徑只給純小寫 run；英數與標點混雜的長 run 走
+        // [`Session::mixed_long_run_plans`]。
         if text.len() <= LONG_LITERAL_RUN || !text.is_ascii() {
             return None;
         }
@@ -3092,6 +3219,39 @@ mod tests {
                 "{ch} 長 run 後的標點與字母"
             );
         }
+    }
+
+    /// 長串英數裡的 `; ' , .` 照字面，不得被當成注音韻母。
+    #[test]
+    fn test_long_ascii_run_keeps_punctuation_literal() {
+        fn assert_literal(keys: &str) {
+            let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+            mixed_type(&mut s, keys);
+            let preedit = s.snapshot().preedit;
+            assert_eq!(preedit, keys, "長串英數要原樣字面：{keys:?}");
+            assert!(
+                !preedit
+                    .chars()
+                    .any(|ch| ('\u{3100}'..='\u{312f}').contains(&ch)),
+                "不得出現注音字元：{preedit:?}"
+            );
+        }
+
+        assert_literal("abc;def'ghi,jkl.mno");
+        // 超過長 run 門檻後仍要整段字面。
+        let long: String = "abc;def'ghi,jkl.mno/".repeat(6);
+        assert_literal(&long[..long.len() - 5]);
+    }
+
+    /// 長串尾巴退格一次只掉一個字元。
+    #[test]
+    fn test_long_run_backspace_still_removes_one_rune() {
+        let keys = "abc;def'ghi,jkl.mno/".repeat(6);
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+        mixed_type(&mut s, &keys);
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, &keys[..keys.len() - 1]);
+        assert_eq!(snap.preedit.chars().count(), keys.chars().count() - 1);
     }
 
     /// 日文解碼器開啟時，已經字面化的長 run 不能因為下一個字母改寫成假名。
