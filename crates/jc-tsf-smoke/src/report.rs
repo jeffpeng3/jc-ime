@@ -97,7 +97,7 @@ pub struct Check {
 pub struct UiProbeCells {
     /// `interactive` 或 `headless`。
     pub desktop: String,
-    /// 組字字串；取不到時是空字串。
+    /// 盡力取得的組字字串；讀不到時為空，不代表失敗，也不參與判定。
     pub composition: String,
     /// 是否看到可見的候選窗。
     pub candidate_visible: bool,

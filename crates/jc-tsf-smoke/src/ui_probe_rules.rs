@@ -7,9 +7,11 @@
 //!
 //! 判定原則：
 //!
+//! - `composition` 是盡力取得的組字字串，只回報、不參與判定。CUAS 的 text
+//!   store 常常讀不到，空字串不代表失敗。
 //! - 候選窗出現之後，Enter 沒上屏、Esc 關不掉、位置不對都是 **FAIL**：按鍵
 //!   已經進到 TIP，這是真的產品行為。
-//! - `composition` 空且候選窗完全沒出現是 **inconclusive**：TIP 根本沒接到
+//! - 讀不到組字字串且候選窗完全沒出現是 **inconclusive**：TIP 根本沒接到
 //!   按鍵，先懷疑前景／TSF／桌面環境，不能算產品 bug。
 
 use crate::report::UiProbeCells;
@@ -74,7 +76,7 @@ impl std::fmt::Display for Rect {
 /// 一次探針量到的東西。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observation {
-    /// EDIT 的組字字串。
+    /// EDIT 的組字字串；盡力取得的回報值，讀不到時為空，不參與判定。
     pub composition: String,
     /// 是否看到可見的候選窗。
     pub candidate_visible: bool,
@@ -136,10 +138,11 @@ pub struct Assessment {
 
 /// 判定這次量測是 PASS、FAIL 還是 inconclusive。
 ///
-/// `composition` 空而且候選窗完全沒出現，代表按鍵沒有進到 TIP（前景或 TSF
-/// 沒接上、桌面環境不對），這種量測不能用來判定產品 bug。只要看到候選窗，
-/// 就代表按鍵已經進到 TIP；之後 Enter 沒上屏、Esc 關不掉或位置不對都是真的
-/// FAIL。
+/// `composition` 只是回報值，不影響判定：CUAS 的 text store 不保證讀得到組字
+/// 字串。只有連候選窗都沒出現、又讀不到組字字串時，才代表按鍵沒有進到 TIP
+/// （前景或 TSF 沒接上、桌面環境不對），這種量測不能用來判定產品 bug。只要
+/// 看到候選窗，就代表按鍵已經進到 TIP；之後 Enter 沒上屏、Esc 關不掉或位置
+/// 不對都是真的 FAIL。
 pub fn assess(observation: &Observation, dpi: u32) -> Assessment {
     // 候選窗只要有 rect，就代表它真的被建立過；即使不可見也是產品行為，
     // 不能當成「TIP 沒接到按鍵」。
@@ -150,7 +153,7 @@ pub fn assess(observation: &Observation, dpi: u32) -> Assessment {
         return Assessment {
             decision: Decision::Inconclusive,
             problems: vec![
-                "組字字串是空的且候選窗沒有出現：TIP 沒有接到按鍵，這是環境問題，無法判定產品行為"
+                "讀不到組字字串且候選窗沒有出現：TIP 沒有接到按鍵，這是環境問題，無法判定產品行為"
                     .to_string(),
             ],
         };
@@ -174,10 +177,6 @@ pub fn max_dx(dpi: u32) -> i32 {
 /// 回傳所有不成立的地方；空 `Vec` 代表 PASS。
 pub fn problems(observation: &Observation, dpi: u32) -> Vec<String> {
     let mut problems = Vec::new();
-
-    if observation.composition.trim().is_empty() {
-        problems.push("組字字串是空的：EDIT 沒有收到 TSF 組字".to_string());
-    }
 
     match observation.candidate_rect {
         None => problems.push(format!(
@@ -350,18 +349,36 @@ mod tests {
     }
 
     #[test]
-    fn candidate_visible_without_composition_is_fail() {
+    fn composition_empty_but_ui_works_is_pass() {
         let mut observation = healthy();
         observation.composition = String::new();
 
-        // 候選窗出現就代表按鍵進到 TIP；組字讀不到是產品／量測路徑的問題。
+        // CUAS 的 text store 不一定給組字字串；候選窗、Enter、Esc 都對就是
+        // 端到端成功，不能因為 composition 空就判失敗。
         let assessment = assess(&observation, 96);
-        assert_eq!(assessment.decision, Decision::Fail);
+        assert_eq!(assessment.decision, Decision::Pass);
+        assert_eq!(assessment.problems, Vec::<String>::new());
+        assert_eq!(cells(&observation, "interactive").composition, "");
+    }
+
+    #[test]
+    fn composition_empty_and_candidate_missing_is_inconclusive() {
+        let mut observation = healthy();
+        observation.composition = String::new();
+        observation.candidate_visible = false;
+        observation.candidate_rect = None;
+        observation.latency_ms = 2000;
+        observation.committed_text = String::new();
+        observation.escape_verified = false;
+        observation.escape_hides = false;
+
+        let assessment = assess(&observation, 96);
+        assert_eq!(assessment.decision, Decision::Inconclusive);
         assert!(
             assessment
                 .problems
                 .iter()
-                .any(|problem| problem.contains("組字字串是空的")),
+                .any(|problem| problem.contains("TIP 沒有接到按鍵")),
             "{:?}",
             assessment.problems
         );
@@ -407,16 +424,10 @@ mod tests {
     }
 
     #[test]
-    fn empty_composition_fails_when_candidate_was_visible() {
+    fn blank_composition_adds_no_problem() {
         let mut observation = healthy();
         observation.composition = "  ".to_string();
-        let problems = problems(&observation, 96);
-        assert!(
-            problems
-                .iter()
-                .any(|problem| problem.contains("組字字串是空的")),
-            "{problems:?}"
-        );
+        assert_eq!(problems(&observation, 96), Vec::<String>::new());
     }
 
     #[test]

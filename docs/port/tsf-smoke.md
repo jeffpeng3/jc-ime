@@ -116,7 +116,7 @@ install-smoke 也執行同一支腳本。
 | 10 | `profile.user` | `IsEnabledLanguageProfile`、`EnumLanguageProfiles(0x0404)`、`GetActiveProfile` | 已列舉**且**已啟用 | 列舉到的 profile 數、目前作用中的 profile GUID |
 | 11 | `profile.language_list` | `HKCU\Control Panel\International\User Profile` 的 `Languages` 與 `zh-Hant-TW\InputMethodTips` | 含 `zh-Hant-TW`，且含 `0404:{CLSID}{PROFILE}`（有無大括號都接受） | 兩個清單的項目數 |
 | 12 | `engine.detail` | 沿用檢查 6 的連線，再送 `Health` | 引擎健康且不在交接 | 引擎版本、協定、session、連線數、組字中、引擎 session 數、pid |
-| 13 | `ui.probe` | 開 host 視窗＋`EDIT`、`ActivateProfile`、`SendInput` 打 `j` `i` `3` `↓` 開候選窗，再 `Enter` 提交；重新開窗後送 `Esc` | 互動桌面上：`composition` 非空、候選窗可見、rect 在虛擬螢幕內且與插入點 monitor 的 work area 相交、位置在插入點附近、`Enter` 後 EDIT 含「我」、`Esc` 後消失 | `desktop`、`composition`、`candidate_visible`、`candidate_rect`、`latency_ms`、`escape_hides`、`committed_text`；沒有互動桌面、TIP 沒啟用，或組字空且候選窗沒出現（inconclusive）時 `[SKIP]` |
+| 13 | `ui.probe` | 開 host 視窗＋`EDIT`、`ActivateProfile`、`SendInput` 打 `j` `i` `3` `↓` 開候選窗，再 `Enter` 提交；重新開窗後送 `Esc` | 互動桌面上：候選窗可見、rect 在虛擬螢幕內且與插入點 monitor 的 work area 相交、位置在插入點附近、`Enter` 後 EDIT 含「我」、`Esc` 後消失；`composition` 只回報、不參與判定 | `desktop`、`composition`、`candidate_visible`、`candidate_rect`、`latency_ms`、`escape_hides`、`committed_text`；沒有互動桌面、TIP 沒啟用，或讀不到組字字串且候選窗沒出現（inconclusive）時 `[SKIP]` |
 
 ### 檢查 3 的物件身分
 
@@ -236,14 +236,16 @@ Windows 各版本寫入的格式不完全一致，比對時接受有無大括號
    `jcCandidateUiWindow`（同名視窗可能長在別的程序），記錄第一次看到可見視窗
    的延遲。
 5. 斷言：
-   - `composition`（EDIT 的組字文字）非空；如果它空而且候選窗完全沒出現，
-     改判 inconclusive，不當成產品失敗
    - `IsWindowVisible` 為真
    - `GetWindowRect` 非空、在虛擬螢幕範圍內、與插入點所在 monitor 的 work area
      相交
    - 與 EDIT 的插入點比較：`GetCaretPos` 轉螢幕座標（取不到就用 EDIT client
      rect 的左下角），`|dx| <= 300`（依該 monitor 的 DPI 換算，300 DIP）、
      `dy` 在 `-200..=160`（視窗翻到上方是正常的）
+
+   `composition` 只是把 EDIT 讀到的組字文字回報出來，不當成斷言。CUAS 的
+   text store 常常讀不到，空字串不代表失敗；只有連候選窗都沒出現、又讀不到
+   組字字串時，才改判 inconclusive。
 6. 候選窗開著時送 `VK_RETURN`，讀 EDIT 的文字；必須包含 `ji3` 的第一個候選
    「我」。這是端到端證明，不只是視窗出現。
 7. 重新送 `VK_J`、`VK_I`、`VK_3`、`VK_DOWN` 開第二次候選窗，再送 `Esc`，最多等
@@ -265,20 +267,24 @@ desktop=interactive；composition=ㄨㄛˇ；candidate_visible=true；candidate_
 - 本產品還沒安裝，或 `IsEnabledLanguageProfile=false`：記 `[SKIP]`，`detail`
   寫明「jc 注音未安裝或未為目前使用者啟用」並指向 `user-install`。真正的安裝
   問題由檢查 10 判 `[FAIL]`，不重複紅。
-- `composition` 空而且候選窗完全沒出現：TIP 根本沒接到按鍵（前景、TSF 或
+- 讀不到組字字串而且候選窗完全沒出現：TIP 根本沒接到按鍵（前景、TSF 或
   桌面環境不對）。記 `[SKIP]`（inconclusive），`detail` 寫明這是環境問題、
   無法判定產品行為，**不算失敗**。
 - 只要候選窗出現過，就代表按鍵已經進到 TIP。之後任一斷言不成立都是
   `[FAIL]`：候選窗位置不合理、Enter 後 EDIT 沒有「我」、Esc 關不掉。`detail`
   帶實際 rect、延遲、所有不成立的地方與 `%LOCALAPPDATA%\jc-ime\tsf.log` 的
   建議。
+- 候選窗出現、`committed_text` 含「我」、`escape_hides=true`：即使
+  `composition` 是空的也判 `[PASS]`。`composition` 只是盡力取得的回報值，
+  CUAS 的 text store 不保證給組字字串。
 - `committed_text` 是空的代表候選窗出現、Esc 也能關掉，但 Enter 沒把字送進
   EDIT，可能是 CUAS 或 TIP 插入路徑。這是真的 `[FAIL]`，`detail` 會直接寫出
   這句話（候選窗沒出現時只報逾時，或依上一條判 inconclusive）。
-- 候選字來自引擎：引擎沒開但 `composition` 有內容、只是沒有候選窗時，本項
+- 候選字來自引擎：引擎沒開但讀得到 `composition`、只是沒有候選窗時，本項
   判 `[FAIL]`，先啟動 `jc-engine.exe` 再跑。若連 `composition` 都是空的，
   依上一條是 inconclusive 的 `[SKIP]`，不當成產品 bug。
-- `composition` 是 EDIT 目前的組字文字，取不到時是空字串。
+- `composition` 是 EDIT 目前的組字文字，盡力取得；讀不到時是空字串，不代表
+  失敗。
 
 `--check ui-probe`／`--ui-probe` 只跑這一項，適合在實機上手動驗一次；它不看
 `--dll`，TIP 是由 msctf 依註冊機碼載入的。
@@ -360,7 +366,8 @@ desktop=interactive；composition=ㄨㄛˇ；candidate_visible=true；candidate_
 
 `candidate_rect` 是 `l,t,r,b` 字串，沒看到候選窗時是空字串；`latency_ms` 是送出
 最後一個鍵到第一次看到可見候選窗的毫秒數；`committed_text` 是候選窗開著時按
-`Enter` 之後 EDIT 的文字，正常要含「我」。
+`Enter` 之後 EDIT 的文字，正常要含「我」。`composition` 是 EDIT 目前的組字
+文字，盡力取得；讀不到時是空字串，不代表失敗。
 
 PowerShell 直接解析：
 
@@ -434,7 +441,7 @@ jc-ime 安裝診斷（jc 注音）
 [PASS] 10. 使用者啟用：IsEnabledLanguageProfile=true；EnumLanguageProfiles(0x0404)=true（共 12 個 profile）；目前啟用 {C4E8D217-…}（本產品）
 [PASS] 11. 語言清單：Languages 3 項（含 zh-Hant-TW）；zh-Hant-TW\InputMethodTips 2 項（含 0404:{2F6B41D8-…}{C4E8D217-…}）
 [PASS] 12. 引擎細節：引擎 jc-engine 0.1.4；協定 3；session 1；健康狀態 正常；連線 1、組字中 0、引擎 session 數 1、pid 4242
-[PASS] 13. UI 探針：desktop=interactive；composition=ㄨㄛˇ；candidate_visible=true；candidate_rect=104,142,304,182；latency_ms=87；escape_hides=true；committed_text=我；候選窗在插入點附近出現、Enter 送出「我」、Esc 後消失
+[PASS] 13. UI 探針：desktop=interactive；composition=；candidate_visible=true；candidate_rect=104,142,304,182；latency_ms=87；escape_hides=true；committed_text=我；候選窗在插入點附近出現、Enter 送出「我」、Esc 後消失
 [INFO] 釋放物件後 DllCanUnloadNow = 0x00000000（S_OK 代表沒有 refcount 洩漏）
 
 結果：13 通過、0 警告、0 失敗
@@ -445,8 +452,10 @@ jc-ime 安裝診斷（jc 注音）
 
 檢查 6、12 是 `[SKIP]`。檢查 13 要看按鍵有沒有進到 TIP：
 
-- `composition` 有內容、只是候選窗沒出現：候選字來自引擎，記 `[FAIL]`。
-- `composition` 也是空的、候選窗完全沒出現：TIP 根本沒接到按鍵，記
+- 候選窗出現，Enter 送出「我」、Esc 也能關掉：判 `[PASS]`，即使
+  `composition` 是空的也一樣。
+- 讀得到 `composition`、只是候選窗沒出現：候選字來自引擎，記 `[FAIL]`。
+- 連 `composition` 都讀不到、候選窗完全沒出現：TIP 根本沒接到按鍵，記
   `[SKIP]`（inconclusive）。這是環境問題，不能當成產品 bug。
 
 有組字但沒有候選窗的失敗長這樣：
@@ -461,10 +470,10 @@ jc-ime 安裝診斷（jc 注音）
 總結：安裝診斷失敗；請依上面各項的「修復」處理後重跑（1 項失敗）
 ```
 
-連組字都沒有的 inconclusive：
+連組字都讀不到、也沒有候選窗的 inconclusive：
 
 ```text
-[SKIP] 13. UI 探針：desktop=interactive；composition=；candidate_visible=false；candidate_rect=；latency_ms=2000；escape_hides=false；committed_text=；組字字串是空的且候選窗沒有出現：TIP 沒有接到按鍵，這是環境問題，無法判定產品行為；這是探針環境問題，不能判定產品失敗；…
+[SKIP] 13. UI 探針：desktop=interactive；composition=；candidate_visible=false；candidate_rect=；latency_ms=2000；escape_hides=false；committed_text=；讀不到組字字串且候選窗沒有出現：TIP 沒有接到按鍵，這是環境問題，無法判定產品行為；這是探針環境問題，不能判定產品失敗；…
 
 結果：10 通過、0 警告、0 失敗、3 略過
 總結：全部通過

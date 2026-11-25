@@ -14,15 +14,16 @@
 //!    消失。Esc 不能在 Enter 之後直接驗，那時視窗已經因為提交而關掉了。
 //! 6. 清理：`DestroyWindow`、`UnregisterClassW`，還原 profile 與語言。
 //!
-//! 判定規則（composition 非空、rect 在虛擬螢幕內、與 work area 相交、與插入點
-//! 的距離、Enter 的文字、Esc 後消失）放在 [`crate::ui_probe_rules`]；那裡不碰
-//! Win32，Linux 也能跑單元測試。
+//! 判定規則（候選窗可見、rect 在虛擬螢幕內、與 work area 相交、與插入點的
+//! 距離、Enter 的文字、Esc 後消失）放在 [`crate::ui_probe_rules`]；那裡不碰
+//! Win32，Linux 也能跑單元測試。`composition` 只是回報值：CUAS 的 text store
+//! 不保證讀得到組字字串，空白不代表失敗。
 //!
 //! 沒有互動桌面（Session 0、服務工作階段、鎖定中的桌面）時建視窗、取得前景
 //! 視窗或送按鍵會失敗；這種情況回 [`Verdict::Headless`]，由呼叫端記成 `[SKIP]`，
 //! **不算失敗**。本產品還沒安裝或沒為目前使用者啟用時回
 //! [`Verdict::Unavailable`]，同樣是 `[SKIP]`（檢查 10 已經會把這件事判成
-//! `[FAIL]`，不要重複紅）。組字空且候選窗完全沒出現時回
+//! `[FAIL]`，不要重複紅）。讀不到組字字串且候選窗完全沒出現時回
 //! [`Verdict::Inconclusive`]：TIP 根本沒接到按鍵，這是環境問題，也是 `[SKIP]`。
 //! 只要候選窗出現過，Enter 沒上屏、Esc 關不掉或位置不對都是
 //! [`Verdict::Fail`]，detail 會帶 cell、所有不成立的地方與
@@ -92,7 +93,7 @@ pub enum Verdict {
     Pass,
     /// 互動桌面上候選窗出現後，任一斷言不成立。
     Fail,
-    /// TIP 沒有接到按鍵（組字空且候選窗沒出現）：無法判定，不算失敗。
+    /// TIP 沒有接到按鍵（讀不到組字字串且候選窗沒出現）：無法判定，不算失敗。
     Inconclusive,
     /// 沒有互動桌面：不算失敗。
     Headless,
