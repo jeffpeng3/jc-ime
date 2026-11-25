@@ -2990,6 +2990,31 @@ mod tests {
         assert_eq!(hira.preedit, "きょう", "F6 轉回平假名");
     }
 
+    /// 日文候選窗的 Enter 行為不變：套用游標所在片段，不送出整段。
+    #[test]
+    fn test_enter_in_ja_candidate_window_keeps_existing_ja_semantics() {
+        use crate::ja::live::Trigger;
+
+        let mut config = live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            trigger: Trigger::EveryKey,
+            deferred_sentence: false,
+            ..live::Config::default()
+        };
+        config.neural = None;
+        let mut s = ja_live_session(config);
+        type_ja(&mut s, "kyou");
+        s.ja_live_flush();
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
+
+        let picked = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(picked.preedit, "きょう", "日文 Enter 只換片段");
+        assert!(s.pending_commit.is_none(), "日文候選 Enter 不送出整段");
+    }
+
     /// 同讀音、成本差距可被學習翻盤的日文 session。
     fn ja_learning_session(learning: bool) -> Session {
         let source = LiveTestSource(vec![

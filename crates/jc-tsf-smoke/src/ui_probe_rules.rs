@@ -9,8 +9,8 @@
 //!
 //! - `composition` 是盡力取得的組字字串，只回報、不參與判定。CUAS 的 text
 //!   store 常常讀不到，空字串不代表失敗。
-//! - 候選窗出現之後，Enter 沒上屏、Esc 關不掉、位置不對都是 **FAIL**：按鍵
-//!   已經進到 TIP，這是真的產品行為。
+//! - 候選窗出現之後，第一次 Enter 就送出整段、第二次 Enter 沒上屏或送錯字、
+//!   Esc 關不掉、位置不對都是 **FAIL**：按鍵已經進到 TIP，這是真的產品行為。
 //! - 讀不到組字字串且候選窗完全沒出現是 **inconclusive**：TIP 根本沒接到
 //!   按鍵，先懷疑前景／TSF／桌面環境，不能算產品 bug。
 
@@ -24,7 +24,7 @@ pub const MIN_DY: i32 = -200;
 pub const MAX_DY: i32 = 160;
 /// 換算 DIP 的基準 DPI。
 pub const BASE_DPI: u32 = 96;
-/// `ji3` 的第一個候選；Enter 之後 EDIT 必須有這個字。
+/// `ji3` 的第一個候選；第二次 Enter 之後 EDIT 必須有這個字。
 pub const EXPECTED_COMMIT: &str = "我";
 
 /// 一個矩形（螢幕座標）。
@@ -84,7 +84,9 @@ pub struct Observation {
     pub candidate_rect: Option<Rect>,
     /// 送出最後一個鍵到第一次看到候選窗的延遲（毫秒）。
     pub latency_ms: u64,
-    /// 候選窗開著時按 Enter 之後 EDIT 的文字。
+    /// 候選窗開著時第一次 Enter 之後 EDIT 的文字；正確應該還是空的。
+    pub first_enter_text: String,
+    /// 第二次 Enter 送出整段之後 EDIT 的文字。
     pub committed_text: String,
     /// 插入點的螢幕座標。
     pub caret: Option<(i32, i32)>,
@@ -106,6 +108,7 @@ impl Observation {
             candidate_visible: false,
             candidate_rect: None,
             latency_ms: 0,
+            first_enter_text: String::new(),
             committed_text: String::new(),
             caret: None,
             screen: None,
@@ -224,15 +227,22 @@ pub fn problems(observation: &Observation, dpi: u32) -> Vec<String> {
     // 只有候選窗真的出現時，Enter 與 Esc 才有東西可驗；沒出現時上面已經
     // 有「逾時」這條，避免再補兩條誤導的訊息。
     if observation.candidate_visible {
+        // 第一次 Enter 只該套用高亮候選；整段必須等第二次 Enter。
+        if !observation.first_enter_text.trim().is_empty() {
+            problems.push(format!(
+                "候選窗開著時第一次 Enter 就送出整段「{}」；應該只套用高亮候選、關窗、保留組字",
+                observation.first_enter_text
+            ));
+        }
         if !observation.committed_text.contains(EXPECTED_COMMIT) {
             if observation.committed_text.trim().is_empty() {
                 problems.push(
-                    "候選窗出現但 Enter 後 EDIT 沒收到文字，可能是 CUAS 或 TIP 插入路徑"
+                    "第二次 Enter 後 EDIT 仍沒有文字：第一次 Enter 沒上屏、第二次也沒送出，可能是 CUAS 或 TIP 插入路徑"
                         .to_string(),
                 );
             } else {
                 problems.push(format!(
-                    "Enter 後 EDIT 的文字是「{}」，沒有包含「{EXPECTED_COMMIT}」",
+                    "第二次 Enter 送出的字不是第一候選，沒有包含「{EXPECTED_COMMIT}」：EDIT 的文字是「{}」",
                     observation.committed_text
                 ));
             }
@@ -285,6 +295,7 @@ mod tests {
             candidate_visible: true,
             candidate_rect: Some(rect(400, 320, 600, 360)),
             latency_ms: 87,
+            first_enter_text: String::new(),
             committed_text: "我".to_string(),
             caret: Some((400, 300)),
             screen: Some(rect(0, 0, 1920, 1080)),
@@ -547,6 +558,45 @@ mod tests {
             problems
                 .iter()
                 .any(|problem| problem.contains("沒有包含「我」")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn first_enter_committing_the_whole_composition_fails() {
+        let mut observation = healthy();
+        observation.first_enter_text = "我".to_string();
+        let problems = problems(&observation, 96);
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("第一次 Enter 就送出整段")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn empty_second_enter_reports_first_enter_hint() {
+        let mut observation = healthy();
+        observation.committed_text = String::new();
+        let problems = problems(&observation, 96);
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("第一次 Enter 沒上屏")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn wrong_second_enter_reports_first_candidate() {
+        let mut observation = healthy();
+        observation.committed_text = "喔".to_string();
+        let problems = problems(&observation, 96);
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("第二次 Enter 送出的字不是第一候選")),
             "{problems:?}"
         );
     }

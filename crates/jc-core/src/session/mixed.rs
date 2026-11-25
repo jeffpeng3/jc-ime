@@ -1497,11 +1497,8 @@ impl Session {
         };
         let scorer = super::core::zh_scorer(&self.ctx, self.zh_lm.as_deref());
         let decoder = super::core::zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
-        let (mut hypotheses, _) =
-            decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
-        if self.config.learning {
-            self.personal.rank_hypotheses(&mut hypotheses, reading);
-        }
+        let (hypotheses, _) = decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
+        let hypotheses = self.rank_zh_hypotheses(hypotheses, reading);
         let literal = reading.to_string();
         let mut out: Vec<Candidate> = Vec::new();
         for hypothesis in hypotheses {
@@ -1996,12 +1993,9 @@ impl Session {
         };
         let scorer = super::core::zh_scorer(&self.ctx, self.zh_lm.as_deref());
         let decoder = super::core::zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
-        let (mut hypotheses, _) =
-            decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
+        let (hypotheses, _) = decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
+        let hypotheses = self.rank_zh_hypotheses(hypotheses, &reading);
         let literal = reading.clone();
-        if self.config.learning {
-            self.personal.rank_hypotheses(&mut hypotheses, &reading);
-        }
         self.candidates = hypotheses
             .into_iter()
             .map(|hypothesis| {
@@ -4168,6 +4162,118 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn display_lexicon() -> InMemoryLexicon {
+        let mut lex = InMemoryLexicon::new();
+        for (surface, reading, cost) in [
+            ("我", "ㄨㄛˇ", 0),
+            ("婐", "ㄨㄛˇ", 10),
+            ("捰", "ㄨㄛˇ", 20),
+            ("台", "ㄊㄞˊ", 10),
+            ("灣", "ㄨㄢˊ", 10),
+            ("台灣", "ㄊㄞˊ ㄨㄢˊ", 0),
+        ] {
+            lex.push(LexEntry::new(surface, reading, cost, 0));
+        }
+        lex
+    }
+
+    fn display_session(personal: bool) -> Session {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(display_lexicon()));
+        if personal {
+            config.personal.note_seed("捰", 1.0);
+            config.personal.note_seed("台灣", 1.0);
+        }
+        Session::new(config)
+    }
+
+    /// 個人學習把「捰」排第一時，組字區與候選第一項要一起變成「捰」。
+    #[test]
+    fn test_display_matches_first_candidate_for_zh_syllable() {
+        let mut s = display_session(true);
+        mixed_type(&mut s, "ji3");
+        let snap = s.snapshot();
+        assert_eq!(snap.candidates[0].surface, "捰");
+        assert_eq!(snap.preedit, "捰");
+
+        let down = s.press(Key::new(KeyCode::Down, None, false));
+        assert!(s.candidate_window, "↓ 開候選窗");
+        assert_eq!(down.candidates[0].surface, "捰", "候選第一項不變");
+        assert_eq!(down.preedit, "捰", "preedit 仍等於第一候選");
+    }
+
+    /// 沒有個人資料時，兩邊都回到詞典成本決定的「我」。
+    #[test]
+    fn test_display_matches_first_candidate_without_personal() {
+        let mut s = display_session(false);
+        mixed_type(&mut s, "ji3");
+        let snap = s.snapshot();
+        assert_eq!(snap.candidates[0].surface, "我");
+        assert_eq!(snap.preedit, "我");
+    }
+
+    /// 多音節詞的顯示與候選第一項也要一致。
+    #[test]
+    fn test_display_matches_first_candidate_for_multi_syllable() {
+        let mut s = display_session(false);
+        mixed_type(&mut s, "w96j06");
+        let snap = s.snapshot();
+        assert_eq!(snap.candidates[0].surface, "台灣");
+        assert_eq!(snap.preedit, "台灣");
+    }
+
+    /// Enter 在候選窗開著時只套用高亮候選、關窗，不送出整段。
+    #[test]
+    fn test_enter_in_candidate_window_applies_without_committing() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3");
+        // UI 用 select 開候選窗、↓ 進入選取模式，再指定第二項；這條路
+        // 沒有 mixed_choices 快取，Enter 以前會直接送出整段。
+        s.select(0);
+        s.press(Key::new(KeyCode::Down, None, false));
+        assert!(s.zh_window_last, "↓ 把候選窗縮到游標那一格");
+        s.select(1);
+        let expected = s.highlighted_text().expect("有高亮候選").to_string();
+        assert_eq!(expected, "窩", "第二項是窩");
+
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(snap.preedit, expected, "只換游標所在音節");
+        assert!(!s.candidate_window, "Enter 後關窗");
+        assert!(s.pending_commit.is_none(), "第一次 Enter 不能送出整段");
+        assert_eq!(snap.cursor_rune, 1, "游標往右一格");
+    }
+
+    /// 候選窗關掉後再按 Enter，才送出整段組字。
+    #[test]
+    fn test_enter_twice_in_candidate_window_commits_second_time() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3");
+        s.select(0);
+        s.press(Key::new(KeyCode::Down, None, false));
+        assert!(s.zh_window_last);
+        s.select(1);
+        let expected = s.highlighted_text().expect("有高亮候選").to_string();
+        assert_eq!(expected, "窩");
+
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert!(s.pending_commit.is_none(), "第一次 Enter 不送出");
+
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(snap.preedit, "", "第二次 Enter 清空組字");
+        assert_eq!(s.commit(), expected, "第二次才送出整段");
+    }
+
+    /// 沒有候選窗時，Enter 維持直接送出整段。
+    #[test]
+    fn test_enter_without_candidate_window_commits() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3");
+        assert!(!s.candidate_window);
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(snap.preedit, "", "直接送出整段");
+        assert_eq!(s.commit(), "我");
     }
 
     #[test]

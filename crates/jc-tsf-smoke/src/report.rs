@@ -92,7 +92,8 @@ pub struct Check {
 /// 人類輸出與 JSON 共用同一組值；`candidate_rect` 用 `l,t,r,b` 字串，
 /// 沒有看到候選窗時是空字串。`latency_ms` 是送出最後一個鍵到第一次看到
 /// 可見候選窗的毫秒數，沒看到時記 0。`committed_text` 是候選窗開著時按
-/// Enter 之後 EDIT 的文字，正常要含「我」。
+/// 兩次 Enter 之後 EDIT 的文字，正常要含「我」；第一次 Enter 只套用候選，
+/// 不應該上屏。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UiProbeCells {
     /// `interactive` 或 `headless`。
@@ -107,7 +108,7 @@ pub struct UiProbeCells {
     pub latency_ms: u64,
     /// 按 Esc 之後候選窗是否消失。
     pub escape_hides: bool,
-    /// 候選窗開著時按 Enter 之後 EDIT 的文字。
+    /// 候選窗開著時按兩次 Enter、第二次送出之後 EDIT 的文字。
     pub committed_text: String,
 }
 

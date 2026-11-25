@@ -608,21 +608,20 @@ impl Session {
             return self.apply_ja_candidate(index).then(|| self.finish_choice());
         }
         // 游標移到中間或調過詞長時，選字只鎖定這一段，不送出整段組字。
-        if self.edit.is_some() {
-            return self
-                .select_window_candidate(index)
-                .then(|| self.finish_choice());
+        if let Some(edit) = self.edit {
+            let applied = self.select_window_candidate(index);
+            self.edit = None;
+            if applied {
+                self.cursor = (edit.start + 1).min(self.syllables.len());
+            }
+            return applied.then(|| self.finish_choice());
         }
         // ↓／空白開的純注音候選只涵蓋最後一個音節：選字換那一段，整段留著。
         if self.config.mode == Mode::Mixed && self.in_zh_lane() && self.zh_window_last {
             self.zh_window_last = false;
-            self.edit = Some(EditWindow {
-                start: self.syllables.len().saturating_sub(1),
-                len: 1,
-            });
-            return self
-                .select_window_candidate(index)
-                .then(|| self.finish_choice());
+            let start = self.syllables.len().saturating_sub(1);
+            let applied = self.select_window_candidate_for_zh_window_last(index, start);
+            return applied.then(|| self.finish_choice());
         }
         // 混合模式的候選是英文補完、拼字建議或已完成的注音詞；英文候選
         // 取代待定按鍵，注音候選換掉結尾的注音片段。純注音路徑（含 Mixed
@@ -721,6 +720,17 @@ impl Session {
         self.navigating = true;
         self.keep_candidates = true;
         true
+    }
+
+    /// 套用 Mixed 純注音候選窗的高亮項：只換最後一個音節，關窗、組字留著。
+    fn select_window_candidate_for_zh_window_last(&mut self, index: usize, start: usize) -> bool {
+        self.edit = Some(EditWindow { start, len: 1 });
+        let applied = self.select_window_candidate(index);
+        self.edit = None;
+        if applied {
+            self.cursor = (start + 1).min(self.syllables.len());
+        }
+        applied
     }
 
     pub(super) fn space(&mut self) {
@@ -1500,9 +1510,17 @@ impl Session {
         {
             return;
         }
-        // Mixed 的純注音候選窗只列游標那一格；Enter 仍送出整段，先恢復整段
-        // 候選再走一般提交路徑，學習才會記到整個詞。
-        if self.config.mode == Mode::Mixed && self.in_zh_lane() && self.zh_window_last {
+        // Mixed 的純注音候選窗只列游標那一格：Enter 套用高亮候選、關窗，
+        // 組字留著；第二次 Enter（窗已關）才送出整段。
+        if self.config.mode == Mode::Mixed
+            && self.in_zh_lane()
+            && self.zh_window_last
+            && self.candidate_window
+            && !self.candidates.is_empty()
+        {
+            if self.choose_candidate(self.highlighted).is_some() {
+                return;
+            }
             self.zh_window_last = false;
             self.rebuild();
         }
@@ -1532,12 +1550,12 @@ impl Session {
         {
             return;
         }
-        // 游標在片段中且候選窗開著：Enter 先把候選套到這一段，不送出整段。
+        // 游標在片段中且候選窗開著：Enter 先把候選套到這一段，關窗、組字留著。
         if self.in_zh_lane()
             && self.edit.is_some()
             && self.candidate_window
             && !self.candidates.is_empty()
-            && self.select_window_candidate(self.highlighted)
+            && self.choose_candidate(self.highlighted).is_some()
         {
             return;
         }
@@ -2330,6 +2348,53 @@ impl Session {
         }
     }
 
+    /// 注音顯示與候選共用的排序：nbest → 個人學習 → rerank。
+    ///
+    /// 兩邊各自排序會分叉（`ji3` 顯示「我」、候選第一項「捰」），所以只在
+    /// 這裡排一次，呼叫端都拿同一份結果。
+    pub(super) fn rank_zh_hypotheses(
+        &self,
+        mut hypotheses: Vec<Hypothesis>,
+        reading: &str,
+    ) -> Vec<Hypothesis> {
+        if self.config.learning {
+            self.personal.rank_hypotheses(&mut hypotheses, reading);
+        }
+        if let Some(options) = &self.config.rerank {
+            Self::apply_rerank(&mut hypotheses, options);
+        }
+        hypotheses
+    }
+
+    /// 有詞典字時不讓字面讀音排第一，並讓顯示與候選第一項指向同一條路徑。
+    ///
+    /// 優先取整條路徑都是詞典字的一條；`nbest` 會對非詞疊字加成本，
+    /// `decoder.best` 不會，所以第一條可能是「字面讀音＋詞」而不是整串詞。
+    fn prefer_dictionary_hypothesis(hypotheses: &mut Vec<Hypothesis>, literal: &str) {
+        let dictionary_path = |hypothesis: &Hypothesis| {
+            !hypothesis.segments.is_empty()
+                && hypothesis
+                    .segments
+                    .iter()
+                    .all(|segment| segment.word.chars().any(is_han))
+        };
+        let index = hypotheses
+            .iter()
+            .position(|hypothesis| hypothesis.text != literal && dictionary_path(hypothesis))
+            .or_else(|| {
+                hypotheses.iter().position(|hypothesis| {
+                    hypothesis.text != literal && hypothesis.text.chars().any(is_han)
+                })
+            });
+        let Some(index) = index else {
+            return;
+        };
+        if index > 0 {
+            let display = hypotheses.remove(index);
+            hypotheses.insert(0, display);
+        }
+    }
+
     pub(super) fn rebuild_zh(&mut self) {
         self.pending = self.zh.pending();
         let syllables = self.syllables.to_vec();
@@ -2349,10 +2414,25 @@ impl Session {
         };
         let scorer = zh_scorer(&self.ctx, self.zh_lm.as_deref());
         let decoder = zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
-        let (segs, _) = decoder.best(&lattice, &self.locks, false);
-        let conversion = decoder.conversion(&lattice, &segs, Lang::Zh);
-        self.base = conversion.surface;
-        self.segments = Self::segments_of(&segs, Lang::Zh, Script::Bopomofo);
+        let reading = readings.join(" ");
+        let literal = readings.join("");
+        // 顯示與候選共用同一份排序：nbest → 個人學習 → rerank。兩邊各自
+        // 再算一次會分叉（`ji3` 顯示「我」、清單第一項卻是「捰」）。
+        let (hypotheses, _) = decoder.nbest(&lattice, &self.locks, false, self.max_candidates());
+        let mut hypotheses = self.rank_zh_hypotheses(hypotheses, &reading);
+        Self::prefer_dictionary_hypothesis(&mut hypotheses, &literal);
+        let display_segments = if let Some(best) = hypotheses.first() {
+            self.base = best.text.clone();
+            self.segments = Self::segments_of(&best.segments, Lang::Zh, Script::Bopomofo);
+            best.segments.clone()
+        } else {
+            // nbest 沒有結果時退回解碼器的最佳路徑，至少維持可顯示與可送出。
+            let (segs, _) = decoder.best(&lattice, &self.locks, false);
+            let conversion = decoder.conversion(&lattice, &segs, Lang::Zh);
+            self.base = conversion.surface;
+            self.segments = Self::segments_of(&segs, Lang::Zh, Script::Bopomofo);
+            segs
+        };
         self.literal_offset = if self.literal_anchor == 0 {
             0
         } else {
@@ -2361,48 +2441,8 @@ impl Session {
                 .map(|segment| segment.end)
                 .unwrap_or(self.base.len())
         };
-        let reading = readings.join(" ");
-        let literal = readings.join("");
-        let (mut hypotheses, _) =
-            decoder.nbest(&lattice, &self.locks, false, self.max_candidates());
-        if self.config.learning {
-            self.personal.rank_hypotheses(&mut hypotheses, &reading);
-        }
-        if let Some(options) = &self.config.rerank {
-            Self::apply_rerank(&mut hypotheses, options);
-        }
-        // 有詞典字時不要停在原始注音。未知詞邊的成本（預設 8）可能低於罕用
-        // 詞（機率 0 的詞成本 100000），`nbest` 會把讀音字面排第一；顯示與
-        // 送出要取第一條非字面的路徑，`ㄨㄢ` 才會是「彎」而不是 `ㄨㄢ`。
-        let dictionary_at = hypotheses.iter().position(|hypothesis| {
-            hypothesis.text != literal && hypothesis.text.chars().any(is_han)
-        });
-        // Mixed 的純注音組字沿用混打管線的顯示：整段最佳路徑才是組字字串，
-        // 候選清單再依學習與 rerank 排序。純注音模式仍然讓第一候選決定顯示，
-        // 兩邊的舊測試各自鎖住原本行為。
-        let mixed_lane = self.config.mode == Mode::Mixed && self.zh_lane;
-        if !mixed_lane {
-            let index = dictionary_at.unwrap_or(0);
-            if let Some(best) = hypotheses.get(index) {
-                self.base = best.text.clone();
-                self.segments = Self::segments_of(&best.segments, Lang::Zh, Script::Bopomofo);
-            }
-        } else if self.base == literal {
-            if let Some(best) = dictionary_at.and_then(|index| hypotheses.get(index)) {
-                self.base = best.text.clone();
-                self.segments = Self::segments_of(&best.segments, Lang::Zh, Script::Bopomofo);
-            }
-        }
         self.last_hypotheses = hypotheses.clone();
-        let best_segments = if mixed_lane {
-            // Mixed 的顯示用整段最佳轉換，這個路徑才對得上 `base`。
-            segs.clone()
-        } else {
-            hypotheses
-                .first()
-                .map(|hypothesis| hypothesis.segments.clone())
-                .unwrap_or_default()
-        };
+        let mixed_lane = self.config.mode == Mode::Mixed && self.zh_lane;
         let mut candidates: Vec<Candidate> = hypotheses
             .into_iter()
             .map(|hypothesis| {
@@ -2435,7 +2475,7 @@ impl Session {
             });
         }
         // 尾端差一個符號的完整詞：一般候選只是顯示，選了才改字。
-        let phonetic = self.phonetic_candidates(&best_segments);
+        let phonetic = self.phonetic_candidates(&display_segments);
         if !phonetic.is_empty() {
             let mut seen: Vec<String> = candidates
                 .iter()
@@ -2450,11 +2490,10 @@ impl Session {
             }
         }
         candidates.truncate(self.max_candidates());
-        self.candidates = candidates;
         // Mixed 的純注音顯示沿用混打管線：整段沒有詞可解時，若模糊音候選
         // 有真字就顯示那個字，而不是留一串注音。
         if mixed_lane && self.base == literal {
-            if let Some(first) = self.candidates.first() {
+            if let Some(first) = candidates.first() {
                 if first.surface.chars().next().is_some_and(is_han) {
                     self.base = first.surface.clone();
                     self.segments =
@@ -2462,12 +2501,28 @@ impl Session {
                 }
             }
         }
+        // 顯示字必須就是第一候選；模糊音或字面候選插在前面時把顯示字移回
+        // 第一項，兩條路徑才不會再各說各話。
+        if candidates
+            .first()
+            .map(|candidate| candidate.surface.as_str())
+            != Some(self.base.as_str())
+        {
+            if let Some(at) = candidates
+                .iter()
+                .position(|candidate| candidate.surface == self.base)
+            {
+                let display = candidates.remove(at);
+                candidates.insert(0, display);
+            }
+        }
+        self.candidates = candidates;
         // 混打管線把一段連續注音當一個片段（`字字`），純注音模式則照詞切。
         // Mixed 的組字字串沿用前者：相鄰同字面、中間沒有空白打斷的片段合併。
-        if mixed_lane && self.segments.len() == segs.len() {
+        if mixed_lane && self.segments.len() == display_segments.len() {
             let mut merged: Vec<Segment> = Vec::with_capacity(self.segments.len());
             for (index, segment) in std::mem::take(&mut self.segments).into_iter().enumerate() {
-                let boundary = segs[index].start;
+                let boundary = display_segments[index].start;
                 let joinable = self.zh_run_breaks.binary_search(&boundary).is_err();
                 if let Some(last) = merged.last_mut() {
                     if joinable
@@ -2484,7 +2539,7 @@ impl Session {
             }
             self.segments = merged;
         }
-        let (completion, _) = decoder.complete(&lattice, &segs);
+        let (completion, _) = decoder.complete(&lattice, &display_segments);
         self.suggestion = if completion.found() {
             Some(completion.entry.surface)
         } else {
@@ -2517,7 +2572,7 @@ impl Session {
             ));
         }
         // 所有權寫回點：語言無關模型只在這一步承接新的顯示片段。
-        self.sync_composition_zh(&readings, &best_segments);
+        self.sync_composition_zh(&readings, &display_segments);
     }
 
     /// 游標所在片段的候選；整段解碼只負責顯示，選字由這份清單決定。

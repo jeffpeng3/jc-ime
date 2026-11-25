@@ -1096,7 +1096,8 @@ jobs:
       # 檢查 13 驗得到。GitHub 的 Windows runner 是 Session 0，探針會回
       # desktop=headless；composition 空且候選窗沒出現也代表 TIP 沒接到按鍵
       # （inconclusive）。兩者都只留 warning，不讓環境問題把 job 弄紅。真的
-      # 看到候選窗卻位置不對、Enter 沒送出「我」或 Esc 關不掉，才讓這步失敗。
+      # 看到候選窗卻位置不對、第一次 Enter 就送出整段、第二次 Enter 沒送出「我」
+      # 或 Esc 關不掉，才讓這步失敗。
       - name: UI 探針（候選窗）
         shell: pwsh
         env:
@@ -1145,7 +1146,7 @@ jobs:
           if ($check.status -ne 'pass') {
             throw "UI 探針的 status 不是 pass：$($check.status)"
           }
-          Write-Host 'UI 探針通過：j i 3 ↓ 讓候選窗出現、位置合理、Enter 送出「我」、Esc 後消失'
+          Write-Host 'UI 探針通過：j i 3 ↓ Enter Enter 讓候選窗出現、第一次 Enter 只套用、第二次送出「我」、Esc 後消失'
 
       # 安裝期的 doctor 若卡住，install step 會在 10 分鐘先失敗，後面的
       # 「安裝後 doctor」不會執行。這裡直接從使用者目錄收集當次 json 與

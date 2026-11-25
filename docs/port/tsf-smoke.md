@@ -116,7 +116,7 @@ install-smoke 也執行同一支腳本。
 | 10 | `profile.user` | `IsEnabledLanguageProfile`、`EnumLanguageProfiles(0x0404)`、`GetActiveProfile` | 已列舉**且**已啟用 | 列舉到的 profile 數、目前作用中的 profile GUID |
 | 11 | `profile.language_list` | `HKCU\Control Panel\International\User Profile` 的 `Languages` 與 `zh-Hant-TW\InputMethodTips` | 含 `zh-Hant-TW`，且含 `0404:{CLSID}{PROFILE}`（有無大括號都接受） | 兩個清單的項目數 |
 | 12 | `engine.detail` | 沿用檢查 6 的連線，再送 `Health` | 引擎健康且不在交接 | 引擎版本、協定、session、連線數、組字中、引擎 session 數、pid |
-| 13 | `ui.probe` | 開 host 視窗＋`EDIT`、`ActivateProfile`、`SendInput` 打 `j` `i` `3` `↓` 開候選窗，再 `Enter` 提交；重新開窗後送 `Esc` | 互動桌面上：候選窗可見、rect 在虛擬螢幕內且與插入點 monitor 的 work area 相交、位置在插入點附近、`Enter` 後 EDIT 含「我」、`Esc` 後消失；`composition` 只回報、不參與判定 | `desktop`、`composition`、`candidate_visible`、`candidate_rect`、`latency_ms`、`escape_hides`、`committed_text`；沒有互動桌面、TIP 沒啟用，或讀不到組字字串且候選窗沒出現（inconclusive）時 `[SKIP]` |
+| 13 | `ui.probe` | 開 host 視窗＋`EDIT`、`ActivateProfile`、`SendInput` 打 `j` `i` `3` `↓` 開候選窗，按兩次 `Enter`（第一次套用、第二次送出）；重新開窗後送 `Esc` | 互動桌面上：候選窗可見、rect 在虛擬螢幕內且與插入點 monitor 的 work area 相交、位置在插入點附近、第一次 `Enter` 後 EDIT 仍空、第二次 `Enter` 後 EDIT 含「我」、`Esc` 後消失；`composition` 只回報、不參與判定 | `desktop`、`composition`、`candidate_visible`、`candidate_rect`、`latency_ms`、`escape_hides`、`committed_text`；沒有互動桌面、TIP 沒啟用，或讀不到組字字串且候選窗沒出現（inconclusive）時 `[SKIP]` |
 
 ### 檢查 3 的物件身分
 
@@ -246,10 +246,11 @@ Windows 各版本寫入的格式不完全一致，比對時接受有無大括號
    `composition` 只是把 EDIT 讀到的組字文字回報出來，不當成斷言。CUAS 的
    text store 常常讀不到，空字串不代表失敗；只有連候選窗都沒出現、又讀不到
    組字字串時，才改判 inconclusive。
-6. 候選窗開著時送 `VK_RETURN`，讀 EDIT 的文字；必須包含 `ji3` 的第一個候選
-   「我」。這是端到端證明，不只是視窗出現。
+6. 候選窗開著時送第一次 `VK_RETURN`，讀 EDIT 的文字；這時必須還是空的，代表
+   Enter 只套用高亮候選、關窗、保留組字。接著送第二次 `VK_RETURN`，EDIT 才必須
+   包含 `ji3` 的第一個候選「我」。這是端到端證明，不只是視窗出現。
 7. 重新送 `VK_J`、`VK_I`、`VK_3`、`VK_DOWN` 開第二次候選窗，再送 `Esc`，最多等
-   1000ms 確認不再可見。不能在 Enter 之後直接驗消失：那時視窗已經因為提交而
+   1000ms 確認不再可見。不能在送出之後直接驗消失：那時視窗已經因為送出而
    關掉了。
 8. `DestroyWindow`、`UnregisterClassW`，還原 profile 與語言。
 
@@ -271,15 +272,17 @@ desktop=interactive；composition=ㄨㄛˇ；candidate_visible=true；candidate_
   桌面環境不對）。記 `[SKIP]`（inconclusive），`detail` 寫明這是環境問題、
   無法判定產品行為，**不算失敗**。
 - 只要候選窗出現過，就代表按鍵已經進到 TIP。之後任一斷言不成立都是
-  `[FAIL]`：候選窗位置不合理、Enter 後 EDIT 沒有「我」、Esc 關不掉。`detail`
-  帶實際 rect、延遲、所有不成立的地方與 `%LOCALAPPDATA%\jc-ime\tsf.log` 的
-  建議。
+  `[FAIL]`：候選窗位置不合理、第一次 Enter 就送出整段、第二次 Enter 後
+  EDIT 沒有「我」、Esc 關不掉。`detail` 帶實際 rect、延遲、所有不成立的地方與
+  `%LOCALAPPDATA%\jc-ime\tsf.log` 的建議。
 - 候選窗出現、`committed_text` 含「我」、`escape_hides=true`：即使
   `composition` 是空的也判 `[PASS]`。`composition` 只是盡力取得的回報值，
   CUAS 的 text store 不保證給組字字串。
-- `committed_text` 是空的代表候選窗出現、Esc 也能關掉，但 Enter 沒把字送進
-  EDIT，可能是 CUAS 或 TIP 插入路徑。這是真的 `[FAIL]`，`detail` 會直接寫出
-  這句話（候選窗沒出現時只報逾時，或依上一條判 inconclusive）。
+- `first_enter_text` 不是空的代表候選窗還開著時，第一次 Enter 就把整段送出，
+  這是舊行為的回歸。`committed_text` 是空的代表第二次 Enter 也沒把字送進 EDIT，
+  可能是 CUAS 或 TIP 插入路徑；不是空字串但不含「我」則代表送出的不是第一候選。
+  兩者都是真的 `[FAIL]`，`detail` 會分開寫出是第一次沒上屏還是第二次送錯字
+  （候選窗沒出現時只報逾時，或依上一條判 inconclusive）。
 - 候選字來自引擎：引擎沒開但讀得到 `composition`、只是沒有候選窗時，本項
   判 `[FAIL]`，先啟動 `jc-engine.exe` 再跑。若連 `composition` 都是空的，
   依上一條是 inconclusive 的 `[SKIP]`，不當成產品 bug。
@@ -365,8 +368,8 @@ desktop=interactive；composition=ㄨㄛˇ；candidate_visible=true；candidate_
 ```
 
 `candidate_rect` 是 `l,t,r,b` 字串，沒看到候選窗時是空字串；`latency_ms` 是送出
-最後一個鍵到第一次看到可見候選窗的毫秒數；`committed_text` 是候選窗開著時按
-`Enter` 之後 EDIT 的文字，正常要含「我」。`composition` 是 EDIT 目前的組字
+最後一個鍵到第一次看到可見候選窗的毫秒數；`committed_text` 是候選窗開著時
+按兩次 `Enter`、第二次送出之後 EDIT 的文字，正常要含「我」。`composition` 是 EDIT 目前的組字
 文字，盡力取得；讀不到時是空字串，不代表失敗。
 
 PowerShell 直接解析：

@@ -9,14 +9,15 @@
 //! 2. 每 20ms 用 `FindWindowExW` 找本行程的 `jcCandidateUiWindow`，最多等
 //!    2000ms，記錄第一次看到可見視窗的延遲。
 //! 3. 量 rect、插入點、虛擬螢幕與插入點所在 monitor 的 work area。
-//! 4. 按 `Enter` 提交，讀 EDIT 的文字；必須包含 `ji3` 的第一個候選「我」。
+//! 4. 按第一次 `Enter` 只套用高亮候選，讀 EDIT 的文字；這時必須還是空的。
+//!    再按第二次 `Enter` 送出整段，EDIT 才必須包含 `ji3` 的第一個候選「我」。
 //! 5. 重新打 `j`、`i`、`3`、`↓` 再開一次候選窗，按 `Esc`，最多等 1000ms 確認
-//!    消失。Esc 不能在 Enter 之後直接驗，那時視窗已經因為提交而關掉了。
+//!    消失。Esc 不能在 Enter 之後直接驗，那時視窗已經因為送出而關掉了。
 //! 6. 清理：`DestroyWindow`、`UnregisterClassW`，還原 profile 與語言。
 //!
 //! 判定規則（候選窗可見、rect 在虛擬螢幕內、與 work area 相交、與插入點的
-//! 距離、Enter 的文字、Esc 後消失）放在 [`crate::ui_probe_rules`]；那裡不碰
-//! Win32，Linux 也能跑單元測試。`composition` 只是回報值：CUAS 的 text store
+//! 距離、第一次 Enter 不上屏、第二次 Enter 的文字、Esc 後消失）放在
+//! [`crate::ui_probe_rules`]；那裡不碰 Win32，Linux 也能跑單元測試。`composition` 只是回報值：CUAS 的 text store
 //! 不保證讀得到組字字串，空白不代表失敗。
 //!
 //! 沒有互動桌面（Session 0、服務工作階段、鎖定中的桌面）時建視窗、取得前景
@@ -25,8 +26,8 @@
 //! [`Verdict::Unavailable`]，同樣是 `[SKIP]`（檢查 10 已經會把這件事判成
 //! `[FAIL]`，不要重複紅）。讀不到組字字串且候選窗完全沒出現時回
 //! [`Verdict::Inconclusive`]：TIP 根本沒接到按鍵，這是環境問題，也是 `[SKIP]`。
-//! 只要候選窗出現過，Enter 沒上屏、Esc 關不掉或位置不對都是
-//! [`Verdict::Fail`]，detail 會帶 cell、所有不成立的地方與
+//! 只要候選窗出現過，第一次 Enter 就送出整段、第二次 Enter 沒上屏或送錯字、
+//! Esc 關不掉或位置不對都是 [`Verdict::Fail`]，detail 會帶 cell、所有不成立的地方與
 //! `%LOCALAPPDATA%\jc-ime\tsf.log` 的建議。
 //!
 //! 所有 TSF 狀態都只改本行程：`ActivateProfile` 帶 `TF_IPPMF_FORPROCESS`，
@@ -89,7 +90,7 @@ const POLL: Duration = Duration::from_millis(20);
 /// 檢查 13 的判定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// 候選窗出現、位置合理、Enter 送出「我」、Esc 後消失。
+    /// 候選窗出現、位置合理、第一次 Enter 只套用、第二次 Enter 送出「我」、Esc 後消失。
     Pass,
     /// 互動桌面上候選窗出現後，任一斷言不成立。
     Fail,
@@ -174,14 +175,21 @@ pub fn run() -> Outcome {
                 observation.work_area = observation.caret.and_then(monitor_work_area);
                 dpi = dpi_for(hwnd);
 
-                // 端到端證明：候選窗開著時 Enter 要真的把「我」送進 EDIT。
+                // 端到端證明：候選窗開著時第一次 Enter 只套用高亮候選，
+                // 第二次 Enter 才把整段送進 EDIT。
+                if !send_key(VK_RETURN) {
+                    return headless("SendInput(VK_RETURN) 被系統拒絕");
+                }
+                pump_for(Duration::from_millis(200));
+                observation.first_enter_text = edit_text(host.edit);
+
                 if !send_key(VK_RETURN) {
                     return headless("SendInput(VK_RETURN) 被系統拒絕");
                 }
                 pump_for(Duration::from_millis(200));
                 observation.committed_text = edit_text(host.edit);
 
-                // 第二輪：重新組字開窗再驗 Esc。Enter 之後視窗已經關了，
+                // 第二輪：重新組字開窗再驗 Esc。送出之後視窗已經關了，
                 // 直接驗「消失」會得到假的 true。
                 match open_candidates() {
                     Ok((Some(_), _)) => {
@@ -208,7 +216,7 @@ pub fn run() -> Outcome {
         ui_probe_rules::Decision::Pass => Outcome {
             verdict: Verdict::Pass,
             detail: format!(
-                "{}；候選窗在插入點附近出現、Enter 送出「{}」、Esc 後消失",
+                "{}；候選窗在插入點附近出現、第一次 Enter 只套用、第二次 Enter 送出「{}」、Esc 後消失",
                 cells.detail(),
                 ui_probe_rules::EXPECTED_COMMIT
             ),
