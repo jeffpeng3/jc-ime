@@ -602,16 +602,19 @@ jobs:
       # 安裝包（0.1.2 的 pipe debug log 因此消失，見 fix-msi-stale-dll）。
       #
       # 只清自家 crate 的產物，不動第三方依賴的 rlib 與 fingerprint。全量刪
-      # release 目錄會讓每個 job 連 400 多個依賴一起重編，發版要 20 分鐘以上；
+      # 建置目錄會讓每個 job 連 400 多個依賴一起重編，發版要 20 分鐘以上；
       # 自家 crate 只有十幾個，重編不到兩分鐘。build.ps1 另有 mtime／SHA-256
       # 驗證把關，真的拿到舊檔會直接失敗而不是靜靜打包。
-      - name: 清除快取的 release 產物
+      - name: 清除快取的建置產物
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           foreach ($dir in @(
             'target\x86_64-pc-windows-msvc\release',
             'target\i686-pc-windows-msvc\release',
+            # TSF DLL 改用 tsf profile 後，產物在 tsf 目錄。
+            'target\x86_64-pc-windows-msvc\tsf',
+            'target\i686-pc-windows-msvc\tsf',
             'target\tip-register\x86_64-pc-windows-msvc\release'
           )) {
             if (-not (Test-Path $dir)) {

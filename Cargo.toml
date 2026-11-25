@@ -23,6 +23,21 @@ members = [
     "crates/jc-ui",
 ]
 
+# 出貨執行檔：strip 符號、thin LTO 換體積。panic = abort 讓執行檔 panic 時
+# 直接結束（不印 backtrace）；只有不被宿主載入、也不靠 catch_unwind 保命的
+# 程式可以吃這個 profile。codegen-units 維持預設 16：實測改成 1 只再少
+# 2～11%（Windows）／10～14%（Linux），wall time 卻多約 20%，以 CI 時間優先。
+[profile.release]
+strip = "symbols"
+lto = "thin"
+panic = "abort"
+
+# TSF DLL 不能 abort：它用 catch_unwind 攔下 COM 邊界的 panic，避免拖垮宿主
+# 程式（explorer、Office 等）。其餘設定沿用 release。
+[profile.tsf]
+inherits = "release"
+panic = "unwind"
+
 [workspace.package]
 version = "0.1.25"
 edition = "2021"

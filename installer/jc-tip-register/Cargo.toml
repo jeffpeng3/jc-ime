@@ -11,6 +11,13 @@ description = "jc 注音的 MSI 自訂動作輔助程式：註冊／移除 TSF T
 # jc-* crate。空白的 [workspace] 讓 Cargo 不把它當成上層 workspace 的成員。
 [workspace]
 
+# 與 root workspace 的 release profile 一致；這個 crate 是獨立 workspace，
+# 不寫在這裡就吃不到 strip／LTO／abort。codegen-units 同樣維持預設 16。
+[profile.release]
+strip = "symbols"
+lto = "thin"
+panic = "abort"
+
 [[bin]]
 name = "jc-tip-register"
 path = "src/main.rs"

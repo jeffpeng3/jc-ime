@@ -234,7 +234,9 @@ signtool verify /pa /v jc-ime-<version>-x64-setup.exe
 | `build-linux` | `needs: check-tag`，與測試同時起步；GPUI 系統依賴 → `cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui` → tar.gz 與 checksum → 清理快取 |
 | `publish` | `needs: [check-tag, linux, windows, test-windows, build-windows, build-linux, install-smoke]`；全部成功才下載兩個 artifact、建立或更新 GitHub Release，不查 CI run |
 
-Windows 建置必須指定 target（`--target x86_64-pc-windows-msvc`），否則 `build.ps1` 的 payload 路徑會不符；x64 找不到 `target/<triple>/release` 時會退回 `target/release`，並印出警告與實際路徑。
+Windows 建置必須指定 target（`--target x86_64-pc-windows-msvc`），否則 `build.ps1` 的 payload 路徑會不符。執行檔在 `target/<triple>/release`；兩支 TSF DLL 固定用 `--profile tsf`，輸出在 `target/<triple>/tsf`。`build.ps1` 只認這兩個目錄，找不到就直接失敗。
+
+`Cargo.toml` 的 `[profile.release]` 開 `strip = "symbols"`、`lto = "thin"`、`panic = "abort"`，`codegen-units` 維持預設 16。`panic = "abort"` 只給不被宿主載入、也不靠 `catch_unwind` 保命的執行檔；`jc-tsf` 的 `[profile.tsf]` 繼承 release 但保持 `panic = "unwind"`，因為 DLL 用 `catch_unwind` 攔下 COM 邊界的 panic，abort 會讓宿主行程一起結束。`panic = "abort"` 的執行檔 panic 時直接結束，不印 backtrace。`installer/jc-tip-register` 是獨立 workspace，`[profile.release]` 寫在它自己的 `Cargo.toml`。
 
 `+crt-static` 是 Windows 出貨條件，TSF DLL 不能依賴 `vcruntime140.dll`。旗標統一放在 `.cargo/config.toml` 的 `[target.x86_64-pc-windows-msvc]` 與 `[target.i686-pc-windows-msvc]`；`build.ps1` 的 `cargo build` 依照這組 rustflags，不會因 `RUSTFLAGS` 變動而全量重編。資料驗證改走 Python 後，workflow 不再為了驗證單獨編一次 `jc-cli`。
 

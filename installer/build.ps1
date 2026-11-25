@@ -3,9 +3,15 @@
     建置 jc 注音的可攜 payload 與 Inno Setup setup.exe。
 
 .DESCRIPTION
-    步驟：cargo build（x64 全部程式含 jc-tsf，i686 的 jc-tsf，
-    以及 jc-tip-register）→ 使用或產生資料 manifest → 暫存 payload（程式、資料、
+    步驟：cargo build（x64 的執行檔、x64 與 i686 的 jc-tsf，以及
+    jc-tip-register）→ 使用或產生資料 manifest → 暫存 payload（程式、資料、
     授權文件）→ check-payload.py → 選用簽章 → ISCC 編 installer/jc.iss。
+
+    兩支 TSF DLL 固定用 `--profile tsf`（繼承 release、panic 保持 unwind）。
+    release profile 是 panic=abort，abort 會讓 catch_unwind 直接失效，DLL 內的
+    panic 就會拖垮載入它的宿主程式（explorer、Office 等）。其餘執行檔不會被
+    宿主載入，也沒有靠 catch_unwind 保命，維持 `--release`。也因為 panic=abort，
+    這些執行檔 panic 時直接結束行程，不會印 backtrace。
 
     版本號取自 workspace Cargo.toml 的 [workspace.package] version，可以是
     pre-release（例如 0.1.0-rc.1）。setup.exe 的 AppVersion 用完整版本，檔名也用
@@ -99,13 +105,22 @@ if ($Configuration -eq 'release') {
     $profileArgs = @('--profile', $Configuration)
 }
 
+# TSF DLL 一律用 tsf profile：release 的 panic=abort 會讓 catch_unwind 失效，
+# 宿主行程的 panic 就沒有東西攔。DLL 的輸出目錄因此是 target/<triple>/tsf。
+$TsfConfiguration = 'tsf'
+$tsfProfileArgs = @('--profile', $TsfConfiguration)
+
 # 實際執行的 cargo 參數只定義一次，建置與錯誤訊息共用，避免兩者不一致。
+# x64 的 jc-tsf 單獨建，才不會吃到執行檔的 release profile。
 $cargoX64Args = @('build') + $profileArgs + @(
     '--target', $Target,
-    '-p', 'jc-tsf', '-p', 'jc-engine', '-p', 'jc-cli',
+    '-p', 'jc-engine', '-p', 'jc-cli',
     '-p', 'jc-settings-ui', '-p', 'jc-tsf-smoke'
 )
-$cargoX86Args = @('build') + $profileArgs + @(
+$cargoTsfX64Args = @('build') + $tsfProfileArgs + @(
+    '--target', $Target, '-p', 'jc-tsf'
+)
+$cargoTsfX86Args = @('build') + $tsfProfileArgs + @(
     '--target', $TargetX86, '-p', 'jc-tsf'
 )
 $cargoHelperArgs = @('build') + $profileArgs + @(
@@ -146,8 +161,13 @@ Invoke-Checked '建置 workspace 程式' {
 
 # 32 位元的 TSF DLL。TSF 依宿主行程的位元數載入 TIP，沒有這一份，
 # 舊版 Office 等 32 位元程式就看不到輸入法。引擎、CLI 與設定程式只有 x64 版。
+# 兩支 DLL 都用 tsf profile，理由見檔頭。
+Invoke-Checked '建置 x64 jc-tsf' {
+    & cargo @cargoTsfX64Args
+}
+
 Invoke-Checked '建置 x86 jc-tsf' {
-    & cargo @cargoX86Args
+    & cargo @cargoTsfX86Args
 }
 
 Invoke-Checked '建置 jc-tip-register' {
@@ -161,17 +181,20 @@ Invoke-Checked '建置 jc-tip-register' {
 function Resolve-ReleaseDir {
     param(
         [Parameter(Mandatory)][string]$Triple,
+        [Parameter(Mandatory)][string]$ProfileName,
         [Parameter(Mandatory)][string]$CargoCommand
     )
-    $targeted = Join-Path $TargetRoot (Join-Path $Triple $Configuration)
+    $targeted = Join-Path $TargetRoot (Join-Path $Triple $ProfileName)
     if (Test-Path $targeted) { return $targeted }
     throw "找不到建置輸出 $targeted。實際執行：$CargoCommand。請先 rustup target add $Triple，並確認指令有 --target $Triple。"
 }
 
-$ReleaseDir = Resolve-ReleaseDir $Target (Format-CargoCommand $cargoX64Args)
-$ReleaseDirX86 = Resolve-ReleaseDir $TargetX86 (Format-CargoCommand $cargoX86Args)
+$ReleaseDir = Resolve-ReleaseDir $Target $Configuration (Format-CargoCommand $cargoX64Args)
+$TsfDirX64 = Resolve-ReleaseDir $Target $TsfConfiguration (Format-CargoCommand $cargoTsfX64Args)
+$TsfDirX86 = Resolve-ReleaseDir $TargetX86 $TsfConfiguration (Format-CargoCommand $cargoTsfX86Args)
 Write-Host "==> 使用 x64 建置輸出 $ReleaseDir"
-Write-Host "==> 使用 x86 建置輸出 $ReleaseDirX86"
+Write-Host "==> 使用 x64 TSF 輸出 $TsfDirX64"
+Write-Host "==> 使用 x86 TSF 輸出 $TsfDirX86"
 
 # 從建置輸出複製檔案到 payload，並確認它是本次 cargo build 產生的：
 # 1) mtime 必須晚於 $buildStartedAt（容忍 2 秒時鐘誤差），擋掉 rust-cache 還原但
@@ -256,12 +279,12 @@ foreach ($name in $programs) {
         -BuiltAfter $buildStartedAt -Label $name
 }
 
-Copy-FreshArtifact -Source (Join-Path $ReleaseDir $tsfLibName) `
+Copy-FreshArtifact -Source (Join-Path $TsfDirX64 $tsfLibName) `
     -Destination (Join-Path $Payload 'jc-tsf.dll') `
     -BuiltAfter $buildStartedAt -Label "x64 $tsfLibName"
 
 # x86 的 DLL 也改名進 payload；兩份放在同一個目錄，檔名必須分得出架構。
-Copy-FreshArtifact -Source (Join-Path $ReleaseDirX86 $tsfLibName) `
+Copy-FreshArtifact -Source (Join-Path $TsfDirX86 $tsfLibName) `
     -Destination (Join-Path $Payload 'jc-tsf-x86.dll') `
     -BuiltAfter $buildStartedAt -Label "x86 $tsfLibName"
 
