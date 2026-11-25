@@ -37,7 +37,7 @@ fn test_bool_settings_defaults_and_persist() {
         ("document-context", "on", "off"),
         ("english-autocomplete", "off", "on"),
         ("esc-clear", "on", "off"),
-        ("space-selects", "on", "off"),
+        ("space-selects", "off", "on"),
         ("advance-after-select", "off", "on"),
         ("emoji-equals-first", "on", "off"),
         ("simplified-hotkey", "off", "on"),

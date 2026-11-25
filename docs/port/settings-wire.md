@@ -94,7 +94,7 @@ TSF 在 `Ready` 拿到 bindings；`OnSetFocus`／`OnSetThreadFocus` 各刷新一
 | `mixed_input` | 已從 JSON 契約移除；舊檔含這個欄位時直接忽略，引擎一律混打並設 `style.mixed_input = true` | 已移除（舊檔忽略） |
 | `english_autocomplete` | `SessionConfig::english_autocomplete` | 生效 |
 | `esc_clear` | 引擎沒有對應欄位；核心的 Escape 一律清組字，是否轉送 Esc 由外殼決定 | 本版忽略（外殼） |
-| `space_selects` | `style.space_inserts_space = !space_selects` | 生效 |
+| `space_selects` | 已停用；`style.space_inserts_space` 固定 `true`（空白只插空格），設定檔明確寫 `true` 時記一次警告 | 已停用（舊檔相容） |
 | `advance_after_select` | 選字後游標位置；核心提交後不控制游標 | 本版忽略（外殼） |
 | `toggle_key`／`left_shift` | 中英切換已固定為單按左／右 Shift；TSF 送 `{"op":"toggle"}`，引擎在目前語言與 En 間切換。欄位保留給舊檔相容 | 已移除 UI（舊檔忽略） |
 | `start_mode` | 仍保留設定值，但中文使用者的啟動模式不再受它影響；`--mode` 覆寫仍優先 | 本版忽略（中文） |

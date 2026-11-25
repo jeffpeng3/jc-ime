@@ -88,6 +88,10 @@ pub fn load(explicit: Option<&Path>, data_root: Option<&Path>, goos: &str) -> Lo
     // 先取戳記再讀檔：讀取期間若檔案又被改，watcher 第一次 tick 會看到差異。
     let stamp = crate::config_watch::stamp(&path);
     let report = settings::read(&path, goos);
+    if report.settings.space_selects && report.space_selects_explicit {
+        // 舊設定明確寫了 true 才提醒；預設值不再每次啟動都警告。
+        jc_core::session::warn_space_selects_ignored();
+    }
     let mut warnings = Vec::new();
     match report.state {
         FileState::Ok => warnings.extend(report.notes.iter().cloned()),
@@ -149,7 +153,7 @@ pub struct EffectiveSettings {
     pub english_autocomplete: bool,
     /// 按 Esc 清除組字；由外殼決定是否把 Esc 轉送引擎。
     pub esc_clear: bool,
-    /// 空白鍵開候選。
+    /// 空白鍵開候選；舊欄位，已停用。
     pub space_selects: bool,
     /// 選字後游標移到所選詞後面；本版由外殼處理。
     pub advance_after_select: bool,
@@ -309,10 +313,6 @@ pub fn session_config(mut base: SessionConfig, effective: &EffectiveSettings) ->
     base.ja_rerank = effective.ja_rerank;
     base.ja_live.enabled = effective.ja_live;
     base.style.mixed_input = effective.mixed_input;
-    if effective.space_selects {
-        // 舊設定讀到就忽略；空白鍵固定只插入空格。
-        jc_core::session::warn_space_selects_ignored();
-    }
     base.style.space_inserts_space = true;
     base.style.selection_keys = effective.selection_keys.clone();
     base.style.emoji_shortcut = effective.emoji_shortcut.clone();
@@ -430,6 +430,15 @@ mod tests {
         assert_eq!(effective.ja_neural_mode, "off", "statistical 遷移成 off");
         assert!(!effective.ja_rerank, "rerank 預設關閉");
         assert!(!config.ja_rerank);
+    }
+
+    /// 預設不再開空白選字；`space_selects` 只有舊檔明確寫 true 才會有值。
+    #[test]
+    fn default_settings_do_not_enable_space_selects() {
+        let effective = effective(&parsed("{}"), &Overrides::default(), "linux");
+        assert!(!effective.space_selects);
+        let config = session_config(SessionConfig::default(), &effective);
+        assert!(config.style.space_inserts_space, "空白一律只插空格");
     }
 
     /// 舊 `output_simplified` 欄位沿用為啟動時的簡體輸出預設。

@@ -58,6 +58,38 @@ fn test_defaults_missing_fields_and_round_trip() {
 }
 
 #[test]
+fn test_space_selects_default_off_and_only_explicit_true_is_flagged() {
+    let dir = tmpdir("space-selects");
+    let path = dir.join("settings.json");
+
+    let (settings, error) = load(&path, "linux");
+    assert!(error.is_none(), "{error:?}");
+    assert!(!settings.space_selects, "預設不開空白選字");
+    assert!(
+        !read(&path, "linux").space_selects_explicit,
+        "沒有設定檔不算明確寫過"
+    );
+
+    write_settings(&path, r#"{"space_selects":true}"#);
+    let (settings, error) = load(&path, "linux");
+    assert!(error.is_none(), "{error:?}");
+    assert!(settings.space_selects, "舊檔明確寫 true 仍讀得到");
+    assert!(
+        read(&path, "linux").space_selects_explicit,
+        "明確寫 true 要標記"
+    );
+
+    write_settings(&path, r#"{"space_selects":false}"#);
+    let (settings, _) = load(&path, "linux");
+    assert!(!settings.space_selects);
+    assert!(
+        read(&path, "linux").space_selects_explicit,
+        "明確寫 false 也算明確，但不會觸發警告"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn test_legacy_selection_migrates_to_neural_mode() {
     let dir = tmpdir("legacy-selection");
     let path = dir.join("settings.json");

@@ -408,7 +408,7 @@ pub struct Settings {
     pub start_mode: String,
     /// Esc 清除；核心無條件清組字，欄位保留給舊檔相容。
     pub esc_clear: bool,
-    /// 空白鍵開候選（預設）。
+    /// 舊欄位：空白鍵開候選；已停用，空白鍵固定只插入空格。
     pub space_selects: bool,
     /// 從候選窗選字後游標移到所選詞後面。
     pub advance_after_select: bool,
@@ -654,7 +654,7 @@ impl Settings {
             mode_memory: default_mode_memory(goos).to_string(),
             start_mode: START_ZHUYIN.to_string(),
             esc_clear: true,
-            space_selects: true,
+            space_selects: false,
             advance_after_select: false,
             candidate_cursor: default_candidate_cursor(goos).to_string(),
             candidate_layout: "vertical".to_string(),
@@ -1388,6 +1388,8 @@ pub struct Report {
     pub read_only: bool,
     /// 讀不懂而退回預設、或原樣保留的欄位。
     pub notes: Vec<String>,
+    /// 設定檔是否明確寫過 `space_selects`（不論 true 或 false）。
+    pub space_selects_explicit: bool,
     /// 讀取失敗的原因；成功時為 `None`。
     pub error: Option<SettingsError>,
 }
@@ -1430,6 +1432,7 @@ pub fn read(path: &Path, goos: &str) -> Report {
             schema: 0,
             read_only: false,
             notes: Vec::new(),
+            space_selects_explicit: false,
             error: None,
         };
     }
@@ -1441,6 +1444,7 @@ pub fn read(path: &Path, goos: &str) -> Report {
             schema: 0,
             read_only: false,
             notes: Vec::new(),
+            space_selects_explicit: false,
             error: Some(SettingsError::Io(err)),
         };
     }
@@ -1455,6 +1459,7 @@ pub fn read(path: &Path, goos: &str) -> Report {
                 schema: schema_of(&bytes),
                 read_only,
                 notes,
+                space_selects_explicit: space_selects_explicit_of(&bytes),
                 error: None,
             }
         }
@@ -1465,12 +1470,21 @@ pub fn read(path: &Path, goos: &str) -> Report {
             schema: 0,
             read_only: false,
             notes: Vec::new(),
+            space_selects_explicit: false,
             error: Some(SettingsError::Corrupt {
                 path: actual,
                 detail: err.to_string(),
             }),
         },
     }
+}
+
+/// 設定檔是否明確寫過 `space_selects`；預設值不觸發停用警告。
+fn space_selects_explicit_of(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|value| value.get("space_selects").map(|_| ()))
+        .is_some()
 }
 
 fn schema_of(bytes: &[u8]) -> i32 {

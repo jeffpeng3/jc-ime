@@ -226,7 +226,7 @@ pub fn get_for_platform(id: &str, goos: &str) -> Option<Preset> {
         mode_memory: "native".to_string(),
         start_mode: "zhuyin".to_string(),
         esc_clear: true,
-        space_selects: true,
+        space_selects: false,
         candidate_cursor: "after".to_string(),
         candidate_layout: "vertical".to_string(),
         selection_keys: "1234567890".to_string(),
