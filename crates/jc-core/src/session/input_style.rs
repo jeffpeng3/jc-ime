@@ -1516,42 +1516,36 @@ mod tests {
         assert_eq!(s.commit(), "；［］");
     }
 
-    /// 前導符號後面接注音音節：字面與轉換後的字都要留下。
+    /// 前導符號與注音音節之後再套用多變體候選：前面的字面不能被整段蓋掉。
     #[test]
     fn test_prefix_symbol_then_zh_syllable() {
         let mut s = plain_session();
         s.press(Key::char('`', false));
         s.press(Key::char(';', false));
         type_syllable(&mut s, "ㄨㄛˇ");
-        let snap = s.press(Key::new(KeyCode::Space, None, false));
-        assert!(
-            snap.preedit.contains('；'),
-            "組字含前導符號：{:?}",
-            snap.preedit
-        );
-        assert!(
-            snap.preedit.contains('我'),
-            "組字含注音轉出的字：{:?}",
-            snap.preedit
-        );
-        let committed = s.commit();
-        assert!(committed.contains('；'), "提交含前導符號：{committed:?}");
-        assert!(
-            committed.contains('我'),
-            "提交含注音轉出的字：{committed:?}"
-        );
+        s.press(Key::char('`', false));
+        let snap = s.press(Key::char('[', false));
+        assert_eq!(snap.preedit, "；我［", "前導符號與注音字都在");
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(snap.preedit, "；我「", "只把游標所在的符號換成變體");
+        assert_eq!(s.commit(), "；我「");
     }
 
-    /// 前導符號後面接英文：兩段都要提交。
+    /// 前導符號與英文之後再套用多變體候選：前面的字面不能被整段蓋掉。
     #[test]
     fn test_prefix_symbol_then_english() {
         let mut s = plain_session();
         s.press(Key::char('`', false));
         s.press(Key::char(';', false));
         type_keys(&mut s, "hello");
+        s.press(Key::char('`', false));
+        let snap = s.press(Key::char('[', false));
+        assert_eq!(snap.preedit, "；hello［", "前導符號與英文都在");
+        s.press(Key::new(KeyCode::Down, None, false));
         let snap = s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(snap.preedit, "");
-        assert_eq!(s.commit(), "；hello");
+        assert_eq!(snap.preedit, "；hello「", "只把游標所在的符號換成變體");
+        assert_eq!(s.commit(), "；hello「");
     }
 
     /// Esc 取消前導，不留字。
