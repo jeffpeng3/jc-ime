@@ -317,6 +317,9 @@ impl AsciiInput {
         self.reset();
         for ch in keys.chars() {
             if !ch.is_ascii() {
+                // 非 ASCII 是已定案的字面，會打斷前面的待定按鍵；先收尾，
+                // 否則片段順序會變成「字面 + 尚未完成的按鍵」。
+                self.flush();
                 self.seed_literal(&ch.to_string());
             } else if ch == ' ' {
                 self.space(lexicon);
@@ -1522,6 +1525,42 @@ impl Session {
         out
     }
 
+    /// 把按鍵流 `text` 的前 `at` 個位元組換成目前顯示的轉換結果。
+    ///
+    /// 只處理切點落在照字面輸出的片段內的情況；注音或日文片段中間需要
+    /// 音節邊界才切得準，遇到時回傳 `None` 讓呼叫端維持原本的重播路徑。
+    /// 回傳字串是 `typed[..at]` 在畫面上的樣子，空白等不顯示的片段會被
+    /// 略過，因此前段可以整段凍結成字面，不必再被切分器重新解讀。
+    fn rendered_typed_prefix(&self, text: &str, at: usize) -> Option<String> {
+        let plans = self.plan_latin_text(text);
+        let rendered = self.render_latin_plans(text, &plans);
+        let mut out = String::new();
+        let mut done = 0usize;
+        for (plan, item) in plans.iter().zip(rendered) {
+            if plan.end <= at {
+                out.push_str(&item.surface);
+                done = done.max(plan.end);
+                continue;
+            }
+            if plan.start >= at {
+                break;
+            }
+            let literal = text.get(plan.start..plan.end)?;
+            if item.surface != literal {
+                return None;
+            }
+            out.push_str(text.get(plan.start..at)?);
+            done = at;
+            break;
+        }
+        // 切點前的按鍵都要有著落；中間只允許被 `visible_plans` 吃掉的不顯示空白。
+        (done == at
+            || text
+                .get(done..at)
+                .is_some_and(|rest| rest.chars().all(char::is_whitespace)))
+        .then_some(out)
+    }
+
     /// 把候選套用動作寫進按鍵流；`None` 表示這一個候選不存在。
     pub(super) fn apply_mixed_choice(&mut self, index: usize) -> Option<Snapshot> {
         let choice = self.mixed_choices.get(index).cloned().flatten()?;
@@ -1556,16 +1595,31 @@ impl Session {
         if start > end || end > typed.len() || !typed.is_char_boundary(start) {
             return None;
         }
+        // 字面候選只換掉被取代的那一個字元；前段已經轉換好的注音、日文與
+        // 英文照目前顯示留下，不再跟著原始按鍵整串重播（`ji3hello` 選全形
+        // `ｏ` 不能讓前面的「我」退回 `ji3`）。
+        let prefix = if target.reading.is_none() && !target.ja {
+            self.rendered_typed_prefix(&typed, start)
+                .unwrap_or_else(|| typed[..start].to_string())
+        } else {
+            typed[..start].to_string()
+        };
+        // 前段真的被轉換過才需要凍結；純英文字面照原按鍵重播結果相同。
+        let prefix_converted = prefix != typed[..start];
         let mut next =
             String::with_capacity(typed.len() + choice.insert.len() + choice.leftover.len());
-        next.push_str(&typed[..start]);
+        next.push_str(&prefix);
+        let insert_start = next.len();
         next.push_str(&choice.insert);
         next.push_str(&choice.leftover);
         next.push_str(&typed[end..]);
         self.ascii.replay(&next, &self.lexicon);
         self.literal_spans.clear();
+        if insert_start > 0 && prefix_converted {
+            self.literal_spans.push((0, insert_start));
+        }
         if choice.force_literal {
-            let span = (start, start + choice.insert.len() + choice.leftover.len());
+            let span = (insert_start, next.len().saturating_sub(typed[end..].len()));
             self.literal_spans.push(span);
         }
         self.mixed_target = None;
@@ -3996,6 +4050,58 @@ mod tests {
         assert_eq!(snap.preedit, "我hello");
         assert_eq!(snap.cursor_rune, 5, "↓ 先把游標左移到 o");
         assert_eq!(snap.candidates[0].surface, "o", "候選是最後一個字元");
+    }
+
+    /// 選英文字面的全形變體時只換那一個字元，前面的注音維持轉換結果。
+    #[test]
+    fn test_literal_choice_keeps_earlier_zh_conversion() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3hello");
+        assert_eq!(s.snapshot().preedit, "我hello");
+
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(snap.highlighted, 1, "第二項是全形 o");
+        assert_eq!(snap.candidates[1].surface, "ｏ");
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(snap.preedit, "我hellｏ", "前面的注音不能退回原始按鍵 ji3");
+    }
+
+    /// 多個已完成音節也要整段保留，不能因為尾巴選字面而全部重播成按鍵。
+    #[test]
+    fn test_literal_choice_keeps_earlier_zh_for_multiple_syllables() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
+        lex.push(LexEntry::new("你", "ㄋㄧˇ", 0, 0));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        let mut s = Session::new(config);
+        mixed_type(&mut s, "ji3su3hello");
+        assert_eq!(s.snapshot().preedit, "我你hello");
+
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(snap.highlighted, 1, "第二項是全形 o");
+        assert_eq!(snap.candidates[1].surface, "ｏ");
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(
+            snap.preedit, "我你hellｏ",
+            "兩個注音音節都要留著，不能變回 ji3su3"
+        );
+    }
+
+    /// 選字面候選後再按 Enter，送出的也是轉換後的字。
+    #[test]
+    fn test_literal_choice_then_commit_keeps_conversion() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3hello");
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(snap.preedit, "我hellｏ");
+
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "我hellｏ", "送出不能是原始按鍵 ji3hellｏ");
     }
 
     #[test]
