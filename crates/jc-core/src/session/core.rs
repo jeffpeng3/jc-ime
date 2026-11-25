@@ -762,7 +762,18 @@ impl Session {
         self.navigating = false;
         self.keep_candidates = false;
         self.mixed_cursor = Self::MIXED_CURSOR_END;
+        // 待定按鍵是空的：這個空白是純字面，記進 `literal_spans`，重建時
+        // 才不會被 `visible_plans` 當成片段停頓吃掉（`ji3 ji3 ji3`）。
+        // 待定按鍵非空時空白可能被當成一聲／音節分隔，照原管線處理。
+        let literal_space = self.ascii.pending().is_empty();
+        let start = self.ascii.typed().len();
         self.ascii.space(&self.lexicon);
+        if literal_space {
+            let end = self.ascii.typed().len();
+            if start < end {
+                self.literal_spans.push((start, end));
+            }
+        }
     }
 
     /// Mixed 的純注音組字開候選窗時只列游標所在音節。

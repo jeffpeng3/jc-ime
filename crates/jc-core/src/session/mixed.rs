@@ -4053,6 +4053,29 @@ mod tests {
         assert_eq!(s.snapshot().preedit, "我 我");
     }
 
+    /// 三個音節以上時，每個空白都要留下；混打路徑的空白也要記成字面。
+    #[test]
+    fn test_three_zh_syllables_keep_both_spaces() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3 ji3 ji3");
+        assert_eq!(s.snapshot().preedit, "我 我 我");
+    }
+
+    #[test]
+    fn test_four_zh_syllables_keep_all_spaces() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3 ji3 ji3 ji3");
+        assert_eq!(s.snapshot().preedit, "我 我 我 我");
+    }
+
+    /// 英文詞後面的空白照原本管線走，不要硬標成字面。
+    #[test]
+    fn test_space_after_english_word_not_forced_literal() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "hello world");
+        assert_eq!(s.snapshot().preedit, "hello world");
+    }
+
     /// 注音 lane 裡按空白要結束注音 lane：後續拉丁字母不能再進注音解碼器。
     ///
     /// 修前 `ji3 hello` 會變成 `我he lぉ`、`ji3 hello world` 變成
