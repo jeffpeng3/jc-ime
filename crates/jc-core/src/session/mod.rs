@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 mod backends;
+mod command;
 mod composition;
 mod core;
 mod input_style;

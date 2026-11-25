@@ -109,7 +109,7 @@ fn supervisor_lock_name(instance: &str) -> String {
 
 /// 命令列解析結果。
 enum Parsed {
-    Run(Options),
+    Run(Box<Options>),
     Help,
     Version,
 }
@@ -119,7 +119,7 @@ fn main() {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let options = match parse_args(&args) {
-        Ok(Parsed::Run(options)) => options,
+        Ok(Parsed::Run(options)) => *options,
         Ok(Parsed::Help) => {
             print_usage();
             return;
@@ -244,20 +244,35 @@ fn run(options: Options) -> anyhow::Result<()> {
         // 這裡先付掉，使用者按下的第一個鍵才不會突然變慢。這段必須在
         // listener 建立前完成：外殼的 health／hello 有 1 秒逾時，預熱本身
         // 的量測目標是 300ms 以內，遠低於逾期門檻。
-        let warm_config = config::session_config(data.session_config(effective.mode), &effective);
+        let base_config = data.session_config(effective.mode);
+        let warm_config = config::session_config(base_config.clone(), &effective);
         let prewarm = data.prewarm(&warm_config);
         log::info!("{}", prewarm.log_line());
         // session 建立在 Engine::open_session 裡會從全行程共用的 PersonalStore
         // 灌入快照，因此工廠本身不需要碰個人資料；它只負責建立空白 session。
+        // 熱重載後新開的 session 會由 open_session 再套一次最新設定。
+        let effective_for_factory = effective.clone();
+        let mode = effective.mode;
         Arc::new(move || {
-            let base = data.session_config(effective.mode);
-            Session::new(config::session_config(base, &effective))
+            let base = data.session_config(mode);
+            Session::new(config::session_config(base, &effective_for_factory))
         })
     } else {
         log::info!("--allow-empty-data：不載入資料，使用空 session（僅測試用）");
-        Arc::new(move || Session::new(config::session_config(SessionConfig::default(), &effective)))
+        let effective_for_factory = effective.clone();
+        Arc::new(move || {
+            Session::new(config::session_config(
+                SessionConfig::default(),
+                &effective_for_factory,
+            ))
+        })
     };
+    if let Some(path) = &loaded.path {
+        log::info!("設定檔：{}", path.display());
+    }
     let mut engine = Engine::with_factory(factory, personal_dir);
+    engine.set_settings(effective, loaded.path.clone(), goos, overrides);
+    engine.watch_settings();
     engine.set_extra_caps(shell_caps);
     engine.set_start_mode(start_mode);
     engine.set_default_output_simplified(default_simplified);
@@ -599,7 +614,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     if let Some(path) = socket {
         mode = Transport::Socket(path);
     }
-    Ok(Parsed::Run(Options {
+    Ok(Parsed::Run(Box::new(Options {
         mode,
         max_frame,
         data,
@@ -613,7 +628,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         personal_prefix,
         personal_dir,
         instance,
-    }))
+    })))
 }
 
 /// 解析 `--mode`；`en` 併入混打，舊值仍可解析。

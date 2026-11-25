@@ -5,6 +5,7 @@
 //!
 //! 排列由核心解讀：只把可見的 ASCII 交給核心；具名鍵用協定名稱；帶 Ctrl／Alt 的組合鍵交還應用程式，
 //! 只有中文模式的 Ctrl＋標點（#168，見 [`ctrl_punct`]）例外。
+use jc_proto::{Key, KeyCode};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetKeyState, GetKeyboardState, ToUnicode, VK_BACK, VK_CAPITAL, VK_CONTROL,
     VK_CONVERT, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F10, VK_F11, VK_F12, VK_F6, VK_F7,
@@ -366,7 +367,6 @@ pub fn ctrl_punct(vk: u32, lparam: isize) -> Option<&'static str> {
 
 /// 切換「輸出簡體字」的鍵（#192，settings.SimplifiedHotkeyLabel 的 Ctrl＋Shift＋F11）。
 pub const VK_SIMPLIFIED_HOTKEY: u32 = VK_F11.0 as u32;
-
 /// 這一鍵是不是切換簡體字的 Ctrl＋Shift＋F11（#192）：只按著 Ctrl 與 Shift，沒有 Alt、Win。
 /// 要不要攔由呼叫端看引擎回報的 simplified_hotkey。
 pub fn simplified_hotkey(vk: u32) -> bool {
@@ -437,6 +437,104 @@ pub fn ctrl_punct_known(key: &str, engine_keys: &str) -> bool {
         Some(c) if c.chars().count() == 1 => ",.';?!".contains(c) || engine_keys.contains(c),
         _ => false,
     }
+}
+
+/// 這一鍵的正規化按鍵名稱（不含修飾鍵），與引擎的 chord 語法一致。
+///
+/// 字母轉小寫，具名鍵用 `enter`、`pageup`、`f1` 這種名字；符號保留原字元。
+pub fn chord_key_name(vk: u32, lparam: isize) -> Option<String> {
+    if let Some(name) = named(vk) {
+        return Some(if name == " " {
+            "space".to_string()
+        } else {
+            name.to_ascii_lowercase()
+        });
+    }
+    let f = vk as u16;
+    if (VK_F1.0..=VK_F12.0).contains(&f) {
+        return Some(format!("f{}", f - VK_F1.0 + 1));
+    }
+    let key = printable(vk, lparam, false)?;
+    Some(
+        if key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic() {
+            key.to_ascii_lowercase()
+        } else {
+            key
+        },
+    )
+}
+
+/// 這一鍵的正規化 chord；沒有修飾鍵或帶 Win 鍵時回 `None`。
+///
+/// 只做字串比對，不決定行為；呼叫端拿它去比對引擎回報的 `bindings`。
+pub fn chord(vk: u32, lparam: isize) -> Option<String> {
+    let (ctrl, alt, win) = ctrl_alt_win();
+    if win {
+        return None;
+    }
+    let shift = shift_down();
+    if !(ctrl || alt || shift) {
+        return None;
+    }
+    let key = chord_key_name(vk, lparam)?;
+    let mut out = String::new();
+    if ctrl {
+        out.push_str("ctrl+");
+    }
+    if alt {
+        out.push_str("alt+");
+    }
+    if shift {
+        out.push_str("shift+");
+    }
+    out.push_str(&key);
+    Some(out)
+}
+
+/// 命中綁定後送給引擎的結構化按鍵；修飾鍵照當下狀態帶齊。
+pub fn chord_key(vk: u32, lparam: isize) -> Option<Key> {
+    let (ctrl, alt, win) = ctrl_alt_win();
+    if win {
+        return None;
+    }
+    let shift = shift_down();
+    let (code, text) = if let Some(name) = named(vk) {
+        let code = match name {
+            "Enter" => KeyCode::Enter,
+            "Escape" => KeyCode::Escape,
+            "Backspace" => KeyCode::Backspace,
+            "Delete" => KeyCode::Delete,
+            "Tab" => KeyCode::Tab,
+            "Left" => KeyCode::ArrowLeft,
+            "Right" => KeyCode::ArrowRight,
+            "Up" => KeyCode::Up,
+            "Down" => KeyCode::Down,
+            "PageUp" => KeyCode::PageUp,
+            "PageDown" => KeyCode::PageDown,
+            "Home" => KeyCode::Home,
+            "End" => KeyCode::End,
+            " " => KeyCode::Space,
+            _ => return None,
+        };
+        (code, None)
+    } else {
+        let f = vk as u16;
+        if (VK_F1.0..=VK_F12.0).contains(&f) {
+            (KeyCode::F((f - VK_F1.0 + 1) as u8), None)
+        } else {
+            let key = printable(vk, lparam, false)?;
+            let ch = key.chars().next()?;
+            (KeyCode::Char(ch), Some(ch))
+        }
+    };
+    Some(Key {
+        code,
+        text,
+        shift,
+        ctrl,
+        alt,
+        private: false,
+    })
 }
 
 /// health 沒有回報 shift_tap_ms 時的單按時限（毫秒）。
@@ -1325,8 +1423,6 @@ pub fn layout_dependent(key: &str) -> bool {
 // ---------------------------------------------------------------------------
 // adapter 對照表：0c 字串鍵 ↔ jc 結構化 Key
 // ---------------------------------------------------------------------------
-
-use jc_proto::{Key, KeyCode};
 
 /// 0c 協定字串鍵 → jc 結構化 [`Key`]。
 ///

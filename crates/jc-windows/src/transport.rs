@@ -170,6 +170,7 @@ mod tests {
                     protocol: PROTOCOL_VERSION,
                     engine: "test".into(),
                     session: 1,
+                    bindings: Default::default(),
                 },
                 DEFAULT_MAX_FRAME,
             )
@@ -193,6 +194,7 @@ mod tests {
                 protocol: PROTOCOL_VERSION,
                 engine: "test".into(),
                 session: 1,
+                bindings: Default::default(),
             }
         );
         server.join().expect("server 執行緒不該 panic");

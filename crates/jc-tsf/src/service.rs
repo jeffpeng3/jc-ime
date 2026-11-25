@@ -1140,6 +1140,20 @@ impl TextService_Impl {
         self.present(ctx, &snapshot)
     }
 
+    /// 把命中 bindings 的修飾鍵組合送給引擎；引擎回 handled=false 時放行。
+    fn handle_chord(&self, ctx: Option<&ITfContext>, key: &jc_proto::Key) -> bool {
+        zlog!("handle_chord 送引擎 key={:?}", key);
+        let snapshot = self.state.borrow_mut().session.key_chord(key);
+        zlog!(
+            "handle_chord 引擎回 ok={} handled={} composing={} preedit={}",
+            snapshot.ok,
+            snapshot.handled,
+            snapshot.composing(),
+            snapshot.text()
+        );
+        self.present(ctx, &snapshot)
+    }
+
     /// 把字面文字送進引擎的 `literal` op，不重新規劃前面的注音。
     fn handle_literal(&self, ctx: Option<&ITfContext>, text: &str) -> bool {
         zlog!("handle_literal 送引擎 literal={:?}", text);
@@ -1557,6 +1571,13 @@ impl TextService_Impl {
     fn wants_key(&self, vk: u32, lparam: isize) -> bool {
         let available_seen: Cell<Option<bool>> = Cell::new(None);
         let wants = (|| -> bool {
+            // 先更新 bindings（最多 5 秒一次），再只用本地表比對；未命中不產生 IPC。
+            self.state.borrow_mut().session.maybe_refresh_bindings();
+            if let Some(chord) = keys::chord(vk, lparam) {
+                if self.state.borrow().session.binding_for(&chord).is_some() {
+                    return true;
+                }
+            }
             if keys::modifier_down() && self.state.borrow_mut().ctrl_punct_key(vk, lparam).is_some()
             {
                 return true;
@@ -1984,6 +2005,9 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
 impl ITfKeyEventSink_Impl for TextService_Impl {
     fn OnSetFocus(&self, foreground: BOOL) -> windows_core::Result<()> {
         crate::guarded("OnSetFocus", || {
+            if foreground.as_bool() {
+                let _ = self.state.borrow_mut().session.refresh_bindings();
+            }
             if !foreground.as_bool() {
                 {
                     let mut st = self.state.borrow_mut();
@@ -2185,6 +2209,24 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 zdebug!("OnKeyDown vk={} 切換簡體字 on={} ok={}", vk, on, switched);
                 self.state.borrow_mut().eaten.insert(vk);
                 return Ok(true.into());
+            }
+            if let Some(chord) = keys::chord(vk, lparam.0) {
+                if self.state.borrow().session.binding_for(&chord).is_some() {
+                    if let Some(key) = keys::chord_key(vk, lparam.0) {
+                        let eaten = self.handle_chord(pic.as_ref(), &key);
+                        if eaten {
+                            self.state.borrow_mut().eaten.insert(vk);
+                        }
+                        zlog!(
+                            "OnKeyDown vk={}({}) 結束：綁定 chord={} eaten={}",
+                            vk,
+                            vk_label(vk),
+                            chord,
+                            eaten
+                        );
+                        return Ok(eaten.into());
+                    }
+                }
             }
             self.commit_before_host_key(pic.as_ref(), vk, lparam.0, false);
             self.learn_mode(vk);
@@ -2412,6 +2454,9 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
             // 焦點離開舊 context：清掉它的 cache，並讓它的非同步 probe 結果過期。
             if let Some(ctx) = previous.as_ref() {
                 privacy::forget_context(ctx);
+            }
+            if focus.as_ref().is_some() {
+                let _ = self.state.borrow_mut().session.refresh_bindings();
             }
             let owner = self.composition_document();
             let can_wait = self.state.borrow().callback.is_some();

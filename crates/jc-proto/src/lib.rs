@@ -124,6 +124,17 @@ pub struct HealthInfo {
     /// 上面那個慢請求的線路 JSON 長度（位元組）；沒有慢請求時省略。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_slow_input_len: Option<usize>,
+    /// 快捷鍵綁定：action → 正規化 chord，例如 `"symbol_menu": "ctrl+alt+,"`。
+    ///
+    /// 舊客戶端沒有這個欄位也能運作；外殼只比對字串，不自行決定行為。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<String, String>,
+    /// 設定套用版次；每次成功熱重載 +1。舊引擎沒有時為 0。
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub settings_revision: u64,
+    /// 最近一次熱重載失敗的原因；成功後清空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings_error: Option<String>,
 }
 
 impl HealthInfo {
@@ -144,7 +155,7 @@ impl HealthInfo {
         if let Some(pid) = self.pid {
             info.insert("pid".to_string(), pid.to_string());
         }
-        info.insert("settings_deferred_apply".to_string(), "true".to_string());
+        info.insert("settings_deferred_apply".to_string(), "false".to_string());
         if let Some(mode) = &self.start_mode {
             info.insert("start_mode".to_string(), mode.clone());
             info.insert(
@@ -172,6 +183,15 @@ impl HealthInfo {
         }
         if let Some(len) = self.last_slow_input_len {
             info.insert("last_slow_input_len".to_string(), len.to_string());
+        }
+        if self.settings_revision != 0 {
+            info.insert(
+                "settings_revision".to_string(),
+                self.settings_revision.to_string(),
+            );
+        }
+        if let Some(error) = &self.settings_error {
+            info.insert("settings_error".to_string(), error.clone());
         }
         for (name, enabled) in &self.capabilities {
             info.insert(name.clone(), enabled.to_string());
@@ -375,6 +395,9 @@ pub enum Response {
         /// 這條連線的 session id；舊訊框缺省時為 1。
         #[serde(default = "default_ready_session")]
         session: u64,
+        /// 快捷鍵綁定：action → 正規化 chord。舊引擎沒有時為空表。
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        bindings: BTreeMap<String, String>,
     },
     /// 目前的完整組字快照。`cursor` 單位是字元（Unicode scalar value）。
     ///
@@ -1077,7 +1100,7 @@ mod tests {
         );
         assert_eq!(
             info_map.get("settings_deferred_apply").map(String::as_str),
-            Some("true")
+            Some("false")
         );
 
         let empty = HealthInfo::default().as_info();
@@ -1154,6 +1177,7 @@ mod tests {
             protocol: PROTOCOL_VERSION,
             engine: "jc-engine 0.1.0".into(),
             session: 7,
+            bindings: BTreeMap::new(),
         };
         let text = serde_json::to_string(&ready).unwrap();
         assert_eq!(
@@ -1172,7 +1196,37 @@ mod tests {
                 protocol: PROTOCOL_VERSION,
                 engine: "jc-engine/0.1.0".into(),
                 session: 1,
+                bindings: BTreeMap::new(),
             }
+        );
+    }
+
+    #[test]
+    fn health_accepts_old_shape_and_round_trips_settings_fields() {
+        let old: Response =
+            serde_json::from_str(r#"{"op":"health","info":{"sessions":1}}"#).unwrap();
+        let Response::Health { info } = old else {
+            panic!("應是 Health");
+        };
+        assert!(info.bindings.is_empty());
+        assert_eq!(info.settings_revision, 0);
+        assert!(info.settings_error.is_none());
+
+        let info = HealthInfo {
+            bindings: [
+                ("emoji_palette".to_string(), "ctrl+alt+.".to_string()),
+                ("symbol_menu".to_string(), "ctrl+alt+,".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            settings_revision: 7,
+            settings_error: Some("壞檔".to_string()),
+            ..HealthInfo::default()
+        };
+        let text = serde_json::to_string(&Response::Health { info: info.clone() }).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Response>(&text).unwrap(),
+            Response::Health { info }
         );
     }
 

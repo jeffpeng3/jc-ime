@@ -122,6 +122,12 @@ fn socket_serves_connections_sequentially_and_shutdown_cleans_up() {
                 protocol: PROTOCOL_VERSION,
                 engine: format!("jc-engine {}", env!("CARGO_PKG_VERSION")),
                 session: 1,
+                bindings: [
+                    ("emoji_palette".to_string(), "ctrl+alt+.".to_string()),
+                    ("symbol_menu".to_string(), "ctrl+alt+,".to_string()),
+                ]
+                .into_iter()
+                .collect(),
             }
         );
         assert_eq!(

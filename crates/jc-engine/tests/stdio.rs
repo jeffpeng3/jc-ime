@@ -73,6 +73,12 @@ fn stdio_round_trip_and_clean_shutdown() {
             protocol: PROTOCOL_VERSION,
             engine: format!("jc-engine {}", env!("CARGO_PKG_VERSION")),
             session: 1,
+            bindings: [
+                ("emoji_palette".to_string(), "ctrl+alt+.".to_string()),
+                ("symbol_menu".to_string(), "ctrl+alt+,".to_string()),
+            ]
+            .into_iter()
+            .collect(),
         }
     );
 

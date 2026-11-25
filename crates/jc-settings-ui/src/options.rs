@@ -22,6 +22,8 @@ pub enum Kind {
     Switch,
     /// 固定選項。
     Choice(&'static [Choice]),
+    /// 文字輸入；值由 `Settings::set` 驗證。
+    Text,
 }
 
 /// 一個可編輯的設定項目。
@@ -150,12 +152,26 @@ pub const JA: [Opt; 3] = [
 ///
 /// 中英切換固定為單按左／右 Shift，不再提供切換鍵、啟動模式與 Esc 清除開關；
 /// 對應的 JSON 欄位保留給舊檔相容。
-pub const INPUT: [Opt; 1] = [Opt {
-    key: "space-selects",
-    title: "空白選字",
-    help: "空白鍵選第一個候選；關閉時空白鍵只送出空白。",
-    kind: Kind::Switch,
-}];
+pub const INPUT: [Opt; 3] = [
+    Opt {
+        key: "space-selects",
+        title: "空白選字",
+        help: "空白鍵選第一個候選；關閉時空白鍵只送出空白。",
+        kind: Kind::Switch,
+    },
+    Opt {
+        key: "keybind-symbol-menu",
+        title: "符號選單快捷鍵",
+        help: "例如 ctrl+alt+,；至少要有一個修飾鍵，儲存後引擎會熱重載。",
+        kind: Kind::Text,
+    },
+    Opt {
+        key: "keybind-emoji-palette",
+        title: "表情選單快捷鍵",
+        help: "例如 ctrl+alt+.；兩個動作不能綁同一個組合。",
+        kind: Kind::Text,
+    },
+];
 
 /// 把預設值翻成畫面文字。
 pub fn default_label(opt: &Opt, defaults: &Settings) -> String {
@@ -167,6 +183,7 @@ pub fn default_label(opt: &Opt, defaults: &Settings) -> String {
             .find(|choice| choice.value == value)
             .map(|choice| choice.label.to_string())
             .unwrap_or(value),
+        Kind::Text => value,
     }
 }
 

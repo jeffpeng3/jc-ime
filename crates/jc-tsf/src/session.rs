@@ -16,6 +16,7 @@
 //! 0c session.rs 測試原本用 CreateNamedPipeW 等 Win32 API 建立假引擎，移植時改成
 //! 記憶體 `Transport`，所以本檔不直接呼叫 Win32。真正的 overlapped I/O 留給 T2。
 
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use jc_proto::{Response, PROTOCOL_VERSION as JC_PROTOCOL_VERSION};
@@ -528,9 +529,12 @@ pub fn response_to_reply(response: &Response) -> Value {
         // 之後 reset／Drop 的 Close 就送這個 id，而不是寫死 1。舊引擎的 Ready
         // 沒有 session 欄位時，jc-proto 反序列化會補 1，行為與從前一致。
         Response::Ready {
-            engine, session, ..
+            engine,
+            session,
+            bindings,
+            ..
         } => json!({
-            "ok": true, "session": session, "engine": engine, "info": {},
+            "ok": true, "session": session, "engine": engine, "info": {}, "bindings": bindings,
         }),
         Response::State { .. } => json!({
             "ok": true, "snapshot": state_to_snapshot_value(response),
@@ -542,7 +546,8 @@ pub fn response_to_reply(response: &Response) -> Value {
         // T3 擴充的 op：health 的 info 攤成 0c 的字串 map，learn_simplified()
         // 就能讀到 output_simplified；其餘回報照 0c Reply 的形狀組。
         Response::Health { info } => json!({
-            "ok": true, "info": info.as_info(),
+            "ok": true, "info": info.as_info(), "bindings": info.bindings,
+            "settings_revision": info.settings_revision,
         }),
         Response::Acknowledged { session } => json!({
             "ok": true, "session": session,
@@ -1076,6 +1081,12 @@ pub struct Session {
     simplified_at: Option<Instant>,
     idle_info: Option<Value>,
     idle_generation: u32,
+    /// 引擎回報的 action → 正規化 chord；只在本地比對，命中才送按鍵。
+    bindings: BTreeMap<String, String>,
+    /// 上次學到的 `settings_revision`。
+    bindings_revision: u64,
+    /// 上次向引擎更新 bindings 的時間；最多 5 秒一次。
+    bindings_at: Option<Instant>,
 }
 
 impl Session {
@@ -1127,6 +1138,9 @@ impl Session {
             simplified_at: None,
             idle_info: None,
             idle_generation: 0,
+            bindings: BTreeMap::new(),
+            bindings_revision: 0,
+            bindings_at: None,
         }
     }
 
@@ -1150,6 +1164,78 @@ impl Session {
         if !self.japanese_cap {
             self.japanese = false;
         }
+    }
+
+    /// 從 Ready／Health 的回應學到 bindings 與設定版次。
+    fn learn_bindings(&mut self, reply: &Value) {
+        if let Some(map) = reply["bindings"].as_object() {
+            self.bindings = map
+                .iter()
+                .filter_map(|(action, chord)| {
+                    chord
+                        .as_str()
+                        .map(|chord| (action.clone(), chord.to_string()))
+                })
+                .collect();
+        }
+        self.bindings_revision = reply["settings_revision"]
+            .as_u64()
+            .or_else(|| {
+                reply["info"]["settings_revision"]
+                    .as_str()
+                    .and_then(|value| value.parse().ok())
+            })
+            .unwrap_or(self.bindings_revision);
+    }
+
+    /// 這一鍵的 chord 是否綁了 action；只查本地表，不產生 IPC。
+    pub fn binding_for(&self, chord: &str) -> Option<&str> {
+        self.bindings
+            .iter()
+            .find(|(_, bound)| bound.as_str() == chord)
+            .map(|(action, _)| action.as_str())
+    }
+
+    /// 主動向引擎更新 bindings；連不上時保留上一次的表。
+    ///
+    /// `settings_revision` 沒變就不換表，避免每次焦點或輪詢都重建。
+    pub fn refresh_bindings(&mut self) -> bool {
+        if !self.client.connected() {
+            return false;
+        }
+        let Some(reply) = self.client.call(&json!({"op": "health"})) else {
+            return false;
+        };
+        if reply["ok"] != true {
+            return false;
+        }
+        self.bindings_at = Some(Instant::now());
+        let revision = reply["settings_revision"]
+            .as_u64()
+            .or_else(|| {
+                reply["info"]["settings_revision"]
+                    .as_str()
+                    .and_then(|value| value.parse().ok())
+            })
+            .unwrap_or(0);
+        if revision == self.bindings_revision && !self.bindings.is_empty() {
+            return false;
+        }
+        let before = self.bindings.clone();
+        self.learn_bindings(&reply);
+        before != self.bindings
+    }
+
+    /// 每 5 秒最多更新一次 bindings；按鍵路徑用。
+    pub fn maybe_refresh_bindings(&mut self) {
+        if self
+            .bindings_at
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
+        {
+            return;
+        }
+        self.bindings_at = Some(Instant::now());
+        let _ = self.refresh_bindings();
     }
 
     /// 「輸出簡體字」目前的值。
@@ -1481,6 +1567,7 @@ impl Session {
         self.vocab_keys = reply["info"]["vocab_keys"] == "true";
         self.shared = reply["info"]["mode_memory"] == "shared";
         self.learn_capabilities(&reply["info"], self.generation);
+        self.learn_bindings(&reply);
         let _ = self.learn_simplified(&reply["info"]);
         let start_english = reply["info"]["start_mode"] == "english";
         // 開機直接英文只套用在還沒學過模式的第一次開 session；重連後保留
@@ -1785,6 +1872,11 @@ impl Session {
             snapshot.navigating = false;
             return snapshot;
         }
+        self.handle(json!({"type": "key", "key": key}))
+    }
+
+    /// 送出帶修飾鍵的結構化按鍵；快捷鍵命中時使用。
+    pub fn key_chord(&mut self, key: &jc_proto::Key) -> Snapshot {
         self.handle(json!({"type": "key", "key": key}))
     }
 
@@ -2235,6 +2327,7 @@ mod parse_tests {
             protocol: PROTOCOL_VERSION,
             engine: "jc-engine test".into(),
             session: 23,
+            bindings: Default::default(),
         };
         let reply = response_to_reply(&ready);
         assert_eq!(reply["ok"], true);
@@ -2578,6 +2671,76 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ready_bindings_drive_chord_matching_and_key_chord_carries_alt() {
+        let (client, st) = mock_client(|request, _st| match request["op"].as_str() {
+            Some("hello") => Some(
+                serde_json::to_value(Response::Ready {
+                    protocol: PROTOCOL_VERSION,
+                    engine: "toy".into(),
+                    session: 1,
+                    bindings: [
+                        ("emoji_palette".to_string(), "ctrl+alt+.".to_string()),
+                        ("symbol_menu".to_string(), "ctrl+alt+,".to_string()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                })
+                .unwrap(),
+            ),
+            Some("key") => Some(json!(Response::State {
+                preedit: String::new(),
+                cursor: 0,
+                candidates: Vec::new(),
+                details: Vec::new(),
+                segments: Vec::new(),
+                highlighted: 0,
+                cursor_rune: 0,
+                suggestion: None,
+                label: None,
+                navigating: false,
+                handled: Some(true),
+            })),
+            _ => Some(json!({"ok": true})),
+        });
+        let mut s = Session::with_client(client);
+        let key = jc_proto::Key::char(',', false).with_ctrl().with_alt();
+        let snapshot = s.key_chord(&key);
+        assert!(snapshot.ok && snapshot.handled);
+
+        assert_eq!(s.binding_for("ctrl+alt+,"), Some("symbol_menu"));
+        assert_eq!(s.binding_for("ctrl+alt+."), Some("emoji_palette"));
+        assert_eq!(
+            s.binding_for("ctrl+alt+x"),
+            None,
+            "未命中的 chord 不該有 action"
+        );
+
+        let requests = st.lock().unwrap().requests.clone();
+        let sent = requests
+            .iter()
+            .rev()
+            .find(|request| request["op"] == "key")
+            .expect("要送 key");
+        assert_eq!(sent["key"]["alt"], true, "chord 要帶 alt");
+        assert_eq!(sent["key"]["ctrl"], true);
+        assert_eq!(sent["key"]["text"], ",");
+    }
+
+    #[test]
+    fn binding_lookup_is_local_and_does_not_send_requests() {
+        let (client, st) = mock_client(|_request, _st| Some(json!({"ok": true})));
+        let mut s = Session::with_client(client);
+        s.bindings.insert("symbol_menu".into(), "ctrl+alt+,".into());
+        let before = st.lock().unwrap().requests.len();
+        assert_eq!(s.binding_for("ctrl+alt+x"), None);
+        assert_eq!(
+            st.lock().unwrap().requests.len(),
+            before,
+            "本地比對不得產生 IPC"
+        );
+    }
+
     struct MockState {
         connected: bool,
         down: bool,
@@ -2713,6 +2876,7 @@ mod tests {
                         protocol: PROTOCOL_VERSION,
                         engine: "toy".into(),
                         session: st.session,
+                        bindings: Default::default(),
                     };
                     return serde_json::to_value(ready).ok();
                 }

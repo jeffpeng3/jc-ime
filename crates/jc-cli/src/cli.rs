@@ -338,6 +338,11 @@ pub enum Command {
     Help,
     /// 顯示版本。
     Version,
+    /// 對空白 session 執行一個引擎指令；本機驗證 action 用。
+    Command {
+        /// `symbol_menu` 或 `emoji_palette`。
+        action: String,
+    },
 }
 
 /// 解析參數。
@@ -356,6 +361,14 @@ pub fn parse(args: &[String]) -> Result<Command, CliError> {
         "mixed-split" => parse_mixed_split(&args[1..]),
         "mixed-diff" => parse_mixed_diff(&args[1..]),
         "corpus-diff" => parse_corpus_diff(&args[1..]),
+        "command" => {
+            let action = args.get(1).ok_or_else(|| {
+                CliError::Usage("command 需要一個 action，例如 symbol_menu".to_string())
+            })?;
+            Ok(Command::Command {
+                action: action.clone(),
+            })
+        }
         other => Err(CliError::Usage(format!("不認得的子命令 {other}"))),
     }
 }
@@ -1339,6 +1352,16 @@ pub fn run_command(command: &Command, out: &mut dyn Write) -> Result<(), CliErro
             writeln!(out, "jc-cli {}", env!("CARGO_PKG_VERSION"))?;
             Ok(())
         }
+        Command::Command { action } => {
+            let mut session =
+                jc_core::session::Session::new(jc_core::session::SessionConfig::default());
+            let handled = session.command(action);
+            match session.menu_tab() {
+                Some(tab) => writeln!(out, "handled={handled} menu={tab}")?,
+                None => writeln!(out, "handled={handled}")?,
+            }
+            Ok(())
+        }
         Command::EvalZhGolden {
             testdata,
             data,
@@ -1517,7 +1540,8 @@ pub fn usage() -> String {
          jc-cli corpus-diff [--source <dir>] [--limit 0] [--top 5] [--json] [--cases <file>]\n  \
          jc-cli convert <reading> [--mode en] [--testdata <dir>] [--data <dir>] [--lm <lm.bin>] [--mu <0..1>] [--stats] [--n 5] [--select-model on|off] [--backend candle] [--user-data <dir>] [--pick <n>] [--json]\n  \
          jc-cli tokenize ja [--testdata <dir>] [--vocab <model>] [--text <字串>]... [--diff] [--json]\n  \
-         jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\n\
+         jc-cli bench <file> [--testdata <dir>] [--data <dir>] [--repeat 20] [--json]\n\
+         jc-cli command <symbol_menu|emoji_palette>\n\n\
          jc-cli data manifest <root> [--out <manifest.json>] [--version <標籤>]\n  \
          jc-cli data verify <root> [--manifest <manifest.json>] [--json]\n  \
          jc-cli data status <root> [--manifest <manifest.json>] [--json]\n  \

@@ -596,6 +596,10 @@ fn test_keys_list_every_value_with_default() {
             .value(&spec.key)
             .unwrap_or_else(|| panic!("{} 沒有值", spec.key));
         assert!(!value.is_empty(), "{} 的值是空的", spec.key);
+        if spec.values.is_empty() {
+            // 自由輸入（例如快捷鍵 chord）沒有列舉值，由 set 個別驗證。
+            continue;
+        }
         assert!(
             spec.values.contains(&value.as_str()),
             "{}={value} 不在允許值 {:?}",

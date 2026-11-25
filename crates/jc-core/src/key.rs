@@ -57,6 +57,9 @@ pub struct Key {
     /// Ctrl 是否按著；`false` 時不寫進 JSON，維持舊協定形狀。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ctrl: bool,
+    /// Alt 是否按著；`false` 時不寫進 JSON，維持舊協定形狀。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alt: bool,
     /// 這個鍵是否來自私密欄位；`false` 時不寫進 JSON，維持舊協定形狀。
     ///
     /// 外殼依欄位判定後隨每個按鍵明確帶值，引擎據此決定要不要學習。
@@ -72,6 +75,7 @@ impl Key {
             text,
             shift,
             ctrl: false,
+            alt: false,
             private: false,
         }
     }
@@ -84,6 +88,12 @@ impl Key {
     /// 加上 Ctrl 修飾鍵。
     pub fn with_ctrl(mut self) -> Self {
         self.ctrl = true;
+        self
+    }
+
+    /// 加上 Alt 修飾鍵。
+    pub fn with_alt(mut self) -> Self {
+        self.alt = true;
         self
     }
 
@@ -165,5 +175,30 @@ mod tests {
         let parsed: Key =
             serde_json::from_str(r#"{"code":{"kind":"enter"},"text":null,"shift":false}"#).unwrap();
         assert!(!parsed.private);
+    }
+
+    #[test]
+    fn key_alt_round_trips_and_stays_out_of_json_when_false() {
+        let plain = Key::char(',', false);
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("alt"), "alt=false 不應寫進 JSON：{json}");
+
+        let chord = Key::char(',', false).with_ctrl().with_alt();
+        let json = serde_json::to_string(&chord).unwrap();
+        assert!(json.contains(r#""ctrl":true"#), "{json}");
+        assert!(json.contains(r#""alt":true"#), "{json}");
+        let parsed: Key = serde_json::from_str(&json).unwrap();
+        assert!(parsed.ctrl && parsed.alt);
+        assert_eq!(parsed, chord);
+    }
+
+    #[test]
+    fn key_alt_defaults_to_false_for_old_payloads() {
+        let parsed: Key = serde_json::from_str(
+            r#"{"code":{"kind":"char","value":","},"text":",","shift":false,"ctrl":true}"#,
+        )
+        .unwrap();
+        assert!(parsed.ctrl);
+        assert!(!parsed.alt);
     }
 }

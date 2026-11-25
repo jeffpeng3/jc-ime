@@ -20,8 +20,10 @@ use std::time::{Duration, Instant, SystemTime};
 use jc_core::personal::{PersonalError, PersonalStore};
 use jc_core::session::{Session, SessionConfig};
 use jc_core::{KeyCode, Mode, Snapshot};
+use jc_settings::keybinds::Chord;
 
 pub mod config;
+mod config_watch;
 pub mod loader;
 mod personal_merge;
 pub mod supervise;
@@ -99,7 +101,6 @@ pub struct Registry {
     closing: bool,
     shutdown: bool,
     drain_done: bool,
-    settings_pending: bool,
     /// ResetPersonal 代次；worker 發現代次變化時重建自己的 session。
     personal_epoch: u64,
     /// 全行程唯一的個人學習資料。跨 session、跨連線共享同一份。
@@ -119,6 +120,24 @@ pub struct Registry {
     last_key: Option<Instant>,
     /// 最近一次超過 [`SLOW_REQUEST`] 的請求；跨連線共享，health 直接回報。
     last_slow: Option<SlowRequest>,
+    /// 設定檔路徑；watcher 與 `ApplySettings` 都用它重讀。
+    settings_path: Option<PathBuf>,
+    /// 設定檔的平台代號。
+    settings_goos: String,
+    /// CLI 覆寫；熱重載時要一起重算生效設定。
+    settings_overrides: config::Overrides,
+    /// 最近一次成功套用的生效設定；`None` 表示這個引擎沒有設定來源。
+    settings_effective: Option<config::EffectiveSettings>,
+    /// 正規化 chord → action。
+    settings_keymap: BTreeMap<Chord, &'static str>,
+    /// action → 正規化 chord；協定 `bindings` 直接回這個。
+    settings_bindings: BTreeMap<String, String>,
+    /// 成功套用的次數。
+    settings_revision: u64,
+    /// 最近一次熱重載失敗的原因。
+    settings_error: Option<String>,
+    /// watcher 上次看到的設定檔戳記。
+    settings_stamp: Option<config_watch::Stamp>,
 }
 
 impl Registry {
@@ -136,7 +155,6 @@ impl Registry {
             closing: false,
             shutdown: false,
             drain_done: false,
-            settings_pending: false,
             personal_epoch: 0,
             personal_store: Arc::new(Mutex::new(PersonalStore::new())),
             personal_loaded: false,
@@ -146,6 +164,15 @@ impl Registry {
             active: 0,
             last_key: None,
             last_slow: None,
+            settings_path: None,
+            settings_goos: config::platform_goos().to_string(),
+            settings_overrides: config::Overrides::default(),
+            settings_effective: None,
+            settings_keymap: BTreeMap::new(),
+            settings_bindings: BTreeMap::new(),
+            settings_revision: 0,
+            settings_error: None,
+            settings_stamp: None,
         }
     }
 
@@ -160,7 +187,7 @@ impl Registry {
 
 /// 保護共享 metadata 的 Mutex lock。中毒時取回內部資料，避免一條 worker
 /// panic 就拖垮全行程。
-fn lock(registry: &Arc<Mutex<Registry>>) -> MutexGuard<'_, Registry> {
+pub(crate) fn lock(registry: &Arc<Mutex<Registry>>) -> MutexGuard<'_, Registry> {
     registry.lock().unwrap_or_else(|err| err.into_inner())
 }
 
@@ -180,6 +207,8 @@ struct LocalState {
     /// 各 session 建立時從共用 store 取得的快照。回寫時用來算增量，避免重複累加。
     personal_baseline: HashMap<u64, PersonalStore>,
     epoch: u64,
+    /// 這個 worker 已套用的設定 revision。
+    settings_revision: u64,
 }
 
 /// 可跨 thread 遞送的連線憑證。worker 在自己的 thread 呼叫 [`Connection::into_engine`]
@@ -201,6 +230,7 @@ impl Connection {
                 sessions: HashMap::new(),
                 personal_baseline: HashMap::new(),
                 epoch,
+                settings_revision: 0,
             },
             shared: self.shared,
             conn: self.conn,
@@ -277,6 +307,7 @@ impl Engine {
                 sessions: HashMap::new(),
                 personal_baseline: HashMap::new(),
                 epoch: 0,
+                settings_revision: 0,
             },
             shared,
             conn: DEFAULT_CONN,
@@ -467,11 +498,21 @@ impl Engine {
                 .map(|meta| meta.log.clone())
                 .unwrap_or_default()
         };
+        let keymap = lock(&self.shared).settings_keymap.clone();
         log.into_iter()
             .map(|request| {
                 let logged = request.clone();
                 self.apply_to_session(to, Some(request), |session| match logged {
-                    Request::Key { key } => state(session.press(key)),
+                    Request::Key { key } => {
+                        if let Some(action) = config_watch::chord_of_key(&key)
+                            .and_then(|chord| keymap.get(&chord).copied())
+                        {
+                            let _ = session.command(action);
+                            state(session.snapshot())
+                        } else {
+                            state(session.press(key))
+                        }
+                    }
                     Request::Literal { text, .. } => state(session.literal(&text)),
                     Request::Toggle => state(session.toggle_english()),
                     Request::Commit => Response::Committed {
@@ -562,6 +603,7 @@ impl Engine {
     /// 處理一個請求。任何請求都會得到一個回應。
     pub fn handle(&mut self, request: Request) -> Response {
         self.sync_epoch();
+        self.sync_settings();
         if self.last_personal_flush.elapsed() >= PERSONAL_FLUSH_INTERVAL {
             self.last_personal_flush = Instant::now();
             self.flush_all();
@@ -579,22 +621,47 @@ impl Engine {
                 self.open_session();
                 log::info!("客戶端 {} 完成握手（協定 {protocol}）", client);
                 // 把實際配置的 id 回給 adapter；它記住後用在同一連線的 Close。
-                let session = lock(&self.shared)
-                    .current
-                    .get(&self.conn)
-                    .copied()
-                    .unwrap_or(0);
+                let (session, bindings) = {
+                    let registry = lock(&self.shared);
+                    (
+                        registry.current.get(&self.conn).copied().unwrap_or(0),
+                        registry.settings_bindings.clone(),
+                    )
+                };
                 Response::Ready {
                     protocol: PROTOCOL_VERSION,
                     engine: engine_label(),
                     session,
+                    bindings,
                 }
             }
             Request::Key { key } => {
                 if !self.hello {
                     return not_handshaked();
                 }
+                // 快捷鍵先查 keymap：命中就由引擎執行 action，外殼只負責轉發。
+                if key.ctrl || key.alt || key.shift {
+                    let action = config_watch::chord_of_key(&key)
+                        .and_then(|chord| lock(&self.shared).settings_keymap.get(&chord).copied());
+                    if let Some(action) = action {
+                        lock(&self.shared).last_key = Some(Instant::now());
+                        let logged = Some(Request::Key { key });
+                        return self.with_current(logged, |session| {
+                            let _ = session.command(action);
+                            Response::state_with_handled(session.snapshot(), Some(true))
+                        });
+                    }
+                }
                 let enters = key.code == KeyCode::Enter;
+                // Alt 組合鍵是新的快捷鍵空間；沒命中就明確說沒處理，讓外殼放行。
+                // 不要先 press：Ctrl+Alt+, 之類的組合若還有 Ctrl 標點副作用，
+                // 會變成「引擎沒處理」但字元已插入，與放行語意矛盾。
+                if key.alt {
+                    lock(&self.shared).last_key = Some(Instant::now());
+                    return self.with_current(None, |session| {
+                        Response::state_with_handled(session.snapshot(), Some(false))
+                    });
+                }
                 lock(&self.shared).last_key = Some(Instant::now());
                 let logged = Some(Request::Key { key });
                 self.with_current(logged, |session| {
@@ -677,8 +744,10 @@ impl Engine {
                 info: self.health(),
             },
             Request::ApplySettings { settings } => {
-                lock(&self.shared).settings_pending = true;
-                log::info!("收到 {} 項延遲設定；實際套用由 T6 處理", settings.len());
+                log::info!("收到 {} 項設定；立即從設定檔重讀並套用", settings.len());
+                if let Err(err) = self.reload_settings() {
+                    log::warn!("套用設定失敗：{err}");
+                }
                 Response::Health {
                     info: self.health(),
                 }
@@ -741,6 +810,10 @@ impl Engine {
         let mut session = (registry.factory)();
         session.set_personal_store(seed.clone());
         session.set_output_simplified(registry.default_output_simplified);
+        if let Some(effective) = registry.settings_effective.clone() {
+            let config = config::session_config(session.config_snapshot(), &effective);
+            session.apply_config(config);
+        }
         self.local.personal_baseline.insert(id, seed);
         self.local.sessions.insert(id, session);
         registry.owned.entry(self.conn).or_default().insert(id);
@@ -879,6 +952,75 @@ impl Engine {
         lock(&self.shared).extra_caps = caps;
     }
 
+    /// 安裝啟動時的設定與熱重載來源。
+    ///
+    /// `base` 保留資料依賴（詞典、模型），熱重載只換由設定檔決定的欄位。
+    pub fn set_settings(
+        &mut self,
+        effective: config::EffectiveSettings,
+        path: Option<PathBuf>,
+        goos: &str,
+        overrides: config::Overrides,
+    ) {
+        let keymap = effective.keybinds.chords().unwrap_or_default();
+        let bindings = effective.bindings.clone();
+        let stamp = path.as_deref().and_then(config_watch::stamp);
+        {
+            let mut registry = lock(&self.shared);
+            registry.settings_keymap = keymap;
+            registry.settings_bindings = bindings;
+            registry.settings_effective = Some(effective);
+            registry.settings_path = path;
+            registry.settings_goos = goos.to_string();
+            registry.settings_overrides = overrides;
+            registry.settings_stamp = stamp;
+        }
+        // 已經有 session 的嵌入端要立刻套用；一般啟動時還沒開 session。
+        self.local.settings_revision = u64::MAX;
+        self.sync_settings();
+    }
+
+    /// 啟動每秒 stat 設定檔的 watcher；沒有設定檔時什麼都不做。
+    pub fn watch_settings(&self) {
+        config_watch::spawn(Arc::clone(&self.shared));
+    }
+
+    /// 立刻從檔案重讀設定並套用到這條 worker 的 session。
+    pub fn reload_settings(&mut self) -> Result<u64, String> {
+        let revision = config_watch::reload(&self.shared)?;
+        self.sync_settings();
+        Ok(revision)
+    }
+
+    /// 目前成功套用的設定版次；診斷與測試用。
+    pub fn settings_revision(&self) -> u64 {
+        lock(&self.shared).settings_revision
+    }
+
+    /// 把共用 registry 的最新設定套用到這條 worker 的 session。
+    ///
+    /// `Session` 不跨 thread，所以其他 worker 會在自己的下一次請求進來時套用。
+    fn sync_settings(&mut self) {
+        let (revision, effective) = {
+            let registry = lock(&self.shared);
+            (
+                registry.settings_revision,
+                registry.settings_effective.clone(),
+            )
+        };
+        if revision == self.local.settings_revision {
+            return;
+        }
+        self.local.settings_revision = revision;
+        let Some(effective) = effective else {
+            return;
+        };
+        for session in self.local.sessions.values_mut() {
+            let config = config::session_config(session.config_snapshot(), &effective);
+            session.apply_config(config);
+        }
+    }
+
     /// 設定開機模式；外殼從 health 的 `start_mode` 判斷是否直接英文。
     pub fn set_start_mode(&mut self, mode: impl Into<String>) {
         lock(&self.shared).start_mode = Some(mode.into());
@@ -930,6 +1072,9 @@ impl Engine {
             last_slow_op: last_slow.map(|slow| slow.op.clone()),
             last_slow_ms: last_slow.map(|slow| slow.ms),
             last_slow_input_len: last_slow.map(|slow| slow.input_len),
+            bindings: registry.settings_bindings.clone(),
+            settings_revision: registry.settings_revision,
+            settings_error: registry.settings_error.clone(),
         }
     }
 
@@ -965,7 +1110,6 @@ impl Engine {
                     let mut registry = lock(&shared);
                     registry.closing = true;
                     registry.drain_done = true;
-                    registry.settings_pending = false;
                     registry.broadcast_disconnects()
                 };
                 for disconnect in disconnects {
@@ -1862,5 +2006,133 @@ mod tests {
         assert_eq!(info.capabilities.get("personal_shared"), Some(&true));
         assert_eq!(info.capabilities.get("personal_persist"), Some(&true));
         assert_eq!(info.capabilities.get("personal_loaded"), Some(&true));
+    }
+
+    fn engine_with_settings(path: Option<PathBuf>) -> Engine {
+        let goos = "linux";
+        let loaded = config::load(path.as_deref(), None, goos);
+        let effective = config::effective(&loaded.settings, &config::Overrides::default(), goos);
+        let mut engine = Engine::new();
+        engine.set_settings(effective, path, goos, config::Overrides::default());
+        engine
+    }
+
+    fn write_keybinds(path: &PathBuf, symbol: &str, emoji: &str) {
+        let body =
+            format!(r#"{{"keybinds":{{"symbol_menu":"{symbol}","emoji_palette":"{emoji}"}}}}"#);
+        std::fs::write(path, body).unwrap();
+    }
+
+    fn handled(response: &Response) -> Option<bool> {
+        match response {
+            Response::State { handled, .. } => *handled,
+            other => panic!("應該回 State，收到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_alt_comma_opens_symbol_menu_through_keymap() {
+        let mut engine = engine_with_settings(None);
+        hello(&mut engine);
+        let response = engine.handle(Request::Key {
+            key: Key::char(',', false).with_ctrl().with_alt(),
+        });
+        assert_eq!(handled(&response), Some(true));
+        let id = engine.current_session();
+        assert!(
+            engine.local.sessions[&id].menu_tab().is_some(),
+            "引擎要真的開符號選單"
+        );
+    }
+
+    #[test]
+    fn unbound_alt_chord_is_not_handled() {
+        let mut engine = engine_with_settings(None);
+        hello(&mut engine);
+        type_syllable(&mut engine, "ㄇㄚ");
+        assert_eq!(engine.composition(), "ㄇㄚ");
+        let response = engine.handle(Request::Key {
+            key: Key::char('x', false).with_ctrl().with_alt(),
+        });
+        assert_eq!(handled(&response), Some(false));
+        assert_eq!(
+            engine.composition(),
+            "ㄇㄚ",
+            "未命中的 Alt 組合鍵不得改動組字"
+        );
+    }
+
+    #[test]
+    fn settings_reload_updates_revision_keymap_and_keeps_composition() {
+        let dir = temp_data_dir("reload");
+        let path = dir.join("settings.json");
+        write_keybinds(&path, "ctrl+alt+,", "ctrl+alt+.");
+        let mut engine = engine_with_settings(Some(path.clone()));
+        hello(&mut engine);
+        type_syllable(&mut engine, "ㄇㄚ");
+        assert_eq!(engine.composition(), "ㄇㄚ");
+
+        write_keybinds(&path, "ctrl+alt+s", "ctrl+alt+.");
+        let revision = engine.reload_settings().expect("重載設定");
+        assert_eq!(revision, 1);
+        assert_eq!(engine.composition(), "ㄇㄚ", "熱重載不得清掉組字");
+
+        let old = engine.handle(Request::Key {
+            key: Key::char(',', false).with_ctrl().with_alt(),
+        });
+        assert_ne!(handled(&old), Some(true), "舊綁定不該再命中");
+        let new = engine.handle(Request::Key {
+            key: Key::char('s', false).with_ctrl().with_alt(),
+        });
+        assert_eq!(handled(&new), Some(true), "新綁定要立刻生效");
+
+        let Response::Health { info } = engine.handle(Request::Health) else {
+            panic!("health 應回 Health");
+        };
+        assert_eq!(info.settings_revision, 1);
+        assert_eq!(info.bindings["symbol_menu"], "ctrl+alt+s");
+        assert!(info.settings_error.is_none());
+    }
+
+    #[test]
+    fn apply_settings_reloads_immediately() {
+        let dir = temp_data_dir("apply");
+        let path = dir.join("settings.json");
+        write_keybinds(&path, "ctrl+alt+,", "ctrl+alt+.");
+        let mut engine = engine_with_settings(Some(path.clone()));
+        hello(&mut engine);
+
+        write_keybinds(&path, "ctrl+alt+p", "ctrl+alt+.");
+        let Response::Health { info } = engine.handle(Request::ApplySettings {
+            settings: BTreeMap::new(),
+        }) else {
+            panic!("apply_settings 應回 Health");
+        };
+        assert_eq!(info.settings_revision, 1);
+        assert_eq!(info.bindings["symbol_menu"], "ctrl+alt+p");
+
+        let response = engine.handle(Request::Key {
+            key: Key::char('p', false).with_ctrl().with_alt(),
+        });
+        assert_eq!(handled(&response), Some(true));
+    }
+
+    #[test]
+    fn corrupt_reload_keeps_old_settings_and_reports_error() {
+        let dir = temp_data_dir("reload-error");
+        let path = dir.join("settings.json");
+        write_keybinds(&path, "ctrl+alt+,", "ctrl+alt+.");
+        let mut engine = engine_with_settings(Some(path.clone()));
+        hello(&mut engine);
+        engine.reload_settings().expect("第一次重載");
+
+        std::fs::write(&path, b"{ not json").unwrap();
+        assert!(engine.reload_settings().is_err());
+        let Response::Health { info } = engine.handle(Request::Health) else {
+            panic!("health 應回 Health");
+        };
+        assert_eq!(info.settings_revision, 1, "失敗不得 +1");
+        assert_eq!(info.bindings["symbol_menu"], "ctrl+alt+,");
+        assert!(info.settings_error.is_some());
     }
 }

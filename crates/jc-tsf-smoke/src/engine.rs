@@ -198,6 +198,7 @@ pub fn probe() -> Probe {
             protocol,
             engine,
             session,
+            ..
         }) => (protocol, engine, session),
         Ok(other) => {
             return Probe::Unavailable {
@@ -342,6 +343,7 @@ mod tests {
                 protocol: 3,
                 engine: "jc-engine 0.1.0".to_string(),
                 session: 1,
+                bindings: Default::default(),
             }),
             "Ready（協定 3、引擎 jc-engine 0.1.0）"
         );

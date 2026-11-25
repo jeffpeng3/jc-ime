@@ -60,6 +60,12 @@ Go 版設定程式是 Tauri（`ref/0c-ime/platforms/settings`）：Rust 外殼�
 | 日文 | 逐字変換 | `ja-live-conversion` | 開關；說明寫「神經補正由《神經轉換模式》控制」 |
 | 日文 | 寫入日文個人詞庫 | `ja-learning` | 開關（預設開） |
 | 輸入 | 空白選字 | `space-selects` | 開關 |
+| 輸入 | 符號選單快捷鍵 | `keybind-symbol-menu` | 文字；Enter 或失焦時驗證並存檔 |
+| 輸入 | 表情選單快捷鍵 | `keybind-emoji-palette` | 文字；同上，重複 chord 會被拒絕 |
+
+快捷鍵欄位會即時顯示 `ChordError` 的中文說明（缺修飾鍵、未知按鍵、重複綁定）。
+存檔後由引擎的熱重載接手，設定程式不另外送 `ApplySettings`；banner 會提示
+「1 秒內熱重載」。
 
 已從 UI 移除的項目：`toggle-key`、`start-mode`、`esc-clear`、`ja-model`、
 `ja-rerank`、`ja-input-method`、`ja-ambiguous`、`mode-memory`。其中前七項的 JSON

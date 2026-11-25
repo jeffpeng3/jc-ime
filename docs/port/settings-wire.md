@@ -46,6 +46,35 @@ CLI 對照：`jc-cli eval ja --no-live` 走 `sentence`，其餘日文評測預�
    語言模型、神經 runtime 等資料欄位保留載入器的值。
 5. `--print-settings` 在第 3 步後直接輸出 JSON 並結束，不載入資料。
 
+## 熱重載
+
+引擎啟動後由 `crates/jc-engine/src/config_watch.rs` 每 1 秒 `stat` 設定檔
+（mtime + size）。檔案變了才重讀：
+
+1. `config::load` → `config::effective`，沿用與啟動時相同的驗證。
+2. 更新共用 `Registry`：keymap、`bindings`（action → chord）、effective 設定與
+   `settings_revision`。
+3. 各 worker 在下一次 `Engine::handle` 開頭呼叫 `sync_settings()`，用
+   `Session::apply_config` 把新設定套到自己的 session；只換設定與衍生狀態，
+   不清組字。
+4. 成功才把 `settings_revision` +1，並在 log 印「重新載入設定（revision N）」。
+   失敗時保留舊設定、記 warning，revision 不變，錯誤放在
+   `HealthInfo.settings_error`。
+
+`Request::ApplySettings` 不再只設 `settings_pending`，而是立即走同一條重載
+路徑並回傳新的 `HealthInfo`。沒有 TSF 連線時熱重載也照常運作。
+
+`HealthInfo` 另外提供：
+
+| 欄位 | 意義 |
+|---|---|
+| `bindings` | action → 正規化 chord（例如 `symbol_menu` → `ctrl+alt+,`） |
+| `settings_revision` | 每次成功套用 +1；TSF 用它判斷是否要換本地 bindings |
+| `settings_error` | 最近一次重載失敗的原因；成功後清空 |
+
+TSF 只在 `Ready`、`OnSetFocus` 與最多每 5 秒一次的 `Health` 輪詢更新本地
+bindings；`settings_revision` 沒變就不換表。連不上引擎時沿用上一次的表。
+
 ## 設定欄位 → 行為
 
 「引擎」欄指 `SessionConfig`；「外殼」表示需要 TSF／CLI 端處理，引擎只印在
@@ -85,6 +114,7 @@ CLI 對照：`jc-cli eval ja --no-live` 走 `sentence`，其餘日文評測預�
 | `keyboard_layout` | 本版固定標準大千鍵盤（`ZhInput::standard`） | 本版忽略 |
 | `output_variant`／`output_simplified` | 舊 `output_simplified` 遷移成 `output_variant`；`effective.output_simplified` 在引擎啟動時設 session 初始旗標。轉換器載入成功才生效，之後由 `output_simplified` op 即時切換 | 生效（需 `opencc/`） |
 | `simplified_hotkey` | 簡體輸出的外殼快捷鍵 | 本版忽略（外殼） |
+| `keybinds` | `symbol_menu`／`emoji_palette` 的 chord；引擎解析後呼叫 `Session::command`，TSF 只轉發 | 生效（熱重載） |
 | `all_symbols_halfwidth` | 不直接寫 `SessionConfig`；只經由 `effective_ctrl_punctuation`／`effective_toneless` 影響 | 間接生效 |
 | `caps_lock_english` | Caps Lock 直接打英文；外殼決定按鍵怎麼送 | 本版忽略（外殼） |
 | `ja_input_method` | 日文只有羅馬字（`RomajiInput`），沒有直接かな | 本版忽略 |
@@ -137,3 +167,8 @@ CLI 對照：`jc-cli eval ja --no-live` 走 `sentence`，其餘日文評測預�
   警告。
 - `crates/jc-engine/src/main.rs`：`--settings`、`--neural`、`--print-settings`
   的參數解析。
+- `crates/jc-engine/src/lib.rs`：`ctrl+alt+,` 命中 keymap、未綁定回
+  `handled=false`、設定檔變更後 revision +1 且不清組字、`ApplySettings` 立即
+  生效、壞檔保留舊設定並回報 `settings_error`。
+- `crates/jc-settings/src/keybinds.rs`：chord 解析、重複綁定與 round-trip。
+- `scripts/verify-keybinds.sh`：起引擎、送快捷鍵、改設定檔後確認熱重載。

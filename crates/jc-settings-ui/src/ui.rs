@@ -1,20 +1,27 @@
 //! 畫面：分頁、設定項目與資訊列。
 //!
-//! 用 GPUI Kit 的 `component::setting` 元件組頁面。可編輯項目一律走
-//! [`crate::state::SettingsView::apply`]，變更即存檔；純顯示的資訊列用
-//! `SettingField::render`，不假裝有設定鍵。
+//! 用 GPUI Kit 的 `component::setting` 元件組頁面。開關與下拉一改就存檔；文字
+//! 欄位（快捷鍵）在 Enter 或失焦時才存檔，避免打到一半的 chord 被驗證擋掉。
+//! 純顯示的資訊列用 `SettingField::render`，不假裝有設定鍵。
 
 use gpui_kit::component::{
     button::Button,
     h_flex,
+    input::{Input, InputEvent, InputState},
     label::Label,
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings as SettingsPanel},
-    v_flex, ActiveTheme, Disableable, StyledExt,
+    v_flex, ActiveTheme, Disableable, Sizable, StyledExt,
 };
 use gpui_kit::*;
 
 use crate::options::{self, Kind, Opt};
 use crate::state::SettingsView;
+
+/// 文字設定欄位的輸入狀態；`_subscription` 活著才會收到 InputEvent。
+struct TextFieldState {
+    input: Entity<InputState>,
+    _subscription: Subscription,
+}
 
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -39,7 +46,7 @@ fn header(view: &SettingsView, cx: &App) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
     let mut banner = v_flex().gap_1();
     banner = banner.child(
-        Label::new("引擎下次啟動才生效；設定檔儲存後不會即時套用到執行中的引擎。")
+        Label::new("設定檔儲存後，執行中的引擎會在 1 秒內熱重載；不需要重啟。")
             .id("banner-effect")
             .text_sm()
             .text_color(muted),
@@ -279,6 +286,74 @@ fn option_item(this: &Entity<SettingsView>, view: &SettingsView, opt: &Opt) -> S
                         });
                     },
                 ),
+            )
+        }
+        Kind::Text => {
+            let read_view = this.clone();
+            let write_view = this.clone();
+            let key = opt.key;
+            let title = opt.title;
+            // 快捷鍵要整段打完才能驗證，所以不像開關／下拉那樣每個 Change 都存檔；
+            // 只有在 Enter 或失焦時才交給 Settings::set，錯誤會留在狀態列。
+            SettingItem::new(
+                opt.title,
+                SettingField::render(move |options, window, cx| {
+                    let value = SharedString::from(read_view.read(cx).value(key));
+                    let state = window.use_keyed_state(
+                        SharedString::from(format!(
+                            "text-state-{}-{}-{}",
+                            options.page_ix(),
+                            options.group_ix(),
+                            options.item_ix()
+                        )),
+                        cx,
+                        {
+                            let write_view = write_view.clone();
+                            let value = value.clone();
+                            move |window, cx| {
+                                let input =
+                                    cx.new(|cx| InputState::new(window, cx).default_value(value));
+                                let _subscription = cx.subscribe(&input, {
+                                    move |_, input, event: &InputEvent, cx| {
+                                        if matches!(
+                                            event,
+                                            InputEvent::PressEnter { .. } | InputEvent::Blur
+                                        ) {
+                                            let value = input.read(cx).value();
+                                            write_view.update(cx, |view, cx| {
+                                                view.apply(key, &value);
+                                                cx.notify();
+                                            });
+                                        }
+                                    }
+                                });
+                                TextFieldState {
+                                    input,
+                                    _subscription,
+                                }
+                            }
+                        },
+                    );
+
+                    // 外部改動（或存檔失敗後離開欄位）時把顯示值拉回設定值；
+                    // 正在輸入時不要覆蓋使用者打到一半的內容。
+                    state.update(cx, |state, cx| {
+                        let editing = state.input.read(cx).focus_handle(cx).is_focused(window);
+                        if !editing && state.input.read(cx).value() != value {
+                            state.input.update(cx, |input, cx| {
+                                input.set_value(value.clone(), window, cx);
+                            });
+                        }
+                    });
+
+                    let state = state.read(cx);
+                    Input::new(&state.input)
+                        .aria_label(title)
+                        .disabled(options.is_disabled())
+                        .with_size(options.size())
+                        .w_full()
+                        .into_any_element()
+                }),
             )
         }
     };

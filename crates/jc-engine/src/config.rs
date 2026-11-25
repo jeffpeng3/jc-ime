@@ -6,12 +6,14 @@
 //! 讀檔失敗、JSON 壞掉或單一欄位值不合法都只記警告並退回預設值，不讓引擎
 //! 啟動失敗。欄位對照與「本版忽略」的理由見 `docs/port/settings-wire.md`。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use jc_core::inputstyle::Rules;
 use jc_core::session::{NeuralConfig, SessionConfig, DEFAULT_MAX_CANDIDATES};
 use jc_core::zh::fuzzy;
 use jc_core::Mode;
+use jc_settings::keybinds::Keybinds;
 use jc_settings::settings::{self, FileState, Settings};
 use serde::{Serialize, Serializer};
 
@@ -92,9 +94,15 @@ pub fn load(explicit: Option<&Path>, data_root: Option<&Path>, goos: &str) -> Lo
             warnings.push(format!("{detail}；使用預設值"));
         }
     }
+    let mut settings = report.settings;
+    // 快捷鍵解析失敗時整份沿用預設，不讓引擎起不來。
+    if let Err(err) = settings.keybinds.chords() {
+        warnings.push(format!("keybinds：{err}；整份改用預設綁定"));
+        settings.keybinds = Keybinds::default();
+    }
     LoadedSettings {
         path: Some(report.path),
-        settings: report.settings,
+        settings,
         state: report.state,
         warnings,
     }
@@ -166,6 +174,10 @@ pub struct EffectiveSettings {
     pub emoji_shortcut: String,
     /// Shift＋符號打半形。
     pub shift_symbol_halfwidth: bool,
+    /// 快捷鍵綁定；`bindings` 是正規化後的字串表，供協定回報。
+    pub keybinds: Keybinds,
+    /// action → 正規化 chord；由 `keybinds` 推導。
+    pub bindings: BTreeMap<String, String>,
     /// 輸入習慣的鍵位規則；不由 JSON 直接輸出。
     #[serde(skip)]
     pub rules: Rules,
@@ -223,6 +235,8 @@ pub fn effective(settings: &Settings, overrides: &Overrides, goos: &str) -> Effe
         selection_keys: settings.selection_keys.clone(),
         emoji_shortcut: settings.emoji_shortcut.clone(),
         shift_symbol_halfwidth: settings.shift_symbol_halfwidth,
+        keybinds: settings.keybinds.clone(),
+        bindings: settings.keybinds.bindings().unwrap_or_default(),
         rules: settings.profile_rules(goos),
     }
 }

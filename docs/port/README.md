@@ -158,7 +158,8 @@
 | [`pipe-name.md`](pipe-name.md) | pipe 名稱加入 SID、`JC_IME_PIPE` 與機碼覆寫 |
 | [`os-isolation.md`](os-isolation.md) | 平台 cfg 邊界與 Windows 目標型別檢查 |
 | [`settings-ui.md`](settings-ui.md) | GPUI Kit 設定程式與 `settings.json` |
-| [`settings-wire.md`](settings-wire.md) | 引擎啟動讀取設定、CLI 參數優先 |
+| [`settings-wire.md`](settings-wire.md) | 引擎啟動讀取設定、CLI 參數優先、設定熱重載 |
+| [`keybinds.md`](keybinds.md) | 符號／表情快捷鍵的 chord 語法、引擎解析與 TSF 轉發 |
 | [`engine-supervisor.md`](engine-supervisor.md) | `--supervise` 單一實例、重啟與環狀 log |
 | [`data-pack.md`](data-pack.md) | 資料 manifest、驗證與安裝包 payload |
 | [`data-download.md`](data-download.md) | 首次啟動下載、`.part` 與 SHA-256 |

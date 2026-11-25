@@ -20,6 +20,7 @@ use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::atomic_file::write_atomic;
+use crate::keybinds::Keybinds;
 use crate::paths;
 use crate::profiles::fresh_settings;
 
@@ -470,6 +471,8 @@ pub struct Settings {
     pub model_residency_mb: i64,
     /// 允許載入 placeholder 模型。
     pub allow_placeholders: bool,
+    /// 快捷鍵綁定；action → chord。
+    pub keybinds: Keybinds,
 
     /// 本版沒有解讀、但存檔要原樣寫回的成員。
     extra: BTreeMap<String, Value>,
@@ -682,6 +685,7 @@ impl Settings {
             primary_language: LANGUAGE_ZH.to_string(),
             model_residency_mb: MODEL_RESIDENCY_AUTO_MB,
             allow_placeholders: false,
+            keybinds: Keybinds::default(),
             extra: BTreeMap::new(),
             profiles: None,
             selection_conflict: false,
@@ -734,6 +738,9 @@ impl Settings {
         }
         if let Some(raw) = members.remove("fuzzy") {
             settings.fuzzy = Fuzzy::from_value(raw);
+        }
+        if let Some(raw) = members.remove("keybinds") {
+            settings.keybinds = Keybinds::from_json(&raw);
         }
         for (key, setter, values) in STRING_FIELDS {
             if let Some(raw) = members.remove(key) {
@@ -1068,7 +1075,7 @@ impl Settings {
 }
 
 /// 存檔時的固定欄位順序。
-const SAVE_ORDER: [&str; 40] = [
+const SAVE_ORDER: [&str; 41] = [
     "selection",
     "punctuation",
     "document_context",
@@ -1108,6 +1115,7 @@ const SAVE_ORDER: [&str; 40] = [
     "primary_language",
     "model_residency_mb",
     "allow_placeholders",
+    "keybinds",
     "fuzzy",
 ];
 
@@ -1336,6 +1344,12 @@ impl Serialize for Settings {
             &mut kept,
             "allow_placeholders",
             Value::Bool(self.allow_placeholders),
+        )?;
+        put_known(
+            &mut map,
+            &mut kept,
+            "keybinds",
+            serde_json::to_value(&self.keybinds).unwrap_or_default(),
         )?;
         if let Some(profiles) = self.profiles.as_ref() {
             map.serialize_entry("input_profile", profiles)?;
@@ -1711,6 +1725,12 @@ pub(crate) fn specs() -> Vec<Spec> {
         spec("zhuyin-error-hint", &["on", "off"], |s| {
             on_off(s.zhuyin_error_hint)
         }),
+        spec("keybind-symbol-menu", &[], |s| {
+            s.keybinds.symbol_menu.clone()
+        }),
+        spec("keybind-emoji-palette", &[], |s| {
+            s.keybinds.emoji_palette.clone()
+        }),
     ];
     for pair in fuzzy::pairs() {
         out.push(Spec {
@@ -1870,7 +1890,10 @@ impl Settings {
             }
             .into());
         };
-        let valid = if key == "model-residency-mb" {
+        let keybind = matches!(key, "keybind-symbol-menu" | "keybind-emoji-palette");
+        let valid = if keybind {
+            true
+        } else if key == "model-residency-mb" {
             value == MODEL_RESIDENCY_AUTO_VALUE
                 || value
                     .parse::<i64>()
@@ -1892,6 +1915,20 @@ impl Settings {
                 values: spec.values.join(" 或 "),
             }
             .into());
+        }
+        if keybind {
+            let action = if key == "keybind-symbol-menu" {
+                "symbol_menu"
+            } else {
+                "emoji_palette"
+            };
+            let mut keybinds = self.keybinds.clone();
+            keybinds
+                .set(action, value)
+                .map_err(|err| SetError::Message(err.to_string()))?;
+            self.keybinds = keybinds;
+            self.forget("keybinds");
+            return Ok(());
         }
         if self.set_rule(key, value)? {
             self.sync_profile();

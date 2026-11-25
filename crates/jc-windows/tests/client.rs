@@ -173,6 +173,7 @@ fn ready() -> Response {
         protocol: PROTOCOL_VERSION,
         engine: "jc-engine test".into(),
         session: 1,
+        bindings: Default::default(),
     }
 }
 

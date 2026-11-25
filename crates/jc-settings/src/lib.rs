@@ -10,6 +10,7 @@
 pub mod atomic_file;
 pub mod both_shift;
 pub mod change;
+pub mod keybinds;
 pub mod modelset;
 pub mod paths;
 pub mod profile_rules;
@@ -17,6 +18,7 @@ pub mod profiles;
 pub mod settings;
 
 pub use change::{change, WRITE_LOCK};
+pub use keybinds::{Chord, ChordError, Keybinds};
 pub use paths::{legacy_path, settings_path, settings_path_for_store};
 pub use profiles::{Profile, ProfileAction};
 pub use settings::{
