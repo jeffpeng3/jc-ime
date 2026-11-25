@@ -34,6 +34,10 @@ panic = "abort"
 
 # TSF DLL 不能 abort：它用 catch_unwind 攔下 COM 邊界的 panic，避免拖垮宿主
 # 程式（explorer、Office 等）。其餘設定沿用 release。
+#
+# 注意：cargo 對 `cdylib + rlib` 的 unit 在 windows-msvc 不會傳 `-C lto=thin`，
+# 所以 DLL 實際只吃到 `strip`，不是 thin LTO；而且 strip 之後 DLL 也沒有
+# backtrace 符號。看到這個 profile 不代表 DLL 有 LTO。
 [profile.tsf]
 inherits = "release"
 panic = "unwind"
