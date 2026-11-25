@@ -341,7 +341,8 @@ impl State {
         {
             return None;
         }
-        keys::literal(vk, lparam, false)
+        // 標點與符號交回引擎：反引號前導要看到這一鍵（`` ` `` + `Shift+[` → `｛`）。
+        keys::shift_literal(&keys::literal(vk, lparam, false)?)
     }
 
     /// 英文模式的可列印鍵（含空白）；Caps Lock 照英文語意套用。
@@ -1704,11 +1705,16 @@ impl TextService_Impl {
     }
 
     fn follow_focus(&self, step: FocusStep<ITfContext>, focused: bool) {
-        if let Some(window) = self.state.borrow().callback.as_ref() {
-            if matches!(step, FocusStep::Wait(_)) {
-                window.settle_focus_later();
-            } else {
-                window.cancel_settle_focus();
+        // 借用限制在區塊內：`if let` 的臨時值會撐到整個大括號，後面
+        // `borrow_mut` 就會 panic。這裡只呼叫 SetTimer／KillTimer，不會回呼。
+        {
+            let st = self.state.borrow();
+            if let Some(window) = st.callback.as_ref() {
+                if matches!(step, FocusStep::Wait(_)) {
+                    window.settle_focus_later();
+                } else {
+                    window.cancel_settle_focus();
+                }
             }
         }
         match step {
@@ -2250,7 +2256,11 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             self.commit_before_host_key(pic.as_ref(), vk, lparam.0, false);
             self.learn_mode(vk);
             self.sync_caps(pic.as_ref(), vk);
-            if let Some(text) = self.state.borrow().shift_literal_key(vk, lparam.0) {
+            // `if let` 會把 borrow 的臨時值延長到整個區塊；`handle_literal`
+            // 內要 `borrow_mut`，直接寫在條件裡會 panic（Shift＋`[` 曾因此
+            // 炸掉整個 OnKeyDown）。先取值再判斷。
+            let shift_literal = self.state.borrow().shift_literal_key(vk, lparam.0);
+            if let Some(text) = shift_literal {
                 zlog!(
                     "OnKeyDown vk={}({}) 結束：Shift 字面={:?}",
                     vk,

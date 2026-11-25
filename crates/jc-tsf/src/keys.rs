@@ -125,6 +125,20 @@ pub fn literal(vk: u32, lparam: isize, caps_lock: bool) -> Option<String> {
     printable(vk, lparam, caps_lock)
 }
 
+/// 組字中的 Shift＋鍵要不要走「字面」而不是送給引擎。
+///
+/// 只有字母與數字走字面：Shift＋A 要留下大寫 `A`，不能讓前面的注音被重新
+/// 規劃。標點與符號（`Shift+[` 的 `{`、`Shift+1` 的 `!`）必須送給引擎，
+/// 反引號前導的符號表才看得到這一鍵（`` ` `` 之後按 `Shift+[` 是 `｛`）。
+pub fn shift_literal(text: &str) -> Option<String> {
+    let mut chars = text.chars();
+    let ch = chars.next()?;
+    if chars.next().is_some() || !ch.is_ascii_alphanumeric() {
+        return None;
+    }
+    Some(text.to_string())
+}
+
 /// 這一鍵是不是空白鍵。
 pub fn is_space_key(vk: u32) -> bool {
     vk as u16 == VK_SPACE.0
@@ -1574,6 +1588,16 @@ mod protocol_key_tests {
         );
         assert_eq!(from_protocol("Shift"), None);
         assert_eq!(from_protocol("Convert"), None);
+    }
+
+    #[test]
+    fn shift_literal_only_covers_letters_and_digits() {
+        assert_eq!(shift_literal("A").as_deref(), Some("A"));
+        assert_eq!(shift_literal("5").as_deref(), Some("5"));
+        assert_eq!(shift_literal("{"), None, "符號要送引擎，前導表才看得到");
+        assert_eq!(shift_literal("!"), None);
+        assert_eq!(shift_literal(" "), None);
+        assert_eq!(shift_literal(""), None);
     }
 
     #[test]
