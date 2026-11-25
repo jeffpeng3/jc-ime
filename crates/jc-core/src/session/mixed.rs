@@ -2174,6 +2174,20 @@ impl Session {
                 None => out.push(Self::literal_plan(plan.start, plan.end)),
             }
         }
+        // `visible_plans` 可能把字面空白（或整個字面尾巴）當成片段之間的停頓
+        // 吃掉；使用者明確按下的字面仍要輸出，缺的範圍補一個字面計畫。
+        let mut inserted = false;
+        for &(start, end) in &spans {
+            let covered = out.iter().any(|plan| plan.start < end && start < plan.end);
+            if covered {
+                continue;
+            }
+            out.push(Self::literal_plan(start, end));
+            inserted = true;
+        }
+        if inserted {
+            out.sort_by_key(|plan| plan.start);
+        }
         out
     }
 
@@ -3780,6 +3794,29 @@ mod tests {
             assert_eq!(got, want_segments, "{input:?} 片段");
             checked += 1;
         }
+        // 這個測試的詞典把每個讀音都收成「字」；`w96` 的 ㄊㄞˊ 不在詞典裡，
+        // 所以字面是原始注音。真正的「我」／「台」由 `pending_session` 測試鎖住。
+        for (input, want) in [
+            ("ji3 hello", "字 hello"),
+            ("w96 hello", "ㄊㄞˊ hello"),
+            ("ji3 hello world", "字 hello world"),
+        ] {
+            let mut session = Session::new(config.clone());
+            for ch in input.chars() {
+                let key = if ch == ' ' {
+                    Key::new(KeyCode::Space, None, false)
+                } else {
+                    Key::char(ch, false)
+                };
+                session.press(key);
+            }
+            assert_eq!(session.snapshot().preedit, want, "{input:?} 字面");
+            assert_eq!(
+                router.convert(input).expect("轉換").surface,
+                want,
+                "{input:?} Router"
+            );
+        }
         assert!(checked >= 200, "property test 只跑了 {checked} 筆");
     }
 
@@ -4014,6 +4051,93 @@ mod tests {
         let mut s = cursor_session();
         mixed_type(&mut s, "ji3 ji3");
         assert_eq!(s.snapshot().preedit, "我 我");
+    }
+
+    /// 注音 lane 裡按空白要結束注音 lane：後續拉丁字母不能再進注音解碼器。
+    ///
+    /// 修前 `ji3 hello` 會變成 `我he lぉ`、`ji3 hello world` 變成
+    /// `我へㄠㄠ欸world`，提交出去就是這些字。
+    #[test]
+    fn test_space_after_zh_syllable_ends_zh_lane() {
+        let mut s = pending_session();
+        mixed_type(&mut s, "ji3 hello");
+        let snap = s.snapshot();
+        assert_eq!(snap.preedit, "我 hello");
+        assert!(
+            snap.segments.iter().all(|segment| segment.mode != Lang::Ja),
+            "空白後的英文不能生出日文片段：{:?}",
+            snap.segments
+        );
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "我 hello");
+    }
+
+    #[test]
+    fn test_space_after_zh_syllable_then_two_words() {
+        let mut s = pending_session();
+        mixed_type(&mut s, "ji3 hello world");
+        assert_eq!(s.snapshot().preedit, "我 hello world");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "我 hello world");
+    }
+
+    #[test]
+    fn test_space_after_completed_zh_then_english() {
+        let mut s = pending_session();
+        mixed_type(&mut s, "w96 hello");
+        assert_eq!(s.snapshot().preedit, "台 hello");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "台 hello");
+    }
+
+    #[test]
+    fn test_double_space_then_english() {
+        let mut s = pending_session();
+        mixed_type(&mut s, "ji3  hello");
+        assert_eq!(s.snapshot().preedit, "我  hello");
+    }
+
+    /// 外殼把空白送成字元時，要與 `KeyCode::Space` 走同一套處理。
+    #[test]
+    fn test_char_space_matches_space_key() {
+        let mut s = pending_session();
+        for ch in "ji3 hello".chars() {
+            let key = if ch == ' ' {
+                Key::char(' ', false)
+            } else {
+                Key::char(ch, false)
+            };
+            s.press(key);
+        }
+        assert_eq!(s.snapshot().preedit, "我 hello");
+    }
+
+    /// 上面幾個情境都要真的打出英文字母，不能留下注音或日文假名。
+    #[test]
+    fn test_space_then_latin_no_japanese_segments() {
+        for (keys, want) in [
+            ("ji3 hello", "我 hello"),
+            ("w96 hello", "台 hello"),
+            ("ji3 xyz", "我 xyz"),
+            ("ji3 hello world", "我 hello world"),
+        ] {
+            let mut s = pending_session();
+            mixed_type(&mut s, keys);
+            let snap = s.snapshot();
+            assert_eq!(snap.preedit, want, "{keys:?}");
+            assert!(
+                snap.segments.iter().all(|segment| segment.mode != Lang::Ja),
+                "{keys:?} 生出日文片段：{:?}",
+                snap.segments
+            );
+            for ch in ['ぉ', 'へ', 'ㄠ', 'ㄟ', 'ㄘ'] {
+                assert!(
+                    !snap.preedit.contains(ch),
+                    "{keys:?} 出現注音或假名字元 {ch}：{:?}",
+                    snap.preedit
+                );
+            }
+        }
     }
 
     #[test]

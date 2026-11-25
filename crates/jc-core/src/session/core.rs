@@ -199,6 +199,23 @@ impl Session {
         if !self.literal_tail.is_empty() && !self.candidate_window {
             self.absorb_literal_tail();
         }
+        // 外殼可能把空白送成字元而不是 `KeyCode::Space`；兩條路徑要走同一套
+        // 空白處理（注音 lane 的字面空白、混打的字面空格）。注音還沒完成時
+        // 空白仍是一聲鍵，照原路徑交給注音狀態機。
+        if ch == ' ' && !(self.in_zh_lane() && !self.zh_pending_keys.is_empty()) {
+            self.space();
+            return;
+        }
+        // 注音 lane 按過空白：現在才把已完成音節交回混打管線。立刻交回會讓
+        // 注音候選清單消失，所以延到還有輸入時處理。空白本身要留著，不能
+        // 被當成音節分隔（`ji3 hello` 曾變成 `我he lぉ`）。
+        if self.zh_lane && self.zh_space_closed {
+            self.zh_space_closed = false;
+            if let Some(span) = self.flush_zh_lane_for_mixed() {
+                self.literal_spans.push(span);
+                self.rebuild();
+            }
+        }
         // 選取模式中 j／k 換前後一個候選；其他時候 j／k 仍是注音鍵。
         if self.in_zh_lane() && self.candidate_window && self.navigating && self.edit.is_some() {
             match ch {
@@ -414,6 +431,7 @@ impl Session {
         keys.push_str(&self.literal_tail);
         self.zh.reset();
         self.zh_lane = false;
+        self.zh_space_closed = false;
         self.zh_pending_keys.clear();
         self.syllables.clear();
         self.cursor = 0;
@@ -464,6 +482,7 @@ impl Session {
         keys.push_str(&self.literal_tail);
         self.zh.reset();
         self.zh_lane = false;
+        self.zh_space_closed = false;
         self.syllables.clear();
         self.cursor = 0;
         self.locks.clear();
@@ -497,7 +516,10 @@ impl Session {
     }
 
     /// 把純注音組字整段交回混打管線，不附加額外按鍵。
-    pub(super) fn flush_zh_lane_for_mixed(&mut self) {
+    ///
+    /// 回傳字面段在重播按鍵流裡的位元組範圍；呼叫端可把它記進
+    /// `literal_spans`，避免重建時被混打規劃當成片段之間的停頓吃掉。
+    pub(super) fn flush_zh_lane_for_mixed(&mut self) -> Option<(usize, usize)> {
         let keyboard = self.zh.keyboard();
         let mut keys = String::new();
         for syllable in &self.syllables {
@@ -506,10 +528,13 @@ impl Session {
             }
         }
         keys.push_str(&self.zh_pending_keys);
+        let literal_start = keys.len();
         keys.push_str(&self.literal);
+        let literal_end = keys.len();
         keys.push_str(&self.literal_tail);
         self.zh.reset();
         self.zh_lane = false;
+        self.zh_space_closed = false;
         self.zh_pending_keys.clear();
         self.syllables.clear();
         self.cursor = 0;
@@ -534,6 +559,8 @@ impl Session {
         self.literal_spans.clear();
         self.mixed_cursor = Self::MIXED_CURSOR_END;
         self.rebuild();
+        (literal_start < literal_end && literal_end <= self.ascii.typed().len())
+            .then_some((literal_start, literal_end))
     }
 
     /// 候選視窗開啟時，選字鍵選取目前頁的第幾項。
@@ -715,6 +742,9 @@ impl Session {
             } else {
                 self.zh_run_breaks.push(self.syllables.len());
                 self.push_literal(" ");
+                // 空白是字面字元，同時也是注音 lane 的邊界；等真的有下一個
+                // 字元時才把整段交回混打管線（見 `press_char`）。
+                self.zh_space_closed = true;
             }
             return;
         }
@@ -1971,6 +2001,7 @@ impl Session {
         self.ja_run_keys.clear();
         self.zh.reset();
         self.zh_lane = false;
+        self.zh_space_closed = false;
         self.zh_pending_keys.clear();
         self.zh_window_last = false;
         self.zh_run_breaks.clear();

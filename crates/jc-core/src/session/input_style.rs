@@ -487,7 +487,7 @@ impl Session {
         self.edit = None;
         self.highlighted = 0;
         if self.in_zh_lane() {
-            self.flush_zh_lane_for_mixed();
+            let _ = self.flush_zh_lane_for_mixed();
             self.ascii.seed_literal("`");
             self.mixed_cursor = Self::MIXED_CURSOR_END;
             self.rebuild();

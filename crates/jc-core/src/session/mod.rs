@@ -409,6 +409,11 @@ pub struct Session {
     /// 混打從第一個注音鍵開始先走注音狀態機；遇到打不成注音的英數按鍵時
     /// 整段交回混打管線（`ascii`）。
     pub(super) zh_lane: bool,
+    /// 注音路徑中按過空白，等下一個字元進來才把整段交回混打管線。
+    ///
+    /// 空白本身是字面字元，不能當成音節分隔；但立即交回管線會讓注音的
+    /// 候選清單消失，所以延到真的還有輸入時才處理。
+    pub(super) zh_space_closed: bool,
     /// 注音路徑目前尚未完成音節的原始按鍵。
     ///
     /// 由注音轉混打時要重播整段按鍵；已完成的音節用
@@ -555,6 +560,7 @@ impl Session {
             last_ja_results: Vec::new(),
             ascii: AsciiInput::new().with_english(english),
             zh_lane: false,
+            zh_space_closed: false,
             zh_pending_keys: String::new(),
             zh_window_last: false,
             zh_run_breaks: Vec::new(),
