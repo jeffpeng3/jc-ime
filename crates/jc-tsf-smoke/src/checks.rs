@@ -8,7 +8,7 @@
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-use windows::core::{IUnknown, Interface};
+use windows::core::{IUnknown, Interface, GUID};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, IClassFactory, CLSCTX_INPROC_SERVER,
@@ -268,13 +268,16 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
 
                     // 「已為使用者啟用」不等於「這個執行緒正在用它」：msctf 要等到
                     // ActivateProfile 才會載入 TIP，並用真正的 TIP client id 呼叫
-                    // Activate。少了這一步，GetClientId 建出的 id 背後沒有 TIP，
-                    // AdviseKeyEventSink 就回 E_INVALIDARG（這就是先前的
-                    // 0x80070057）。TF_IPPMF_FORPROCESS 只影響本行程。
+                    // Activate。TF_IPPMF_FORPROCESS 只影響本行程。
+                    //
+                    // 但 msctf 也可能在 ITfThreadMgr::Activate() 就因為本產品是
+                    // 目前輸入法而先激活 TIP。先記下 ActivateProfile 前的前景文字
+                    // 服務，才能分辨 TIP 是哪一步激活的。
+                    let before_profile = foreground_tip(manager);
                     let profile_activated = match tsf_profile::activate_ours() {
                         Ok(()) => {
                             report.info(
-                                "ITfInputProcessorProfileMgr::ActivateProfile(TF_IPPMF_FORPROCESS) = S_OK；                                 msctf 已在本行程載入 jc-tsf",
+                                "ITfInputProcessorProfileMgr::ActivateProfile(TF_IPPMF_FORPROCESS) = S_OK",
                             );
                             true
                         }
@@ -292,76 +295,110 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
                         }
                     };
 
-                    // 應用程式與文字服務的 TfClientId 來源不同：前者從
-                    // ITfThreadMgr::Activate 拿到，後者由 TSF 在
-                    // ITfTextInputProcessor::Activate 傳進來。把前者傳給 TIP 會讓
-                    // msctf 的 AdviseKeyEventSink 回 E_INVALIDARG，因為它不是 TIP
-                    // 的 client id。這裡自己建的 TIP 物件用 ITfClientId::GetClientId
-                    // 取得與 CLSID 綁定的 id；上一行 ActivateProfile 之後 msctf 已經
-                    // 用同一個 id 激活過 TIP，這時會回 CONNECT_E_ADVISELIMIT。
                     let mut activated = false;
                     if profile_activated {
-                        let tip_client_id =
-                            manager.cast::<ITfClientId>().and_then(|client_id| unsafe {
-                                client_id.GetClientId(&product::CLSID_JC_TSF)
-                            });
-                        match tip_client_id {
-                        Ok(tip_client_id) => {
-                            report.info(format!(
-                                "ITfClientId::GetClientId(CLSID_JC_TSF) → TIP client_id={tip_client_id}"
-                            ));
-                            match unsafe { service.Activate(manager, tip_client_id) } {
-                                Ok(()) => {
-                                    report.pass(
-                                        "tsf.activate",
-                                        "Activate",
-                                        format!(
-                                            "ITfThreadMgr::Activate → 應用程式 client_id={application_client_id}；\
-                                             ITfClientId::GetClientId → TIP client_id={tip_client_id}；\
-                                             ITfTextInputProcessor::Activate = S_OK（{}）",
-                                            report::hex(0)
-                                        ),
-                                    );
-                                    activated = true;
-                                }
-                                Err(error) => match classify_tip_activate(error.code().0) {
-                                    TipActivate::AlreadyActivated => {
-                                        report.pass(
-                                            "tsf.activate",
-                                            "Activate",
-                                            format!(
-                                                "TIP client_id={tip_client_id} 已有 key sink（HRESULT {}）：\
-                                                 msctf 在 ActivateProfile 時已用真正的 TIP client id 激活本 TIP，\
-                                                 手動建立的物件不需再激活一次",
-                                                report::hex(CONNECT_E_ADVISELIMIT.0 as u32)
-                                            ),
-                                        );
-                                        activated = true;
+                        // TIP 已由 msctf 激活時，再用 GetClientId 建一個「新的」
+                        // TIP 物件去 Activate 是錯的：真機的 GetClientId 可能回
+                        // 一個不是作用中 TIP 的 client id，AdviseKeyEventSink 就回
+                        // E_INVALIDARG（0x80070057）。GetForeground 是 msctf 對
+                        // 「目前前景文字服務」的正式回答；本產品在上面就代表 TIP
+                        // 已激活且 key sink 已安裝。這種情況驗的是「已啟用且介面
+                        // 可用」，不再手動激活第二個物件。
+                        let foreground = foreground_tip(manager);
+                        report.info(format!(
+                            "ITfKeystrokeMgr::GetForeground：ActivateProfile 前={}，後={}",
+                            describe_foreground(&before_profile),
+                            describe_foreground(&foreground)
+                        ));
+                        if foreground_is_ours(&foreground) {
+                            let source = if foreground_is_ours(&before_profile) {
+                                "ITfThreadMgr::Activate（呼叫 ActivateProfile 前 msctf 已激活）"
+                            } else {
+                                "ActivateProfile(TF_IPPMF_FORPROCESS)"
+                            };
+                            report.pass(
+                                "tsf.activate",
+                                "Activate",
+                                format!(
+                                    "ITfThreadMgr::Activate → 應用程式 client_id={application_client_id}；\
+                                     本產品在本行程已由 {source} 激活：\
+                                     ITfKeystrokeMgr::GetForeground = {clsid_text}（key sink 已安裝）；\
+                                     手動建立的 TIP 物件不需再呼叫 Activate"
+                                ),
+                            );
+                            activated = true;
+                        } else {
+                            // 前景不是本產品：ActivateProfile 沒有讓 msctf 激活
+                            // TIP。這裡才用自己建立的物件驗真正的 Activate。
+                            let tip_client_id =
+                                manager.cast::<ITfClientId>().and_then(|client_id| unsafe {
+                                    client_id.GetClientId(&product::CLSID_JC_TSF)
+                                });
+                            match tip_client_id {
+                                Ok(tip_client_id) => {
+                                    report.info(format!(
+                                        "ITfClientId::GetClientId(CLSID_JC_TSF) → TIP client_id={tip_client_id}"
+                                    ));
+                                    match unsafe { service.Activate(manager, tip_client_id) } {
+                                        Ok(()) => {
+                                            report.pass(
+                                                "tsf.activate",
+                                                "Activate",
+                                                format!(
+                                                    "ITfThreadMgr::Activate → 應用程式 client_id={application_client_id}；\
+                                                     ITfClientId::GetClientId → TIP client_id={tip_client_id}；\
+                                                     ITfTextInputProcessor::Activate = S_OK（{}）",
+                                                    report::hex(0)
+                                                ),
+                                            );
+                                            activated = true;
+                                        }
+                                        Err(error) => match classify_tip_activate(error.code().0) {
+                                            TipActivate::AlreadyActivated => {
+                                                report.pass(
+                                                    "tsf.activate",
+                                                    "Activate",
+                                                    format!(
+                                                        "TIP client_id={tip_client_id} 已有 key sink（HRESULT {}）：\
+                                                         msctf 已用真正的 TIP client id 激活本 TIP，\
+                                                         手動建立的物件不需再激活一次",
+                                                        report::hex(CONNECT_E_ADVISELIMIT.0 as u32)
+                                                    ),
+                                                );
+                                                activated = true;
+                                            }
+                                            TipActivate::Failed(_) | TipActivate::Activated => {
+                                                report.fail(
+                                                    "tsf.activate",
+                                                    "Activate",
+                                                    format!(
+                                                        "ITfTextInputProcessor::Activate 回 HRESULT {}；\
+                                                         ActivateProfile 後 ITfKeystrokeMgr::GetForeground = {}，\
+                                                         手動激活用的 TIP client_id={tip_client_id}。\
+                                                         詳細步驟見 TSF 日誌：設定 JC_TSF_LOG=1 後重跑，\
+                                                         會追加到 %LOCALAPPDATA%\\jc-ime\\tsf.log\
+                                                         （沒設定時只走 OutputDebugStringW，用 DebugView 才看得到）",
+                                                        report::hex(error.code().0 as u32),
+                                                        describe_foreground(&foreground)
+                                                    ),
+                                                    "設定 JC_TSF_LOG=1 重跑取得 tsf.log；確認 AdviseKeyEventSink 收到的 client_id 與 thread，並確認 ActivateProfile 後 GetForeground 是本產品",
+                                                );
+                                            }
+                                        },
                                     }
-                                    TipActivate::Failed(_) | TipActivate::Activated => report.fail(
-                                        "tsf.activate",
-                                        "Activate",
-                                        format!(
-                                            "ITfTextInputProcessor::Activate 回 HRESULT {}；詳細步驟見 TSF 日誌：\
-                                             設定環境變數 JC_TSF_LOG=1 後重跑，會追加到 %LOCALAPPDATA%\\jc-ime\\tsf.log\
-                                             （沒設定時只走 OutputDebugStringW，用 DebugView 才看得到）",
-                                            report::hex(error.code().0 as u32)
-                                        ),
-                                        "設定 JC_TSF_LOG=1 重跑取得 tsf.log；確認 Activate 收到的是 TIP client id（不是應用程式 id）",
+                                }
+                                Err(error) => report.fail(
+                                    "tsf.activate",
+                                    "Activate",
+                                    format!(
+                                        "取得 TIP client_id 失敗：HRESULT {}；GetForeground = {}",
+                                        report::hex(error.code().0 as u32),
+                                        describe_foreground(&foreground)
                                     ),
-                                },
+                                    "確認 ITfThreadMgr 支援 ITfClientId；這是 msctf 版本問題，先修復 Windows TSF",
+                                ),
                             }
                         }
-                        Err(error) => report.fail(
-                            "tsf.activate",
-                            "Activate",
-                            format!(
-                                "取得 TIP client_id 失敗：HRESULT {}",
-                                report::hex(error.code().0 as u32)
-                            ),
-                            "確認 ITfThreadMgr 支援 ITfClientId；這是 msctf 版本問題，先修復 Windows TSF",
-                        ),
-                    }
                     }
 
                     if activated {
@@ -979,6 +1016,33 @@ fn classify_tip_activate(hresult: i32) -> TipActivate {
     }
 }
 
+/// 問 msctf 目前的前景 TSF 文字服務是哪一個 CLSID。
+///
+/// `S_FALSE`（沒有前景文字服務）在 windows crate 會是 `Ok(GUID::zeroed())`。
+/// 這個查詢只用本執行緒已 `Activate` 的 `ITfThreadMgr`，不會改任何狀態。
+fn foreground_tip(manager: &ITfThreadMgr) -> Result<GUID, windows::core::Error> {
+    let keystrokes: ITfKeystrokeMgr = manager.cast()?;
+    // SAFETY: manager 已由本執行緒 Activate；輸出只有一個 GUID。
+    unsafe { keystrokes.GetForeground() }
+}
+
+/// 前景文字服務是不是本產品。
+fn foreground_is_ours(result: &Result<GUID, windows::core::Error>) -> bool {
+    matches!(result, Ok(guid) if *guid == product::CLSID_JC_TSF)
+}
+
+/// 把 `foreground_tip` 的結果寫成報表可讀的一行。
+fn describe_foreground(result: &Result<GUID, windows::core::Error>) -> String {
+    match result {
+        Ok(guid) if *guid == GUID::zeroed() => "S_FALSE（沒有前景文字服務）".to_string(),
+        Ok(guid) if *guid == product::CLSID_JC_TSF => {
+            format!("{}（本產品）", product::registry_key(guid))
+        }
+        Ok(guid) => product::registry_key(guid),
+        Err(error) => format!("失敗 HRESULT {}", report::hex(error.code().0 as u32)),
+    }
+}
+
 /// 用 `ITfKeystrokeMgr::TestKeyDown` 確認按鍵鏈接得上（只印資訊）。
 ///
 /// 引擎沒連線時 `OnTestKeyDown` 一律放行，所以 `consumed=false` 是正常結果；
@@ -1253,6 +1317,18 @@ mod tests {
             classify_tip_activate(e_invalidarg),
             TipActivate::Failed(e_invalidarg)
         );
+    }
+
+    #[test]
+    fn foreground_only_accepts_our_clsid() {
+        assert!(foreground_is_ours(&Ok(product::CLSID_JC_TSF)));
+        assert!(!foreground_is_ours(&Ok(GUID::zeroed())));
+        assert!(!foreground_is_ours(&Ok(GUID::from_u128(1))));
+        assert_eq!(
+            describe_foreground(&Ok(GUID::zeroed())),
+            "S_FALSE（沒有前景文字服務）"
+        );
+        assert!(describe_foreground(&Ok(product::CLSID_JC_TSF)).contains("本產品"));
     }
 
     #[test]

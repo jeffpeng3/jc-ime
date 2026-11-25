@@ -71,3 +71,14 @@ HRESULT，可以立刻分辨是 id 來源還是 cleanup 問題。
 | `cargo clippy -p jc-tsf -p jc-tsf-smoke --target x86_64-pc-windows-msvc --all-targets -- -D warnings` | 零警告 |
 | `cargo fmt --all -- --check` | 通過 |
 | `cargo test`／`blaze test` | 依共通規則未執行；`tip_activate_accepts_repeated_activation` 只編譯 |
+
+## 2026-11-26 補充：實機的第二次 Activate 與 GetForeground
+
+後續實機回報：已安裝並使用 jc 時，`ActivateProfile(TF_IPPMF_FORPROCESS)` 成功後
+再用手動建立的 `TextService` 呼叫 `Activate`，仍可能看到 `E_INVALIDARG`。原因是
+msctf 在這個行程已經用真正的 TIP client id 激活過 TIP；`GetClientId` 在真機上
+回的可能不是同一個作用中 TIP 的 id。檢查 5 因此改成先看
+`ITfKeystrokeMgr::GetForeground`：本產品已是前景文字服務時，代表 TIP 已激活且
+key sink 已安裝，不再重複激活；只有前景不是本產品時才走手動 `Activate`。
+這裡沒有放寬判定，`GetForeground` 不是本產品且手動 `Activate` 失敗時仍為
+`[FAIL]`。

@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use windows::Win32::Foundation::{E_INVALIDARG, HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
+use windows::Win32::System::Ole::CONNECT_E_ADVISELIMIT;
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::Variant::{VariantClear, VARIANT, VT_I4};
 use windows::Win32::UI::TextServices::{
     ITfCompartment, ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfCompartmentMgr,
@@ -60,6 +62,20 @@ fn vk_label(vk: u32) -> String {
         ((vk as u8) as char).to_string()
     } else {
         "-".to_owned()
+    }
+}
+
+/// `AdviseKeyEventSink` 失敗時，把 HRESULT 轉成可執行的原因說明。
+///
+/// `E_INVALIDARG` 可能來自 client_id 不是已激活 TIP 的 id、client_id=0，或
+/// sink 的 `ITfKeyEventSink` QI 失敗；日誌要能直接指出這三種可能。
+fn advise_failure_hint(code: windows_core::HRESULT) -> &'static str {
+    if code == E_INVALIDARG {
+        "msctf 不認得這個 client_id（不是已激活 TIP 的 TIP client id）、client_id=0，或 key sink 的 QI 失敗"
+    } else if code == CONNECT_E_ADVISELIMIT {
+        "這個 client_id 已經有 key sink；TIP 已由 msctf 激活"
+    } else {
+        "見 HRESULT"
     }
 }
 
@@ -1889,28 +1905,77 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                 log::log("重複 Activate，忽略");
                 return Ok(());
             }
-            self.activated.set(true);
-            zlog!("activate 開始 exe={} tid={}", log::exe_name(), tid);
-            let tm = ptim.ok()?.clone();
-            // 候選窗的訊息視窗：收 WM_SELECT_CANDIDATE 與延後的焦點確認。
-            let callback = candidate::CandidateWindow::new(self).ok();
-            let mut opened = None;
-            unsafe {
-                let keystrokes: ITfKeystrokeMgr = tm.cast()?;
-                let key_sink: ITfKeyEventSink = self.to_interface();
-                // 這個呼叫的 E_INVALIDARG 只有一個意思：tid 背後沒有已激活的 TIP
-                // （msctf 用 tid 反查 TIP CLSID，查不到就回 E_INVALIDARG）。把它連
-                // tid 一起寫進日誌，免得還要猜是哪一行回的錯。
-                if let Err(error) = keystrokes.AdviseKeyEventSink(tid, &key_sink, true) {
+            // 參數不合法時要在日誌指出是哪一個，不要只留下一個 E_INVALIDARG。
+            // 提前回錯也不可以把 activated 留在 true，否則下一次 Activate 會被
+            // idempotent guard 當成「已啟用」而假成功。
+            if ptim.is_null() {
+                zlog!(
+                    "Activate 參數不合法：ptim=null（ITfTextInputProcessor::Activate 的 pti 必須是有效的 ITfThreadMgr）"
+                );
+                return Err(E_INVALIDARG.into());
+            }
+            if tid == 0 {
+                zlog!(
+                    "Activate 參數不合法：client_id=0（ITfTextInputProcessor::Activate 的 tid 必須是 msctf 給的 TIP client id）"
+                );
+                return Err(E_INVALIDARG.into());
+            }
+            let tm = match ptim.ok() {
+                Ok(tm) => tm.clone(),
+                Err(error) => {
                     zlog!(
-                        "AdviseKeyEventSink 失敗 tid={} code={:#010x}",
-                        tid,
+                        "Activate 參數不合法：ptim 無法使用 code={:#010x}",
                         error.code().0 as u32
                     );
                     return Err(error);
                 }
-                zlog!("advise key sink 完成 tid={}", tid);
-                let source: ITfSource = tm.cast()?;
+            };
+            self.activated.set(true);
+            zlog!(
+                "activate 開始 exe={} client_id={} thread={}",
+                log::exe_name(),
+                tid,
+                unsafe { GetCurrentThreadId() }
+            );
+            // 候選窗的訊息視窗：收 WM_SELECT_CANDIDATE 與延後的焦點確認。
+            let callback = candidate::CandidateWindow::new(self).ok();
+            let mut opened = None;
+            unsafe {
+                let keystrokes: ITfKeystrokeMgr = match tm.cast() {
+                    Ok(keystrokes) => keystrokes,
+                    Err(error) => {
+                        self.activated.set(false);
+                        zlog!(
+                            "Activate 失敗：ITfThreadMgr 沒有 ITfKeystrokeMgr code={:#010x}",
+                            error.code().0 as u32
+                        );
+                        return Err(error);
+                    }
+                };
+                let key_sink: ITfKeyEventSink = self.to_interface();
+                if let Err(error) = keystrokes.AdviseKeyEventSink(tid, &key_sink, true) {
+                    self.activated.set(false);
+                    zlog!(
+                        "AdviseKeyEventSink 失敗 client_id={} thread={} code={:#010x}：{}",
+                        tid,
+                        GetCurrentThreadId(),
+                        error.code().0 as u32,
+                        advise_failure_hint(error.code())
+                    );
+                    return Err(error);
+                }
+                zlog!("advise key sink 完成 client_id={}", tid);
+                let source: ITfSource = match tm.cast() {
+                    Ok(source) => source,
+                    Err(error) => {
+                        self.activated.set(false);
+                        zlog!(
+                            "Activate 失敗：ITfThreadMgr 沒有 ITfSource code={:#010x}",
+                            error.code().0 as u32
+                        );
+                        return Err(error);
+                    }
+                };
                 let tm_sink: ITfThreadMgrEventSink = self.to_interface();
                 let cookie = source
                     .AdviseSink(&ITfThreadMgrEventSink::IID, &tm_sink)
@@ -1992,7 +2057,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                     }
                 }
             }
-            zlog!("activate 完成 exe={} tid={}", log::exe_name(), tid);
+            zlog!("activate 完成 exe={} client_id={}", log::exe_name(), tid);
             Ok(())
         })
     }
