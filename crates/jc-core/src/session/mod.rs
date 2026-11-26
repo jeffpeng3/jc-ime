@@ -1835,6 +1835,67 @@ mod tests {
         assert_eq!(s.commit(), want, "頁內第 2 項是索引 11");
     }
 
+    /// 四欄時數字鍵只選目前直排的列號：欄 2 列 3 按 5，選欄 2 列 5。
+    #[test]
+    fn test_digit_selects_row_in_current_column() {
+        let mut s = many_candidates_session(50);
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.select(12);
+        assert_eq!(s.candidate_layout().cell(12), (2, 1), "欄 2、列 3");
+
+        let want = s.candidates()[14].surface.clone();
+        s.press(Key::char('5', false));
+        assert_eq!(s.commit(), want, "欄 2 列 5");
+    }
+
+    /// 左右鍵在直排之間移動，列號不變。
+    #[test]
+    fn test_arrow_left_right_switches_column_same_row() {
+        let mut s = many_candidates_session(50);
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.select(12);
+        assert_eq!(s.candidate_layout().cell(12), (2, 1));
+
+        let right = s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(right.highlighted, 22, "欄 3、列 3");
+        assert_eq!(s.candidate_layout().cell(right.highlighted), (2, 2));
+        let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(left.highlighted, 12, "回到欄 2、列 3");
+    }
+
+    /// 直向模式按數字鍵選頁內該列。
+    #[test]
+    fn test_digit_in_vertical_mode_selects_item() {
+        let mut s = many_candidates_session(25);
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.select(3);
+        assert_eq!(s.candidate_layout().cell(3), (3, 0));
+
+        let want = s.candidates()[4].surface.clone();
+        s.press(Key::char('5', false));
+        assert_eq!(s.commit(), want, "直向第 5 項");
+    }
+
+    /// 換頁不改變目前欄數。
+    #[test]
+    fn test_page_down_keeps_column_count() {
+        let mut s = many_candidates_session(50);
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(s.snapshot().columns, 4);
+
+        let page = s.press(Key::new(KeyCode::PageDown, None, false));
+        assert_eq!(page.columns, 4, "PageDown 維持四欄");
+        assert_eq!(page.rows, 10);
+        assert_eq!(page.highlighted, 40, "換到下一頁頁首");
+    }
+
     /// 候選不足一頁時，超出範圍的數字鍵被吃掉，狀態不變。
     #[test]
     fn test_digit_beyond_candidate_count_keeps_state() {
@@ -1872,6 +1933,18 @@ mod tests {
         let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.max_candidates = DEFAULT_MAX_CANDIDATES;
+        Session::new(config)
+    }
+
+    /// 指定數量的同音候選；測四欄與換頁時需要超過一頁 40 項。
+    fn many_candidates_session(count: usize) -> Session {
+        let mut lex = InMemoryLexicon::new();
+        for index in 0..count {
+            lex.push(LexEntry::new(format!("字{index}"), "ㄕˋ", index as i32, 0));
+        }
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
+        config.max_candidates = count.max(1);
         Session::new(config)
     }
 

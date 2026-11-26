@@ -127,11 +127,12 @@ impl Candidate {
 
 /// 候選清單的選字鍵標籤。
 ///
-/// 每頁固定十列，依位置循環 `1`–`9`、`0`；所有來源（中文、英文、日文、
-/// 字面與選單）都用同一條規則。
+/// 鍵是「直排的列號」：第 `index % 10` 列，依序 `1`–`9`、`0`。多欄時每一欄
+/// 各自有一組 `1`–`0`，所以不同欄會看到相同標籤；選取只作用在目前這一欄。
+/// 所有來源（中文、英文、日文、字面與選單）都用同一條規則。
 pub fn selection_key(index: usize) -> String {
-    let position = index % 10;
-    if position == 9 {
+    let position = index % crate::candidate_layout::DEFAULT_ROWS;
+    if position + 1 == crate::candidate_layout::DEFAULT_ROWS {
         "0".to_string()
     } else {
         (position + 1).to_string()
@@ -196,8 +197,18 @@ mod tests {
         assert_eq!(selection_key(1), "2");
         assert_eq!(selection_key(8), "9");
         assert_eq!(selection_key(9), "0");
-        assert_eq!(selection_key(10), "1", "第二頁從 1 重新開始");
+        assert_eq!(selection_key(10), "1", "第二欄從 1 重新開始");
         assert_eq!(hello.display_note(), "hello");
         assert_eq!(help.display_note(), "help");
+    }
+
+    #[test]
+    fn test_selection_key_unique_within_column() {
+        let first: Vec<String> = (0..10).map(selection_key).collect();
+        let second: Vec<String> = (10..20).map(selection_key).collect();
+        assert_eq!(first.len(), 10);
+        let unique: std::collections::HashSet<&String> = first.iter().collect();
+        assert_eq!(unique.len(), 10, "同一欄的 1–0 不重複：{first:?}");
+        assert_eq!(first, second, "下一欄可以有同一組列號");
     }
 }

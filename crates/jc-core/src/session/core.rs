@@ -665,9 +665,13 @@ impl Session {
         if self.config.mode == Mode::Mixed && !self.navigating && self.menu.is_none() {
             return None;
         }
-        let within = self.selection_index(ch)?;
-        // 頁位移由核心算：頁碼來自 `highlighted`，頁面大小固定。
-        let index = self.current_page() * self.page_size() + within;
+        let row = self.selection_index(ch)?;
+        // 數字鍵是「目前直排的列號」：先找高亮所在的頁與欄，再換算成
+        // 該欄第 `row` 列的絕對索引。四欄時 1–0 只作用在目前這一欄。
+        let layout = self.candidate_layout();
+        let page_start = self.current_page() * layout.page_size();
+        let column = self.highlighted.saturating_sub(page_start) / layout.rows();
+        let index = page_start + column * layout.rows() + row;
         match self.choose_candidate(index) {
             Some(_) => Some(true),
             None => Some(false),
@@ -1343,7 +1347,7 @@ impl Session {
                 return;
             }
             self.navigating = true;
-            self.move_highlight(self.candidate_layout().row_step());
+            self.move_row(1);
             return;
         }
         if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
@@ -1352,7 +1356,7 @@ impl Session {
                 return;
             }
             self.navigating = true;
-            self.move_highlight(self.candidate_layout().row_step());
+            self.move_row(1);
             return;
         }
         if self.in_zh_lane() {
@@ -1380,7 +1384,7 @@ impl Session {
             self.navigating = true;
             return;
         }
-        self.move_highlight(self.candidate_layout().row_step());
+        self.move_row(1);
     }
 
     /// 上鍵：候選窗開著時往上換一項並進入選取模式；還沒開窗時先開窗。
@@ -1395,7 +1399,7 @@ impl Session {
             return;
         }
         self.navigating = true;
-        self.move_highlight(-self.candidate_layout().row_step());
+        self.move_row(-1);
     }
 
     /// `PageDown`／`PageUp`：換頁，頁碼頭尾相接；還沒開窗時先開窗。
@@ -1648,9 +1652,10 @@ impl Session {
         {
             return;
         }
-        // 其他來源（英文補全、字面候選、選單）只要候選窗開著，Enter 一律
+        // 其他來源（英文補全、字面候選）只要候選窗開著，Enter 一律
         // 套用高亮項、關窗、保留組字。前導符號的「高亮項就是現值」例外
-        // 已在上面處理，這裡不重複攔。
+        // 已在上面處理，這裡不重複攔。選單候選代表立即插入，仍走原本的
+        // 一次送出，不套用兩段式。
         if self.candidate_window
             && !self.candidates.is_empty()
             && !self.highlighted_choice_is_current_literal()
@@ -1910,7 +1915,7 @@ impl Session {
                 self.candidate_expanded = true;
                 return;
             }
-            self.move_highlight(delta);
+            self.move_column(delta);
             return;
         }
         if self.in_ja_lane() && self.live.is_some() {
@@ -2262,6 +2267,36 @@ impl Session {
             index += len;
         }
         self.highlighted = index as usize;
+    }
+
+    /// `↑`／`↓`：在同一個直排內移動一列。
+    pub(super) fn move_row(&mut self, delta: isize) {
+        let len = self.candidates.len();
+        if len == 0 {
+            return;
+        }
+        self.candidate_window = true;
+        let layout = self.candidate_layout();
+        self.highlighted = if delta < 0 {
+            layout.up(self.highlighted, len)
+        } else {
+            layout.down(self.highlighted, len)
+        };
+    }
+
+    /// `←`／`→`：在直排之間移動，停在同一個列號。
+    pub(super) fn move_column(&mut self, delta: isize) {
+        let len = self.candidates.len();
+        if len == 0 {
+            return;
+        }
+        self.candidate_window = true;
+        let layout = self.candidate_layout();
+        self.highlighted = if delta < 0 {
+            layout.left(self.highlighted, len)
+        } else {
+            layout.right(self.highlighted, len)
+        };
     }
 
     pub(super) fn clear_composition(&mut self) {

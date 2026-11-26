@@ -1577,6 +1577,23 @@ mod tests {
         assert_eq!(s.commit(), "；［");
     }
 
+    /// 前導變體窗選了不同字時仍是兩段式：第一次套用、第二次送出。
+    #[test]
+    fn test_enter_still_two_stage_when_selecting_variant() {
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        s.press(Key::char('[', false));
+        // 往下移到「「」；高亮項不再是目前字面，所以 Enter 要先套用。
+        s.press(Key::new(KeyCode::Down, None, false));
+        let first = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(first.preedit, "「", "第一次 Enter 只套用變體");
+        assert!(s.pending_commit.is_none(), "第一次 Enter 不送出");
+
+        let second = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(second.preedit, "", "第二次 Enter 才清空組字");
+        assert_eq!(s.commit(), "「");
+    }
+
     /// 連續三段前導符號；包含多變體鍵。
     #[test]
     fn test_three_prefix_symbols_commit_all() {

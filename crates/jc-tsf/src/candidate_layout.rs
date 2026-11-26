@@ -251,7 +251,7 @@ pub fn hit_test(layout: &Layout, x: f32, y: f32) -> Option<i64> {
 
 /// 目前這一頁在清單中的索引範圍。
 ///
-/// `count` 是全部候選數，`columns` 是一列幾項，`rows` 是一頁幾列，
+/// `count` 是全部候選數，`columns` 是一頁幾欄，`rows` 是一欄幾列，
 /// `highlight` 是反白索引。反白所在的頁就是顯示頁；沒有候選時回空範圍。
 pub fn page_bounds(
     count: usize,
@@ -274,18 +274,26 @@ pub fn page_bounds(
 }
 
 /// 目前這一頁每一列要畫的候選索引，依左到右、上到下排列。
+///
+/// 候選先填滿第一欄的十列，再填下一欄；索引是頁內的絕對索引。
 pub fn visible_rows(count: usize, columns: usize, rows: usize, highlight: i64) -> Vec<Vec<usize>> {
     let columns = columns.clamp(1, MAX_COLUMNS);
-    page_bounds(count, columns, rows, highlight)
-        .collect::<Vec<_>>()
-        .chunks(columns)
-        .map(<[usize]>::to_vec)
+    let rows = rows.max(1);
+    let page = page_bounds(count, columns, rows, highlight);
+    (0..rows.min(page.len()))
+        .map(|row| {
+            (0..columns)
+                .map(|column| page.start + column * rows + row)
+                .filter(|index| page.contains(index))
+                .collect()
+        })
         .collect()
 }
 
 /// 算版面。`measure` 回傳文字在指定樣式下的寬度（DIP），Windows 端由 DirectWrite 提供。
 pub fn layout(content: &Content, measure: impl Fn(&str, TextStyle) -> f32) -> Layout {
     let columns = content.columns.clamp(1, MAX_COLUMNS);
+    let max_rows = DEFAULT_ROWS;
     let count = content.candidates.len();
     let mut rows = Vec::with_capacity(count);
     let mut cells = Vec::with_capacity(count);
@@ -353,7 +361,7 @@ pub fn layout(content: &Content, measure: impl Fn(&str, TextStyle) -> f32) -> La
     } else {
         HEADER_HEIGHT
     };
-    let row_count = count.div_ceil(columns);
+    let row_count = if count == 0 { 0 } else { count.min(max_rows) };
     let rows_height = if row_count == 0 {
         0.0
     } else {
@@ -365,8 +373,9 @@ pub fn layout(content: &Content, measure: impl Fn(&str, TextStyle) -> f32) -> La
     for (index, (candidate, (text_width, key, note, _))) in
         content.candidates.iter().zip(cells).enumerate()
     {
-        let column = index % columns;
-        let line = index / columns;
+        // 欄是一條直排：先填滿一欄的十列，再往右換下一欄。
+        let column = index / max_rows;
+        let line = index % max_rows;
         let cell_left = PAD + column as f32 * (cell_width + COLUMN_GAP);
         let cell_top = PAD + header_height + line as f32 * (ROW_HEIGHT + ROW_GAP);
         let cell = DipRect::new(cell_left, cell_top, cell_width, ROW_HEIGHT);
@@ -521,40 +530,33 @@ mod tests {
     }
 
     #[test]
-    fn columns_wrap_rows_left_to_right_without_overlap() {
-        let mut content = content(vec![
-            candidate(1, "一", Some("1"), ""),
-            candidate(2, "二", Some("2"), ""),
-            candidate(3, "三", Some("3"), ""),
-            candidate(4, "四", Some("4"), ""),
-            candidate(5, "五", Some("5"), ""),
-        ]);
+    fn columns_fill_vertically_then_wrap_to_the_next_column() {
+        let mut content = content(
+            (1..=13)
+                .map(|index| candidate(index, "字", Some(&(index % 10).to_string()), ""))
+                .collect(),
+        );
         content.columns = 3;
         let layout = layout(&content, measure);
-        assert_eq!(layout.rows.len(), 5);
-        assert_eq!(layout.rows[0].rect.top, layout.rows[1].rect.top);
-        assert_eq!(layout.rows[1].rect.top, layout.rows[2].rect.top);
-        assert_eq!(
-            layout.rows[3].rect.top,
-            PAD + ROW_HEIGHT + ROW_GAP,
-            "第 4 項換到第二列"
-        );
+        assert_eq!(layout.rows.len(), 13);
+        // 第 1 欄先填滿十列，第 11 項才換到第 2 欄第 1 列。
         assert_eq!(layout.rows[0].rect.left, PAD);
-        assert!(layout.rows[1].rect.left >= layout.rows[0].rect.right());
-        assert!(
-            layout.rows[1].rect.left <= layout.rows[0].rect.right() + COLUMN_GAP + f32::EPSILON
-        );
+        assert_eq!(layout.rows[10].rect.top, PAD, "第 11 項在第二欄第一列");
+        assert!(layout.rows[10].rect.left >= layout.rows[0].rect.right());
+        assert_eq!(layout.rows[1].rect.top, PAD + ROW_HEIGHT + ROW_GAP);
         // 每格等寬，整排不超出視窗。
         let width = layout.rows[0].rect.width;
         for row in &layout.rows {
             assert!((row.rect.width - width).abs() < f32::EPSILON);
         }
-        assert!(layout.rows[2].rect.right() <= layout.width - PAD + f32::EPSILON);
-        // 命中第 5 項（第二列第二格）。
-        let fifth = &layout.rows[4].rect;
+        assert!(layout.rows[10].rect.right() <= layout.width - PAD + f32::EPSILON);
+        // 高度仍是最多十列，不會因為第三欄只有三項而縮短。
+        assert_eq!(layout.height, PAD * 2.0 + 10.0 * ROW_HEIGHT + 9.0 * ROW_GAP);
+        // 命中第 11 項（第二欄第一列）。
+        let eleventh = &layout.rows[10].rect;
         assert_eq!(
-            hit_test(&layout, fifth.left + 1.0, fifth.top + 1.0),
-            Some(5)
+            hit_test(&layout, eleventh.left + 1.0, eleventh.top + 1.0),
+            Some(11)
         );
     }
 
@@ -567,11 +569,14 @@ mod tests {
         // 四欄：一頁四十項，反白不換頁。
         assert_eq!(page_bounds(50, 4, 10, 12), 0..40);
         assert_eq!(page_bounds(50, 4, 10, 41), 40..50);
-        // 每列索引依左到右排列，最後一列可以不足欄數。
+        // 每列依欄排列；候選先填滿第一欄的十列，再往右換欄。
         let rows = visible_rows(23, 4, 10, 0);
-        assert_eq!(rows.len(), 6, "23 項四欄只排六列");
-        assert_eq!(rows[0], vec![0, 1, 2, 3]);
-        assert_eq!(rows[5], vec![20, 21, 22]);
+        assert_eq!(rows.len(), 10, "一頁最多十列");
+        assert_eq!(rows[0], vec![0, 10, 20]);
+        assert_eq!(rows[1], vec![1, 11, 21]);
+        assert_eq!(rows[2], vec![2, 12, 22]);
+        assert_eq!(rows[3], vec![3, 13]);
+        assert_eq!(rows[9], vec![9, 19]);
         assert!(page_bounds(0, 4, 10, 0).is_empty());
     }
 
