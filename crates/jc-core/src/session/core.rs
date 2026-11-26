@@ -1308,50 +1308,6 @@ impl Session {
         true
     }
 
-    /// Esc 的優先權：先關候選窗，再清未完成的注音，最後才清整段組字。
-    ///
-    /// 對照上游 `key()` 的 Escape 分支；標示範圍與同音預覽在本埠沒有對應狀態。
-    pub(super) fn escape(&mut self) {
-        // 英文模式的 Esc 丟掉整段，包含前面的中文緩衝。
-        if !self.literal_tail.is_empty() {
-            self.clear_composition();
-            return;
-        }
-        if self.candidate_window && self.menu.is_none() {
-            self.candidate_window = false;
-            self.navigating = false;
-            self.keep_candidates = false;
-            self.edit = None;
-            self.highlighted = 0;
-            return;
-        }
-        if self.in_zh_lane() && !self.zh.pending().is_empty() {
-            self.clear_pending_zhuyin();
-            return;
-        }
-        self.clear_composition();
-    }
-
-    /// 只清掉尚未完成的注音，保留已完成的音節。
-    ///
-    /// `ZhInput` 沒有「清暫存」的公開方法，這裡用退格逐格退掉暫存注音；
-    /// 暫存清空就停手，不會動到已完成的音節。
-    fn clear_pending_zhuyin(&mut self) {
-        let mut guard = 0;
-        while !self.zh.pending().is_empty() && guard < 16 {
-            let before = self.zh.pending();
-            self.zh.press(Key::new(KeyCode::Backspace, None, false));
-            if self.zh.pending() == before {
-                break;
-            }
-            guard += 1;
-        }
-        self.pending_tone = None;
-        self.zh_pending_keys.clear();
-        self.candidate_window = false;
-        self.navigating = false;
-    }
-
     /// 下鍵：第一次開候選窗並進入選取模式，之後往下換一項。
     pub(super) fn down(&mut self) {
         // 外殼送來 Down 只是為了避開數字選字，後面的聲調鍵仍要完成原本的音節；

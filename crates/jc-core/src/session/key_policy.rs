@@ -208,6 +208,66 @@ impl Session {
     }
 }
 
+impl Session {
+    /// `Escape` 的固定層級：字面尾巴 → 候選窗 → 未完成注音 → 整段組字。
+    pub(super) fn escape(&mut self) {
+        match self.escape_layer() {
+            EscapeLayer::LiteralTail => self.clear_composition(),
+            EscapeLayer::CandidateWindow => {
+                self.candidate_window = false;
+                self.navigating = false;
+                self.keep_candidates = false;
+                self.edit = None;
+                self.highlighted = 0;
+            }
+            EscapeLayer::PendingZhuyin => self.clear_pending_zhuyin(),
+            EscapeLayer::Composition => self.clear_composition(),
+        }
+    }
+
+    fn escape_layer(&self) -> EscapeLayer {
+        // 英文模式的 Esc 丟掉整段，包含前面的中文緩衝。
+        if !self.literal_tail.is_empty() {
+            EscapeLayer::LiteralTail
+        } else if self.candidate_window && self.menu.is_none() {
+            EscapeLayer::CandidateWindow
+        } else if self.in_zh_lane() && !self.zh.pending().is_empty() {
+            EscapeLayer::PendingZhuyin
+        } else {
+            EscapeLayer::Composition
+        }
+    }
+
+    /// 只清掉尚未完成的注音，保留已完成的音節。
+    ///
+    /// `ZhInput` 沒有「清暫存」的公開方法，這裡用退格逐格退掉暫存注音；
+    /// 暫存清空就停手，不會動到已完成的音節。
+    fn clear_pending_zhuyin(&mut self) {
+        let mut guard = 0;
+        while !self.zh.pending().is_empty() && guard < 16 {
+            let before = self.zh.pending();
+            self.zh.press(Key::new(KeyCode::Backspace, None, false));
+            if self.zh.pending() == before {
+                break;
+            }
+            guard += 1;
+        }
+        self.pending_tone = None;
+        self.zh_pending_keys.clear();
+        self.candidate_window = false;
+        self.navigating = false;
+    }
+}
+
+/// `Escape` 要處理的層級。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EscapeLayer {
+    LiteralTail,
+    CandidateWindow,
+    PendingZhuyin,
+    Composition,
+}
+
 /// `Backspace` 的刪除單位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackspaceLane {
