@@ -165,6 +165,12 @@
 | [`data-download.md`](data-download.md) | 首次啟動下載、`.part` 與 SHA-256 |
 | [`legal-update.md`](legal-update.md) | 授權帳本與第三方聲明同步 |
 
+### 工具與流程
+
+| 文件 | 一句話 |
+|---|---|
+| [`testing.md`](testing.md) | 內圈用 `scripts/test-plan.sh` 只跑受影響測試，gate 仍跑完整 workspace |
+
 ### 任務書索引對照
 
 這一輪任務書列的 `x86-tip`、`release-flow`、`settings-neural`、`live-default`
