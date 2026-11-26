@@ -163,6 +163,76 @@ fn engine_converts_japanese_with_data() {
     shutdown(child);
 }
 
+/// 日文逐鍵預覽的端到端驗證：用真實引擎與 ja pack 送 `watashi` 七個鍵，
+/// 每個回應都要比上一鍵更進一步；未完成的羅馬字必須留在 preedit 尾巴。
+#[test]
+fn japanese_live_preview_advances_on_every_key() {
+    let Some(root) = jc_testdata::root() else {
+        eprintln!("缺少測試資料：JC_TESTDATA");
+        return;
+    };
+    let settings_dir =
+        std::env::temp_dir().join(format!("jc-ja-live-preview-{}", std::process::id()));
+    std::fs::create_dir_all(&settings_dir).expect("建立暫存設定目錄");
+    let settings_path = settings_dir.join("settings.json");
+    // 故意不寫 `ja_conversion`：舊設定檔也要預設逐字変換（live）。
+    std::fs::write(
+        &settings_path,
+        r#"{"schema":2,"primary_language":"ja","ja_input_method":"romaji"}"#,
+    )
+    .expect("寫入暫存設定");
+
+    let root = root.into_os_string();
+    let settings = settings_path.clone().into_os_string();
+    let mut child = spawn(&[
+        std::ffi::OsStr::new("--data"),
+        &root,
+        std::ffi::OsStr::new("--settings"),
+        &settings,
+    ]);
+    let mut output = hello(&mut child);
+    let mut seen = Vec::new();
+    for ch in "watashi".chars() {
+        let input = child.stdin.as_mut().expect("stdin");
+        write_message(
+            input,
+            &Request::Key {
+                key: Key::char(ch, false),
+            },
+            DEFAULT_MAX_FRAME,
+        )
+        .unwrap();
+        input.flush().unwrap();
+        let reply: Response = read_message(&mut output, DEFAULT_MAX_FRAME)
+            .unwrap()
+            .expect("要有按鍵回應");
+        let Response::State { preedit, .. } = reply else {
+            panic!("按鍵 {ch:?} 應回 State，得到 {reply:?}");
+        };
+        assert!(!preedit.is_empty(), "按鍵 {ch:?} 的 preedit 不該是空的");
+        seen.push((ch, preedit));
+    }
+    for pair in seen.windows(2) {
+        assert_ne!(
+            pair[0].1, pair[1].1,
+            "按鍵 {:?} → {:?} 沒有進展：{:?}",
+            pair[0].0, pair[1].0, seen
+        );
+    }
+    assert!(
+        seen.iter()
+            .any(|(_, preedit)| preedit.chars().any(|ch| ch.is_ascii_lowercase())),
+        "逐鍵預覽要看到尚未完成的羅馬字：{seen:?}"
+    );
+    assert_ne!(
+        seen.last().map(|(_, preedit)| preedit.as_str()),
+        Some("watashi"),
+        "最後一鍵應已進入轉換，而不是原樣羅馬字：{seen:?}"
+    );
+    shutdown(child);
+    std::fs::remove_dir_all(&settings_dir).ok();
+}
+
 #[test]
 fn missing_data_directory_reports_path() {
     let output = Command::new(env!("CARGO_BIN_EXE_jc-engine"))

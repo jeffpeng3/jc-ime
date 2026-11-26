@@ -462,19 +462,53 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
         return Value::Null;
     };
 
+    let total_runes = preedit.chars().count();
     let mut preedit_segments: Vec<Value> = Vec::new();
-    if segments.is_empty() {
+    let mut covered_runes = 0usize;
+    // 沒有片段時整段 preedit 都是待處理輸入；`covered_runes` 保持 0，游標才
+    // 會跟著移到整段之後。
+    let whole_preedit = segments.is_empty();
+    if whole_preedit {
         if !preedit.is_empty() {
             preedit_segments.push(json!({"text": preedit, "style": "normal"}));
         }
     } else {
         for segment in segments {
-            preedit_segments.push(json!({
-                "text": slice_runes(preedit, segment.start, segment.end),
-                "style": if segment.mode == "japanese" { "clause" } else { "normal" },
-            }));
+            let start = segment.start.min(total_runes);
+            let end = segment.end.min(total_runes);
+            // 片段之間若有缺口也照樣顯示；`segments` 的契約是涵蓋整個 preedit，
+            // 但舊引擎／舊路徑可能留下沒標到的字。
+            if start > covered_runes {
+                preedit_segments.push(json!({
+                    "text": slice_runes(preedit, covered_runes, start),
+                    "style": "normal",
+                }));
+            }
+            let from = start.max(covered_runes);
+            if end > from {
+                preedit_segments.push(json!({
+                    "text": slice_runes(preedit, from, end),
+                    "style": if segment.mode == "japanese" { "clause" } else { "normal" },
+                }));
+            }
+            covered_runes = covered_runes.max(end);
         }
     }
+    // 日文逐鍵預覽的尾巴是尚未完成的羅馬字，引擎只放在 `preedit`，不在
+    // `segments`。這裡若不補回來，外殼每鍵只看到上一次的かな，實機就像
+    // 「打完才顯示」。尾巴一律接在最後，游標也跟著移到尾巴之後。
+    let tail_runes = total_runes.saturating_sub(covered_runes);
+    if tail_runes > 0 && !whole_preedit {
+        preedit_segments.push(json!({
+            "text": slice_runes(preedit, covered_runes, total_runes),
+            "style": "normal",
+        }));
+    }
+    let cursor_rune = if *cursor_rune >= covered_runes {
+        (*cursor_rune + tail_runes).min(total_runes)
+    } else {
+        (*cursor_rune).min(total_runes)
+    };
 
     let (candidate_start, candidate_length) = if segments.is_empty() {
         (0, 0)
@@ -512,7 +546,7 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
     json!({
         "handled": handled,
         "preedit": preedit_segments,
-        "cursor": {"rune": cursor_rune, "utf16": utf16_at_rune(preedit, *cursor_rune)},
+        "cursor": {"rune": cursor_rune, "utf16": utf16_at_rune(preedit, cursor_rune)},
         "suggestion": suggestion.clone().unwrap_or_default(),
         "candidates": {
             "start": candidate_start,
@@ -2600,6 +2634,37 @@ mod tests {
             }
             other => panic!("應是 Key 請求：{other:?}"),
         }
+    }
+
+    /// 日文逐鍵預覽：引擎把未完成的羅馬字放在 `preedit`，但 `segments` 只涵蓋
+    /// 已轉出的かな。外殼若只照 `segments` 切字，畫面每鍵都少一截，實機就變成
+    /// 「打完才顯示」。這裡要求尾巴原樣接回，游標也落在尾巴之後。
+    #[test]
+    fn japanese_pending_romaji_tail_is_kept_in_preedit() {
+        let wire = json!({
+            "op": "state",
+            "preedit": "わt",
+            "cursor": 1,
+            "candidates": [],
+            "segments": [{"start": 0, "end": 1, "mode": "japanese", "script": "kana"}],
+            "cursor_rune": 1
+        });
+        let response: jc_proto::Response = serde_json::from_value(wire).expect("state 要能解析");
+        let reply = response_to_reply(&response);
+        let snapshot = parse(&reply);
+        assert_eq!(snapshot.text(), "わt", "未完成的羅馬字不可被切掉");
+        assert_eq!(snapshot.cursor_rune, 2, "游標要落在未完成羅馬字之後");
+        assert_eq!(snapshot.cursor_utf16, 2);
+
+        // 第一鍵還沒有任何かな片段：整段都是未完成的羅馬字。
+        let wire = json!({
+            "op": "state", "preedit": "w", "cursor": 0, "candidates": [],
+            "segments": [], "cursor_rune": 0
+        });
+        let response: jc_proto::Response = serde_json::from_value(wire).expect("state 要能解析");
+        let snapshot = parse(&response_to_reply(&response));
+        assert_eq!(snapshot.text(), "w");
+        assert_eq!(snapshot.cursor_rune, 1);
     }
 
     /// 0c 的 `display` 要翻成 jc 的 `snapshot`。
