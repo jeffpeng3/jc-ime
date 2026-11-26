@@ -150,6 +150,162 @@ fn four_settings_states_show_default_chords_and_help(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn record_button_captures_chord_and_rejects_invalid_keys(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = TempDir::new("record");
+    let (handle, view) = open_settings(cx, &dir);
+
+    cx.update_window(handle, |_, window, cx| {
+        show_input_page(window, cx);
+
+        let record_id = "record-keybind-keybind-symbol-menu";
+        assert_eq!(
+            window.find(record_id).label(),
+            Some("錄製"),
+            "快捷鍵欄位旁要有錄製按鈕"
+        );
+
+        window.click(record_id, cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("keybind-recording-keybind-symbol-menu").value(),
+            Some("請按下要使用的組合鍵…"),
+            "錄製中欄位顯示提示文字"
+        );
+        assert_eq!(window.find(record_id).label(), Some("取消錄製"));
+        assert!(
+            window
+                .try_find("keybind-input-keybind-symbol-menu")
+                .is_none(),
+            "錄製中由提示文字取代輸入框"
+        );
+
+        window.press("a", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("keybind-error-keybind-symbol-menu").value(),
+            Some("快捷鍵需要 Ctrl 或 Alt（不能是純按鍵）")
+        );
+        assert_eq!(
+            window.find("keybind-recording-keybind-symbol-menu").value(),
+            Some("請按下要使用的組合鍵…"),
+            "無效組合後繼續等"
+        );
+
+        window.press("shift-a", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("keybind-error-keybind-symbol-menu").value(),
+            Some("快捷鍵不能只用 Shift；請加上 Ctrl 或 Alt")
+        );
+        assert_eq!(
+            window.find("keybind-recording-keybind-symbol-menu").value(),
+            Some("請按下要使用的組合鍵…"),
+            "Shift-only 後繼續等"
+        );
+
+        window.press("ctrl-alt-,", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("符號選單快捷鍵").value(),
+            Some("ctrl+alt+,"),
+            "錄製結果寫回欄位"
+        );
+        assert!(
+            window
+                .try_find("keybind-recording-keybind-symbol-menu")
+                .is_none(),
+            "成功後結束錄製"
+        );
+        assert!(
+            window
+                .try_find("keybind-error-keybind-symbol-menu")
+                .is_none(),
+            "成功後錯誤消失"
+        );
+        assert_eq!(window.find(record_id).label(), Some("錄製"));
+    })
+    .expect("更新視窗");
+
+    let value = cx.update(|cx| view.read(cx).value("keybind-symbol-menu"));
+    assert_eq!(value, "ctrl+alt+,");
+    let report = jc_settings::read(&dir.settings(), "linux");
+    assert_eq!(report.state, jc_settings::FileState::Ok);
+    assert_eq!(report.settings.keybinds.symbol_menu, "ctrl+alt+,");
+}
+
+#[gpui_kit::test]
+fn escape_cancels_recording_and_keeps_original_value(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = TempDir::new("record-escape");
+    let (handle, _) = open_settings(cx, &dir);
+
+    cx.update_window(handle, |_, window, cx| {
+        show_input_page(window, cx);
+        let record_id = "record-keybind-keybind-symbol-menu";
+        window.click(record_id, cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("keybind-recording-keybind-symbol-menu").value(),
+            Some("請按下要使用的組合鍵…")
+        );
+
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("符號選單快捷鍵").value(),
+            Some("ctrl+alt+,"),
+            "Esc 取消後保留原值"
+        );
+        assert!(
+            window
+                .try_find("keybind-recording-keybind-symbol-menu")
+                .is_none(),
+            "Esc 後離開錄製"
+        );
+        assert_eq!(window.find(record_id).label(), Some("錄製"));
+    })
+    .expect("更新視窗");
+}
+
+#[gpui_kit::test]
+fn manual_edit_after_recording_still_saves(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = TempDir::new("record-manual");
+    let (handle, _) = open_settings(cx, &dir);
+
+    cx.update_window(handle, |_, window, cx| {
+        show_input_page(window, cx);
+        window.click("record-keybind-keybind-symbol-menu", cx);
+        window.render_frame(cx);
+        window.press("ctrl-alt-b", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("符號選單快捷鍵").value(),
+            Some("ctrl+alt+b")
+        );
+
+        window.click("keybind-input-keybind-symbol-menu", cx);
+        window.press("ctrl-a", cx);
+        window.input("ctrl+alt+x", cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("符號選單快捷鍵").value(),
+            Some("ctrl+alt+x"),
+            "錄製後仍可手動編輯並存檔"
+        );
+        assert!(window
+            .try_find("keybind-error-keybind-symbol-menu")
+            .is_none());
+    })
+    .expect("更新視窗");
+
+    let report = jc_settings::read(&dir.settings(), "linux");
+    assert_eq!(report.settings.keybinds.symbol_menu, "ctrl+alt+x");
+}
+
+#[gpui_kit::test]
 fn invalid_chord_error_is_next_to_field_and_reset_restores_default(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let dir = TempDir::new("reset");

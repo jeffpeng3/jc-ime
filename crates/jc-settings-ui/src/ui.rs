@@ -2,7 +2,8 @@
 //!
 //! 用 GPUI Kit 的 `component::setting` 元件組頁面。開關與下拉一改就存檔；文字
 //! 欄位（快捷鍵）在 Enter 或失焦時才存檔，避免打到一半的 chord 被驗證擋掉。
-//! 純顯示的資訊列用 `SettingField::render`，不假裝有設定鍵。
+//! 快捷鍵另外有「錄製」按鈕，錄製期間由最外層 capture 吃掉按鍵，成功後走同一條
+//! 存檔路徑。純顯示的資訊列用 `SettingField::render`，不假裝有設定鍵。
 
 use gpui_kit::component::{
     button::Button,
@@ -13,6 +14,8 @@ use gpui_kit::component::{
     v_flex, ActiveTheme, Disableable, Sizable, StyledExt,
 };
 use gpui_kit::*;
+
+use jc_settings::ChordError;
 
 use crate::options::{self, Kind, Opt};
 use crate::state::SettingsView;
@@ -26,9 +29,36 @@ struct TextFieldState {
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity();
+        let key_view = this.clone();
         v_flex()
             .size_full()
             .bg(cx.theme().background)
+            .capture_key_down(move |event, _, cx| {
+                // 錄製中由最外層先吃掉按鍵：不再往下送給輸入框、按鈕或
+                // 應用程式的其他處理。沒有在錄製時完全不介入。
+                let Some(key) = key_view.read(cx).recording.clone() else {
+                    return;
+                };
+                let keystroke = &event.keystroke;
+                if keystroke.is_modifier_key() {
+                    // 只按 Shift／Ctrl 本身還不算組合鍵，繼續等。
+                    cx.stop_propagation();
+                    return;
+                }
+                cx.stop_propagation();
+                if keystroke.key == "escape" {
+                    key_view.update(cx, |view, cx| {
+                        view.cancel_recording();
+                        cx.notify();
+                    });
+                    return;
+                }
+                let candidate = chord_candidate(keystroke);
+                key_view.update(cx, |view, cx| {
+                    view.record_chord(&key, candidate);
+                    cx.notify();
+                });
+            })
             .child(header(self, cx))
             .child(
                 div().flex_1().min_h_0().child(
@@ -40,6 +70,28 @@ impl Render for SettingsView {
                 ),
             )
     }
+}
+
+/// 把 GPUI 的按鍵事件轉成 chord 候選字串。
+///
+/// 修飾鍵照 `Chord` 的順序排；平台鍵（cmd／win）與 fn 不在 chord 語法內，
+/// 一律當成沒有合法修飾鍵，交給 `Chord::parse` 回 `NoModifier` 的中文訊息。
+fn chord_candidate(keystroke: &Keystroke) -> Result<String, ChordError> {
+    if keystroke.modifiers.platform || keystroke.modifiers.function {
+        return Err(ChordError::NoModifier);
+    }
+    let mut text = String::new();
+    if keystroke.modifiers.control {
+        text.push_str("ctrl+");
+    }
+    if keystroke.modifiers.alt {
+        text.push_str("alt+");
+    }
+    if keystroke.modifiers.shift {
+        text.push_str("shift+");
+    }
+    text.push_str(&keystroke.key);
+    Ok(text)
 }
 
 fn header(view: &SettingsView, cx: &App) -> impl IntoElement {
@@ -305,6 +357,7 @@ fn keybind_item(
     let read_view = this.clone();
     let write_view = this.clone();
     let reset_view = this.clone();
+    let this = this.clone();
     let key = opt.key;
     let title = opt.title;
     let help = options::chord_help(opt, &view.defaults);
@@ -314,6 +367,7 @@ fn keybind_item(
     SettingItem::render(move |options, window, cx| {
         let value = SharedString::from(read_view.read(cx).value(key));
         let error = read_view.read(cx).field_error(key).map(ToOwned::to_owned);
+        let recording = read_view.read(cx).is_recording(key);
         let muted = cx.theme().muted_foreground;
         let state = window.use_keyed_state(
             SharedString::from(format!(
@@ -358,14 +412,51 @@ fn keybind_item(
             }
         });
 
+        // 錄製時把焦點放在「取消錄製」按鈕上，按鍵才會落在本視窗的
+        // dispatch path，由最外層的 capture 吃掉；輸入框同時讓位給提示文字。
+        let record_focus = window
+            .use_keyed_state(
+                SharedString::from(format!("record-focus-{key}")),
+                cx,
+                |_, cx| cx.focus_handle(),
+            )
+            .read(cx)
+            .clone();
+
         let reset_view = reset_view.clone();
         let state = state.read(cx);
-        let input = Input::new(&state.input)
-            .id(SharedString::from(format!("keybind-input-{key}")))
-            .aria_label(title)
+        let field: AnyElement = if recording {
+            Label::new("請按下要使用的組合鍵…")
+                .id(SharedString::from(format!("keybind-recording-{key}")))
+                .text_sm()
+                .into_any_element()
+        } else {
+            Input::new(&state.input)
+                .id(SharedString::from(format!("keybind-input-{key}")))
+                .aria_label(title)
+                .disabled(options.is_disabled())
+                .with_size(options.size())
+                .w_full()
+                .into_any_element()
+        };
+        let record_view = this.clone();
+        let click_focus = record_focus.clone();
+        let record = Button::new(SharedString::from(format!("record-keybind-{key}")))
+            .label(if recording { "取消錄製" } else { "錄製" })
+            .small()
             .disabled(options.is_disabled())
-            .with_size(options.size())
-            .w_full()
+            .track_focus(&record_focus)
+            .on_click(move |_, window, cx| {
+                window.focus(&click_focus, cx);
+                record_view.update(cx, |view, cx| {
+                    if view.is_recording(key) {
+                        view.cancel_recording();
+                    } else {
+                        view.begin_recording(key);
+                    }
+                    cx.notify();
+                });
+            })
             .into_any_element();
         let reset = Button::new(SharedString::from(format!("reset-keybind-{key}")))
             .label("重設為預設")
@@ -388,7 +479,8 @@ fn keybind_item(
                     .w_full()
                     .gap_2()
                     .items_center()
-                    .child(div().flex_1().child(input))
+                    .child(div().flex_1().child(field))
+                    .child(record)
                     .child(reset),
             )
             .child(

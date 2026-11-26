@@ -7,7 +7,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use jc_settings::{read, save, FileState, ProfileAction, Settings, SettingsError};
+use jc_settings::{
+    read, save, Chord, ChordError, FileState, ProfileAction, Settings, SettingsError,
+};
 
 use crate::data::DataStatus;
 
@@ -69,6 +71,8 @@ pub struct SettingsView {
     pub status: Status,
     /// 各設定鍵最近一次的錯誤；顯示在欄位旁，不只留在狀態列。
     pub field_errors: BTreeMap<String, String>,
+    /// 正在錄製的快捷鍵欄位；有值時下一個按鍵會被這個欄位吃掉。
+    pub recording: Option<String>,
     /// 資料根目錄的檢查結果。
     pub data: DataStatus,
 }
@@ -133,6 +137,7 @@ impl SettingsView {
             notes,
             status: Status::Idle,
             field_errors: BTreeMap::new(),
+            recording: None,
             data,
         }
     }
@@ -205,6 +210,48 @@ impl SettingsView {
     pub fn reset_to_default(&mut self, key: &str) {
         let value = self.defaults.value(key).unwrap_or_default();
         self.apply(key, &value);
+    }
+
+    /// 開始錄製某個快捷鍵欄位；先清掉舊的欄位錯誤。
+    pub fn begin_recording(&mut self, key: &str) {
+        self.recording = Some(key.to_string());
+        self.field_errors.remove(key);
+    }
+
+    /// 是否正在錄製指定欄位。
+    pub fn is_recording(&self, key: &str) -> bool {
+        self.recording.as_deref() == Some(key)
+    }
+
+    /// 取消錄製；原值不動，Esc 與再按一次「取消錄製」都走這裡。
+    pub fn cancel_recording(&mut self) {
+        if let Some(key) = self.recording.take() {
+            self.field_errors.remove(&key);
+        }
+    }
+
+    /// 收到錄製中的按鍵組合。
+    ///
+    /// `candidate` 是 UI 從 `KeyDownEvent` 拼出的 chord 字串，或轉換時的錯誤。
+    /// 不合法時只更新欄位錯誤、維持錄製狀態繼續等；合法時走與手動編輯相同的
+    /// `apply`／存檔／熱重載路徑，成功才結束錄製。
+    pub fn record_chord(&mut self, key: &str, candidate: Result<String, ChordError>) {
+        match candidate {
+            Ok(text) => match Chord::parse(&text) {
+                Ok(chord) => {
+                    self.apply(key, &chord.as_str());
+                    if !self.field_errors.contains_key(key) {
+                        self.recording = None;
+                    }
+                }
+                Err(err) => self.record_error(key, err),
+            },
+            Err(err) => self.record_error(key, err),
+        }
+    }
+
+    fn record_error(&mut self, key: &str, err: ChordError) {
+        self.field_errors.insert(key.to_string(), err.to_string());
     }
 
     /// 某個設定鍵最近一次的錯誤；文字欄位會顯示在輸入框下方。
@@ -414,6 +461,120 @@ mod tests {
         assert!(matches!(view.status, Status::Saved));
         let report = read(&dir.0.join("settings.json"), "linux");
         assert_eq!(report.settings.keybinds.symbol_menu, "ctrl+alt+,");
+    }
+
+    #[test]
+    fn test_record_chord_normalizes_and_saves() {
+        let dir = TempDir::new("record-save");
+        let mut view = view(&dir);
+        view.begin_recording("keybind-symbol-menu");
+        assert!(view.is_recording("keybind-symbol-menu"));
+
+        view.record_chord("keybind-symbol-menu", Ok("alt+ctrl+shift+s".to_string()));
+
+        assert!(!view.is_recording("keybind-symbol-menu"), "成功後結束錄製");
+        assert_eq!(view.value("keybind-symbol-menu"), "ctrl+alt+shift+s");
+        assert!(matches!(view.status, Status::Saved));
+        assert!(view.field_error("keybind-symbol-menu").is_none());
+        let report = read(&dir.0.join("settings.json"), "linux");
+        assert_eq!(
+            report.settings.keybinds.symbol_menu, "ctrl+alt+shift+s",
+            "錄製結果要走同一條存檔路徑"
+        );
+    }
+
+    #[test]
+    fn test_record_without_modifier_keeps_waiting_and_does_not_save() {
+        let dir = TempDir::new("record-no-modifier");
+        let path = dir.0.join("settings.json");
+        let mut view = view(&dir);
+        let before = fs::read(&path).expect("第一次啟動已建立設定檔");
+        let original = view.value("keybind-symbol-menu");
+
+        view.begin_recording("keybind-symbol-menu");
+        view.record_chord("keybind-symbol-menu", Ok("a".to_string()));
+
+        assert!(view.is_recording("keybind-symbol-menu"), "錯誤後繼續等");
+        assert_eq!(
+            view.field_error("keybind-symbol-menu"),
+            Some("快捷鍵需要 Ctrl 或 Alt（不能是純按鍵）")
+        );
+        assert_eq!(view.value("keybind-symbol-menu"), original);
+        assert_eq!(fs::read(&path).expect("讀回設定檔"), before, "不存檔");
+
+        view.record_chord("keybind-symbol-menu", Ok("shift+a".to_string()));
+        assert!(view.is_recording("keybind-symbol-menu"));
+        assert_eq!(
+            view.field_error("keybind-symbol-menu"),
+            Some("快捷鍵不能只用 Shift；請加上 Ctrl 或 Alt")
+        );
+
+        // 同一次錄製可以接著按合法組合。
+        view.record_chord("keybind-symbol-menu", Ok("ctrl+alt+b".to_string()));
+        assert!(!view.is_recording("keybind-symbol-menu"));
+        assert_eq!(view.value("keybind-symbol-menu"), "ctrl+alt+b");
+    }
+
+    #[test]
+    fn test_record_duplicate_chord_stays_in_recording() {
+        let dir = TempDir::new("record-duplicate");
+        let mut view = view(&dir);
+        view.begin_recording("keybind-symbol-menu");
+        view.record_chord("keybind-symbol-menu", Ok("ctrl+alt+.".to_string()));
+
+        assert!(view.is_recording("keybind-symbol-menu"), "重複綁定要繼續等");
+        assert_eq!(
+            view.field_error("keybind-symbol-menu"),
+            Some("同一個快捷鍵 ctrl+alt+. 綁定了多個動作")
+        );
+        assert_eq!(view.value("keybind-symbol-menu"), "ctrl+alt+,");
+    }
+
+    #[test]
+    fn test_cancel_recording_keeps_original_value() {
+        let dir = TempDir::new("record-cancel");
+        let path = dir.0.join("settings.json");
+        let mut view = view(&dir);
+        let before = fs::read(&path).expect("第一次啟動已建立設定檔");
+        let original = view.value("keybind-symbol-menu");
+
+        view.begin_recording("keybind-symbol-menu");
+        view.record_chord("keybind-symbol-menu", Ok("a".to_string()));
+        assert!(view.field_error("keybind-symbol-menu").is_some());
+        view.cancel_recording();
+
+        assert!(!view.is_recording("keybind-symbol-menu"));
+        assert!(view.field_error("keybind-symbol-menu").is_none());
+        assert_eq!(view.value("keybind-symbol-menu"), original, "原值保留");
+        assert_eq!(fs::read(&path).expect("讀回設定檔"), before, "取消不寫檔");
+    }
+
+    #[test]
+    fn test_manual_edit_after_recording_still_saves() {
+        let dir = TempDir::new("record-then-manual");
+        let mut view = view(&dir);
+        view.begin_recording("keybind-symbol-menu");
+        view.record_chord("keybind-symbol-menu", Ok("ctrl+alt+b".to_string()));
+        assert_eq!(view.value("keybind-symbol-menu"), "ctrl+alt+b");
+
+        view.apply("keybind-symbol-menu", "ctrl+shift+s");
+        assert_eq!(view.value("keybind-symbol-menu"), "ctrl+shift+s");
+        let report = read(&dir.0.join("settings.json"), "linux");
+        assert_eq!(report.settings.keybinds.symbol_menu, "ctrl+shift+s");
+    }
+
+    #[test]
+    fn test_record_rejects_platform_modifier_candidate() {
+        let dir = TempDir::new("record-platform");
+        let mut view = view(&dir);
+        view.begin_recording("keybind-symbol-menu");
+        view.record_chord("keybind-symbol-menu", Err(ChordError::NoModifier));
+        assert!(view.is_recording("keybind-symbol-menu"));
+        assert_eq!(
+            view.field_error("keybind-symbol-menu"),
+            Some("快捷鍵需要 Ctrl 或 Alt（不能是純按鍵）")
+        );
+        assert_eq!(view.value("keybind-symbol-menu"), "ctrl+alt+,");
     }
 
     #[test]
