@@ -73,6 +73,10 @@ pub struct SettingsView {
     pub field_errors: BTreeMap<String, String>,
     /// 正在錄製的快捷鍵欄位；有值時下一個按鍵會被這個欄位吃掉。
     pub recording: Option<String>,
+    /// 目前已完成的 render 序號；用來偵測錄製欄位是否還在畫面上。
+    pub render_seq: u64,
+    /// 最後一次看到錄製欄位的 render 序號。
+    pub recording_seen_seq: u64,
     /// 資料根目錄的檢查結果。
     pub data: DataStatus,
 }
@@ -138,6 +142,8 @@ impl SettingsView {
             status: Status::Idle,
             field_errors: BTreeMap::new(),
             recording: None,
+            render_seq: 0,
+            recording_seen_seq: 0,
             data,
         }
     }
@@ -215,7 +221,15 @@ impl SettingsView {
     /// 開始錄製某個快捷鍵欄位；先清掉舊的欄位錯誤。
     pub fn begin_recording(&mut self, key: &str) {
         self.recording = Some(key.to_string());
+        self.recording_seen_seq = self.render_seq;
         self.field_errors.remove(key);
+    }
+
+    /// 記下這一幀仍看得到錄製欄位；分頁切走後就不會再更新。
+    pub fn mark_recording_rendered(&mut self, key: &str) {
+        if self.is_recording(key) {
+            self.recording_seen_seq = self.render_seq;
+        }
     }
 
     /// 是否正在錄製指定欄位。

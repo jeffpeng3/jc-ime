@@ -161,8 +161,13 @@ fn record_button_captures_chord_and_rejects_invalid_keys(cx: &mut TestAppContext
         let record_id = "record-keybind-keybind-symbol-menu";
         assert_eq!(
             window.find(record_id).label(),
-            Some("錄製"),
+            Some("錄製符號選單快捷鍵"),
             "快捷鍵欄位旁要有錄製按鈕"
+        );
+        assert_eq!(
+            window.find("record-keybind-keybind-emoji-palette").label(),
+            Some("錄製表情選單快捷鍵"),
+            "兩個錄製按鈕的無障礙名稱要能分辨"
         );
 
         window.click(record_id, cx);
@@ -172,7 +177,10 @@ fn record_button_captures_chord_and_rejects_invalid_keys(cx: &mut TestAppContext
             Some("請按下要使用的組合鍵…"),
             "錄製中欄位顯示提示文字"
         );
-        assert_eq!(window.find(record_id).label(), Some("取消錄製"));
+        assert_eq!(
+            window.find(record_id).label(),
+            Some("取消錄製符號選單快捷鍵")
+        );
         assert!(
             window
                 .try_find("keybind-input-keybind-symbol-menu")
@@ -223,7 +231,7 @@ fn record_button_captures_chord_and_rejects_invalid_keys(cx: &mut TestAppContext
                 .is_none(),
             "成功後錯誤消失"
         );
-        assert_eq!(window.find(record_id).label(), Some("錄製"));
+        assert_eq!(window.find(record_id).label(), Some("錄製符號選單快捷鍵"));
     })
     .expect("更新視窗");
 
@@ -263,7 +271,7 @@ fn escape_cancels_recording_and_keeps_original_value(cx: &mut TestAppContext) {
                 .is_none(),
             "Esc 後離開錄製"
         );
-        assert_eq!(window.find(record_id).label(), Some("錄製"));
+        assert_eq!(window.find(record_id).label(), Some("錄製符號選單快捷鍵"));
     })
     .expect("更新視窗");
 }
@@ -303,6 +311,131 @@ fn manual_edit_after_recording_still_saves(cx: &mut TestAppContext) {
 
     let report = jc_settings::read(&dir.settings(), "linux");
     assert_eq!(report.settings.keybinds.symbol_menu, "ctrl+alt+x");
+}
+
+#[gpui_kit::test]
+fn test_switching_section_cancels_recording(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = TempDir::new("record-section-switch");
+    let (handle, view) = open_settings(cx, &dir);
+
+    cx.update_window(handle, |_, window, cx| {
+        show_input_page(window, cx);
+        let record_id = "record-keybind-keybind-symbol-menu";
+        window.click(record_id, cx);
+        window.render_frame(cx);
+        assert!(view.read(cx).is_recording("keybind-symbol-menu"));
+
+        // 點側邊欄切到「日文」：焦點離開錄製按鈕，錄製要取消。
+        window.within("settings-sidebar").click("0-1", cx);
+        window.render_frame(cx);
+        assert!(
+            !view.read(cx).is_recording("keybind-symbol-menu"),
+            "切分頁後不能還掛著錄製狀態"
+        );
+        assert!(
+            window
+                .try_find("keybind-recording-keybind-symbol-menu")
+                .is_none(),
+            "欄位不在畫面時不該顯示提示"
+        );
+
+        // 取消後按鍵不應再改值，也不該留下錯誤。
+        window.press("ctrl-alt-b", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            view.read(cx).value("keybind-symbol-menu"),
+            "ctrl+alt+,",
+            "切頁取消後按鍵不會偷改設定"
+        );
+        assert!(window
+            .try_find("keybind-error-keybind-symbol-menu")
+            .is_none());
+
+        // 切回「輸入」分頁，欄位回到原值，按鈕回到「錄製」。
+        window.within("settings-sidebar").click("0-2", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("符號選單快捷鍵").value(),
+            Some("ctrl+alt+,")
+        );
+        assert_eq!(window.find(record_id).label(), Some("錄製符號選單快捷鍵"));
+    })
+    .expect("更新視窗");
+
+    let report = jc_settings::read(&dir.settings(), "linux");
+    assert_eq!(report.settings.keybinds.symbol_menu, "ctrl+alt+,");
+}
+
+#[gpui_kit::test]
+fn test_esc_works_after_section_switch(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = TempDir::new("record-section-esc");
+    let (handle, view) = open_settings(cx, &dir);
+
+    cx.update_window(handle, |_, window, cx| {
+        show_input_page(window, cx);
+        window.click("record-keybind-keybind-symbol-menu", cx);
+        window.render_frame(cx);
+        window.within("settings-sidebar").click("0-1", cx);
+        window.render_frame(cx);
+        assert!(!view.read(cx).is_recording("keybind-symbol-menu"));
+
+        // 切頁已經取消，Esc 不該產生錯誤或改值，也不該把舊錄製叫回來。
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert!(!view.read(cx).is_recording("keybind-symbol-menu"));
+        assert_eq!(view.read(cx).value("keybind-symbol-menu"), "ctrl+alt+,");
+        assert!(window
+            .try_find("keybind-error-keybind-symbol-menu")
+            .is_none());
+    })
+    .expect("更新視窗");
+}
+
+#[gpui_kit::test]
+fn tab_is_captured_while_recording_and_keeps_waiting(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = TempDir::new("record-tab");
+    let (handle, view) = open_settings(cx, &dir);
+
+    cx.update_window(handle, |_, window, cx| {
+        show_input_page(window, cx);
+        window.click("record-keybind-keybind-symbol-menu", cx);
+        window.render_frame(cx);
+
+        window.press("tab", cx);
+        window.render_frame(cx);
+        assert!(
+            view.read(cx).is_recording("keybind-symbol-menu"),
+            "Tab 不該讓焦點跑走並取消錄製"
+        );
+        assert_eq!(
+            window.find("record-keybind-keybind-symbol-menu").focused(),
+            Some(true),
+            "Tab 不該把焦點帶離錄製按鈕"
+        );
+        assert_eq!(
+            window.find("keybind-recording-keybind-symbol-menu").value(),
+            Some("請按下要使用的組合鍵…"),
+            "Tab 後仍要繼續等"
+        );
+        assert_eq!(
+            window.find("keybind-error-keybind-symbol-menu").value(),
+            Some("快捷鍵需要 Ctrl 或 Alt（不能是純按鍵）")
+        );
+
+        // 連按 Tab 後仍能完成錄製。
+        window.press("tab", cx);
+        window.press("ctrl-alt-b", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("符號選單快捷鍵").value(),
+            Some("ctrl+alt+b")
+        );
+        assert!(!view.read(cx).is_recording("keybind-symbol-menu"));
+    })
+    .expect("更新視窗");
 }
 
 #[gpui_kit::test]

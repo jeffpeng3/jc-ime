@@ -2,8 +2,9 @@
 //!
 //! 用 GPUI Kit 的 `component::setting` 元件組頁面。開關與下拉一改就存檔；文字
 //! 欄位（快捷鍵）在 Enter 或失焦時才存檔，避免打到一半的 chord 被驗證擋掉。
-//! 快捷鍵另外有「錄製」按鈕，錄製期間由最外層 capture 吃掉按鍵，成功後走同一條
-//! 存檔路徑。純顯示的資訊列用 `SettingField::render`，不假裝有設定鍵。
+//! 快捷鍵另外有「錄製」按鈕，錄製期間由 App 層攔截器吃掉按鍵；切到別的
+//! 分頁時會自動取消錄製。成功後走同一條存檔路徑。純顯示的資訊列用
+//! `SettingField::render`，不假裝有設定鍵。
 
 use gpui_kit::component::{
     button::Button,
@@ -26,16 +27,27 @@ struct TextFieldState {
     _subscription: Subscription,
 }
 
+/// App 層級的錄製攔截器；`Subscription` 活著才會持續收到按鍵。
+struct KeyCapture {
+    _subscription: Subscription,
+}
+
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity();
+
+        // 錄製欄位只在目前分頁會 render。若上一幀之後就沒再看到它，代表
+        // 使用者切走了，直接取消錄製，避免掛著看不到的錄製狀態。
+        self.render_seq = self.render_seq.wrapping_add(1);
+        if self.recording.is_some() && self.recording_seen_seq.wrapping_add(1) < self.render_seq {
+            self.cancel_recording();
+        }
+
+        // 攔截器綁在 App 層級，不看目前焦點。這樣錄製中就算滑鼠點了側邊欄，
+        // 按鍵仍會先被吃掉，不會漏給其他控制項或應用程式。
         let key_view = this.clone();
-        v_flex()
-            .size_full()
-            .bg(cx.theme().background)
-            .capture_key_down(move |event, _, cx| {
-                // 錄製中由最外層先吃掉按鍵：不再往下送給輸入框、按鈕或
-                // 應用程式的其他處理。沒有在錄製時完全不介入。
+        let _capture = _window.use_keyed_state("settings-key-capture", cx, move |_, cx| {
+            let subscription = cx.intercept_keystrokes(move |event, _, cx| {
                 let Some(key) = key_view.read(cx).recording.clone() else {
                     return;
                 };
@@ -58,7 +70,15 @@ impl Render for SettingsView {
                     view.record_chord(&key, candidate);
                     cx.notify();
                 });
-            })
+            });
+            KeyCapture {
+                _subscription: subscription,
+            }
+        });
+
+        v_flex()
+            .size_full()
+            .bg(cx.theme().background)
             .child(header(self, cx))
             .child(
                 div().flex_1().min_h_0().child(
@@ -368,6 +388,9 @@ fn keybind_item(
         let value = SharedString::from(read_view.read(cx).value(key));
         let error = read_view.read(cx).field_error(key).map(ToOwned::to_owned);
         let recording = read_view.read(cx).is_recording(key);
+        if recording {
+            read_view.update(cx, |view, _| view.mark_recording_rendered(key));
+        }
         let muted = cx.theme().muted_foreground;
         let state = window.use_keyed_state(
             SharedString::from(format!(
@@ -412,8 +435,7 @@ fn keybind_item(
             }
         });
 
-        // 錄製時把焦點放在「取消錄製」按鈕上，按鍵才會落在本視窗的
-        // dispatch path，由最外層的 capture 吃掉；輸入框同時讓位給提示文字。
+        // 錄製時把焦點放在「取消錄製」按鈕上；按鍵由 App 層攔截器吃掉。
         let record_focus = window
             .use_keyed_state(
                 SharedString::from(format!("record-focus-{key}")),
@@ -426,9 +448,14 @@ fn keybind_item(
         let reset_view = reset_view.clone();
         let state = state.read(cx);
         let field: AnyElement = if recording {
-            Label::new("請按下要使用的組合鍵…")
-                .id(SharedString::from(format!("keybind-recording-{key}")))
-                .text_sm()
+            div()
+                .id(SharedString::from(format!("keybind-recording-group-{key}")))
+                .aria_label(format!("{title}：請按下要使用的組合鍵…"))
+                .child(
+                    Label::new("請按下要使用的組合鍵…")
+                        .id(SharedString::from(format!("keybind-recording-{key}")))
+                        .text_sm(),
+                )
                 .into_any_element()
         } else {
             Input::new(&state.input)
@@ -443,6 +470,11 @@ fn keybind_item(
         let click_focus = record_focus.clone();
         let record = Button::new(SharedString::from(format!("record-keybind-{key}")))
             .label(if recording { "取消錄製" } else { "錄製" })
+            .accessibility_label(if recording {
+                format!("取消錄製{title}")
+            } else {
+                format!("錄製{title}")
+            })
             .small()
             .disabled(options.is_disabled())
             .track_focus(&record_focus)
