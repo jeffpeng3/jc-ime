@@ -28,7 +28,7 @@
 | 候選清單最短輸入 | 2 個字母 | `core/session/english_autocomplete.go` `len(s.mixed.raw) < 2` |
 | 單詞長度上限 | 48 bytes | `mixed.rs` `MAX_WORD_BYTES` |
 | 拼字建議保留名額 | 3 | `english_autocomplete.go`／`openMixedCandidates` |
-| 候選上限 | `SessionConfig::max_candidates`（預設 `DEFAULT_MAX_CANDIDATES`＝80） | `session.rs`；Go 英文補字用 6 |
+| 候選上限 | `SessionConfig::max_candidates`（預設 `DEFAULT_MAX_CANDIDATES`＝200） | `session.rs`；Go 英文補字用 6 |
 | 排序 | 距離 → 權重（高→低）→ 詞面 | `Dictionary::corrections` |
 | 成本換算 | `2_000_000 - 權重 + 1000 × 距離` | `mixed.rs` `cost_of_weight`、`CORRECTION_PENALTY` |
 | 打對的字 | 詞表已有完整單字時不產生拼字建議 | `Dictionary::corrections` 的 `has` 檢查 |

@@ -141,6 +141,7 @@
 | [`ci-lint.md`](ci-lint.md) | 修掉 `zh-symbols` 之後的 clippy 錯誤 |
 | [`candidate-paging.md`](candidate-paging.md) | 候選分頁、數字選字與 `CANDIDATE_PAGE_SIZE` |
 | [`candidate-unify.md`](candidate-unify.md) | 語言無關的候選資料契約、十列／四欄版面與 Enter 語意 |
+| [`candidate-cap.md`](candidate-cap.md) | 候選上限 200 的單鍵延遲、JSON 大小與記憶體量測 |
 | [`composition-cursor.md`](composition-cursor.md) | 組字游標、任意位置編輯與片段換字 |
 | [`language-branches.md`](language-branches.md) | 依語言／模式分岔的行為盤點、統一建議與前三件事 |
 

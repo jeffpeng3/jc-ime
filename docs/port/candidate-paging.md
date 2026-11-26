@@ -11,7 +11,7 @@
 | 頁面大小 | 直向 `10`、橫向四欄 `10 × 4 = 40`，由 `candidate_layout::CandidateLayout` 統一計算 |
 | 頁碼持有者 | 核心；由 `highlighted / page_size` 推導，`Session` 不另存 `page` |
 | 外殼取得頁面大小 | 核心送 `State.rows`／`columns`；舊引擎由外殼用 10 與 1 補預設 |
-| 預設候選數 | `DEFAULT_MAX_CANDIDATES = 列數 × 四欄欄數 × 2 = 80`（兩頁四欄版面） |
+| 預設候選數 | `DEFAULT_MAX_CANDIDATES = 200`（量測決定、固定值；量測見 [candidate-cap.md](candidate-cap.md)） |
 
 `Session::current_page()` 是唯一算頁碼的地方。翻頁、方向鍵、Tab、Home／End
 與 `Session::select` 都只改 `highlighted`，頁碼自然跟著變，不會出現「高亮在

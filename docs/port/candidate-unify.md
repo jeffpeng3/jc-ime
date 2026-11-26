@@ -43,6 +43,8 @@
 - 一頁容量是「列數 × 欄數」：直向十項，橫向四十項。
 - 頁內索引的版面位置是 `(列, 欄) = (index % 10, index / 10)`。
 - 換頁只移動 `highlighted`，頁碼一律由 `highlighted / page_size` 推導。
+  每個快照都重算頁碼，所以 `↓`／`↑` 跨頁時畫面會跟著換頁，不需要另一份
+  `page` 狀態，也不會出現「索引在第 2 頁、畫面停在第 1 頁」。
 - 第一次按 `←`／`→` 只展開成四欄並立刻重排；之後才在欄之間移動。
 - 切換欄數不改變高亮索引，同一個候選仍然反白。
 - 換頁維持同一個欄數；`Esc`、關窗與重新開窗會回到直向單欄。
@@ -53,24 +55,21 @@
 
 ## 候選上限與版面
 
-候選上限 `DEFAULT_MAX_CANDIDATES` 由版面推導，不是固定 20：
+候選上限 `DEFAULT_MAX_CANDIDATES` 固定 **200**，不是版面推導，也不是使用者
+設定。數值來自量測：k=200 相對 40 的單鍵成本最多 +0.11 ms（`ㄧˋ`
+0.766→0.880 ms），200 的最差單鍵總成本約 0.93 ms，遠低於 16.7 ms 的影格
+預算；k=500 只多出 40–130 個極罕用候選，不值得。完整方法與表格見
+[candidate-cap.md](candidate-cap.md)。
 
-```
-DEFAULT_MAX_CANDIDATES
-  = 列數 × 四欄欄數 × 2
-  = 10 × 4 × 2
-  = 80
-```
-
-- 為什麼是兩頁：四欄一頁 40 項，留兩頁讓 `PageDown` 後還有內容，也讓第二頁
-  的數字選字有實際用途。
-- 直向時一頁仍是 10 項，80 項相當於八頁；上限不影響 `page_size()`。
+- 分頁仍由版面決定：直向一頁 10 項、四欄一頁 40 項；200 項在四欄是 5 頁，
+  直向是 20 頁。上限不影響 `page_size()`。
 - 上限只決定「最多保留幾項」，候選排序不變：解碼器照原本分數輸出，截斷發生
   在尾端。提高上限不會讓後面的候選插到前面。
-- 舊版 `PAGE_SIZE * 2` 是以直向頁面（10）計算，四欄展開後只能排滿兩欄；現在
-  改用版面常數相乘，之後改列數或欄數時上限會跟著動。
-- 候選數少於上限時照實際數量顯示；四欄只排得滿一欄時，`↓` 在該頁內環繞是
-  正常行為（沒有第二欄可走）。
+- 實際候選數常見差異很大：`ㄨㄛˇ` 只有 9 項，`ㄕˋ` 146、`ㄧˋ` 200、
+  `ㄊㄞˊㄨㄢˊ` 240（k=500 時）；候選少於上限時照實際數量顯示。
+- 舊版用 `PAGE_SIZE * 2` 得到 20，四欄展開後只排得滿兩欄；先改成版面推導的
+  80，最後依量測定為 200。四欄只排得滿一欄時，`↓` 在該頁內跨欄是正常行為
+  （沒有第二欄可走）。
 
 ## 選取與 Enter
 
@@ -119,8 +118,11 @@ DEFAULT_MAX_CANDIDATES
 - `test_up_crosses_column_boundary_backwards`
 - `test_down_at_page_end_behavior`
 - `test_vertical_down_at_page_end_crosses_page`
+- `test_vertical_down_crosses_page_and_updates_page`
+- `test_vertical_down_twenty_times_reaches_page_two`
 - `test_left_right_jump_ten`
 - `test_candidate_cap_allows_four_columns`
+- `test_many_candidates_exceed_forty_at_cap`
 - `test_vertical_page_size_is_ten`
 - `test_four_column_page_size_is_forty`
 - `test_page_down_after_forty`
