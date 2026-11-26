@@ -723,6 +723,11 @@ impl Session {
                 return self.snapshot();
             }
         }
+        // 組字中的 Shift＋字母是字面：保留未完成的注音與既有片段，只把字面
+        // 接在最後。不能讓它落進注音狀態機，否則整段會重播成原始按鍵。
+        if let Some(text) = Self::shift_literal_text(&key) {
+            return self.literal(&text);
+        }
         if key.ctrl {
             self.pending_tone = None;
             self.press_ctrl(key);
@@ -2277,6 +2282,102 @@ mod tests {
         assert_eq!(s.mode(), Mode::Mixed);
         s.toggle_english();
         assert_eq!(s.mode(), Mode::Mixed);
+    }
+
+    /// 組字中按 Shift＋字母是字面：未完成的注音要留在原處，不能整段重播成
+    /// 原始按鍵。
+    #[test]
+    fn test_shift_literal_keeps_pending_zhuyin() {
+        let mut s = session();
+        type_keys(&mut s, "w96j0");
+        assert_eq!(s.snapshot().preedit, "台ㄨㄢ");
+
+        // 外殼送來的 Shift+A：鍵碼是小寫 `a`，`text` 是大寫、`shift` 為 true。
+        let snap = s.press(Key::new(KeyCode::Char('a'), Some('A'), true));
+        assert_eq!(snap.preedit, "台ㄨㄢA");
+        assert_eq!(snap.cursor_rune, 4, "游標要落在 A 後面");
+        assert!(snap.candidates.is_empty(), "字面輸入不產生候選");
+
+        // 另一種外殼編碼：鍵碼本身就是大寫。
+        let snap = s.press(Key::char('B', true));
+        assert_eq!(snap.preedit, "台ㄨㄢAB");
+        assert_eq!(snap.cursor_rune, 5);
+    }
+
+    /// 連續 Shift 字面要依序接在已完成與未完成的注音後面，Backspace 只刪
+    /// 一個字面字元。
+    #[test]
+    fn test_shift_literal_keeps_completed_syllables() {
+        let mut s = session();
+        type_keys(&mut s, "su3");
+        assert_eq!(s.snapshot().preedit, "你");
+
+        let snap = s.press(Key::new(KeyCode::Char('a'), Some('A'), true));
+        assert_eq!(snap.preedit, "你A");
+        let snap = s.press(Key::new(KeyCode::Char('b'), Some('B'), true));
+        assert_eq!(snap.preedit, "你AB");
+        assert_eq!(snap.cursor_rune, 3);
+
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "你A", "Backspace 只刪一個字面字元");
+        assert_eq!(snap.cursor_rune, 2);
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "你");
+        assert_eq!(snap.cursor_rune, 1);
+    }
+
+    /// 英文模式的字面尾巴依序附加；下一個按鍵把尾巴併回組字時不得把英文
+    /// 搬到最前面。
+    #[test]
+    fn test_english_literal_appends_in_order() {
+        let mut s = session();
+        s.toggle_english();
+        for ch in "abc".chars() {
+            s.press(Key::char(ch, false));
+        }
+        let snap = s.snapshot();
+        assert_eq!(snap.preedit, "abc");
+        assert_eq!(snap.cursor_rune, 3);
+
+        // Shift 大寫字母是字面尾巴；下一個鍵才把它併回一般組字。
+        let snap = s.literal("X");
+        assert_eq!(snap.preedit, "abcX");
+        assert_eq!(snap.cursor_rune, 4);
+
+        let snap = s.press(Key::char('4', false));
+        assert_eq!(snap.preedit, "abcX4", "字面尾巴不得被搬到最前面");
+        assert_eq!(snap.cursor_rune, 5);
+    }
+
+    /// 中文未完成注音後面切英文再打字，字面要接在注音之後，不能整段重播。
+    #[test]
+    fn test_english_literal_after_zh_syllable() {
+        let mut s = session();
+        type_keys(&mut s, "w96j0");
+        s.toggle_english();
+        for ch in "abc".chars() {
+            s.literal(&ch.to_string());
+        }
+        let snap = s.snapshot();
+        assert_eq!(snap.preedit, "台ㄨㄢabc");
+        assert_eq!(snap.cursor_rune, 6, "顯示幾個字，游標就在第幾個字之後");
+    }
+
+    /// 既有片段的相對順序不因字面尾巴併回組字而改變。
+    #[test]
+    fn test_literal_does_not_move_existing_text() {
+        let mut s = session();
+        for ch in "abc".chars() {
+            s.press(Key::char(ch, false));
+        }
+        s.literal("X");
+        let snap = s.press(Key::char('4', false));
+        assert_eq!(snap.preedit, "abcX4");
+        assert!(
+            snap.preedit.starts_with("abcX"),
+            "前面的英文片段順序不變：{:?}",
+            snap.preedit
+        );
     }
 
     /// 字面輸入接在未完成的注音後面，不重新規劃前面的中文，也不鎖定任何片段。

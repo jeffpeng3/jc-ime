@@ -79,8 +79,29 @@ impl Session {
     pub(super) fn push_literal(&mut self, text: &str) {
         if self.literal.is_empty() {
             self.literal_anchor = self.syllables.len();
+            // 混打／日文沒有音節格可以推導插入點，字面接在目前組字尾端。
+            // 固定當下的長度，後續追加的按鍵才不會把字面擠到最前面。
+            if !self.in_zh_lane() {
+                self.literal_offset = self.base.len();
+            }
         }
         self.literal.push_str(text);
+    }
+
+    /// Shift＋字母要當成字面，不讓前面的注音被重播成原始按鍵。
+    ///
+    /// 外殼可能送大寫鍵碼，也可能送小寫鍵碼配 `shift = true`（0c 協定把
+    /// `Shift+A` 編成 `a` 加 Shift）；兩種都轉成同一個大寫字面。標點與
+    /// 符號不走這裡，Shift＋符號仍由注音／前導表決定。
+    pub(super) fn shift_literal_text(key: &Key) -> Option<String> {
+        if !key.shift || key.ctrl || key.alt {
+            return None;
+        }
+        let KeyCode::Char(ch) = key.code else {
+            return None;
+        };
+        ch.is_ascii_alphabetic()
+            .then(|| ch.to_ascii_uppercase().to_string())
     }
 
     /// 把英文／Shift 附加的字面尾巴併回一般組字，讓下一個按鍵接在後面。
@@ -2370,7 +2391,11 @@ impl Session {
             self.candidates.clear();
         }
         self.segments.clear();
-        self.literal_offset = 0;
+        // 注音路徑由 `rebuild_zh` 依字面插入點重算；混打與日文保留
+        // `push_literal` 當下固定的尾端位置。
+        if self.zh_lane {
+            self.literal_offset = 0;
+        }
         if self.in_ja_lane() {
             self.rebuild_ja();
         } else if self.zh_lane {
