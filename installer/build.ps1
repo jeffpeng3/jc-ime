@@ -112,10 +112,17 @@ $tsfProfileArgs = @('--profile', $TsfConfiguration)
 
 # 實際執行的 cargo 參數只定義一次，建置與錯誤訊息共用，避免兩者不一致。
 # x64 的 jc-tsf 單獨建，才不會吃到執行檔的 release profile。
+#
+# 只建出貨的 bin：`-p jc-cli` 預設會連 src/bin 下的 jinen-eval、jinen-gate、
+# ja-eval、ja-cost、zh-calibrate、candle-zh-check 一起建置，每個 bin 各自做
+# 一次 thin LTO 連結，但它們不進安裝包。不能拆成第二次 cargo 呼叫：feature
+# 統一的範圍會從四個 package 變成只有 jc-cli，jc-core、jc-model 等相依 crate
+# 全部換指紋重編，實測多花 3m27s。單次呼叫用 --bin 逐一挑出貨的 target。
 $cargoX64Args = @('build') + $profileArgs + @(
     '--target', $Target,
-    '-p', 'jc-engine', '-p', 'jc-cli',
-    '-p', 'jc-settings-ui', '-p', 'jc-tsf-smoke'
+    '-p', 'jc-engine', '-p', 'jc-cli', '-p', 'jc-settings-ui', '-p', 'jc-tsf-smoke',
+    '--bin', 'jc-engine', '--bin', 'jc-cli',
+    '--bin', 'jc-settings-ui', '--bin', 'jc-tsf-smoke'
 )
 $cargoTsfX64Args = @('build') + $tsfProfileArgs + @(
     '--target', $Target, '-p', 'jc-tsf'

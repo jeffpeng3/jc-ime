@@ -1572,8 +1572,11 @@ jobs:
           # workflow_dispatch 跑，tag 不會另外觸發。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # 只建出貨的 bin：jc-cli 的 src/bin 開發工具各自要做一次 thin LTO 連結，
+      # 但不進 tar.gz。拆成兩次 cargo 呼叫會讓相依 crate 因 feature 統一範圍
+      # 改變而重編，所以維持單次呼叫並用 --bin 挑 target。
       - name: 建置 Linux 執行檔
-        run: cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui
+        run: cargo build --release -p jc-engine -p jc-cli -p jc-settings-ui --bin jc-engine --bin jc-cli --bin jc-settings-ui
 
       - name: 打包 tar.gz
         shell: bash
