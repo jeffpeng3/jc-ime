@@ -4289,7 +4289,7 @@ mod tests {
         }
         // 全角與尾端標點。
         for suffix in [".", "ＡＢＣ", ",", "/"] {
-            for left in keys.iter().take(4) {
+            for left in &keys {
                 inputs.push(format!("{left}{suffix}"));
             }
         }
@@ -4322,20 +4322,6 @@ mod tests {
             assert_eq!(got, want_segments, "{input:?} 片段");
             checked += 1;
         }
-        // 沒有 Shift 的大寫不重播：已轉換的注音留著，大寫接在後面。批次
-        // Router 仍把整段無空白英數當字面（`5k4ABC`），這條刻意只鎖增量路徑。
-        for left in keys.iter().take(4) {
-            let input = format!("{left}ABC");
-            let mut session = Session::new(config.clone());
-            for ch in input.chars() {
-                session.press(Key::char(ch, false));
-            }
-            assert_eq!(
-                session.snapshot().preedit,
-                "字ABC",
-                "{input:?} 大寫不重播注音"
-            );
-        }
         // 這個測試的詞典把每個讀音都收成「字」；`w96` 的 ㄊㄞˊ 不在詞典裡，
         // 所以字面是原始注音。真正的「我」／「台」由 `pending_session` 測試鎖住。
         for (input, want) in [
@@ -4360,6 +4346,84 @@ mod tests {
             );
         }
         assert!(checked >= 200, "property test 只跑了 {checked} 筆");
+    }
+
+    /// 沒有 Shift 的大寫接在已完成注音後：session 是增量，保留已轉換的
+    /// 「字」再把大寫接成字面；Router 是批次，整段無空白英數（`5k4ABC`）
+    /// 仍判成字面。這裡逐個 left 鎖住增量結果與 segments，再用 `ji3ABC`
+    /// 單獨鎖住與 Router 的差異。
+    #[test]
+    fn test_incremental_uppercase_differs_from_batch_router() {
+        use crate::score::ScoreContext;
+        use crate::zh::keyboard::Keyboard;
+        use crate::zh::syllable::Syllable;
+
+        let mut lex = InMemoryLexicon::new();
+        let readings = [
+            "ㄓㄜˋ",
+            "ㄉㄡ",
+            "ㄕˋ",
+            "ㄙㄢ",
+            "ㄒㄧㄠˇ",
+            "ㄅㄟ",
+            "ㄘㄜ",
+            "ㄨㄛˇ",
+            "ㄇㄚ",
+            "ㄌㄜ",
+            "ㄒㄧ",
+            "ㄨ",
+            "ㄏㄠˇ",
+            "ㄐㄧㄝˋ",
+            "ㄅㄨˋ",
+            "ㄊㄧㄢ",
+        ];
+        let mut keys = Vec::new();
+        for reading in readings {
+            let syllable = Syllable::from_raw(reading);
+            keys.push(
+                Keyboard::standard()
+                    .keys(&syllable)
+                    .unwrap_or_else(|_| panic!("{reading:?} 無法拆回按鍵")),
+            );
+            lex.push(LexEntry::new("字", reading, 0, 0));
+        }
+        let ctx = ScoreContext::default();
+        let router = Router::new().with_zh(&lex, &ctx);
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex.clone()));
+
+        for left in &keys {
+            let input = format!("{left}ABC");
+            let mut session = Session::new(config.clone());
+            for ch in input.chars() {
+                session.press(Key::char(ch, false));
+            }
+            let got_surface = session.snapshot().preedit;
+            assert_eq!(got_surface, "字ABC", "{input:?} 增量：大寫不重播注音");
+
+            let got: Vec<(Lang, String)> = session
+                .segments()
+                .iter()
+                .map(|seg| (seg.mode, got_surface[seg.start..seg.end].to_string()))
+                .collect();
+            assert_eq!(
+                got,
+                vec![(Lang::Zh, "字".to_string()), (Lang::En, "ABC".to_string())],
+                "{input:?} 增量片段"
+            );
+        }
+
+        // 批次 Router 對無法切開的整段英數（`ji3ABC`）會照原樣留下；增量
+        // session 已先完成 `ji3`，大寫只能接在「字」後面，兩者刻意不同。
+        // 有些 left 的按鍵本身含標點（例如 ㄉㄡ 的 `2.`），Router 會先切成
+        // 注音再接字面，結果剛好與增量相同；差異用 `ji3ABC` 單獨鎖住。
+        let wo = keys
+            .iter()
+            .find(|keys| keys.as_str() == "ji3")
+            .expect("ㄨㄛˇ 對應 ji3");
+        let batch = router.convert(&format!("{wo}ABC")).expect("轉換");
+        assert_eq!(batch.surface, format!("{wo}ABC"), "Router 批次整段字面");
+        assert_ne!(batch.surface, "字ABC", "Router 不會保留已轉換的注音");
     }
 
     fn cursor_lexicon() -> InMemoryLexicon {
