@@ -553,7 +553,7 @@ pub const CATALOG: &[DataFileSpec] = &[
         role: DataRole::JaNeural,
         licenses: &["L-21"],
         shipped: true,
-        candidates: &["models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf"],
+        candidates: &["models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf"],
         url: None,
     },
     DataFileSpec {

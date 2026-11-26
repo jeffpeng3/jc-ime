@@ -30,7 +30,7 @@ manifest，解析器明確過濾舊資料目錄的殘留鍵。資料來源：
 `legal/licenses/MIT-Funmula.txt` 的 copyright 與授權全文。`model.onnx` 只是轉檔來源，
 不進 MSI。`zh-punct` 已移除，不散布。日文 reranker 不再是預設路徑：`SessionConfig::ja_rerank`
 預設 `false`，由 Jinen small 的門檻混合取代。`ja-neural` 沒有 `Role` 列舉，
-`jc-engine` 直接依 `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf`
+`jc-engine` 直接依 `models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf`
 載入；tokenizer 沿用 `models/quant/jinen-v2-xsmall/tokenizer.json`。資料根目錄
 `manifest.json` 以 `ja_neural` 收錄 Jinen GGUF、以 `ja_tokenizer` 收錄 tokenizer，
 兩筆都標 `shipped: true`、授權 `L-21`；引擎優先用 manifest 解析這兩條路徑，
@@ -104,12 +104,13 @@ Q8_0 是量測與建議使用的注音選字權重：33.9 MiB、推論 p50 9.36 
 
 | 檔案 | 大小 | SHA-256 |
 |---|---:|---|
-| `jinen-v2-small-Q5_K_M.gguf` | 81,117,824 | `80482707513d6b67dafc31774371cf95d765542abf8d74eebf5f32f92d788bd3` |
+| `jinen-v2-small-Q4_K_M.gguf` | 72,123,008 | `26a6a71020a8d12908615d6ed2541ad6d6d9b73fc179d8d5472eb1c709bb1300` |
 | `tokenizer.json`（`models/quant/jinen-v2-xsmall/`，manifest 角色 `ja_tokenizer`） | 2,047,498 | `477c91a788bf97e7ed993a4441cfb2c4d60033e505ade17d6c367bc09ed6e6ba` |
 
 來源 `togatogah/jinen-v2-small.gguf`，revision
 `3461d0573ab447985badde3174165b967d06076c`，授權 CC-BY-SA-4.0。Qwen3
-109.5M 級，Q5_K_M 量化，檔案 77.4 MiB（約 78 MB）。用途是日文轉換的
+109.5M 級，Q4_K_M 量化，檔案 68.8 MiB（約 69 MB）。Q4_K_M 是上游 HF repo 同
+revision 的官方重量化檔，本專案沒有自行重新量化。用途是日文轉換的
 第二階段：統計結果永遠先算好，`top2 - top1 < 460` 時才送 Jinen，通過五條
 驗證才替換，180 ms 逾時回退統計結果。`jc-engine` 預設載入，`JC_JINEN=off`
 關閉。詳細門檻與量測見 [`docs/port/jinen-default.md`](port/jinen-default.md)。

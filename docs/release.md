@@ -495,7 +495,8 @@ scripts/release-notes.sh <版本> <iso版本> <true|false> <資料根目錄> <CH
   `AppVersion` 是完整字串，`VersionInfoVersion` 只有四段數字
 - 模型與資料版本：安裝包內 `manifest.json` 的 `version`（涵蓋詞典與模型）
 - 資料包內容：bigram 語言模型是必要檔案、unigram 已退役、英文詞表與 zh-select
-  神經選字模型都隨附
+  神經選字模型都隨附；日文神經模型是 Jinen v2 small Q4_K_M（上游官方重量化，
+  72,123,008 bytes）
 - `docs/CHANGELOG.md` 中 `## <version>` 的段落
 - 兩個平台的下載檔名與 `.sha256` 提示
 - 簽章狀態：已簽章，或明確標「未簽章」與 SmartScreen／AppLocker 影響

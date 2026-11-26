@@ -44,7 +44,7 @@ check_files() {
         models/zh-select/model.q8_0.gguf \
         models/zh-select/vocab.json \
         models/zh-select/manifest.json \
-        models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf
+        models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf
     do
         path="${root}/${relative}"
         if [[ ! -f ${path} ]]; then

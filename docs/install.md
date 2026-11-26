@@ -202,7 +202,7 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%ProgramData%\jc-ime\data\models\zh-select\model.q8_0.gguf` | 注音選字模型（candle Q8_0，33.9 MiB） |
 | `%ProgramData%\jc-ime\data\models\zh-select\vocab.json` | 注音選字詞表，選字模型載入必要檔 |
 | `%ProgramData%\jc-ime\data\english\words.bin` | 英文詞表 |
-| `%ProgramData%\jc-ime\data\models\external\jinen-v2-small\jinen-v2-small-Q5_K_M.gguf` | 日文神經模型 |
+| `%ProgramData%\jc-ime\data\models\external\jinen-v2-small\jinen-v2-small-Q4_K_M.gguf` | 日文神經模型 |
 | `%LOCALAPPDATA%\jc-ime\settings.json` | 使用者設定；第一次開啟設定程式就以預設值建立，可立即修改，安裝器不覆蓋既有檔 |
 | `%LOCALAPPDATA%\jc-ime\personal.json` | 個人化資料；引擎啟動時載入，學習後原子寫回 |
 | `%LOCALAPPDATA%\jc-ime\supervisor.log` | `--supervise` 的環狀 log；預設位置，可用 `--supervisor-log` 改 |

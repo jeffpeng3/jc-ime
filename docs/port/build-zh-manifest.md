@@ -48,7 +48,7 @@ manifest 從 10 筆變成 11 筆（9 個 `shipped: true`、2 個 `zh_select` 下
 | `build-zh/lexicon.bin`、`build-zh/lm.bin` | 已有 | `Bundle::open` 一併驗證 |
 | `english/words.bin`、`english/manifest.json`、`english/NOTICE.txt` | 已有 | 英文載入器要求三者同時存在 |
 | `packs/ja-lexicon-mozc-v2.pack` | 已有 | pack 內容自帶 manifest，不逐檔列入 catalog |
-| `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | 已有 | Jinen 的預設 GGUF 路徑 |
+| `models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf` | 已有 | Jinen 的預設 GGUF 路徑 |
 | `models/quant/jinen-v2-xsmall/tokenizer.json` | 已有 | Jinen tokenizer；`JA_TOKENIZER_CANDIDATES` 還有舊候選，出貨用這一份 |
 | 根 `manifest.json` | 不列（正確） | `build.ps1` 用 `jc-cli data manifest` 產生；`CATALOG` 是它的輸入 |
 

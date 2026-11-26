@@ -18,7 +18,7 @@ x64 MSI 可安裝；M6 的設定程式與安裝器完成，更新器不做。逐
 | 模糊音 | `select` 模式（`z-zh`、`c-ch`、`s-sh`、`en-eng`）；919 題 top-1 16.4%，注音 319 題 44.5% |
 | 注音選字模型 | candle Q8_0，33.9 MiB、推論 p50 9.36 ms、逐對排序一致 99.51%、golden 45/45 |
 | 日文（羅馬字→かな→漢字） | Mozc pack v2 與 context ID 矩陣；預設 Jinen small 門檻混合，`auto` 92.2%、`quality` 93.6% |
-| 日文神經轉換 | Jinen v2 small Q5_K_M；`auto` 只在成本差與候選數達門檻時呼叫，逾時回退統計結果 |
+| 日文神經轉換 | Jinen v2 small Q4_K_M；`auto` 只在成本差與候選數達門檻時呼叫，逾時回退統計結果 |
 | Mixed 路由 | 注音／日文／英文分段、英文直通與前綴補完；`eval mixed` 6/6 |
 | 個人化 | rollback window、弱負向訊號、最短觸發長度；機制在 `jc-core`，資料可寫成 `personal.json` |
 | 引擎行程 | stdio、Unix domain socket、Windows named pipe；`--supervise` 提供單一實例與崩潰重啟 |

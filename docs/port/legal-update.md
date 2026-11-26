@@ -56,7 +56,7 @@ manifest 來源：[`docs/port/data-pack.md`](data-pack.md) 的實際產物，`sc
 | `english/words.bin` | `english` | L-08 | L-08 | 是 | 是 |
 | `english/manifest.json` | `english` | L-08 | L-08 | 是 | 是（2026-11-21 補） |
 | `english/NOTICE.txt` | `english` | L-08 | L-08 | 是 | 是（2026-11-21 補） |
-| `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | `ja_neural` | L-21 | L-21 | 是 | 是 |
+| `models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf` | `ja_neural` | L-21 | L-21 | 是 | 是 |
 
 ### 下載（`shipped: false`）
 
@@ -89,8 +89,9 @@ manifest 來源：[`docs/port/data-pack.md`](data-pack.md) 的實際產物，`sc
   散布需附署名與同授權。
 - 署名：模型由 Hitoshi Togasaki 製作；訓練語料部分使用國立國會圖書館「全国書誌データ」
   （2026-07-09 取得）與國立國會圖書館サーチ書誌資料，國立國會圖書館未背書。
-- 檔案：`jinen-v2-small-Q5_K_M.gguf`，81,117,824 bytes，
-  `80482707513d6b67dafc31774371cf95d765542abf8d74eebf5f32f92d788bd3`。
+- 檔案：`jinen-v2-small-Q4_K_M.gguf`，72,123,008 bytes，
+  `26a6a71020a8d12908615d6ed2541ad6d6d9b73fc179d8d5472eb1c709bb1300`。Q4_K_M
+  是上游 HF repo 同 revision 的官方重量化檔，散布同採 CC-BY-SA-4.0。
 
 ## GPUI Kit／GPUI
 

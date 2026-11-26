@@ -440,13 +440,14 @@ fn write_json(
 }
 
 fn default_gguf(model: &str) -> Result<PathBuf, String> {
-    let slug = match model {
-        "xsmall" | "small" => format!("jinen-v2-{model}"),
+    let (slug, quant) = match model {
+        "xsmall" => ("jinen-v2-xsmall", "Q5_K_M"),
+        "small" => ("jinen-v2-small", "Q4_K_M"),
         other => return Err(format!("--model 只接受 xsmall 或 small，實際為 {other}")),
     };
     Ok(PathBuf::from(DEFAULT_MODEL_DATA)
-        .join(&slug)
-        .join(format!("{slug}-Q5_K_M.gguf")))
+        .join(slug)
+        .join(format!("{slug}-{quant}.gguf")))
 }
 
 fn resolve_tokenizer(args: &Args, gguf: &Path) -> Result<PathBuf, String> {

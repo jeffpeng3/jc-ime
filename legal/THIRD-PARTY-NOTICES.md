@@ -195,8 +195,12 @@ distribute，條件是保留 copyright 與授權全文；本專案已遵守，�
 - 來源：訓練在 `jeffpeng3/0c-training`；權重發佈於
   <https://huggingface.co/togatogah/jinen-v2-small.gguf>，rev
   `3461d0573ab447985badde3174165b967d06076c`。
-- 使用：`models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf`，日文轉換的預設神經
+- 使用：`models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf`，日文轉換的預設神經
   後端；tokenizer 沿用 `models/quant/jinen-v2-xsmall/tokenizer.json`。
+- 量化：Q4_K_M 由上游在同一個 HF revision 發佈（`jinen-v2-small-Q4_K_M.gguf`，
+  72,123,008 bytes，SHA-256
+  `26a6a71020a8d12908615d6ed2541ad6d6d9b73fc179d8d5472eb1c709bb1300`），
+  本專案沒有自行重新量化。
 - 授權：CC-BY-SA-4.0（上游模型卡與 `manifest.json` 都標這個授權）。
 - 訓練資料與署名：
   - 訓練語料部分使用國立國會圖書館「全国書誌データ」（2026-07-09 取得）與國立國會

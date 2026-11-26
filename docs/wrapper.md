@@ -63,7 +63,7 @@ jc-engine --data <資料根目錄> [--mode zh|ja|mixed|en] \
 <root>/build-zh-bigram/lm.bin      安裝版必要；存在時載入 bigram，缺檔以詞典-only 啟動
 <root>/packs/ja-lexicon-mozc-v2.pack   日文用；缺了退回 ja-src/lexicon/words.tsv
 <root>/models/                     選用；有就安裝注音選字與日文模型
-<root>/models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf
+<root>/models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf
                                    選用；預設日文神經轉換
 ```
 

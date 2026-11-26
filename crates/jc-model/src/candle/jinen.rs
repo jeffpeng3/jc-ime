@@ -20,8 +20,8 @@
 //! GGUF 內的詞表逐 id 相同，另外比 llama.cpp 多了 BOS 的處理：llama.cpp
 //! 的 `tokenize` 預設 `add_bos=True`，所以這裡也手動補上 `BOS`。
 //!
-//! 量化格式由 candle 的 `quantized_qwen3` 直接吃 GGUF（Q5_K_M：大部分
-//! 張量 Q5_K、`ffn_down` 與少數 `attn_v` 是 Q6_K／Q8_0）。
+//! 量化格式由 candle 的 `quantized_qwen3` 直接吃 GGUF（small 用 Q4_K_M：
+//! 大部分張量 Q4_K，`ffn_down` 與少數 `attn_v` 是 Q6_K，norm 等其餘是 F32）。
 
 use std::path::Path;
 

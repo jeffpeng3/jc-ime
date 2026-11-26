@@ -231,7 +231,7 @@ mod tests {
             .expect("建立 Jinen tokenizer 目錄");
         fs::write(
             dir.0
-                .join("models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf"),
+                .join("models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf"),
             b"gguf",
         )
         .expect("寫入 Jinen GGUF");
@@ -287,7 +287,7 @@ mod tests {
         let dir = TempDir::new("beside-tokenizer");
         let model_dir = dir.0.join("models/external/jinen-v2-small");
         fs::create_dir_all(&model_dir).expect("建立 Jinen 模型目錄");
-        fs::write(model_dir.join("jinen-v2-small-Q5_K_M.gguf"), b"gguf").expect("寫入 Jinen GGUF");
+        fs::write(model_dir.join("jinen-v2-small-Q4_K_M.gguf"), b"gguf").expect("寫入 Jinen GGUF");
         let beside = model_dir.join("tokenizer.json");
         fs::write(&beside, b"{}").expect("寫入同目錄 tokenizer");
 

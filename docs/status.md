@@ -52,7 +52,7 @@
 | Mozc pack v2 | 1,220,427 筆詞條、983,412 surfaces、2,672 context、81.5 MiB | `docs/port/ja-import.md` |
 | 注音詞典 | `build-zh/lexicon.bin` 8,791,416 bytes；bigram 版 `build-zh-bigram/lm.bin` 32,879,418 bytes | `docs/port/zh-data.md`、`docs/port/bigram-data.md` |
 | 注音選字模型 | candle Q8_0 35,515,136 bytes（33.9 MiB）、推論 p50 9.36 ms、逐對排序一致 99.51%（5439/5466） | `docs/port/candle-zh.md` |
-| 日文神經模型 | Jinen v2 small Q5_K_M 81,117,824 bytes（77.4 MiB） | `docs/models.md` |
+| 日文神經模型 | Jinen v2 small Q4_K_M 72,123,008 bytes（68.8 MiB） | `docs/models.md` |
 | 日文 reranker | int8 34,268,510 bytes；單次推論約 32 ms；預設關閉 | `docs/integration-log.md`、`docs/port/jc-model.md` |
 | 測試 | 54 targets、1301 passed、0 failed | `docs/integration-log.md` 2026-11-21 05:10 gate |
 | 協定 | `PROTOCOL_VERSION = 3`（v3 凍結） | `docs/proto.md` |

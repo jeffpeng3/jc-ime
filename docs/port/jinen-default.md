@@ -13,7 +13,7 @@
 |---|---:|---|
 | `enabled` | `true` | `--neural off` 設成 `false` |
 | `gap_threshold` | 460 | `top2 - top1` 的原始成本差；沒有 `top2` 視為一定觸發 |
-| `model` | `Small` | `jinen-v2-small-Q5_K_M.gguf` |
+| `model` | `Small` | `jinen-v2-small-Q4_K_M.gguf` |
 | `timeout_ms` | 180 | 超過就沿用統計結果 |
 | `max_context_chars.left` | 24 | 左文脈只取尾端 |
 | `max_context_chars.right` | 6 | 右文脈只取開頭；Jinen prompt 目前沒有右文脈欄位 |

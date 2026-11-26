@@ -159,7 +159,7 @@ Source: "{#PayloadDir}\data\models\manifest.json"; DestDir: "{commonappdata}\jc-
 Source: "{#PayloadDir}\data\models\zh-select\model.q8_0.gguf"; DestDir: "{commonappdata}\jc-ime\data\models\zh-select"; Flags: ignoreversion
 Source: "{#PayloadDir}\data\models\zh-select\vocab.json"; DestDir: "{commonappdata}\jc-ime\data\models\zh-select"; Flags: ignoreversion
 Source: "{#PayloadDir}\data\models\zh-select\manifest.json"; DestDir: "{commonappdata}\jc-ime\data\models\zh-select"; Flags: ignoreversion
-Source: "{#PayloadDir}\data\models\external\jinen-v2-small\jinen-v2-small-Q5_K_M.gguf"; DestDir: "{commonappdata}\jc-ime\data\models\external\jinen-v2-small"; Flags: ignoreversion
+Source: "{#PayloadDir}\data\models\external\jinen-v2-small\jinen-v2-small-Q4_K_M.gguf"; DestDir: "{commonappdata}\jc-ime\data\models\external\jinen-v2-small"; Flags: ignoreversion
 Source: "{#PayloadDir}\data\models\quant\jinen-v2-xsmall\tokenizer.json"; DestDir: "{commonappdata}\jc-ime\data\models\quant\jinen-v2-xsmall"; Flags: ignoreversion
 
 [Icons]

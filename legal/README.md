@@ -110,9 +110,12 @@ repo 內的檔案相對於本 repo 根目錄。同一個資料包目錄的 `mani
 
 | 散布檔案 | 大小 | SHA-256 | 授權條目 | 散布 |
 |---|---|---:|---|---|
-| `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | 81,117,824 | `80482707513d6b67dafc31774371cf95d765542abf8d74eebf5f32f92d788bd3` | L-21 | 是 |
+| `models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf` | 72,123,008 | `26a6a71020a8d12908615d6ed2541ad6d6d9b73fc179d8d5472eb1c709bb1300` | L-21 | 是 |
 | `models/quant/jinen-v2-xsmall/tokenizer.json` | 2,047,498 | `477c91a788bf97e7ed993a4441cfb2c4d60033e505ade17d6c367bc09ed6e6ba` | L-21 | 是（隨安裝包散布） |
-| `models/external/jinen-v2-small/manifest.json`、`README.md` | 824／2,427 | 見目錄內檔案 | L-21 | 否 |
+| `models/external/jinen-v2-small/manifest.json`、`README.md` | 1,117／2,427 | 見目錄內檔案 | L-21 | 否 |
+
+Q4_K_M 是上游 HF repo 同 revision 的官方重量化檔，不是本專案自行重新量化；散布時
+同採 CC-BY-SA-4.0，並標明上游作者 Hitoshi Togasaki 與國立國會圖書館書誌資料來源。
 
 Jinen small 是日文轉換的預設神經後端，GGUF 與 tokenizer 兩筆在資料 manifest 都標 `shipped: true`。
 GGUF 同目錄沒有 `tokenizer.json`，`jc-engine` 會退到 `models/quant/jinen-v2-xsmall/tokenizer.json`；
@@ -190,7 +193,7 @@ Public Domain，`ja/ajimee_200.json` 是 CC-BY-SA-3.0。若要隨產品散布題
 | `packs/ja-lexicon-mozc-v2.pack` | `ja_lexicon` | L-01 | 是 |
 | `build-zh/lexicon.bin`、`build-zh/lm.bin` | `zh_lexicon`、`zh_lm` | L-04～L-06、L-13～L-17 | 是 |
 | `english/words.bin`、`english/manifest.json`、`english/NOTICE.txt` | `english` | L-08 | 是 |
-| `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | `ja_neural` | L-21 | 是 |
+| `models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf` | `ja_neural` | L-21 | 是 |
 | `models/quant/jinen-v2-xsmall/tokenizer.json` | `ja_tokenizer` | L-21 | 是 |
 | `models/manifest.json`、`models/zh-select/manifest.json` | `zh_select` | L-11 | 是 |
 | `models/zh-select/vocab.json` | `zh_select` | L-11 | 是 |

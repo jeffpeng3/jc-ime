@@ -55,7 +55,7 @@ Worktree：`/mnt/work/jc/wt/data-pack`（branch `data-pack`）
   build-zh-bigram/lm.bin                 # 選用；引擎優先載入
   english/words.bin
   english/manifest.json
-  models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf
+  models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf
   models/quant/jinen-v2-xsmall/tokenizer.json   # Jinen tokenizer（small 沿用 xsmall）
   models/zh-select/model.onnx            # 下載項
   models/zh-select/vocab.json            # 下載項
@@ -149,9 +149,9 @@ debug，直接使用 `build-zh/lm.bin` 的 unigram；檔案存在但載入失敗
       "shipped": true
     },
     {
-      "path": "models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf",
-      "bytes": 81117824,
-      "sha256": "80482707513d6b67dafc31774371cf95d765542abf8d74eebf5f32f92d788bd3",
+      "path": "models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf",
+      "bytes": 72123008,
+      "sha256": "26a6a71020a8d12908615d6ed2541ad6d6d9b73fc179d8d5472eb1c709bb1300",
       "role": "ja_neural",
       "license": ["L-21"],
       "shipped": true
@@ -245,7 +245,7 @@ cargo run -p jc-cli --release -- data verify /mnt/work/jc/jc-ime-data \
 通過      build-zh/lexicon.bin（zh_lexicon）
 通過      build-zh/lm.bin（zh_lm）
 通過      english/words.bin（english）
-通過      models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf（ja_neural）
+通過      models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf（ja_neural）
 通過      models/quant/jinen-v2-xsmall/tokenizer.json（ja_tokenizer）
 驗證 /tmp/opencode/manifest.json：通過 6/6，錯誤 0，警告 0
 ```
@@ -314,7 +314,7 @@ jc-engine: 載入資料失敗：… 資料 manifest 檢查失敗：1 個致命�
 | `english/words.bin` | `english` | L-08 | ESDB／SCOWL 為 MIT 類授權，附 NOTICE |
 | `english/manifest.json` | `english` | L-08 | 2026-11-21 補：詞表驗證中繼檔，與 `words.bin` 同授權，隨資料包散布 |
 | `english/NOTICE.txt` | `english` | L-08 | 2026-11-21 補：詞表授權通知，與 `words.bin` 同授權，隨資料包散布 |
-| `models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf` | `ja_neural` | L-21 | Jinen v2 small 為 CC-BY-SA-4.0，散布需附授權全文與 notice |
+| `models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf` | `ja_neural` | L-21 | Jinen v2 small 為 CC-BY-SA-4.0，散布需附授權全文與 notice |
 | `models/quant/jinen-v2-xsmall/tokenizer.json` | `ja_tokenizer` | L-21 | small 沿用 xsmall 的 tokenizer，授權同 Jinen 權重 |
 
 `legal/README.md` 的 L-21 原本標成評估用、暫不散布。`legal-update`（2026-11-20）已把

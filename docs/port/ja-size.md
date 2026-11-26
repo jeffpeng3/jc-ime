@@ -16,6 +16,9 @@ Worktree：`/mnt/work/jc/wt/ja-size`（分支 `ja-size`，從 `main` `4493772` �
 只挑一個做：先換 Jinen Q4_K_M，9.8 MB 的成本最低、風險最小。詞條瘦身不建議。
 矩陣量化省的是安裝後空間，對下載沒有實質幫助。
 
+2026-11-26 更新：已採用 Q4_K_M，隨附檔改為 `jinen-v2-small-Q4_K_M.gguf`；
+下面的量測數字保留當時的 Q5_K_M 對照，沒有重跑。
+
 ## 1. payload 實際組成
 
 資料來自 `jc-ime-data/manifest.json` 的 `shipped: true` 檔案，加上本機用

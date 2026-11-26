@@ -37,7 +37,7 @@ pub const DEFAULT_JA_PACK: &str = "packs/ja-lexicon-mozc-v2.pack";
 pub const FALLBACK_JA_PACK: &str = "packs/ja-lexicon-public-core.pack";
 
 /// 預設的 Jinen small GGUF（相對於資料根目錄）。
-pub const JA_NEURAL_GGUF: &str = "models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf";
+pub const JA_NEURAL_GGUF: &str = "models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf";
 
 /// 覆寫 Jinen GGUF 路徑的環境變數。
 pub const JA_NEURAL_GGUF_ENV: &str = "JC_JINEN_GGUF";
@@ -1291,7 +1291,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        let gguf_rel = "models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf";
+        let gguf_rel = "models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf";
         let tokenizer_rel = "custom/jinen/tokenizer.json";
         for rel in [gguf_rel, tokenizer_rel] {
             let path = dir.join(rel);
@@ -1323,7 +1323,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let gguf_rel = "models/external/jinen-v2-small/jinen-v2-small-Q5_K_M.gguf";
+        let gguf_rel = "models/external/jinen-v2-small/jinen-v2-small-Q4_K_M.gguf";
         let tokenizer_rel = "models/quant/jinen-v2-xsmall/tokenizer.json";
         let gguf = dir.join(gguf_rel);
         std::fs::create_dir_all(gguf.parent().unwrap()).unwrap();

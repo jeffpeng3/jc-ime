@@ -7,7 +7,7 @@
 //! ```sh
 //! cargo run -p jc-cli --release --bin jinen-gate -- collect --corpus modern-500
 //! cargo run -p jc-cli --release --bin jinen-gate -- collect --corpus modern-500 \
-//!     --gguf2 /path/to/jinen-v2-small-Q5_K_M.gguf
+//!     --gguf2 /path/to/jinen-v2-small-Q4_K_M.gguf
 //! cargo run -p jc-cli --release --bin jinen-gate -- sweep
 //! ```
 //!

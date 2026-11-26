@@ -56,7 +56,7 @@ CONTEXT_CACHE = Path("/tmp/opencode/jinen-eval/ajimee_evaluation_items.json")
 
 MODELS = {
     "xsmall": "jinen-v2-xsmall/jinen-v2-xsmall-Q5_K_M.gguf",
-    "small": "jinen-v2-small/jinen-v2-small-Q5_K_M.gguf",
+    "small": "jinen-v2-small/jinen-v2-small-Q4_K_M.gguf",
 }
 
 INPUT_START = "\uee00"
