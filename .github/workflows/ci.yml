@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # 每週跑一次 nextest 與傳統 cargo test 的相容性守門（test-compat job）。
+  schedule:
+    - cron: '0 3 * * 1'
 
 permissions:
   contents: read
@@ -19,6 +22,8 @@ env:
   CARGO_NET_RETRY: 5
   # 增量編譯對 CI 沒有好處，關掉可少寫很多暫存檔。
   CARGO_INCREMENTAL: 0
+  # 與 mise.toml 的 cargo-nextest 版本相同；linux job 會檢查兩者一致。
+  NEXTEST_VERSION: 0.9.152
 
 jobs:
   # 與測試並行起步。主動抓 tag 並用完整 SHA 比對，決定要不要接著發版。
@@ -142,6 +147,20 @@ jobs:
             exit 1
           fi
           echo "rustc ${active}（rust-toolchain.toml）"
+      # nextest 版本釘在 mise.toml 與 workflow env，兩邊不同就紅，避免本機與 CI
+      # 跑到不同版本。安裝用預編譯 binary，不從原始碼編。
+      - name: nextest 版本與 mise.toml 一致
+        run: |
+          pinned=$(python3 -c 'import tomllib,pathlib;print(tomllib.loads(pathlib.Path("mise.toml").read_text())["tools"]["cargo:cargo-nextest"])')
+          if [[ "${pinned}" != "${NEXTEST_VERSION}" ]]; then
+            echo "::error::mise.toml 的 cargo-nextest ${pinned} 與 workflow 的 ${NEXTEST_VERSION} 不一致"
+            exit 1
+          fi
+          echo "cargo-nextest ${pinned}（mise.toml／workflow）"
+      - name: 安裝 cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
       - name: 系統依賴（GPUI Kit 的 X11／Wayland／字型）
         run: |
           sudo apt-get update
@@ -300,8 +319,11 @@ jobs:
           cargo check --workspace --all-targets
           --exclude jc-cli --exclude jc-settings-ui
           --target x86_64-pc-windows-msvc
-      - name: Test
-        run: cargo test --workspace
+      - name: Test（nextest）
+        run: cargo nextest run --workspace
+      # nextest 不跑 doctest，另一行補齊。兩步都失敗即紅。
+      - name: Doctest
+        run: cargo test --workspace --doc
       # 授權清單是散布條件，不能跟 Cargo.lock 脫節。改了相依沒重跑
       # scripts/gen-rust-notices.py 就讓 CI 紅，不要等到發版才發現安裝包少條款。
       # 全文從 ~/.cargo/registry/cache 的 .crate 讀，上面的步驟已經抓好三個平台。
@@ -320,9 +342,89 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: bash scripts/cache-prune.sh --skip-recent-hours 1
 
+  # 每週／手動的相容性守門。gate 已改用 nextest；這支 job 在同一份資料上
+  # 再跑一次傳統 cargo test，逐項比對 passed／failed／ignored。分叉就紅。
+  # needs linux 是為了沿用 linux job 剛存好的資料包快取，不重下 1GB。
+  test-compat:
+    name: test-compat（nextest vs cargo test，排程）
+    needs: linux
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      # 與 rust-toolchain.toml 同一版（action 不讀該檔案）。
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          components: rustfmt, clippy
+      - name: 系統依賴（GPUI Kit 的 X11／Wayland／字型）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev \
+            libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libasound2-dev
+      # 只還原 linux job 的快取，不重存。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-linux
+          cache-targets: "true"
+          cache-all-crates: "true"
+          cache-on-failure: "true"
+          save-if: false
+      - name: 還原資料包快取
+        id: data-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/jc-ime-data
+          key: jc-ime-data-${{ runner.os }}-${{ vars.JC_DATA_BUNDLE_SHA256 }}
+      - name: 資料包快取未命中
+        if: steps.data-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "::error::找不到 linux job 存下的資料包快取；排程與手動 run 要在 main 上跑。"
+          exit 1
+      # 快取命中時沒有下載步驟，環境變數由這裡設定。
+      - name: 設定資料根目錄
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/jc-ime-data"
+          data_root="${root}"
+          if [[ ! -f "${data_root}/manifest.json" ]]; then
+            candidates=()
+            for dir in "${root}"/*/; do
+              if [[ -f "${dir}manifest.json" ]]; then
+                candidates+=("${dir%/}")
+              fi
+            done
+            if [[ ${#candidates[@]} -eq 1 ]]; then
+              data_root="${candidates[0]}"
+            fi
+          fi
+          if [[ ! -f "${data_root}/manifest.json" ]]; then
+            echo "::error::資料包裡找不到 manifest.json（位置：${root}）"
+            exit 1
+          fi
+          echo "JC_IMEDATA=${data_root}" >> "${GITHUB_ENV}"
+          echo "資料根目錄：${data_root}"
+      - name: 檢查資料包內容
+        shell: bash
+        run: bash scripts/check-data-bundle.sh "${JC_IMEDATA}"
+      - name: 安裝 cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+      - name: nextest 與 cargo test 比對
+        run: bash scripts/check-nextest-compat.sh
+
   windows:
     name: windows (msvc)
     runs-on: windows-2022
+    # 每週排程只跑 Linux 的 nextest 相容性守門；Windows 仍由 push／PR／手動
+    # dispatch 驗。
+    if: github.event_name != 'schedule'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -472,6 +574,10 @@ jobs:
         run: bash scripts/check-data-bundle.sh "$(cygpath -u "${JC_IMEDATA}")"
       # 只跑 test（debug）。release 建置由下面的 build-windows job 並行處理，
       # 不必等測試結束才起步。
+      #
+      # Windows 暫維持 cargo test：nextest 還沒在這兩個 Windows job 的實機環境
+      # 驗過能跑同一批（含 Windows-only crate 與 jc-tsf-smoke）。驗過再切，
+      # 不要為了形式一致直接換。Linux gate 已用 nextest＋doctest。
       - name: Test
         run: cargo test --workspace
 
@@ -488,6 +594,8 @@ jobs:
   test-windows:
     name: test-windows（Windows 測試）
     runs-on: windows-2022
+    # 排程只跑 Linux 的 nextest 相容性守門。
+    if: github.event_name != 'schedule'
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
@@ -518,6 +626,8 @@ jobs:
 
       # jc-settings-ui 依賴 GPUI，與 Linux job 一樣排除；它的 Windows 建置由
       # build-windows 負責。
+      # 與 windows job 相同原因，這裡暫用 cargo test，等 nextest 在 Windows
+      # 實機驗過同一批測試再切。
       - name: Test（workspace）
         run: cargo test --workspace --no-fail-fast --exclude jc-settings-ui
 

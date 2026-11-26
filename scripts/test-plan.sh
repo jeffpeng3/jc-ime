@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # test-plan.sh：從 git diff 或明確檔案清單推算「內圈該跑哪些 crate 與模組」。
 #
-# 只印建議指令，--run 才執行。這不是 gate：checker／CI 一律跑完整 workspace。
+# 只印建議指令，--run 才執行。內圈用 cargo nextest；doctest 因為 nextest
+# 不跑，另外接一行 `cargo test --doc`。這不是 gate：checker 與 Linux CI 跑
+# `cargo nextest run --workspace` 加 `cargo test --workspace --doc`。
 set -euo pipefail
 
 usage() {
@@ -17,7 +19,9 @@ crate 與模組測試。預設只印指令，不執行。
   --run          執行建議指令
   -h, --help     顯示這段說明
 
-這不是 gate。gate（checker／CI）一律跑 `cargo test --workspace`。
+內圈用 `cargo nextest run`；doctest 由 nextest 另外補上 `cargo test --doc`。
+這不是 gate。gate（checker／Linux CI）跑 `cargo nextest run --workspace` 加
+`cargo test --workspace --doc`。
 EOF
 }
 
@@ -135,6 +139,7 @@ crate_package() {
 declare -A crate_whole=()
 declare -A crate_modules=()
 declare -A crate_tests=()
+declare -A doctest_crates=()
 declare -A seen=()
 workspace=0
 installer_changed=0
@@ -256,10 +261,11 @@ sorted_keys() {
 
 commands=()
 if ((workspace)); then
-  commands=("cargo test --workspace")
+  commands=("cargo nextest run --workspace" "cargo test --workspace --doc")
 else
   while IFS= read -r crate; do
-    [[ -n $crate ]] && commands+=("cargo test -p $crate")
+    [[ -n $crate ]] && commands+=("cargo nextest run -p $crate")
+    [[ -n $crate ]] && doctest_crates[$crate]=1
   done < <(sorted_keys crate_whole)
 
   while IFS= read -r crate; do
@@ -267,10 +273,11 @@ else
     [[ -z ${crate_whole[$crate]:-} ]] || continue
     while IFS= read -r module; do
       [[ -n $module ]] || continue
-      # cargo test 只收一個 TESTNAME；多個模組就一個模組一條指令，避免產生
-      # `cargo test -p c a b` 這種會被 clap 拒絕的寫法。
-      commands+=("cargo test -p $crate $module")
+      # nextest 的 filterset：模組路徑用 regex 比對測試全名。每個模組一條
+      # 指令，避免把多個 filter 塞在同一個 -E 裡難以閱讀。
+      commands+=("cargo nextest run -p $crate -E 'test(/$module/)'")
     done < <(printf '%s' "${crate_modules[$crate]}" | sort -u)
+    doctest_crates[$crate]=1
   done < <(sorted_keys crate_modules)
 
   while IFS= read -r crate; do
@@ -278,14 +285,21 @@ else
     [[ -z ${crate_whole[$crate]:-} ]] || continue
     while IFS= read -r test_name; do
       [[ -n $test_name ]] || continue
-      commands+=("cargo test -p $crate --test $test_name")
+      commands+=("cargo nextest run -p $crate --test $test_name")
     done < <(printf '%s' "${crate_tests[$crate]}" | sort -u)
+    doctest_crates[$crate]=1
   done < <(sorted_keys crate_tests)
+
+  # nextest 不跑 doctest，受影響的 crate 各補一條。放在最後，讓上面的
+  # nextest 指令可以整段貼上。
+  while IFS= read -r crate; do
+    [[ -n $crate ]] && commands+=("cargo test -p $crate --doc")
+  done < <(sorted_keys doctest_crates)
 fi
 
 echo '內圈建議，不是 gate；gate（checker／CI）一律跑完整 workspace。'
 echo
-echo '建議指令：'
+echo '建議指令（nextest 跑單元＋整合，cargo test --doc 補 doctest）：'
 if ((${#commands[@]} == 0)); then
   if ((${#changed[@]} == 0)); then
     echo '  （無變更）'
@@ -294,7 +308,7 @@ if ((${#commands[@]} == 0)); then
   fi
 else
   for command in "${commands[@]}"; do
-    echo "  mise exec -- $command"
+    echo "  $command"
   done
 fi
 echo '理由：'
@@ -319,13 +333,14 @@ if ((do_run)); then
     exit 0
   fi
   for command in "${commands[@]}"; do
-    echo "+ mise exec -- $command"
-    read -r -a argv <<<"mise exec -- $command"
-    if "${argv[@]}"; then
+    echo "+ $command"
+    # 用 bash 重新解析一次，讓 `-E 'test(/session::mixed/)'` 的引號生效。
+    # command 只由已驗證的 crate／模組／測試名稱組成。
+    if bash -c "$command"; then
       :
     else
       status=$?
-      echo "test-plan: 指令失敗（exit $status）：mise exec -- $command" >&2
+      echo "test-plan: 指令失敗（exit $status）：$command" >&2
       exit "$status"
     fi
   done

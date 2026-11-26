@@ -119,12 +119,14 @@ cargo run -p jc-jadic --release -- import \
 ## 測試
 
 ```sh
-cargo test --workspace
+cargo nextest run --workspace     # 單元＋整合
+cargo test --workspace --doc      # nextest 不跑 doctest
 ```
 
 需要外部資料的測試用 `jc_testdata::require_data!`，資料不存在時跳過而不是
-失敗。開發期間只做 `cargo check`，測試由整合階段統一執行；細節見
-[`docs/blaze.md`](docs/blaze.md)。最新 gate 是 54 targets、1231 passed。
+失敗。開發期間的內圈用 `scripts/test-plan.sh --run`（只跑受影響範圍），
+細節見 [`docs/port/testing.md`](docs/port/testing.md) 與
+[`docs/blaze.md`](docs/blaze.md)。
 
 ## 資料
 

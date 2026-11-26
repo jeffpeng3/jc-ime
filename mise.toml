@@ -1,0 +1,5 @@
+# 內圈與 CI 的 cargo-nextest 版本。CI 的 NEXTEST_VERSION 必須與這裡一致，
+# 由 linux job 的檢查步驟比對（見 .github/workflows/ci.yml 與
+# docs/port/testing.md）。
+[tools]
+"cargo:cargo-nextest" = "0.9.152"

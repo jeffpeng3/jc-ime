@@ -10,7 +10,7 @@
 | 開發中反覆檢查 | `blaze check -p <crate> --all-targets` |
 | 交件前必跑 | `cargo check -p <crate> --all-targets` |
 | 格式化 | `cargo fmt -p <crate>` |
-| 測試 | 由整合階段統一跑 `cargo test` |
+| 測試 | 內圈用 `scripts/test-plan.sh --run`（nextest＋doctest），交件 gate 用 `cargo nextest run --workspace` 加 `cargo test --workspace --doc` |
 
 `blaze check` 可以一直跑，很快；但它只是加速器，不能取代交件前的
 `cargo check`。兩者結果不一致時以 `cargo check` 為準。
@@ -19,8 +19,8 @@
 
 - 不要 `blaze enable`：這個 workspace 不需要、也不應該把 blaze 設成
   cargo 的 wrapper，否則其他工具與 CI 會拿到非預期的行為。
-- 不要用 `blaze test` 或 `cargo test` 驗證個別 task；測試只寫、只編譯，
-  最終由整合階段統一執行。
+- 不要用 `blaze test` 驗證個別 task；內圈用 `scripts/test-plan.sh --run`，
+  最終 gate 由 checker 跑 nextest＋doctest。
 
 ## 效能参考
 
