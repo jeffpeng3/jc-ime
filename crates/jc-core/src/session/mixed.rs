@@ -4287,8 +4287,8 @@ mod tests {
         ] {
             inputs.push(input.to_string());
         }
-        // 大寫、全角與尾端標點。
-        for suffix in [".", "ABC", "ＡＢＣ", ",", "/"] {
+        // 全角與尾端標點。
+        for suffix in [".", "ＡＢＣ", ",", "/"] {
             for left in keys.iter().take(4) {
                 inputs.push(format!("{left}{suffix}"));
             }
@@ -4321,6 +4321,20 @@ mod tests {
                 .collect();
             assert_eq!(got, want_segments, "{input:?} 片段");
             checked += 1;
+        }
+        // 沒有 Shift 的大寫不重播：已轉換的注音留著，大寫接在後面。批次
+        // Router 仍把整段無空白英數當字面（`5k4ABC`），這條刻意只鎖增量路徑。
+        for left in keys.iter().take(4) {
+            let input = format!("{left}ABC");
+            let mut session = Session::new(config.clone());
+            for ch in input.chars() {
+                session.press(Key::char(ch, false));
+            }
+            assert_eq!(
+                session.snapshot().preedit,
+                "字ABC",
+                "{input:?} 大寫不重播注音"
+            );
         }
         // 這個測試的詞典把每個讀音都收成「字」；`w96` 的 ㄊㄞˊ 不在詞典裡，
         // 所以字面是原始注音。真正的「我」／「台」由 `pending_session` 測試鎖住。

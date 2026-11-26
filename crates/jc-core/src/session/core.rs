@@ -79,6 +79,7 @@ impl Session {
     pub(super) fn push_literal(&mut self, text: &str) {
         if self.literal.is_empty() {
             self.literal_anchor = self.syllables.len();
+            self.literal_tail_absorbed = false;
             // 混打／日文沒有音節格可以推導插入點，字面接在目前組字尾端。
             // 固定當下的長度，後續追加的按鍵才不會把字面擠到最前面。
             if !self.in_zh_lane() {
@@ -92,16 +93,74 @@ impl Session {
     ///
     /// 外殼可能送大寫鍵碼，也可能送小寫鍵碼配 `shift = true`（0c 協定把
     /// `Shift+A` 編成 `a` 加 Shift）；兩種都轉成同一個大寫字面。標點與
-    /// 符號不走這裡，Shift＋符號仍由注音／前導表決定。
+    /// 符號不走這裡，Shift＋符號仍由注音／前導表決定。沒有 Shift 的大寫
+    /// 輸入仍交給混打規劃，不能一律當字面。
     pub(super) fn shift_literal_text(key: &Key) -> Option<String> {
         if !key.shift || key.ctrl || key.alt {
             return None;
         }
-        let KeyCode::Char(ch) = key.code else {
+        let KeyCode::Char(code) = key.code else {
             return None;
         };
-        ch.is_ascii_alphabetic()
-            .then(|| ch.to_ascii_uppercase().to_string())
+        code.is_ascii_alphabetic()
+            .then(|| code.to_ascii_uppercase().to_string())
+    }
+
+    /// 把 Shift＋字母附加成字面，並保持 preedit 長度與游標一致。
+    ///
+    /// 候選窗開著時先關窗：字面接在整段最後，游標也移到最後。候選窗是選字
+    /// 介面，Shift＋字母不是選字鍵，關窗後再把字面接上。
+    pub(super) fn append_shift_literal(&mut self, text: &str) -> Snapshot {
+        let window = self.candidate_window || self.menu.is_some();
+        if window {
+            self.menu = None;
+            self.candidate_window = false;
+            self.candidate_expanded = false;
+            self.navigating = false;
+            self.keep_candidates = false;
+            self.edit = None;
+            self.highlighted = 0;
+            self.mixed_target = None;
+            self.mixed_choices.clear();
+            self.rebuild();
+        }
+        let _ = self.literal(text);
+        // 字面固定接在整段最後，游標跟著到最後。
+        if self.in_ja_lane() {
+            self.ja_cursor = self.base_with_highlight().len();
+        } else if self.in_zh_lane() {
+            self.cursor = self.syllables.len();
+        } else {
+            self.mixed_cursor = Self::MIXED_CURSOR_END;
+        }
+        self.snapshot()
+    }
+
+    /// 把混打 lane 中已固定在尾端的字面併回按鍵流，讓後續輸入接在它之後。
+    ///
+    /// 一個 `literal` 只能記一個插入點；第二段字面若發生在後續按鍵之後，
+    /// 先併回按鍵流才會得到 `abcXdYe`，不會兩段都黏在第一個插入點。
+    fn flush_literal_to_ascii(&mut self) {
+        if !self.literal_tail_absorbed
+            || self.literal.is_empty()
+            || self.in_zh_lane()
+            || self.in_ja_lane()
+        {
+            return;
+        }
+        if self.literal_offset != self.base.len() {
+            return;
+        }
+        let start = self.ascii.typed().len();
+        let text = std::mem::take(&mut self.literal);
+        self.ascii.seed_literal(&text);
+        let end = self.ascii.typed().len();
+        if start < end {
+            self.literal_spans.push((start, end));
+        }
+        self.literal_anchor = 0;
+        self.literal_offset = 0;
+        self.literal_tail_absorbed = false;
     }
 
     /// 把英文／Shift 附加的字面尾巴併回一般組字，讓下一個按鍵接在後面。
@@ -118,6 +177,8 @@ impl Session {
             self.complete_pending();
         }
         self.push_literal(&tail);
+        // 只有英文／Shift 字面尾巴可以提前併回按鍵流。
+        self.literal_tail_absorbed = true;
     }
 
     /// 在音節索引 `at` 插入一個完成的音節，游標移到它後面。
@@ -220,6 +281,8 @@ impl Session {
         if !self.literal_tail.is_empty() && !self.candidate_window {
             self.absorb_literal_tail();
         }
+        // 已固定在尾端的字面先併回按鍵流，第二段字面才有自己的插入點。
+        self.flush_literal_to_ascii();
         // 外殼可能把空白送成字元而不是 `KeyCode::Space`；兩條路徑要走同一套
         // 空白處理（注音 lane 的字面空白、混打的字面空格）。注音還沒完成時
         // 空白仍是一聲鍵，照原路徑交給注音狀態機。

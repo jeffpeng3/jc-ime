@@ -61,6 +61,19 @@ use crate::zh::input::ZhInput;
 use crate::zh::syllable::Syllable;
 use mixed::AsciiInput;
 
+/// 沒有 Shift 的大寫字母：Caps Lock 開啟，或外殼把 `text` 送成 `A` 而
+/// `shift=false`。這種大寫是鍵盤狀態，不是 IME 的 Shift 模式，一律當字面。
+fn capital_letter_literal(key: &Key) -> Option<char> {
+    if key.shift {
+        return None;
+    }
+    let KeyCode::Char(code) = key.code else {
+        return None;
+    };
+    let ch = key.text.unwrap_or(code);
+    ch.is_ascii_uppercase().then_some(ch)
+}
+
 /// 這個 crate 的語意版本，供協定握手與診斷使用。
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -364,6 +377,11 @@ pub struct Session {
     /// 這一段不進混打規劃，永遠接在目前組字最後；因此前面的中文不會被
     /// 整段重讀成英文字面，所有權也維持原狀（`Auto`）。
     pub(super) literal_tail: String,
+    /// 目前 `literal` 是否來自英文／Shift 附加的字面尾巴。
+    ///
+    /// 只有這種字面可以在下一個一般按鍵前併回按鍵流，取得自己的插入點；
+    /// 一般標點與數字字面仍留在 `literal`，不能提前混進混打規劃。
+    pub(super) literal_tail_absorbed: bool,
     pub(super) candidates: Vec<Candidate>,
     pub(super) highlighted: usize,
     /// 候選視窗是否由 Tab／方向鍵開啟；數字鍵只在開啟時選字。
@@ -541,6 +559,7 @@ impl Session {
             literal_anchor: 0,
             literal_offset: 0,
             literal_tail: String::new(),
+            literal_tail_absorbed: false,
             candidates: Vec::new(),
             highlighted: 0,
             candidate_window: false,
@@ -689,8 +708,13 @@ impl Session {
     /// 翻頁鍵、Home／End 在候選清單中移動，左右方向鍵與 Tab 也在候選間移動。
     /// 字面尾巴（英文模式或 Shift 字面）存在且沒有補全建議時，Tab 是 no-op：
     /// 英文模式是 raw input，沒有東西可以補全。
-    pub fn press(&mut self, key: Key) -> Snapshot {
+    pub fn press(&mut self, mut key: Key) -> Snapshot {
         self.expire_segment_view();
+        // 0c 協定把 Shift+A 編成小寫鍵碼加 Shift；風格規則（commit／lower）
+        // 用 `text` 判斷大小寫，這裡先補成大寫，兩種外殼編碼才會一致。
+        if let Some(text) = Self::shift_literal_text(&key) {
+            key.text = text.chars().next();
+        }
         // 字面尾巴存在時，Backspace 只刪一個字元，不重算前面的組字；這樣
         // 英文路徑不會因為重建而冒出新候選。
         if key.code == KeyCode::Backspace && !self.literal_tail.is_empty() {
@@ -723,15 +747,29 @@ impl Session {
                 return self.snapshot();
             }
         }
-        // 組字中的 Shift＋字母是字面：保留未完成的注音與既有片段，只把字面
-        // 接在最後。不能讓它落進注音狀態機，否則整段會重播成原始按鍵。
-        if let Some(text) = Self::shift_literal_text(&key) {
-            return self.literal(&text);
-        }
         if key.ctrl {
             self.pending_tone = None;
             self.press_ctrl(key);
+        } else if let Some(text) = capital_letter_literal(&key) {
+            // Caps Lock（或外殼送來的大寫但沒有 Shift）不是 IME 的 Shift
+            // 模式：一律照字面接在組字後面，不進注音狀態機、不套
+            // `shift_letter`。Shift＋字母仍走下面的風格路徑。
+            self.pending_tone = None;
+            if self.in_zh_lane() || self.in_ja_lane() || !self.literal_tail.is_empty() {
+                // 注音／日文狀態機接不住大寫，硬送會讓整段重播；接到字面
+                // 尾巴才不會動到已完成的片段，也能維持後續按鍵的順序。
+                self.literal(&text.to_string());
+            } else {
+                // 混打的英數流本來就把大寫留在字面；照一般路徑走，空白與
+                // 後續小寫才會保持原本的相對順序（`ABC DEF`）。
+                self.press_char(text);
+            }
         } else if !self.style_key(&key) && !self.menu_key(&key) {
+            // 組字中的 Shift＋字母是字面：保留未完成的注音與既有片段，只把字面
+            // 接在最後。風格已處理的 `shift_letter`（commit／lower）先走原路徑。
+            if let Some(text) = Self::shift_literal_text(&key) {
+                return self.append_shift_literal(&text);
+            }
             if !self.segments_press(&key) {
                 match key.code {
                     KeyCode::Enter => self.finish_composition(),
@@ -2282,6 +2320,108 @@ mod tests {
         assert_eq!(s.mode(), Mode::Mixed);
         s.toggle_english();
         assert_eq!(s.mode(), Mode::Mixed);
+    }
+
+    /// 沒有 Shift 的大寫字母（Caps Lock 或外殼送來的 text）一律是字面英文，
+    /// 接在未完成的注音後面，不能進注音狀態機。
+    #[test]
+    fn test_uppercase_without_shift_is_literal() {
+        let mut s = session();
+        type_keys(&mut s, "w96j0");
+        assert_eq!(s.snapshot().preedit, "台ㄨㄢ");
+        let snap = s.press(Key::char('A', false));
+        assert_eq!(snap.preedit, "台ㄨㄢA");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "台ㄨㄢA");
+    }
+
+    /// 混打的英文待定按鍵後面接沒有 Shift 的大寫，兩者直接相連。
+    #[test]
+    fn test_uppercase_after_english_literal() {
+        let mut s = session();
+        type_keys(&mut s, "abc");
+        assert_eq!(s.snapshot().preedit, "abc");
+        let snap = s.press(Key::char('X', false));
+        assert_eq!(snap.preedit, "abcX");
+    }
+
+    /// 大寫不能讓已轉換的片段重播；只接在目前組字後面。
+    #[test]
+    fn test_uppercase_does_not_replay_composition() {
+        let mut s = session();
+        type_keys(&mut s, "ji3");
+        assert_eq!(s.snapshot().preedit, "我");
+        let snap = s.press(Key::char('B', false));
+        assert_eq!(snap.preedit, "我B");
+    }
+
+    /// 小寫字母仍走注音，不受大寫字面規則影響。
+    #[test]
+    fn test_lowercase_still_uses_zhuyin() {
+        let mut s = session();
+        type_keys(&mut s, "w96");
+        assert_eq!(s.snapshot().preedit, "台");
+    }
+
+    /// 「字面 A ＋注音＋字面 B」：字面尾巴要維持在注音之後，不能和前面的
+    /// 字面黏在同一個插入點。
+    #[test]
+    fn test_literal_zhuyin_literal_keeps_order() {
+        let mut s = session();
+        s.press(Key::char('中', false));
+        type_syllable(&mut s, "ㄨㄛˇ");
+        s.literal("X");
+        let snap = s.press(Key::new(KeyCode::Char('a'), Some('A'), true));
+        assert_eq!(snap.preedit, "中我XA");
+        assert_eq!(snap.cursor_rune, 4);
+    }
+
+    /// 候選窗開著時按 Shift＋字母：先關窗再附加字面，preedit 長度與游標要一致。
+    #[test]
+    fn test_shift_literal_with_candidate_window_keeps_cursor_invariant() {
+        let mut s = session();
+        type_keys(&mut s, "ji3");
+        s.press(Key::new(KeyCode::Down, None, false));
+        assert!(!s.snapshot().candidates.is_empty(), "↓ 要開候選窗");
+
+        let snap = s.press(Key::new(KeyCode::Char('a'), Some('A'), true));
+        assert_eq!(snap.preedit, "我A");
+        assert_eq!(
+            snap.cursor_rune,
+            snap.preedit.chars().count(),
+            "候選窗開著時附加字面仍要維持游標不變量"
+        );
+    }
+
+    /// 候選窗開著時按 Shift＋字母要把候選窗關掉，不能留下選字狀態。
+    #[test]
+    fn test_shift_literal_after_candidate_window_closes_window() {
+        let mut s = session();
+        type_keys(&mut s, "ji3");
+        s.press(Key::new(KeyCode::Down, None, false));
+        assert!(s.snapshot().navigating, "↓ 進入候選選取");
+
+        let snap = s.press(Key::new(KeyCode::Char('a'), Some('A'), true));
+        assert!(snap.candidates.is_empty(), "Shift＋字母要關掉候選窗");
+        assert!(!snap.navigating);
+        assert_eq!(snap.preedit, "我A");
+        assert_eq!(snap.cursor_rune, 2);
+    }
+
+    /// 字面與一般按鍵交錯時，每段字面保有自己的位置：`abcXdYe`，不會兩段
+    /// 字面都黏在第一個插入點。
+    #[test]
+    fn test_interleaved_literals_keep_their_own_positions() {
+        let mut s = session();
+        for ch in "abc".chars() {
+            s.press(Key::char(ch, false));
+        }
+        s.literal("X");
+        s.press(Key::char('d', false));
+        s.literal("Y");
+        let snap = s.press(Key::char('e', false));
+        assert_eq!(snap.preedit, "abcXdYe");
+        assert_eq!(snap.cursor_rune, 7);
     }
 
     /// 組字中按 Shift＋字母是字面：未完成的注音要留在原處，不能整段重播成

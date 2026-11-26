@@ -775,8 +775,9 @@ impl Session {
             }
             return true;
         }
-        // Shift＋字母。
-        if ch.is_ascii_uppercase() {
+        // Shift＋字母；沒有 Shift 的大寫是 Caps Lock，已在 `Session::press`
+        // 當成字面處理，不套 `shift_letter`。
+        if key.shift && ch.is_ascii_uppercase() {
             match self.style.rules.shift_letter.as_str() {
                 "commit" => {
                     let text = format!("{}{}", self.current_text(), ch);
@@ -1008,6 +1009,42 @@ mod tests {
         }
     }
 
+    /// Shift＋字母依 `shift_letter` 設定分流：`commit` 立即送出、`lower` 打
+    /// 小寫字面、`inline` 打大寫字面。新字面路徑不得蓋掉既有設定。
+    #[test]
+    fn test_shift_letter_modes_on_composing_shift_a() {
+        for (mode, preedit, committed) in [
+            ("inline", "我A", "我A"),
+            ("lower", "我a", "我a"),
+            ("commit", "", "我A"),
+        ] {
+            // 兩種外殼編碼：text 已是大寫，或 0c 的小寫 text＋Shift。
+            for text in ['A', 'a'] {
+                let mut config = SessionConfig::new(Mode::Mixed);
+                config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
+                let mut style = InputStyle::preset("0c").expect("預設存在");
+                style.rules.shift_letter = mode.to_string();
+                config.style = style;
+                let mut s = Session::new(config);
+                type_syllable(&mut s, "ㄨㄛˇ");
+
+                let snap = s.press(Key::new(KeyCode::Char('a'), Some(text), true));
+                assert_eq!(snap.preedit, preedit, "shift_letter={mode} text={text:?}");
+                assert_eq!(
+                    snap.cursor_rune,
+                    snap.preedit.chars().count(),
+                    "shift_letter={mode} text={text:?}：游標要跟 preedit 一致"
+                );
+                if preedit.is_empty() {
+                    assert_eq!(s.commit(), committed, "shift_letter={mode} text={text:?}");
+                } else {
+                    s.press(Key::new(KeyCode::Enter, None, false));
+                    assert_eq!(s.commit(), committed, "shift_letter={mode} text={text:?}");
+                }
+            }
+        }
+    }
+
     /// 對照 `TestStyleLiteralPreservesMixedRunAndShiftCommit` 的 Shift 送出。
     #[test]
     fn test_shift_letter_commit_appends_to_composition() {
@@ -1017,9 +1054,34 @@ mod tests {
         let mut s = Session::new(config);
         type_keys(&mut s, "hello");
         assert_eq!(s.snapshot().preedit, "hello", "混打的待定英文");
-        let snap = s.press(Key::char('A', false));
+        let snap = s.press(Key::char('A', true));
         assert_eq!(snap.preedit, "", "送出後不留組字");
         assert_eq!(s.commit(), "helloA");
+    }
+
+    /// `shift_letter` 只管 Shift＋字母；Caps Lock 的大寫一律字面，不轉小寫。
+    #[test]
+    fn test_caps_uppercase_ignores_shift_letter() {
+        let style = || {
+            let mut style = InputStyle::preset("mcbopomofo").expect("預設存在");
+            style.rules.shift_letter = "lower".to_string();
+            style
+        };
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
+        config.style = style();
+        let mut caps = Session::new(config);
+        type_syllable(&mut caps, "ㄨㄛˇ");
+        let snap = caps.press(Key::char('A', false));
+        assert_eq!(snap.preedit, "我A", "Caps Lock 不套 shift_letter=lower");
+
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
+        config.style = style();
+        let mut shift = Session::new(config);
+        type_syllable(&mut shift, "ㄨㄛˇ");
+        let snap = shift.press(Key::char('A', true));
+        assert_eq!(snap.preedit, "我a", "Shift＋字母仍照 shift_letter=lower");
     }
 
     /// 對照 `TestMcBopomofoCycleAndShiftSpace` 的空白與全形標點。
