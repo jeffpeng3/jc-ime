@@ -1496,7 +1496,7 @@ mod tests {
         let snap = s.press(Key::char('[', false));
         assert_eq!(snap.preedit, "；［");
         let snap = s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(snap.preedit, "；［");
+        assert_eq!(snap.preedit, "", "變體窗只是列著現值，Enter 要直接送出");
         assert_eq!(s.commit(), "；［");
     }
 
@@ -1512,7 +1512,7 @@ mod tests {
         let snap = s.press(Key::char(']', false));
         assert_eq!(snap.preedit, "；［］");
         let snap = s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(snap.preedit, "；［］");
+        assert_eq!(snap.preedit, "", "三段字面也要一次送出");
         assert_eq!(s.commit(), "；［］");
     }
 

@@ -1501,7 +1501,12 @@ impl Session {
 
     pub(super) fn finish_composition(&mut self) {
         // 逐字元候選窗的 Enter：套用目前高亮並關窗，不送出整段。
-        if self.candidate_window
+        //
+        // 例外：高亮項就是組字裡已經顯示的字面（反引號前導的變體窗，游標
+        // 停在剛插入的預設符號上）。這時套用等於什麼都沒換，Enter 直接送出
+        // 整段，不要讓使用者多按一次。
+        if !self.highlighted_choice_is_current_literal()
+            && self.candidate_window
             && self
                 .mixed_choices
                 .get(self.highlighted)
@@ -1571,6 +1576,36 @@ impl Session {
             self.pending_commit = Some(text);
         }
         self.clear_composition();
+    }
+
+    /// 目前高亮的候選是否就是組字裡已經顯示的字面。
+    ///
+    /// 反引號前導的多變體符號會先插入預設值，再開候選窗列出同類寫法；游標
+    /// 停在剛插入的符號上、高亮第一項時，套用候選不會換掉任何字。Enter
+    /// 應該直接送出整段，只有真的選到不同字時才先套用。
+    fn highlighted_choice_is_current_literal(&self) -> bool {
+        if !self.candidate_window || self.edit.is_some() || !self.zh.pending().is_empty() {
+            return false;
+        }
+        let Some(Some(choice)) = self.mixed_choices.get(self.highlighted) else {
+            return false;
+        };
+        if choice.syllable_edit.is_some() || !choice.leftover.is_empty() || choice.force_literal {
+            return false;
+        }
+        let Some(target) = self.mixed_target.as_ref() else {
+            return false;
+        };
+        if target.reading.is_some() || target.ja {
+            return false;
+        }
+        let text = self.base_with_highlight();
+        let surface: String = text
+            .chars()
+            .skip(target.rune_start)
+            .take(target.rune_len)
+            .collect();
+        surface == choice.insert
     }
 
     /// 送出前套用中英自動空格；簡體轉換留到 [`Session::commit`]。

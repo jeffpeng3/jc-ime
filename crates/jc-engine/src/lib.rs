@@ -1813,6 +1813,25 @@ mod tests {
     }
 
     #[test]
+    fn prefix_symbol_commits_on_first_enter() {
+        let mut engine = engine_with_wo_lexicon();
+        hello(&mut engine);
+        for ch in "`;`[".chars() {
+            engine.handle(Request::Key {
+                key: Key::char(ch, false),
+            });
+        }
+        assert_eq!(engine.composition(), "；［");
+
+        let response = press_enter(&mut engine);
+        let Response::Committed { text } = response else {
+            panic!("字面組字的 Enter 應直接送出，得到 {response:?}");
+        };
+        assert_eq!(text, "；［", "前導符號不能吃掉第一次 Enter");
+        assert_eq!(engine.composition(), "");
+    }
+
+    #[test]
     fn health_reports_the_last_slow_request() {
         let mut engine = Engine::new();
         let Response::Health { info } = engine.handle(Request::Health) else {
