@@ -1519,6 +1519,27 @@ impl TextService_Impl {
                     return Some(EnglishKey::EngineLiteral(text));
                 }
             }
+            // 英文模式組字中、沒有補全：Enter／Backspace／Esc／Tab 比照組字區，
+            // 由輸入法自己處理。交給宿主會讓宿主結束組字，看起來就是「順便送出」。
+            // Tab 在英文模式是 raw input，沒有 suggestion 時不動作，只吃掉按鍵。
+            if snap.ok && snap.composing() && !snap.english_pending && !keys::modifier_down() {
+                if let Some(key) = keys::named(vk)
+                    .filter(|key| matches!(*key, "Enter" | "Backspace" | "Escape" | "Tab"))
+                {
+                    let next = self.state.borrow_mut().session.key(key);
+                    zlog!(
+                        "english_key_policy vk={}({}) 英文組字鍵 key={} ok={} handled={} preedit={}",
+                        vk,
+                        vk_label(vk),
+                        key,
+                        next.ok,
+                        next.handled,
+                        next.text()
+                    );
+                    self.present(ctx, &next);
+                    return Some(EnglishKey::Eat(true));
+                }
+            }
             if !snap.ok
                 || (!snap.english_autocomplete && !snap.full_width && !caps_lower)
                 || snap.composing() && !snap.english_pending

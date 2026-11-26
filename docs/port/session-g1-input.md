@@ -58,6 +58,23 @@ Branch：`session-g1-input`（base：`session-core-split`）
 3. `core::select_by_digit`：數字鍵改由 `selection_index` 判斷，預設規則與原本的
    1–9、0 完全相同，風格設定選字鍵時才多接受字母。
 
+## 英文模式組字中的特殊鍵
+
+英文模式是 raw input：沒有候選、沒有 suggestion。組字中的四個特殊鍵比照組字區
+規則，一律由輸入法處理，不交給宿主；交給宿主會讓宿主結束組字，變成「順便送出」。
+
+| 按鍵 | 行為 |
+|---|---|
+| Enter | 送出整段組字（含之前保留的中文緩衝），組字清空 |
+| Backspace | 只刪一個 rune，不送出；刪到空也只清組字 |
+| Esc | 只清掉整段組字，不送出 |
+| Tab | 沒有 suggestion 時 no-op：不動組字、不送出、不進選取模式 |
+
+`crates/jc-tsf/src/service.rs` 的 `english_key_policy` 在英文模式組字中直接送
+`Enter`／`Backspace`／`Escape`／`Tab` 給引擎並吃掉按鍵；`crates/jc-core` 的
+`Session::press` 對字面尾巴的 Tab 維持 no-op。英文補全（Tab 接受 suggestion）
+不在這一輪範圍。
+
 ## 與上游的差異
 
 - 本埠沒有 `handled` 旗標；上游「交還應用程式」的閒置半形符號改成直接送出

@@ -687,6 +687,8 @@ impl Session {
     /// `Enter` 會把組字結果放進待提交區，下一次 [`Session::commit`] 取走；
     /// `Escape` 先關候選窗、再清未完成的注音，最後才清整段組字。上下鍵、
     /// 翻頁鍵、Home／End 在候選清單中移動，左右方向鍵與 Tab 也在候選間移動。
+    /// 字面尾巴（英文模式或 Shift 字面）存在且沒有補全建議時，Tab 是 no-op：
+    /// 英文模式是 raw input，沒有東西可以補全。
     pub fn press(&mut self, key: Key) -> Snapshot {
         self.expire_segment_view();
         // 字面尾巴存在時，Backspace 只刪一個字元，不重算前面的組字；這樣
@@ -760,7 +762,10 @@ impl Session {
                     KeyCode::Home => self.candidate_edge(false),
                     KeyCode::End => self.candidate_edge(true),
                     KeyCode::Tab => {
-                        if self.navigating && !self.candidates.is_empty() {
+                        if !self.literal_tail.is_empty() && self.suggestion.is_none() {
+                            // 英文模式是 raw input，沒有 suggestion：Tab 沒有可
+                            // 補全的東西，直接吃掉，不送出、不動文件。
+                        } else if self.navigating && !self.candidates.is_empty() {
                             // 選取模式中的 Tab 換下一個候選；候選選取優先於補全。
                             self.move_highlight(1);
                         } else {
@@ -2328,6 +2333,97 @@ mod tests {
         let snap = s.press(Key::new(KeyCode::Backspace, None, false));
         assert_eq!(snap.preedit, "台ㄨㄢhello worl");
         assert!(snap.candidates.is_empty());
+    }
+
+    /// 英文模式組字中：Enter 送出整段、組字清空。
+    #[test]
+    fn test_english_enter_commits_composition() {
+        let mut s = session();
+        s.literal("abc");
+        assert_eq!(s.snapshot().preedit, "abc");
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(snap.preedit, "");
+        assert_eq!(s.commit(), "abc");
+    }
+
+    /// 英文模式組字中：Backspace 只刪一個字元，不送出。
+    #[test]
+    fn test_english_backspace_deletes_one_rune_only() {
+        let mut s = session();
+        s.literal("abc");
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "ab");
+        assert!(s.pending_commit.is_none(), "Backspace 不得順便送出");
+        assert!(!snap.preedit.is_empty(), "刪完仍要在組字中");
+    }
+
+    /// 英文模式組字只剩一個字元：Backspace 清空組字，不送出空字串。
+    #[test]
+    fn test_english_backspace_on_last_rune_does_not_commit() {
+        let mut s = session();
+        s.literal("a");
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "");
+        assert!(s.pending_commit.is_none(), "刪到空也不得送出");
+        assert!(s.snapshot().preedit.is_empty());
+    }
+
+    /// 英文模式組字中：Esc 只清掉組字，不送出。
+    #[test]
+    fn test_english_escape_discards_composition() {
+        let mut s = session();
+        s.literal("abc");
+        let snap = s.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(snap.preedit, "");
+        assert!(s.pending_commit.is_none(), "Esc 只清組字，不得送出");
+    }
+
+    /// 英文模式沒有補全建議：Tab 不送出、不改組字、也不進選取模式。
+    #[test]
+    fn test_english_tab_is_noop_without_suggestion() {
+        let mut s = session();
+        s.literal("abc");
+        let snap = s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(snap.preedit, "abc");
+        assert!(s.pending_commit.is_none(), "Tab 不得送出");
+        assert!(snap.suggestion.is_none());
+        assert!(!snap.navigating, "英文模式組字中 Tab 不該進選取模式");
+        assert_eq!(s.snapshot().preedit, "abc");
+    }
+
+    /// 中文組字後切英文再打字：四個特殊鍵都照英文模式規則處理，
+    /// Enter 送出整段（含前面的中文緩衝）。
+    #[test]
+    fn test_english_keys_with_zh_composition_retained() {
+        let enter = |s: &mut Session| {
+            let snap = s.press(Key::new(KeyCode::Enter, None, false));
+            assert_eq!(snap.preedit, "");
+            assert_eq!(s.commit(), "台ㄨㄢabc");
+        };
+        let backspace = |s: &mut Session| {
+            let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+            assert_eq!(snap.preedit, "台ㄨㄢab");
+            assert!(s.pending_commit.is_none(), "Backspace 不得順便送出");
+        };
+        let escape = |s: &mut Session| {
+            let snap = s.press(Key::new(KeyCode::Escape, None, false));
+            assert_eq!(snap.preedit, "");
+            assert!(s.pending_commit.is_none(), "Esc 只清組字，不得送出");
+        };
+        let tab = |s: &mut Session| {
+            let snap = s.press(Key::new(KeyCode::Tab, None, false));
+            assert_eq!(snap.preedit, "台ㄨㄢabc");
+            assert!(s.pending_commit.is_none(), "Tab 不得送出");
+            assert!(!snap.navigating, "英文模式組字中 Tab 不該進選取模式");
+        };
+        for check in [enter, backspace, escape, tab] {
+            let mut s = session();
+            type_keys(&mut s, "w96j0");
+            s.toggle_english();
+            s.literal("abc");
+            assert_eq!(s.snapshot().preedit, "台ㄨㄢabc");
+            check(&mut s);
+        }
     }
 
     /// toggle 兩次都保留整段緩衝，owners 仍是 Auto。
