@@ -15,7 +15,7 @@
 三個目標平台。dev-dependency、build-dependency 與 proc-macro crate 不會進
 安裝包，因此不列。
 
-共 617 個 crate、337 份不同的授權全文。
+共 668 個 crate、350 份不同的授權全文。
 
 上架包沒有附授權檔的 crate 只列 Cargo.toml 的宣告；條款本身不含著作權人時
 （Apache-2.0、Unicode-3.0），改為引用同樣條款的其他 crate 的全文。
@@ -27,623 +27,674 @@
 
 | crate | 版本 | 授權（Cargo.toml） | 授權全文 |
 |---|---|---|---|
-| `accesskit` | 0.24.1 | MIT OR Apache-2.0 | §223 |
-| `accesskit_atspi_common` | 0.19.1 | MIT OR Apache-2.0 | §223 |
-| `accesskit_consumer` | 0.38.0 | MIT OR Apache-2.0 | §223 |
-| `accesskit_unix` | 0.22.1 | MIT OR Apache-2.0 | §223 |
-| `accesskit_windows` | 0.34.0 | MIT OR Apache-2.0 | §223 |
-| `addr2line` | 0.27.1 | Apache-2.0 OR MIT | §223、§301 |
-| `adler2` | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | §58、§185、§193 |
-| `aes` | 0.8.4 | MIT OR Apache-2.0 | §229、§326 |
-| `ahash` | 0.8.12 | MIT OR Apache-2.0 | §11、§223 |
-| `aho-corasick` | 1.1.5 | Unlicense OR MIT | §5、§33、§174 |
-| `aligned` | 0.4.3 | MIT OR Apache-2.0 | §10、§223 |
-| `aligned-vec` | 0.6.4 | MIT | §256 |
-| `allocator-api2` | 0.2.21 | MIT OR Apache-2.0 | §58、§136 |
-| `annotate-snippets` | 0.12.18 | MIT OR Apache-2.0 | §15、§153 |
-| `anstream` | 1.0.0 | MIT OR Apache-2.0 | §153、§246 |
-| `anstyle` | 1.0.14 | MIT OR Apache-2.0 | §153、§246 |
-| `anstyle-parse` | 1.0.0 | MIT OR Apache-2.0 | §153、§246 |
-| `anstyle-query` | 1.1.5 | MIT OR Apache-2.0 | §153、§246 |
-| `anstyle-wincon` | 3.0.11 | MIT OR Apache-2.0 | §153、§246 |
-| `anyhow` | 1.0.104 | MIT OR Apache-2.0 | §58、§136 |
-| `arc-swap` | 1.9.5 | MIT OR Apache-2.0 | §223、§335 |
-| `arraydeque` | 0.5.1 | MIT/Apache-2.0 | §25 |
-| `arrayref` | 0.3.9 | BSD-2-Clause | §45 |
-| `arrayvec` | 0.7.8 | MIT OR Apache-2.0 | §110、§223 |
-| `as-raw-xcb-connection` | 1.0.1 | MIT OR Apache-2.0 | §208、§261 |
-| `as-slice` | 0.2.1 | MIT OR Apache-2.0 | §223、§266 |
-| `ash` | 0.38.0+1.3.281 | MIT OR Apache-2.0 | §127、§262 |
-| `ashpd` | 0.13.13 | MIT | §237 |
-| `async-broadcast` | 0.7.2 | MIT OR Apache-2.0 | §61、§294 |
-| `async-channel` | 2.5.0 | Apache-2.0 OR MIT | §58、§223 |
-| `async-executor` | 1.14.1 | Apache-2.0 OR MIT | §58、§223 |
-| `async-fs` | 2.2.0 | Apache-2.0 OR MIT | §58、§223 |
-| `async-io` | 2.6.0 | Apache-2.0 OR MIT | §58、§223 |
-| `async-lock` | 3.5.0 | Apache-2.0 OR MIT | §58、§223 |
-| `async-net` | 2.0.0 | Apache-2.0 OR MIT | §58、§223 |
-| `async-process` | 2.5.0 | Apache-2.0 OR MIT | §58、§223 |
-| `async-signal` | 0.2.14 | Apache-2.0 OR MIT | §58、§223 |
-| `async-task` | 4.7.1 | Apache-2.0 OR MIT | §58、§223 |
-| `atomic-waker` | 1.1.2 | Apache-2.0 OR MIT | §58、§135、§223 |
-| `atspi` | 0.29.0 | Apache-2.0 OR MIT | §114、§230 |
-| `atspi-common` | 0.13.0 | Apache-2.0 OR MIT | §114、§230 |
-| `atspi-proxies` | 0.13.0 | Apache-2.0 OR MIT | §114、§230 |
-| `av-scenechange` | 0.14.1 | MIT | §49 |
-| `av1-grain` | 0.2.5 | BSD-2-Clause | §235 |
-| `avif-serialize` | 0.8.9 | BSD-3-Clause | §12 |
-| `backtrace` | 0.3.77 | MIT OR Apache-2.0 | §83、§223 |
-| `base62` | 2.2.6 | MIT | §70 |
-| `base64` | 0.13.1 | MIT/Apache-2.0 | §32、§223 |
-| `base64` | 0.22.1 | MIT OR Apache-2.0 | §32、§223 |
-| `base64` | 0.23.1 | MIT OR Apache-2.0 | §223、§233 |
-| `bit-set` | 0.10.0 | Apache-2.0 OR MIT | §146、§178 |
-| `bit-set` | 0.8.0 | Apache-2.0 OR MIT | §178、§320 |
-| `bit-vec` | 0.8.0 | Apache-2.0 OR MIT | §178、§320 |
-| `bit-vec` | 0.9.1 | Apache-2.0 OR MIT | §178、§320 |
-| `bit_field` | 0.10.4 | MIT OR Apache-2.0 | §56、§246 |
-| `bitflags` | 1.3.2 | MIT/Apache-2.0 | §138、§223 |
-| `bitflags` | 2.13.2 | MIT OR Apache-2.0 | §138、§223 |
-| `bitstream-io` | 4.10.0 | MIT/Apache-2.0 | §166、§223 |
-| `block-buffer` | 0.10.4 | MIT OR Apache-2.0 | §229、§281 |
-| `block-buffer` | 0.12.1 | MIT OR Apache-2.0 | §211、§229 |
-| `block-padding` | 0.3.3 | MIT OR Apache-2.0 | §229、§281 |
-| `blocking` | 1.7.0 | Apache-2.0 OR MIT | §58、§223 |
-| `bstr` | 1.14.0 | MIT OR Apache-2.0 | §143、§147、§223 |
-| `bumpalo` | 3.20.4 | MIT OR Apache-2.0 | §139、§223 |
-| `bytemuck` | 1.25.2 | Zlib OR Apache-2.0 OR MIT | §183、§219、§293 |
-| `byteorder` | 1.5.0 | Unlicense OR MIT | §5、§33、§174 |
-| `byteorder-lite` | 0.1.0 | Unlicense OR MIT | §33、§174 |
-| `bytes` | 1.12.1 | MIT | §104 |
-| `calloop` | 0.14.5 | MIT | §108 |
-| `calloop-wayland-source` | 0.4.1 | MIT | §19 |
-| `candle-core` | 0.11.1 | MIT OR Apache-2.0 | §261 |
-| `candle-nn` | 0.11.1 | MIT OR Apache-2.0 | §223 |
-| `candle-transformers` | 0.11.1 | MIT OR Apache-2.0 | §223 |
-| `castaway` | 0.2.4 | MIT | §327 |
-| `cbc` | 0.1.2 | MIT OR Apache-2.0 | §137、§229 |
-| `cfg-if` | 1.0.5 | MIT OR Apache-2.0 | §83、§223 |
-| `chrono` | 0.4.45 | MIT OR Apache-2.0 | §55 |
-| `cipher` | 0.4.4 | MIT OR Apache-2.0 | §128、§229 |
-| `codespan-reporting` | 0.13.1 | Apache-2.0 | §261 |
-| `color_quant` | 1.1.0 | MIT | §121 |
-| `colorchoice` | 1.0.5 | MIT OR Apache-2.0 | §153、§246 |
-| `compact_str` | 0.9.1 | MIT | §31 |
-| `concurrent-queue` | 2.5.0 | Apache-2.0 OR MIT | §58、§223 |
-| `const-oid` | 0.10.3 | Apache-2.0 OR MIT | §159、§229 |
-| `const-random` | 0.1.18 | MIT OR Apache-2.0 | §223、§336 |
-| `constant_time_eq` | 0.6.1 | CC0-1.0 OR MIT-0 OR Apache-2.0 | §136、§213、§222 |
-| `convert_case` | 0.10.0 | MIT | §290 |
-| `core_detect` | 1.0.0 | MIT/Apache-2.0 | §184、§223 |
-| `core_maths` | 0.1.1 | MIT | §106 |
-| `cosmic-text` | 0.19.0 | MIT OR Apache-2.0 | §1、§209 |
-| `cpufeatures` | 0.2.17 | MIT OR Apache-2.0 | §229、§239 |
-| `cpufeatures` | 0.3.1 | MIT OR Apache-2.0 | §159、§229 |
-| `crc32fast` | 1.5.4 | MIT OR Apache-2.0 | §133、§246 |
-| `crossbeam-deque` | 0.8.8 | MIT OR Apache-2.0 | §118、§223 |
-| `crossbeam-epoch` | 0.9.21 | MIT OR Apache-2.0 | §118、§223 |
-| `crossbeam-utils` | 0.8.23 | MIT OR Apache-2.0 | §118、§223 |
-| `crunchy` | 0.2.4 | MIT | §93 |
-| `crypto-common` | 0.1.7 | MIT OR Apache-2.0 | §80、§229 |
-| `crypto-common` | 0.2.2 | MIT OR Apache-2.0 | §229、§278 |
-| `daachorse` | 3.0.3 | MIT OR Apache-2.0 | §58、§136 |
-| `darling` | 0.20.11 | MIT | §204 |
-| `darling_core` | 0.20.11 | MIT | §204 |
-| `dary_heap` | 0.3.9 | MIT OR Apache-2.0 | §58、§136 |
-| `data-url` | 0.3.2 | MIT OR Apache-2.0 | §223、§243 |
-| `derive_builder` | 0.20.2 | MIT OR Apache-2.0 | §201、§246 |
-| `derive_builder_core` | 0.20.2 | MIT OR Apache-2.0 | §201、§246 |
-| `derive_more` | 2.1.1 | MIT | §191 |
-| `digest` | 0.10.7 | MIT OR Apache-2.0 | §221、§229 |
-| `digest` | 0.11.3 | MIT OR Apache-2.0 | §229、§240 |
-| `dirs` | 5.0.1 | MIT OR Apache-2.0 | §145、§280 |
-| `dirs` | 6.0.0 | MIT OR Apache-2.0 | §145、§280 |
-| `dirs-sys` | 0.4.1 | MIT OR Apache-2.0 | §145、§280 |
-| `dirs-sys` | 0.5.0 | MIT OR Apache-2.0 | §145、§280 |
-| `dlib` | 0.5.3 | MIT | §170 |
-| `downcast-rs` | 1.2.1 | MIT/Apache-2.0 | §178、§331 |
-| `dunce` | 1.0.5 | CC0-1.0 OR MIT-0 OR Apache-2.0 | §222 |
-| `dyn-clone` | 1.0.20 | MIT OR Apache-2.0 | §58、§136 |
-| `dyn-stack` | 0.13.2 | MIT | §256 |
-| `either` | 1.19.0 | MIT OR Apache-2.0 | §162、§223 |
-| `encoding_rs` | 0.8.44 | (Apache-2.0 OR MIT) AND BSD-3-Clause | §95、§181、§261 |
-| `encoding_rs_io` | 0.1.8 | MIT OR Apache-2.0 | §33、§36、§223 |
-| `endi` | 1.1.1 | MIT | §58 |
-| `enum-iterator` | 2.3.0 | 0BSD | §215 |
-| `enumflags2` | 0.7.12 | MIT OR Apache-2.0 | §75、§130 |
-| `env_filter` | 2.0.0 | MIT OR Apache-2.0 | §153、§246 |
-| `env_logger` | 0.11.11 | MIT OR Apache-2.0 | §153、§246 |
-| `equator` | 0.4.2 | MIT | §210 |
-| `equivalent` | 1.0.3 | Apache-2.0 OR MIT | §157、§223 |
-| `errno` | 0.3.15 | MIT OR Apache-2.0 | §188、§223 |
-| `esaxx-rs` | 0.1.10 | Apache-2.0 | §261 |
-| `etagere` | 0.2.15 | MIT/Apache-2.0 | §73、§218 |
-| `euclid` | 0.22.14 | MIT OR Apache-2.0 | §134、§223 |
-| `event-listener` | 5.4.2 | Apache-2.0 OR MIT | §58、§223 |
-| `event-listener-strategy` | 0.5.4 | Apache-2.0 OR MIT | §58、§223 |
-| `exr` | 1.74.3 | BSD-3-Clause | §234 |
-| `fancy-regex` | 0.17.0 | MIT | §89 |
-| `fancy-regex` | 0.19.2 | MIT | §89 |
-| `fastrand` | 2.5.0 | Apache-2.0 OR MIT | §58、§223 |
-| `fax` | 0.2.7 | MIT | §156 |
-| `fdeflate` | 0.3.7 | MIT OR Apache-2.0 | §225、§263 |
-| `filedescriptor` | 0.8.3 | MIT | §41 |
-| `flate2` | 1.1.11 | MIT OR Apache-2.0 | §8、§223 |
-| `float-cmp` | 0.9.0 | MIT | §96 |
-| `float-ord` | 0.3.2 | MIT / Apache-2.0 | §22、§246 |
-| `float8` | 0.7.0 | MIT | §217 |
-| `float_next_after` | 1.0.0 | MIT | §16 |
-| `fluent-uri` | 0.1.4 | MIT | §220 |
-| `flume` | 0.12.0 | Apache-2.0/MIT | §58、§295 |
-| `fnv` | 1.0.7 | Apache-2.0 / MIT | §140、§223 |
-| `foldhash` | 0.2.0 | Zlib | §48 |
-| `font-types` | 0.11.3 | MIT OR Apache-2.0 | §6、§192 |
-| `font-types` | 0.12.7 | MIT OR Apache-2.0 | §168、§306 |
-| `fontconfig-parser` | 0.5.8 | MIT | §318 |
-| `fontdb` | 0.23.0 | MIT | §123 |
-| `form_urlencoded` | 1.2.2 | MIT OR Apache-2.0 | §53、§223 |
-| `freetype-sys` | 0.20.1 | MIT | §102 |
-| `futf` | 0.1.5 | MIT / Apache-2.0 | §132、§223 |
-| `futures` | 0.3.34 | MIT OR Apache-2.0 | §64、§141 |
-| `futures-channel` | 0.3.34 | MIT OR Apache-2.0 | §64、§141 |
-| `futures-core` | 0.3.34 | MIT OR Apache-2.0 | §64、§141 |
-| `futures-executor` | 0.3.34 | MIT OR Apache-2.0 | §64、§141 |
-| `futures-io` | 0.3.34 | MIT OR Apache-2.0 | §64、§141 |
-| `futures-lite` | 2.6.1 | Apache-2.0 OR MIT | §58、§135、§223 |
-| `futures-sink` | 0.3.34 | MIT OR Apache-2.0 | §64、§141 |
-| `futures-task` | 0.3.34 | MIT OR Apache-2.0 | §64、§141 |
-| `futures-util` | 0.3.34 | MIT OR Apache-2.0 | §64、§141 |
-| `gemm` | 0.19.0 | MIT | §282 |
-| `gemm-c32` | 0.19.0 | MIT | §282 |
-| `gemm-c64` | 0.19.0 | MIT | §282 |
-| `gemm-common` | 0.19.0 | MIT | §282 |
-| `gemm-f16` | 0.19.0 | MIT | §282 |
-| `gemm-f32` | 0.19.0 | MIT | §282 |
-| `gemm-f64` | 0.19.0 | MIT | §282 |
-| `generic-array` | 0.14.7 | MIT | §304 |
-| `gethostname` | 1.1.0 | Apache-2.0 | §223 |
-| `getrandom` | 0.2.17 | MIT OR Apache-2.0 | §99、§232 |
-| `getrandom` | 0.3.4 | MIT OR Apache-2.0 | §68、§232 |
-| `getrandom` | 0.4.3 | MIT OR Apache-2.0 | §116、§232 |
-| `gif` | 0.13.3 | MIT OR Apache-2.0 | §163、§223 |
-| `gif` | 0.14.2 | MIT OR Apache-2.0 | §163、§223 |
-| `gimli` | 0.34.0 | MIT OR Apache-2.0 | §169、§223 |
-| `glob` | 0.3.4 | MIT OR Apache-2.0 | §138、§223 |
-| `globset` | 0.4.21 | Unlicense OR MIT | §5、§33、§174 |
-| `globwalk` | 0.8.1 | MIT | §305 |
-| `glow` | 0.17.0 | MIT OR Apache-2.0 OR Zlib | §58、§223、§245 |
-| `gpu-allocator` | 0.28.0 | MIT OR Apache-2.0 | §3、§253 |
-| `gpui-base` | 0.10.0 | Apache-2.0 | §275 |
-| `gpui-component` | 0.10.0 | Apache-2.0 | §275 |
-| `gpui-kit` | 0.10.0 | Apache-2.0 | §223 |
-| `gpui-kit-assets` | 0.10.0 | Apache-2.0 | §247 |
-| `gpui-pre` | 0.3.12 | Apache-2.0 | §161 |
-| `gpui-pre-collections` | 0.3.12 | Apache-2.0 | §161 |
-| `gpui-pre-http-client` | 0.3.12 | Apache-2.0 | §161 |
-| `gpui-pre-linux` | 0.3.12 | Apache-2.0 | §161 |
-| `gpui-pre-platform` | 0.3.12 | Apache-2.0 | §161 |
-| `gpui-pre-refineable` | 0.3.12 | Apache-2.0 | §161 |
-| `gpui-pre-scheduler` | 0.3.12 | Apache-2.0 | §161 |
-| `gpui-pre-shared-string` | 0.3.12 | Apache-2.0 | §161 |
-| `gpui-pre-sum-tree` | 0.3.12 | Apache-2.0 | §161 |
-| `gpui-pre-util` | 0.3.12 | Apache-2.0 | §161 |
-| `gpui-pre-wgpu` | 0.3.12 | Apache-2.0 | §161 |
-| `gpui-pre-windows` | 0.3.12 | Apache-2.0 | §161 |
-| `gpui-pre-ztracing` | 0.3.12 | Apache-2.0 | §161 |
-| `granit-parser` | 1.3.0 | MIT OR Apache-2.0 | §44 |
-| `half` | 2.7.1 | MIT OR Apache-2.0 | §113、§225 |
+| `accesskit` | 0.24.1 | MIT OR Apache-2.0 | §231 |
+| `accesskit_atspi_common` | 0.19.1 | MIT OR Apache-2.0 | §231 |
+| `accesskit_consumer` | 0.38.0 | MIT OR Apache-2.0 | §231 |
+| `accesskit_unix` | 0.22.1 | MIT OR Apache-2.0 | §231 |
+| `accesskit_windows` | 0.34.0 | MIT OR Apache-2.0 | §231 |
+| `addr2line` | 0.27.1 | Apache-2.0 OR MIT | §231、§314 |
+| `adler2` | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | §60、§192、§200 |
+| `aes` | 0.8.4 | MIT OR Apache-2.0 | §237、§339 |
+| `ahash` | 0.8.12 | MIT OR Apache-2.0 | §13、§231 |
+| `aho-corasick` | 1.1.5 | Unlicense OR MIT | §7、§35、§181 |
+| `aligned` | 0.4.3 | MIT OR Apache-2.0 | §12、§231 |
+| `aligned-vec` | 0.6.4 | MIT | §266 |
+| `alloca` | 0.4.0 | MIT | §223 |
+| `allocator-api2` | 0.2.21 | MIT OR Apache-2.0 | §60、§140 |
+| `anes` | 0.1.6 | MIT OR Apache-2.0 | §231 |
+| `annotate-snippets` | 0.12.18 | MIT OR Apache-2.0 | §17、§157 |
+| `anstream` | 1.0.0 | MIT OR Apache-2.0 | §157、§254 |
+| `anstyle` | 1.0.14 | MIT OR Apache-2.0 | §157、§254 |
+| `anstyle-parse` | 1.0.0 | MIT OR Apache-2.0 | §157、§254 |
+| `anstyle-query` | 1.1.5 | MIT OR Apache-2.0 | §157、§254 |
+| `anstyle-wincon` | 3.0.11 | MIT OR Apache-2.0 | §157、§254 |
+| `anyhow` | 1.0.104 | MIT OR Apache-2.0 | §60、§140 |
+| `arc-swap` | 1.9.5 | MIT OR Apache-2.0 | §231、§348 |
+| `arraydeque` | 0.5.1 | MIT/Apache-2.0 | §27 |
+| `arrayref` | 0.3.9 | BSD-2-Clause | §47 |
+| `arrayvec` | 0.7.8 | MIT OR Apache-2.0 | §113、§231 |
+| `as-raw-xcb-connection` | 1.0.1 | MIT OR Apache-2.0 | §215、§271 |
+| `as-slice` | 0.2.1 | MIT OR Apache-2.0 | §231、§276 |
+| `ash` | 0.38.0+1.3.281 | MIT OR Apache-2.0 | §130、§272 |
+| `ashpd` | 0.13.13 | MIT | §245 |
+| `async-broadcast` | 0.7.2 | MIT OR Apache-2.0 | §63、§307 |
+| `async-channel` | 2.5.0 | Apache-2.0 OR MIT | §60、§231 |
+| `async-executor` | 1.14.1 | Apache-2.0 OR MIT | §60、§231 |
+| `async-fs` | 2.2.0 | Apache-2.0 OR MIT | §60、§231 |
+| `async-io` | 2.6.0 | Apache-2.0 OR MIT | §60、§231 |
+| `async-lock` | 3.5.0 | Apache-2.0 OR MIT | §60、§231 |
+| `async-net` | 2.0.0 | Apache-2.0 OR MIT | §60、§231 |
+| `async-process` | 2.5.0 | Apache-2.0 OR MIT | §60、§231 |
+| `async-signal` | 0.2.14 | Apache-2.0 OR MIT | §60、§231 |
+| `async-task` | 4.7.1 | Apache-2.0 OR MIT | §60、§231 |
+| `atomic` | 0.5.3 | Apache-2.0/MIT | §231、§277 |
+| `atomic-waker` | 1.1.2 | Apache-2.0 OR MIT | §60、§139、§231 |
+| `atspi` | 0.29.0 | Apache-2.0 OR MIT | §117、§238 |
+| `atspi-common` | 0.13.0 | Apache-2.0 OR MIT | §117、§238 |
+| `atspi-proxies` | 0.13.0 | Apache-2.0 OR MIT | §117、§238 |
+| `av-scenechange` | 0.14.1 | MIT | §51 |
+| `av1-grain` | 0.2.5 | BSD-2-Clause | §243 |
+| `avif-serialize` | 0.8.9 | BSD-3-Clause | §14 |
+| `backtrace` | 0.3.77 | MIT OR Apache-2.0 | §85、§231 |
+| `base62` | 2.2.6 | MIT | §72 |
+| `base64` | 0.13.1 | MIT/Apache-2.0 | §34、§231 |
+| `base64` | 0.22.1 | MIT OR Apache-2.0 | §34、§231 |
+| `base64` | 0.23.1 | MIT OR Apache-2.0 | §231、§241 |
+| `bit-set` | 0.10.0 | Apache-2.0 OR MIT | §150、§185 |
+| `bit-set` | 0.11.1 | Apache-2.0 OR MIT | §185、§333 |
+| `bit-set` | 0.8.0 | Apache-2.0 OR MIT | §185、§333 |
+| `bit-vec` | 0.10.2 | Apache-2.0 OR MIT | §185、§333 |
+| `bit-vec` | 0.8.0 | Apache-2.0 OR MIT | §185、§333 |
+| `bit-vec` | 0.9.1 | Apache-2.0 OR MIT | §185、§333 |
+| `bit_field` | 0.10.4 | MIT OR Apache-2.0 | §58、§254 |
+| `bitflags` | 1.3.2 | MIT/Apache-2.0 | §142、§231 |
+| `bitflags` | 2.13.2 | MIT OR Apache-2.0 | §142、§231 |
+| `bitstream-io` | 4.10.0 | MIT/Apache-2.0 | §171、§231 |
+| `block-buffer` | 0.10.4 | MIT OR Apache-2.0 | §237、§293 |
+| `block-buffer` | 0.12.1 | MIT OR Apache-2.0 | §218、§237 |
+| `block-padding` | 0.3.3 | MIT OR Apache-2.0 | §237、§293 |
+| `blocking` | 1.7.0 | Apache-2.0 OR MIT | §60、§231 |
+| `borsh` | 1.8.1 | MIT OR Apache-2.0 | §60、§176 |
+| `bstr` | 1.14.0 | MIT OR Apache-2.0 | §147、§151、§231 |
+| `bumpalo` | 3.20.4 | MIT OR Apache-2.0 | §143、§231 |
+| `bytemuck` | 1.25.2 | Zlib OR Apache-2.0 OR MIT | §190、§227、§306 |
+| `byteorder` | 1.5.0 | Unlicense OR MIT | §7、§35、§181 |
+| `byteorder-lite` | 0.1.0 | Unlicense OR MIT | §35、§181 |
+| `bytes` | 1.12.1 | MIT | §107 |
+| `c-enum` | 0.2.3 | MIT OR Apache-2.0 | §60、§231 |
+| `calloop` | 0.14.5 | MIT | §111 |
+| `calloop-wayland-source` | 0.4.1 | MIT | §21 |
+| `candle-core` | 0.11.1 | MIT OR Apache-2.0 | §271 |
+| `candle-nn` | 0.11.1 | MIT OR Apache-2.0 | §231 |
+| `candle-transformers` | 0.11.1 | MIT OR Apache-2.0 | §231 |
+| `cast` | 0.3.0 | MIT OR Apache-2.0 | §4、§231 |
+| `castaway` | 0.2.4 | MIT | §340 |
+| `cbc` | 0.1.2 | MIT OR Apache-2.0 | §141、§237 |
+| `cfg-if` | 1.0.5 | MIT OR Apache-2.0 | §85、§231 |
+| `chacha20` | 0.10.2 | MIT OR Apache-2.0 | §237、§261 |
+| `chrono` | 0.4.45 | MIT OR Apache-2.0 | §57 |
+| `ciborium` | 0.2.2 | Apache-2.0 | §271 |
+| `ciborium-io` | 0.2.2 | Apache-2.0 | §271 |
+| `ciborium-ll` | 0.2.2 | Apache-2.0 | §271 |
+| `cipher` | 0.4.4 | MIT OR Apache-2.0 | §131、§237 |
+| `clap` | 4.6.10 | MIT OR Apache-2.0 | §17、§157 |
+| `clap_builder` | 4.6.10 | MIT OR Apache-2.0 | §17、§157 |
+| `clap_lex` | 1.1.2 | MIT OR Apache-2.0 | §17、§157 |
+| `codespan-reporting` | 0.13.1 | Apache-2.0 | §271 |
+| `color_quant` | 1.1.0 | MIT | §124 |
+| `colorchoice` | 1.0.5 | MIT OR Apache-2.0 | §157、§254 |
+| `compact_str` | 0.9.1 | MIT | §33 |
+| `concurrent-queue` | 2.5.0 | Apache-2.0 OR MIT | §60、§231 |
+| `const-oid` | 0.10.3 | Apache-2.0 OR MIT | §163、§237 |
+| `const-random` | 0.1.18 | MIT OR Apache-2.0 | §231、§349 |
+| `constant_time_eq` | 0.6.1 | CC0-1.0 OR MIT-0 OR Apache-2.0 | §140、§220、§230 |
+| `convert_case` | 0.10.0 | MIT | §303 |
+| `convert_case` | 0.11.0 | MIT | §303 |
+| `core_detect` | 1.0.0 | MIT/Apache-2.0 | §191、§231 |
+| `core_maths` | 0.1.1 | MIT | §109 |
+| `cosmic-text` | 0.19.0 | MIT OR Apache-2.0 | §1、§216 |
+| `cpufeatures` | 0.2.17 | MIT OR Apache-2.0 | §237、§247 |
+| `cpufeatures` | 0.3.1 | MIT OR Apache-2.0 | §163、§237 |
+| `crc32fast` | 1.5.4 | MIT OR Apache-2.0 | §137、§254 |
+| `criterion` | 0.8.2 | Apache-2.0 OR MIT | §105、§231 |
+| `criterion-plot` | 0.8.2 | Apache-2.0 OR MIT | §105、§231 |
+| `crossbeam-deque` | 0.8.8 | MIT OR Apache-2.0 | §121、§231 |
+| `crossbeam-epoch` | 0.9.21 | MIT OR Apache-2.0 | §121、§231 |
+| `crossbeam-queue` | 0.3.14 | MIT OR Apache-2.0 | §121、§231 |
+| `crossbeam-utils` | 0.8.23 | MIT OR Apache-2.0 | §121、§231 |
+| `crunchy` | 0.2.4 | MIT | §95 |
+| `crypto-common` | 0.1.7 | MIT OR Apache-2.0 | §82、§237 |
+| `crypto-common` | 0.2.2 | MIT OR Apache-2.0 | §237、§289 |
+| `daachorse` | 3.0.3 | MIT OR Apache-2.0 | §60、§140 |
+| `darling` | 0.20.11 | MIT | §211 |
+| `darling_core` | 0.20.11 | MIT | §211 |
+| `dary_heap` | 0.3.9 | MIT OR Apache-2.0 | §60、§140 |
+| `data-url` | 0.3.2 | MIT OR Apache-2.0 | §231、§251 |
+| `derive_builder` | 0.20.2 | MIT OR Apache-2.0 | §208、§254 |
+| `derive_builder_core` | 0.20.2 | MIT OR Apache-2.0 | §208、§254 |
+| `derive_more` | 2.1.1 | MIT | §198 |
+| `digest` | 0.10.7 | MIT OR Apache-2.0 | §229、§237 |
+| `digest` | 0.11.3 | MIT OR Apache-2.0 | §237、§248 |
+| `dirs` | 5.0.1 | MIT OR Apache-2.0 | §149、§291 |
+| `dirs` | 6.0.0 | MIT OR Apache-2.0 | §149、§291 |
+| `dirs-sys` | 0.4.1 | MIT OR Apache-2.0 | §149、§291 |
+| `dirs-sys` | 0.5.0 | MIT OR Apache-2.0 | §149、§291 |
+| `dlib` | 0.5.3 | MIT | §177 |
+| `downcast-rs` | 1.2.1 | MIT/Apache-2.0 | §185、§344 |
+| `dunce` | 1.0.5 | CC0-1.0 OR MIT-0 OR Apache-2.0 | §230 |
+| `dyn-clone` | 1.0.20 | MIT OR Apache-2.0 | §60、§140 |
+| `dyn-stack` | 0.13.2 | MIT | §266 |
+| `either` | 1.19.0 | MIT OR Apache-2.0 | §166、§231 |
+| `encoding_rs` | 0.8.44 | (Apache-2.0 OR MIT) AND BSD-3-Clause | §97、§188、§271 |
+| `encoding_rs_io` | 0.1.8 | MIT OR Apache-2.0 | §35、§38、§231 |
+| `endi` | 1.1.1 | MIT | §60 |
+| `enum-iterator` | 2.3.0 | 0BSD | §222 |
+| `enumflags2` | 0.7.12 | MIT OR Apache-2.0 | §77、§133 |
+| `env_filter` | 2.0.0 | MIT OR Apache-2.0 | §157、§254 |
+| `env_logger` | 0.11.11 | MIT OR Apache-2.0 | §157、§254 |
+| `equator` | 0.4.2 | MIT | §217 |
+| `equivalent` | 1.0.3 | Apache-2.0 OR MIT | §161、§231 |
+| `errno` | 0.3.15 | MIT OR Apache-2.0 | §195、§231 |
+| `esaxx-rs` | 0.1.10 | Apache-2.0 | §271 |
+| `etagere` | 0.2.15 | MIT/Apache-2.0 | §75、§226 |
+| `euclid` | 0.22.14 | MIT OR Apache-2.0 | §138、§231 |
+| `event-listener` | 5.4.2 | Apache-2.0 OR MIT | §60、§231 |
+| `event-listener-strategy` | 0.5.4 | Apache-2.0 OR MIT | §60、§231 |
+| `exr` | 1.74.3 | BSD-3-Clause | §242 |
+| `fancy-regex` | 0.17.0 | MIT | §91 |
+| `fancy-regex` | 0.19.2 | MIT | §91 |
+| `fastrand` | 2.5.0 | Apache-2.0 OR MIT | §60、§231 |
+| `fax` | 0.2.7 | MIT | §160 |
+| `fdeflate` | 0.3.7 | MIT OR Apache-2.0 | §233、§273 |
+| `filedescriptor` | 0.8.3 | MIT | §43 |
+| `fixedbitset` | 0.5.9 | MIT OR Apache-2.0 | §231、§284 |
+| `flate2` | 1.1.11 | MIT OR Apache-2.0 | §10、§231 |
+| `float-cmp` | 0.9.0 | MIT | §98 |
+| `float-ord` | 0.3.2 | MIT / Apache-2.0 | §24、§254 |
+| `float8` | 0.7.0 | MIT | §225 |
+| `float_next_after` | 1.0.0 | MIT | §18 |
+| `fluent-uri` | 0.1.4 | MIT | §228 |
+| `flume` | 0.12.0 | Apache-2.0/MIT | §60、§308 |
+| `fnv` | 1.0.7 | Apache-2.0 / MIT | §144、§231 |
+| `foldhash` | 0.2.0 | Zlib | §50 |
+| `font-types` | 0.11.3 | MIT OR Apache-2.0 | §8、§199 |
+| `font-types` | 0.12.7 | MIT OR Apache-2.0 | §174、§319 |
+| `fontconfig-parser` | 0.5.8 | MIT | §331 |
+| `fontdb` | 0.23.0 | MIT | §126 |
+| `form_urlencoded` | 1.2.2 | MIT OR Apache-2.0 | §55、§231 |
+| `freetype-sys` | 0.20.1 | MIT | §104 |
+| `futf` | 0.1.5 | MIT / Apache-2.0 | §136、§231 |
+| `futures` | 0.3.34 | MIT OR Apache-2.0 | §66、§145 |
+| `futures-channel` | 0.3.34 | MIT OR Apache-2.0 | §66、§145 |
+| `futures-concurrency` | 7.7.1 | MIT OR Apache-2.0 | §63、§307 |
+| `futures-core` | 0.3.34 | MIT OR Apache-2.0 | §66、§145 |
+| `futures-executor` | 0.3.34 | MIT OR Apache-2.0 | §66、§145 |
+| `futures-io` | 0.3.34 | MIT OR Apache-2.0 | §66、§145 |
+| `futures-lite` | 2.6.1 | Apache-2.0 OR MIT | §60、§139、§231 |
+| `futures-sink` | 0.3.34 | MIT OR Apache-2.0 | §66、§145 |
+| `futures-task` | 0.3.34 | MIT OR Apache-2.0 | §66、§145 |
+| `futures-util` | 0.3.34 | MIT OR Apache-2.0 | §66、§145 |
+| `gemm` | 0.19.0 | MIT | §294 |
+| `gemm-c32` | 0.19.0 | MIT | §294 |
+| `gemm-c64` | 0.19.0 | MIT | §294 |
+| `gemm-common` | 0.19.0 | MIT | §294 |
+| `gemm-f16` | 0.19.0 | MIT | §294 |
+| `gemm-f32` | 0.19.0 | MIT | §294 |
+| `gemm-f64` | 0.19.0 | MIT | §294 |
+| `generic-array` | 0.14.7 | MIT | §317 |
+| `gethostname` | 1.1.0 | Apache-2.0 | §231 |
+| `getrandom` | 0.2.17 | MIT OR Apache-2.0 | §101、§240 |
+| `getrandom` | 0.3.4 | MIT OR Apache-2.0 | §70、§240 |
+| `getrandom` | 0.4.3 | MIT OR Apache-2.0 | §119、§240 |
+| `gif` | 0.13.3 | MIT OR Apache-2.0 | §168、§231 |
+| `gif` | 0.14.2 | MIT OR Apache-2.0 | §168、§231 |
+| `gimli` | 0.34.0 | MIT OR Apache-2.0 | §175、§231 |
+| `glob` | 0.3.4 | MIT OR Apache-2.0 | §142、§231 |
+| `globset` | 0.4.21 | Unlicense OR MIT | §7、§35、§181 |
+| `globwalk` | 0.8.1 | MIT | §318 |
+| `glow` | 0.17.0 | MIT OR Apache-2.0 OR Zlib | §60、§231、§253 |
+| `gpu-allocator` | 0.28.0 | MIT OR Apache-2.0 | §5、§263 |
+| `gpui-base` | 0.10.0 | Apache-2.0 | §286 |
+| `gpui-component` | 0.10.0 | Apache-2.0 | §286 |
+| `gpui-fast` | 0.1.17 | Apache-2.0 | §134 |
+| `gpui-fast-linux` | 0.1.17 | Apache-2.0 | §134 |
+| `gpui-fast-platform` | 0.1.17 | Apache-2.0 | §134 |
+| `gpui-fast-wgpu` | 0.1.17 | Apache-2.0 | §134 |
+| `gpui-fast-windows` | 0.1.17 | Apache-2.0 | §134 |
+| `gpui-kit` | 0.10.0 | Apache-2.0 | §231 |
+| `gpui-kit-assets` | 0.10.0 | Apache-2.0 | §255 |
+| `gpui-pre` | 0.3.12 | Apache-2.0 | §165 |
+| `gpui-pre-bench-metrics` | 0.3.12 | Apache-2.0 | §165 |
+| `gpui-pre-collections` | 0.3.12 | Apache-2.0 | §165 |
+| `gpui-pre-http-client` | 0.3.12 | Apache-2.0 | §165 |
+| `gpui-pre-linux` | 0.3.12 | Apache-2.0 | §165 |
+| `gpui-pre-platform` | 0.3.12 | Apache-2.0 | §165 |
+| `gpui-pre-refineable` | 0.3.12 | Apache-2.0 | §165 |
+| `gpui-pre-scheduler` | 0.3.12 | Apache-2.0 | §165 |
+| `gpui-pre-shared-string` | 0.3.12 | Apache-2.0 | §165 |
+| `gpui-pre-sum-tree` | 0.3.12 | Apache-2.0 | §165 |
+| `gpui-pre-util` | 0.3.12 | Apache-2.0 | §165 |
+| `gpui-pre-wgpu` | 0.3.12 | Apache-2.0 | §165 |
+| `gpui-pre-windows` | 0.3.12 | Apache-2.0 | §165 |
+| `gpui-pre-ztracing` | 0.3.12 | Apache-2.0 | §165 |
+| `granit-parser` | 1.3.0 | MIT OR Apache-2.0 | §46 |
+| `half` | 2.7.1 | MIT OR Apache-2.0 | §116、§233 |
 | `harfrust` | 0.5.2 | MIT | （這個 crate 的上架包沒有附授權檔） |
-| `hash32` | 0.3.1 | MIT OR Apache-2.0 | §223、§266 |
-| `hashbrown` | 0.14.5 | MIT OR Apache-2.0 | §223、§336 |
-| `hashbrown` | 0.16.1 | MIT OR Apache-2.0 | §223、§336 |
-| `hashbrown` | 0.17.1 | MIT OR Apache-2.0 | §223、§336 |
-| `heapless` | 0.9.4 | MIT OR Apache-2.0 | §10、§223 |
-| `heck` | 0.5.0 | MIT OR Apache-2.0 | §169、§223 |
-| `hex` | 0.4.3 | MIT OR Apache-2.0 | §246、§324 |
-| `hkdf` | 0.12.4 | MIT OR Apache-2.0 | §229、§277 |
-| `hmac` | 0.12.1 | MIT OR Apache-2.0 | §221、§229 |
-| `html5ever` | 0.27.0 | MIT OR Apache-2.0 | §186、§223 |
-| `http` | 1.5.0 | MIT OR Apache-2.0 | §198、§288 |
-| `http-body` | 1.1.0 | MIT | §59 |
-| `httparse` | 1.10.1 | MIT OR Apache-2.0 | §40、§223 |
-| `hybrid-array` | 0.4.15 | MIT OR Apache-2.0 | §155、§229 |
-| `iana-time-zone` | 0.1.65 | MIT OR Apache-2.0 | §144、§285 |
-| `icu_collections` | 2.4.0 | Unicode-3.0 | §316 |
-| `icu_locale_core` | 2.4.0 | Unicode-3.0 | §316 |
-| `icu_locale_fallback` | 2.4.0 | Unicode-3.0 | §316 |
-| `icu_locale_fallback_data` | 2.4.0 | Unicode-3.0 | §316 |
-| `icu_normalizer` | 2.4.0 | Unicode-3.0 | §316 |
-| `icu_normalizer_data` | 2.4.0 | Unicode-3.0 | §316 |
-| `icu_properties` | 2.4.0 | Unicode-3.0 | §316 |
-| `icu_properties_data` | 2.4.0 | Unicode-3.0 | §316 |
-| `icu_provider` | 2.4.0 | Unicode-3.0 | §316 |
-| `icu_segmenter` | 2.4.0 | Unicode-3.0 | §316 |
-| `icu_segmenter_data` | 2.4.0 | Unicode-3.0 | §316 |
-| `ident_case` | 1.0.1 | MIT/Apache-2.0 | §113 |
-| `idna` | 1.1.0 | MIT OR Apache-2.0 | §223、§243 |
-| `idna_adapter` | 1.2.2 | Apache-2.0 OR MIT | §195、§223 |
-| `ignore` | 0.4.34 | Unlicense OR MIT | §5、§33、§174 |
-| `image` | 0.25.10 | MIT OR Apache-2.0 | §225、§263 |
-| `image-webp` | 0.2.4 | MIT OR Apache-2.0 | §225、§263 |
-| `imagesize` | 0.13.0 | MIT | §329 |
-| `imagesize` | 0.14.0 | MIT | §329 |
-| `imgref` | 1.12.3 | CC0-1.0 OR Apache-2.0 | §222、§261 |
-| `indexmap` | 2.14.2 | Apache-2.0 OR MIT | §223、§309 |
-| `inotify` | 0.11.5 | ISC | §176 |
-| `inotify-sys` | 0.1.8 | ISC | §176 |
-| `inout` | 0.1.4 | MIT OR Apache-2.0 | §76、§229 |
-| `instant` | 0.1.13 | BSD-3-Clause | §269 |
-| `interprocess` | 2.4.9 | 0BSD OR Apache-2.0 | §177、§205 |
-| `inventory` | 0.3.25 | MIT OR Apache-2.0 | §58、§136 |
-| `is-docker` | 0.2.0 | MIT | §158 |
-| `is-wsl` | 0.4.0 | MIT | §158 |
-| `is_terminal_polyfill` | 1.70.2 | MIT OR Apache-2.0 | §153、§246 |
-| `itertools` | 0.11.0 | MIT OR Apache-2.0 | §162、§223 |
-| `itertools` | 0.13.0 | MIT OR Apache-2.0 | §162、§223 |
-| `itertools` | 0.14.0 | MIT OR Apache-2.0 | §162、§223 |
-| `itoa` | 1.0.19 | MIT OR Apache-2.0 | §58、§136 |
-| `jiff` | 0.2.46 | Unlicense OR MIT | §5、§33、§174 |
-| `jiff-core` | 0.1.8 | Unlicense OR MIT | §5、§33、§174 |
-| `khronos-egl` | 6.0.0 | MIT/Apache-2.0 | §58、§223 |
-| `kurbo` | 0.11.3 | Apache-2.0 OR MIT | §57、§261 |
-| `kurbo` | 0.13.1 | Apache-2.0 OR MIT | §57、§261 |
-| `lazy_static` | 1.5.1 | MIT OR Apache-2.0 | §58、§223 |
-| `lebe` | 0.5.3 | BSD-3-Clause | §297 |
-| `libc` | 0.2.191 | MIT OR Apache-2.0 | §34、§136 |
-| `libloading` | 0.8.9 | ISC | §242 |
-| `libm` | 0.2.16 | MIT | §84 |
-| `linebender_resource_handle` | 0.1.1 | Apache-2.0 OR MIT | §113、§225 |
-| `linux-raw-sys` | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | §58、§87、§223 |
-| `litemap` | 0.8.3 | Unicode-3.0 | §316 |
-| `litrs` | 1.0.1 | MIT OR Apache-2.0 | §136、§173 |
-| `lock_api` | 0.4.14 | MIT OR Apache-2.0 | §223、§267 |
-| `log` | 0.4.35 | MIT OR Apache-2.0 | §138、§223 |
-| `loop9` | 0.1.5 | MIT | §241 |
-| `lsp-types` | 0.97.0 | MIT | §21 |
-| `lyon` | 1.0.19 | MIT OR Apache-2.0 | §223 |
-| `lyon_algorithms` | 1.0.22 | MIT OR Apache-2.0 | §223 |
-| `lyon_geom` | 1.0.20 | MIT OR Apache-2.0 | §223 |
-| `lyon_path` | 1.0.19 | MIT OR Apache-2.0 | §223 |
-| `lyon_tessellation` | 1.0.23 | MIT OR Apache-2.0 | §223 |
+| `hash32` | 0.3.1 | MIT OR Apache-2.0 | §231、§276 |
+| `hashbrown` | 0.14.5 | MIT OR Apache-2.0 | §231、§349 |
+| `hashbrown` | 0.16.1 | MIT OR Apache-2.0 | §231、§349 |
+| `hashbrown` | 0.17.1 | MIT OR Apache-2.0 | §231、§349 |
+| `heapless` | 0.9.4 | MIT OR Apache-2.0 | §12、§231 |
+| `heck` | 0.5.0 | MIT OR Apache-2.0 | §175、§231 |
+| `hex` | 0.4.3 | MIT OR Apache-2.0 | §254、§337 |
+| `hkdf` | 0.12.4 | MIT OR Apache-2.0 | §237、§288 |
+| `hmac` | 0.12.1 | MIT OR Apache-2.0 | §229、§237 |
+| `html5ever` | 0.27.0 | MIT OR Apache-2.0 | §193、§231 |
+| `http` | 1.5.0 | MIT OR Apache-2.0 | §205、§301 |
+| `http-body` | 1.1.0 | MIT | §61 |
+| `httparse` | 1.10.1 | MIT OR Apache-2.0 | §42、§231 |
+| `hybrid-array` | 0.4.15 | MIT OR Apache-2.0 | §159、§237 |
+| `iana-time-zone` | 0.1.65 | MIT OR Apache-2.0 | §148、§298 |
+| `icu_collections` | 2.4.0 | Unicode-3.0 | §329 |
+| `icu_locale_core` | 2.4.0 | Unicode-3.0 | §329 |
+| `icu_locale_fallback` | 2.4.0 | Unicode-3.0 | §329 |
+| `icu_locale_fallback_data` | 2.4.0 | Unicode-3.0 | §329 |
+| `icu_normalizer` | 2.4.0 | Unicode-3.0 | §329 |
+| `icu_normalizer_data` | 2.4.0 | Unicode-3.0 | §329 |
+| `icu_properties` | 2.4.0 | Unicode-3.0 | §329 |
+| `icu_properties_data` | 2.4.0 | Unicode-3.0 | §329 |
+| `icu_provider` | 2.4.0 | Unicode-3.0 | §329 |
+| `icu_segmenter` | 2.4.0 | Unicode-3.0 | §329 |
+| `icu_segmenter_data` | 2.4.0 | Unicode-3.0 | §329 |
+| `ident_case` | 1.0.1 | MIT/Apache-2.0 | §116 |
+| `idna` | 1.1.0 | MIT OR Apache-2.0 | §231、§251 |
+| `idna_adapter` | 1.2.2 | Apache-2.0 OR MIT | §202、§231 |
+| `ignore` | 0.4.34 | Unlicense OR MIT | §7、§35、§181 |
+| `image` | 0.25.10 | MIT OR Apache-2.0 | §233、§273 |
+| `image-webp` | 0.2.4 | MIT OR Apache-2.0 | §233、§273 |
+| `imagesize` | 0.13.0 | MIT | §342 |
+| `imagesize` | 0.14.0 | MIT | §342 |
+| `imgref` | 1.12.3 | CC0-1.0 OR Apache-2.0 | §230、§271 |
+| `indexmap` | 2.14.2 | Apache-2.0 OR MIT | §231、§322 |
+| `inotify` | 0.11.5 | ISC | §183 |
+| `inotify-sys` | 0.1.8 | ISC | §183 |
+| `inout` | 0.1.4 | MIT OR Apache-2.0 | §78、§237 |
+| `instant` | 0.1.13 | BSD-3-Clause | §279 |
+| `interprocess` | 2.4.9 | 0BSD OR Apache-2.0 | §184、§212 |
+| `inventory` | 0.3.25 | MIT OR Apache-2.0 | §60、§140 |
+| `is-docker` | 0.2.0 | MIT | §162 |
+| `is-wsl` | 0.4.0 | MIT | §162 |
+| `is_terminal_polyfill` | 1.70.2 | MIT OR Apache-2.0 | §157、§254 |
+| `itertools` | 0.11.0 | MIT OR Apache-2.0 | §166、§231 |
+| `itertools` | 0.13.0 | MIT OR Apache-2.0 | §166、§231 |
+| `itertools` | 0.14.0 | MIT OR Apache-2.0 | §166、§231 |
+| `itoa` | 1.0.19 | MIT OR Apache-2.0 | §60、§140 |
+| `jiff` | 0.2.46 | Unlicense OR MIT | §7、§35、§181 |
+| `jiff-core` | 0.1.8 | Unlicense OR MIT | §7、§35、§181 |
+| `khronos-egl` | 6.0.0 | MIT/Apache-2.0 | §60、§231 |
+| `kurbo` | 0.11.3 | Apache-2.0 OR MIT | §59、§271 |
+| `kurbo` | 0.13.1 | Apache-2.0 OR MIT | §59、§271 |
+| `lazy_static` | 1.5.1 | MIT OR Apache-2.0 | §60、§231 |
+| `lebe` | 0.5.3 | BSD-3-Clause | §310 |
+| `libc` | 0.2.191 | MIT OR Apache-2.0 | §36、§140 |
+| `libloading` | 0.8.9 | ISC | §250 |
+| `libm` | 0.2.16 | MIT | §86 |
+| `linebender_resource_handle` | 0.1.1 | Apache-2.0 OR MIT | §116、§233 |
+| `linux-raw-sys` | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | §60、§89、§231 |
+| `litemap` | 0.8.3 | Unicode-3.0 | §329 |
+| `litrs` | 1.0.1 | MIT OR Apache-2.0 | §140、§180 |
+| `lock_api` | 0.4.14 | MIT OR Apache-2.0 | §231、§277 |
+| `log` | 0.4.35 | MIT OR Apache-2.0 | §142、§231 |
+| `loop9` | 0.1.5 | MIT | §249 |
+| `lsp-types` | 0.97.0 | MIT | §23 |
+| `lyon` | 1.0.19 | MIT OR Apache-2.0 | §231 |
+| `lyon_algorithms` | 1.0.22 | MIT OR Apache-2.0 | §231 |
+| `lyon_geom` | 1.0.20 | MIT OR Apache-2.0 | §231 |
+| `lyon_path` | 1.0.19 | MIT OR Apache-2.0 | §231 |
+| `lyon_tessellation` | 1.0.23 | MIT OR Apache-2.0 | §231 |
 | `mac` | 0.1.1 | MIT/Apache-2.0 | （這個 crate 的上架包沒有附授權檔） |
-| `macro_rules_attribute` | 0.2.3 | Apache-2.0 OR MIT OR Zlib | §46、§85、§131 |
-| `markdown` | 1.0.0 | MIT | §298 |
-| `markup5ever` | 0.12.1 | MIT OR Apache-2.0 | §186、§223 |
-| `markup5ever_rcdom` | 0.3.0 | MIT OR Apache-2.0 | §186、§223 |
-| `maybe-rayon` | 0.1.1 | MIT | §88 |
-| `md-5` | 0.10.6 | MIT OR Apache-2.0 | §229、§248 |
-| `memchr` | 2.8.3 | Unlicense OR MIT | §5、§33、§174 |
-| `memmap2` | 0.9.12 | MIT OR Apache-2.0 | §13、§30 |
-| `mime` | 0.3.18 | MIT OR Apache-2.0 | §197、§223 |
-| `mime_guess` | 2.0.5 | MIT | §37 |
-| `minimal-lexical` | 0.2.1 | MIT/Apache-2.0 | §58、§178、§286 |
-| `miniz_oxide` | 0.8.9 | MIT OR Zlib OR Apache-2.0 | §23、§97、§165、§225 |
-| `miniz_oxide` | 0.9.1 | MIT OR Zlib OR Apache-2.0 | §23、§97、§165、§225 |
-| `mio` | 1.2.5 | MIT | §18 |
-| `monostate` | 0.1.18 | MIT OR Apache-2.0 | §58、§136 |
-| `moxcms` | 0.8.1 | BSD-3-Clause OR Apache-2.0 | §107、§206 |
-| `multiversion` | 0.8.1 | MIT OR Apache-2.0 | §91、§261 |
-| `naga` | 30.0.2 | MIT OR Apache-2.0 | §225、§287 |
-| `naga-types` | 30.0.2 | MIT OR Apache-2.0 | §225、§287 |
-| `new_debug_unreachable` | 1.0.6 | MIT | §322 |
-| `no_std_io2` | 0.9.4 | Apache-2.0 OR MIT | §246、§315 |
-| `nohash-hasher` | 0.2.0 | Apache-2.0 OR MIT | §261、§308 |
-| `nom` | 7.1.3 | MIT | §111 |
-| `nom` | 8.0.0 | MIT | §111 |
-| `normpath` | 1.5.2 | MIT OR Apache-2.0 | §148、§225、§289 |
-| `notify` | 8.2.2 | CC0-1.0 | §69 |
-| `notify-rust` | 4.19.0 | MIT OR Apache-2.0 | §246、§284 |
-| `notify-types` | 2.3.1 | MIT OR Apache-2.0 | §250、§251 |
-| `ntapi` | 0.4.3 | Apache-2.0 OR MIT | §261、§317 |
-| `num` | 0.4.3 | MIT OR Apache-2.0 | §138、§223 |
-| `num-bigint` | 0.4.8 | MIT OR Apache-2.0 | §138、§223 |
-| `num-bigint-dig` | 0.9.1 | MIT/Apache-2.0 | §138、§223 |
-| `num-complex` | 0.4.6 | MIT OR Apache-2.0 | §138、§223 |
-| `num-integer` | 0.1.47 | MIT OR Apache-2.0 | §138、§223 |
-| `num-iter` | 0.1.46 | MIT OR Apache-2.0 | §138、§223 |
-| `num-rational` | 0.4.2 | MIT OR Apache-2.0 | §138、§223 |
-| `num-traits` | 0.2.19 | MIT OR Apache-2.0 | §138、§223 |
-| `num_cpus` | 1.17.0 | MIT OR Apache-2.0 | §40、§223 |
-| `object` | 0.40.0 | Apache-2.0 OR MIT | §29、§223 |
-| `once_cell` | 1.21.4 | MIT OR Apache-2.0 | §58、§223 |
-| `once_cell_polyfill` | 1.70.2 | MIT OR Apache-2.0 | §153、§246 |
-| `oo7` | 0.6.0 | MIT | §330 |
-| `open` | 5.4.5 | MIT | §299 |
-| `option-ext` | 0.2.0 | MPL-2.0 | §94 |
-| `ordered-float` | 5.5.1 | MIT | §322 |
-| `ordered-stream` | 0.2.0 | MIT OR Apache-2.0 | §58、§223 |
-| `parking` | 2.2.1 | Apache-2.0 OR MIT | §58、§214、§223 |
-| `parking_lot` | 0.12.5 | MIT OR Apache-2.0 | §223、§267 |
-| `parking_lot_core` | 0.9.12 | MIT OR Apache-2.0 | §223、§267 |
+| `macro_rules_attribute` | 0.2.3 | Apache-2.0 OR MIT OR Zlib | §48、§87、§135 |
+| `markdown` | 1.0.0 | MIT | §311 |
+| `markup5ever` | 0.12.1 | MIT OR Apache-2.0 | §193、§231 |
+| `markup5ever_rcdom` | 0.3.0 | MIT OR Apache-2.0 | §193、§231 |
+| `maybe-rayon` | 0.1.1 | MIT | §90 |
+| `md-5` | 0.10.6 | MIT OR Apache-2.0 | §237、§256 |
+| `memchr` | 2.8.3 | Unlicense OR MIT | §7、§35、§181 |
+| `memmap2` | 0.9.12 | MIT OR Apache-2.0 | §15、§32 |
+| `memoffset` | 0.9.1 | MIT | §318 |
+| `mime` | 0.3.18 | MIT OR Apache-2.0 | §204、§231 |
+| `mime_guess` | 2.0.5 | MIT | §39 |
+| `minimal-lexical` | 0.2.1 | MIT/Apache-2.0 | §60、§185、§299 |
+| `miniz_oxide` | 0.8.9 | MIT OR Zlib OR Apache-2.0 | §25、§99、§170、§233 |
+| `miniz_oxide` | 0.9.1 | MIT OR Zlib OR Apache-2.0 | §25、§99、§170、§233 |
+| `mio` | 1.2.5 | MIT | §20 |
+| `monostate` | 0.1.18 | MIT OR Apache-2.0 | §60、§140 |
+| `moxcms` | 0.8.1 | BSD-3-Clause OR Apache-2.0 | §110、§213 |
+| `multiversion` | 0.8.1 | MIT OR Apache-2.0 | §93、§271 |
+| `naga` | 30.0.2 | MIT OR Apache-2.0 | §233、§300 |
+| `naga-types` | 30.0.2 | MIT OR Apache-2.0 | §233、§300 |
+| `new_debug_unreachable` | 1.0.6 | MIT | §335 |
+| `no_std_io2` | 0.9.4 | Apache-2.0 OR MIT | §254、§328 |
+| `nohash-hasher` | 0.2.0 | Apache-2.0 OR MIT | §271、§321 |
+| `nom` | 7.1.3 | MIT | §114 |
+| `nom` | 8.0.0 | MIT | §114 |
+| `normpath` | 1.5.2 | MIT OR Apache-2.0 | §152、§233、§302 |
+| `notify` | 8.2.2 | CC0-1.0 | §71 |
+| `notify-rust` | 4.19.0 | MIT OR Apache-2.0 | §254、§296 |
+| `notify-types` | 2.3.1 | MIT OR Apache-2.0 | §258、§259 |
+| `ntapi` | 0.4.3 | Apache-2.0 OR MIT | §271、§330 |
+| `num` | 0.4.3 | MIT OR Apache-2.0 | §142、§231 |
+| `num-bigint` | 0.4.8 | MIT OR Apache-2.0 | §142、§231 |
+| `num-bigint-dig` | 0.9.1 | MIT/Apache-2.0 | §142、§231 |
+| `num-complex` | 0.4.6 | MIT OR Apache-2.0 | §142、§231 |
+| `num-integer` | 0.1.47 | MIT OR Apache-2.0 | §142、§231 |
+| `num-iter` | 0.1.46 | MIT OR Apache-2.0 | §142、§231 |
+| `num-rational` | 0.4.2 | MIT OR Apache-2.0 | §142、§231 |
+| `num-traits` | 0.2.19 | MIT OR Apache-2.0 | §142、§231 |
+| `num_cpus` | 1.17.0 | MIT OR Apache-2.0 | §42、§231 |
+| `object` | 0.40.0 | Apache-2.0 OR MIT | §31、§231 |
+| `once_cell` | 1.21.4 | MIT OR Apache-2.0 | §60、§231 |
+| `once_cell_polyfill` | 1.70.2 | MIT OR Apache-2.0 | §157、§254 |
+| `oo7` | 0.6.0 | MIT | §343 |
+| `oorandom` | 11.1.5 | MIT | §167 |
+| `open` | 5.4.5 | MIT | §312 |
+| `option-ext` | 0.2.0 | MPL-2.0 | §96 |
+| `ordered-float` | 5.5.1 | MIT | §335 |
+| `ordered-stream` | 0.2.0 | MIT OR Apache-2.0 | §60、§231 |
+| `page_size` | 0.6.0 | MIT/Apache-2.0 | §142、§231 |
+| `parking` | 2.2.1 | Apache-2.0 OR MIT | §60、§221、§231 |
+| `parking_lot` | 0.12.5 | MIT OR Apache-2.0 | §231、§277 |
+| `parking_lot_core` | 0.9.12 | MIT OR Apache-2.0 | §231、§277 |
 | `pathfinder_geometry` | 0.5.1 | MIT/Apache-2.0 | （這個 crate 的上架包沒有附授權檔） |
-| `pathfinder_simd` | 0.5.6 | MIT OR Apache-2.0 | §223 |
-| `pbkdf2` | 0.12.2 | MIT OR Apache-2.0 | §203、§229 |
-| `percent-encoding` | 2.3.2 | MIT OR Apache-2.0 | §223、§243 |
-| `phf` | 0.11.3 | MIT | §26 |
-| `phf` | 0.13.1 | MIT | §26 |
-| `phf_generator` | 0.13.1 | MIT | §26 |
-| `phf_shared` | 0.11.3 | MIT | §26 |
-| `phf_shared` | 0.13.1 | MIT | §26 |
-| `pico-args` | 0.5.0 | MIT | §255 |
-| `pin-project` | 1.2.0 | Apache-2.0 OR MIT | §58、§225 |
-| `pin-project-lite` | 0.2.17 | Apache-2.0 OR MIT | §58、§225 |
-| `piper` | 0.2.5 | MIT OR Apache-2.0 | §58、§223 |
-| `png` | 0.17.16 | MIT OR Apache-2.0 | §223、§303 |
-| `png` | 0.18.1 | MIT OR Apache-2.0 | §223、§303 |
-| `polling` | 3.11.0 | Apache-2.0 OR MIT | §58、§223 |
-| `pollster` | 0.4.0 | Apache-2.0/MIT | §223、§272 |
-| `polycool` | 0.4.0 | MIT OR Apache-2.0 | §57、§261 |
-| `potential_utf` | 0.1.6 | Unicode-3.0 | §316 |
-| `ppv-lite86` | 0.2.21 | MIT OR Apache-2.0 | §7、§109 |
-| `precomputed-hash` | 0.1.1 | MIT | §171 |
-| `presser` | 0.3.1 | MIT OR Apache-2.0 | §20、§178 |
-| `proc-macro-crate` | 3.5.0 | MIT OR Apache-2.0 | §58、§193 |
-| `proc-macro2` | 1.0.107 | MIT OR Apache-2.0 | §58、§136 |
-| `profiling` | 1.0.18 | MIT OR Apache-2.0 | §223 |
-| `prost` | 0.14.4 | Apache-2.0 | §223 |
-| `pulp` | 0.22.3 | MIT | §282 |
+| `pathfinder_simd` | 0.5.6 | MIT OR Apache-2.0 | §231 |
+| `pbkdf2` | 0.12.2 | MIT OR Apache-2.0 | §210、§237 |
+| `percent-encoding` | 2.3.2 | MIT OR Apache-2.0 | §231、§251 |
+| `perf-event-data` | 0.1.8 | MIT OR Apache-2.0 | §60、§231 |
+| `perf-event-open-sys2` | 5.0.6 | MIT OR Apache-2.0 | §231 |
+| `perf-event2` | 0.7.4 | MIT OR Apache-2.0 | §231 |
+| `phf` | 0.11.3 | MIT | §28 |
+| `phf` | 0.13.1 | MIT | §28 |
+| `phf_generator` | 0.13.1 | MIT | §28 |
+| `phf_shared` | 0.11.3 | MIT | §28 |
+| `phf_shared` | 0.13.1 | MIT | §28 |
+| `pico-args` | 0.5.0 | MIT | §265 |
+| `pin-project` | 1.2.0 | Apache-2.0 OR MIT | §60、§233 |
+| `pin-project-lite` | 0.2.17 | Apache-2.0 OR MIT | §60、§233 |
+| `piper` | 0.2.5 | MIT OR Apache-2.0 | §60、§231 |
+| `plotters` | 0.3.7 | MIT | §172 |
+| `plotters-backend` | 0.3.7 | MIT | §172 |
+| `plotters-svg` | 0.3.7 | MIT | §172 |
+| `png` | 0.17.16 | MIT OR Apache-2.0 | §231、§316 |
+| `png` | 0.18.1 | MIT OR Apache-2.0 | §231、§316 |
+| `polling` | 3.11.0 | Apache-2.0 OR MIT | §60、§231 |
+| `pollster` | 0.2.5 | Apache-2.0/MIT | §231、§282 |
+| `pollster` | 0.4.0 | Apache-2.0/MIT | §231、§282 |
+| `polycool` | 0.4.0 | MIT OR Apache-2.0 | §59、§271 |
+| `postage` | 0.5.0 | MIT | §292 |
+| `potential_utf` | 0.1.6 | Unicode-3.0 | §329 |
+| `ppv-lite86` | 0.2.21 | MIT OR Apache-2.0 | §9、§112 |
+| `precomputed-hash` | 0.1.1 | MIT | §178 |
+| `presser` | 0.3.1 | MIT OR Apache-2.0 | §22、§185 |
+| `proc-macro-crate` | 3.5.0 | MIT OR Apache-2.0 | §60、§200 |
+| `proc-macro2` | 1.0.107 | MIT OR Apache-2.0 | §60、§140 |
+| `profiling` | 1.0.18 | MIT OR Apache-2.0 | §231 |
+| `proptest` | 1.12.0 | MIT OR Apache-2.0 | §231、§297 |
+| `prost` | 0.14.4 | Apache-2.0 | §231 |
+| `pulp` | 0.22.3 | MIT | §294 |
 | `pulp-wasm-simd-flag` | 0.1.1 | MIT | （這個 crate 的上架包沒有附授權檔） |
-| `pxfm` | 0.1.30 | BSD-3-Clause OR Apache-2.0 | §107、§206 |
-| `qoi` | 0.4.1 | MIT/Apache-2.0 | §103、§178 |
-| `quick-error` | 2.0.1 | MIT/Apache-2.0 | §14、§246 |
-| `quick-xml` | 0.41.0 | MIT | §314 |
-| `quote` | 1.0.47 | MIT OR Apache-2.0 | §58、§136 |
-| `rand` | 0.8.8 | MIT OR Apache-2.0 | §51、§81 |
-| `rand` | 0.9.5 | MIT OR Apache-2.0 | §51、§81 |
-| `rand_chacha` | 0.3.1 | MIT OR Apache-2.0 | §51、§232 |
-| `rand_chacha` | 0.9.0 | MIT OR Apache-2.0 | §51、§81 |
-| `rand_core` | 0.10.1 | MIT OR Apache-2.0 | §152、§196 |
-| `rand_core` | 0.6.4 | MIT OR Apache-2.0 | §51、§152 |
-| `rand_core` | 0.9.5 | MIT OR Apache-2.0 | §51、§152 |
-| `rand_distr` | 0.5.1 | MIT OR Apache-2.0 | §152、§227 |
-| `rangemap` | 1.8.0 | MIT/Apache-2.0 | §67、§265 |
-| `rav1e` | 0.8.1 | BSD-2-Clause | §74 |
-| `ravif` | 0.13.0 | BSD-3-Clause | §323 |
-| `raw-cpuid` | 11.6.0 | MIT | §124 |
-| `raw-window-handle` | 0.6.2 | MIT OR Apache-2.0 OR Zlib | §216、§225、§238 |
-| `rayon` | 1.12.0 | MIT OR Apache-2.0 | §17、§223 |
-| `rayon-cond` | 0.4.0 | Apache-2.0/MIT | §65、§223 |
-| `rayon-core` | 1.13.0 | MIT OR Apache-2.0 | §17、§223 |
-| `read-fonts` | 0.37.0 | MIT OR Apache-2.0 | §6、§192 |
-| `read-fonts` | 0.41.0 | MIT OR Apache-2.0 | §168、§306 |
-| `reborrow` | 0.5.5 | MIT | §256 |
-| `recvmsg` | 1.0.0 | 0BSD | §249 |
-| `ref-cast` | 1.0.27 | MIT OR Apache-2.0 | §58、§136 |
-| `regex` | 1.13.2 | MIT OR Apache-2.0 | §138、§223 |
-| `regex-automata` | 0.4.19 | MIT OR Apache-2.0 | §138、§223 |
-| `regex-syntax` | 0.8.12 | MIT OR Apache-2.0 | §138、§223 |
-| `renderdoc-sys` | 1.1.0 | MIT OR Apache-2.0 | §60、§223 |
-| `resvg` | 0.45.1 | Apache-2.0 OR MIT | §225、§321 |
-| `resvg` | 0.46.0 | Apache-2.0 OR MIT | §225、§321 |
-| `rgb` | 0.8.53 | MIT | §101 |
-| `ring` | 0.17.14 | Apache-2.0 AND ISC | §244、§313、§333 |
-| `ropey` | 2.0.0-beta.1 | MIT OR Apache-2.0 | §24、§258 |
-| `roxmltree` | 0.20.0 | MIT OR Apache-2.0 | §223、§337 |
-| `roxmltree` | 0.21.2 | MIT OR Apache-2.0 | §223、§337 |
-| `rust-embed` | 8.14.0 | MIT | §119 |
-| `rust-embed-utils` | 8.14.0 | MIT | §119 |
-| `rust-i18n` | 4.2.4 | MIT | §283 |
+| `pxfm` | 0.1.30 | BSD-3-Clause OR Apache-2.0 | §110、§213 |
+| `qoi` | 0.4.1 | MIT/Apache-2.0 | §106、§185 |
+| `quick-error` | 1.2.3 | MIT/Apache-2.0 | §16、§254 |
+| `quick-error` | 2.0.1 | MIT/Apache-2.0 | §16、§254 |
+| `quick-xml` | 0.41.0 | MIT | §327 |
+| `quote` | 1.0.47 | MIT OR Apache-2.0 | §60、§140 |
+| `rand` | 0.10.4 | MIT OR Apache-2.0 | §53、§83 |
+| `rand` | 0.8.8 | MIT OR Apache-2.0 | §53、§83 |
+| `rand` | 0.9.5 | MIT OR Apache-2.0 | §53、§83 |
+| `rand_chacha` | 0.3.1 | MIT OR Apache-2.0 | §53、§240 |
+| `rand_chacha` | 0.9.0 | MIT OR Apache-2.0 | §53、§83 |
+| `rand_core` | 0.10.1 | MIT OR Apache-2.0 | §156、§203 |
+| `rand_core` | 0.6.4 | MIT OR Apache-2.0 | §53、§156 |
+| `rand_core` | 0.9.5 | MIT OR Apache-2.0 | §53、§156 |
+| `rand_distr` | 0.5.1 | MIT OR Apache-2.0 | §156、§235 |
+| `rand_xorshift` | 0.5.0 | MIT OR Apache-2.0 | §53、§83 |
+| `rangemap` | 1.8.0 | MIT/Apache-2.0 | §69、§275 |
+| `rav1e` | 0.8.1 | BSD-2-Clause | §76 |
+| `ravif` | 0.13.0 | BSD-3-Clause | §336 |
+| `raw-cpuid` | 11.6.0 | MIT | §127 |
+| `raw-window-handle` | 0.6.2 | MIT OR Apache-2.0 OR Zlib | §224、§233、§246 |
+| `rayon` | 1.12.0 | MIT OR Apache-2.0 | §19、§231 |
+| `rayon-cond` | 0.4.0 | Apache-2.0/MIT | §67、§231 |
+| `rayon-core` | 1.13.0 | MIT OR Apache-2.0 | §19、§231 |
+| `read-fonts` | 0.37.0 | MIT OR Apache-2.0 | §8、§199 |
+| `read-fonts` | 0.41.0 | MIT OR Apache-2.0 | §174、§319 |
+| `reborrow` | 0.5.5 | MIT | §266 |
+| `recvmsg` | 1.0.0 | 0BSD | §257 |
+| `ref-cast` | 1.0.27 | MIT OR Apache-2.0 | §60、§140 |
+| `regex` | 1.13.2 | MIT OR Apache-2.0 | §142、§231 |
+| `regex-automata` | 0.4.19 | MIT OR Apache-2.0 | §142、§231 |
+| `regex-syntax` | 0.8.12 | MIT OR Apache-2.0 | §142、§231 |
+| `renderdoc-sys` | 1.1.0 | MIT OR Apache-2.0 | §62、§231 |
+| `resvg` | 0.45.1 | Apache-2.0 OR MIT | §233、§334 |
+| `resvg` | 0.46.0 | Apache-2.0 OR MIT | §233、§334 |
+| `rgb` | 0.8.53 | MIT | §103 |
+| `ring` | 0.17.14 | Apache-2.0 AND ISC | §252、§326、§346 |
+| `ropey` | 2.0.0-beta.1 | MIT OR Apache-2.0 | §26、§268 |
+| `roxmltree` | 0.20.0 | MIT OR Apache-2.0 | §231、§350 |
+| `roxmltree` | 0.21.2 | MIT OR Apache-2.0 | §231、§350 |
+| `rust-embed` | 8.14.0 | MIT | §122 |
+| `rust-embed-utils` | 8.14.0 | MIT | §122 |
+| `rust-i18n` | 4.2.4 | MIT | §295 |
 | `rust-i18n-support` | 4.2.4 | MIT | （這個 crate 的上架包沒有附授權檔） |
-| `rustc-demangle` | 0.1.28 | MIT/Apache-2.0 | §83、§223 |
-| `rustc-hash` | 1.1.0 | Apache-2.0/MIT | §58、§223 |
-| `rustc-hash` | 2.1.3 | Apache-2.0 OR MIT | §58、§136 |
-| `rustix` | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | §58、§87、§223 |
-| `rustls` | 0.23.46 | Apache-2.0 OR ISC OR MIT | §154、§172、§223 |
-| `rustls-pki-types` | 1.16.0 | MIT OR Apache-2.0 | §105、§207 |
-| `rustls-webpki` | 0.103.17 | ISC | §126 |
-| `rustybuzz` | 0.20.1 | MIT | §86 |
-| `ryu` | 1.0.23 | Apache-2.0 OR BSL-1.0 | §136、§268 |
-| `safetensors` | 0.8.0 | Apache-2.0 | §261 |
-| `same-file` | 1.0.6 | Unlicense/MIT | §5、§174、§270 |
-| `schemars` | 1.2.3 | MIT | §43 |
-| `scoped-tls` | 1.0.1 | MIT/Apache-2.0 | §83、§223 |
-| `scopeguard` | 1.2.0 | MIT OR Apache-2.0 | §223、§332 |
+| `rustc-demangle` | 0.1.28 | MIT/Apache-2.0 | §85、§231 |
+| `rustc-hash` | 1.1.0 | Apache-2.0/MIT | §60、§231 |
+| `rustc-hash` | 2.1.3 | Apache-2.0 OR MIT | §60、§140 |
+| `rustix` | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | §60、§89、§231 |
+| `rustls` | 0.23.46 | Apache-2.0 OR ISC OR MIT | §158、§179、§231 |
+| `rustls-pki-types` | 1.16.0 | MIT OR Apache-2.0 | §108、§214 |
+| `rustls-webpki` | 0.103.17 | ISC | §129 |
+| `rusty-fork` | 0.3.1 | MIT/Apache-2.0 | §231、§297 |
+| `rustybuzz` | 0.20.1 | MIT | §88 |
+| `ryu` | 1.0.23 | Apache-2.0 OR BSL-1.0 | §140、§278 |
+| `safetensors` | 0.8.0 | Apache-2.0 | §271 |
+| `same-file` | 1.0.6 | Unlicense/MIT | §7、§181、§280 |
+| `schemars` | 1.2.3 | MIT | §45 |
+| `scoped-tls` | 1.0.1 | MIT/Apache-2.0 | §85、§231 |
+| `scopeguard` | 1.2.0 | MIT OR Apache-2.0 | §231、§345 |
 | `seahash` | 4.1.0 | MIT | （這個 crate 的上架包沒有附授權檔） |
-| `self_cell` | 1.3.0 | Apache-2.0 OR GPL-2.0-only | §179、§261 |
-| `serde` | 1.0.229 | MIT OR Apache-2.0 | §58、§136 |
-| `serde-saphyr` | 1.3.0 | MIT OR Apache-2.0 | §58、§136 |
-| `serde_bytes` | 0.11.19 | MIT OR Apache-2.0 | §58、§136 |
-| `serde_core` | 1.0.229 | MIT OR Apache-2.0 | §58、§136 |
-| `serde_derive_internals` | 0.30.0 | MIT OR Apache-2.0 | §58、§136 |
-| `serde_json` | 1.0.154 | MIT OR Apache-2.0 | §58、§136 |
-| `serde_plain` | 1.0.2 | MIT/Apache-2.0 | §138、§223 |
-| `serde_spanned` | 0.6.9 | MIT OR Apache-2.0 | §153、§246 |
-| `serde_urlencoded` | 0.7.1 | MIT/Apache-2.0 | §136、§252 |
-| `sha1_smol` | 1.0.1 | BSD-3-Clause | §66 |
-| `sha2` | 0.10.9 | MIT OR Apache-2.0 | §229、§248 |
-| `sha2` | 0.11.1 | MIT OR Apache-2.0 | §180、§229 |
-| `shellexpand` | 3.1.2 | MIT/Apache-2.0 | §223、§260 |
-| `signal-hook-registry` | 1.4.8 | MIT OR Apache-2.0 | §112、§223 |
-| `simd-adler32` | 0.3.10 | MIT | §98 |
-| `simdutf8` | 0.1.5 | MIT OR Apache-2.0 | §113、§225 |
-| `similar` | 2.7.0 | Apache-2.0 | §223 |
-| `simplecss` | 0.2.2 | Apache-2.0 OR MIT | §28、§223 |
-| `siphasher` | 1.0.4 | MIT OR Apache-2.0 | §261、§264、§328 |
-| `skrifa` | 0.40.0 | MIT OR Apache-2.0 | §6、§192 |
-| `skrifa` | 0.44.0 | MIT OR Apache-2.0 | §168、§306 |
-| `slab` | 0.4.12 | MIT | §202 |
-| `slotmap` | 1.1.1 | Zlib | §149 |
-| `smallvec` | 1.16.5 | MIT OR Apache-2.0 | §27、§223 |
-| `smol` | 2.0.2 | Apache-2.0 OR MIT | §58、§223 |
-| `smol_str` | 0.3.7 | MIT OR Apache-2.0 | §58、§223 |
-| `socket2` | 0.6.5 | MIT OR Apache-2.0 | §83、§223 |
-| `spin` | 0.10.1 | MIT | §120 |
-| `spin` | 0.9.9 | MIT | §120 |
-| `spirv` | 0.4.0+sdk-1.4.341.0 | Apache-2.0 | §223 |
-| `spm_precompiled` | 0.1.4 | Apache-2.0 | §261 |
-| `stable_deref_trait` | 1.2.1 | MIT OR Apache-2.0 | §90、§223 |
-| `static_assertions` | 1.1.0 | MIT OR Apache-2.0 | §261、§302 |
-| `str_indices` | 0.4.4 | MIT OR Apache-2.0 | §24、§113 |
-| `strict-num` | 0.1.1 | MIT | §77 |
-| `string_cache` | 0.8.9 | MIT OR Apache-2.0 | §134、§223 |
-| `strsim` | 0.11.1 | MIT | §50 |
-| `strum` | 0.28.0 | MIT | §199 |
-| `subtle` | 2.6.1 | BSD-3-Clause | §273 |
+| `self_cell` | 1.3.0 | Apache-2.0 OR GPL-2.0-only | §186、§271 |
+| `serde` | 1.0.229 | MIT OR Apache-2.0 | §60、§140 |
+| `serde-saphyr` | 1.3.0 | MIT OR Apache-2.0 | §60、§140 |
+| `serde_bytes` | 0.11.19 | MIT OR Apache-2.0 | §60、§140 |
+| `serde_core` | 1.0.229 | MIT OR Apache-2.0 | §60、§140 |
+| `serde_derive_internals` | 0.30.0 | MIT OR Apache-2.0 | §60、§140 |
+| `serde_json` | 1.0.154 | MIT OR Apache-2.0 | §60、§140 |
+| `serde_plain` | 1.0.2 | MIT/Apache-2.0 | §142、§231 |
+| `serde_spanned` | 0.6.9 | MIT OR Apache-2.0 | §157、§254 |
+| `serde_urlencoded` | 0.7.1 | MIT/Apache-2.0 | §140、§262 |
+| `sha1_smol` | 1.0.1 | BSD-3-Clause | §68 |
+| `sha2` | 0.10.9 | MIT OR Apache-2.0 | §237、§256 |
+| `sha2` | 0.11.1 | MIT OR Apache-2.0 | §187、§237 |
+| `shellexpand` | 3.1.2 | MIT/Apache-2.0 | §231、§270 |
+| `signal-hook-registry` | 1.4.8 | MIT OR Apache-2.0 | §115、§231 |
+| `simd-adler32` | 0.3.10 | MIT | §100 |
+| `simdutf8` | 0.1.5 | MIT OR Apache-2.0 | §116、§233 |
+| `similar` | 2.7.0 | Apache-2.0 | §231 |
+| `simplecss` | 0.2.2 | Apache-2.0 OR MIT | §30、§231 |
+| `siphasher` | 1.0.4 | MIT OR Apache-2.0 | §271、§274、§341 |
+| `skrifa` | 0.40.0 | MIT OR Apache-2.0 | §8、§199 |
+| `skrifa` | 0.44.0 | MIT OR Apache-2.0 | §174、§319 |
+| `slab` | 0.4.12 | MIT | §209 |
+| `slotmap` | 1.1.1 | Zlib | §153 |
+| `smallvec` | 1.16.5 | MIT OR Apache-2.0 | §29、§231 |
+| `smol` | 2.0.2 | Apache-2.0 OR MIT | §60、§231 |
+| `smol_str` | 0.3.7 | MIT OR Apache-2.0 | §60、§231 |
+| `socket2` | 0.6.5 | MIT OR Apache-2.0 | §85、§231 |
+| `spin` | 0.10.1 | MIT | §123 |
+| `spin` | 0.9.9 | MIT | §123 |
+| `spirv` | 0.4.0+sdk-1.4.341.0 | Apache-2.0 | §231 |
+| `spm_precompiled` | 0.1.4 | Apache-2.0 | §271 |
+| `stable_deref_trait` | 1.2.1 | MIT OR Apache-2.0 | §92、§231 |
+| `static_assertions` | 1.1.0 | MIT OR Apache-2.0 | §271、§315 |
+| `str_indices` | 0.4.4 | MIT OR Apache-2.0 | §26、§116 |
+| `strict-num` | 0.1.1 | MIT | §79 |
+| `string_cache` | 0.8.9 | MIT OR Apache-2.0 | §138、§231 |
+| `strsim` | 0.11.1 | MIT | §52 |
+| `strum` | 0.28.0 | MIT | §206 |
+| `subtle` | 2.6.1 | BSD-3-Clause | §283 |
 | `svg_fmt` | 0.4.5 | MIT/Apache-2.0 | （這個 crate 的上架包沒有附授權檔） |
-| `svgtypes` | 0.15.3 | Apache-2.0 OR MIT | §223、§254 |
-| `svgtypes` | 0.16.2 | Apache-2.0 OR MIT | §223、§254 |
-| `swash` | 0.2.10 | Apache-2.0 OR MIT | §160、§223 |
-| `syn` | 2.0.119 | MIT OR Apache-2.0 | §58、§136 |
-| `syn` | 3.0.10 | MIT OR Apache-2.0 | §58、§136 |
-| `synstructure` | 0.14.0 | MIT | §54 |
-| `sys-locale` | 0.3.2 | MIT OR Apache-2.0 | §129、§261 |
-| `sysinfo` | 0.31.4 | MIT | §142 |
+| `svgtypes` | 0.15.3 | Apache-2.0 OR MIT | §231、§264 |
+| `svgtypes` | 0.16.2 | Apache-2.0 OR MIT | §231、§264 |
+| `swash` | 0.2.10 | Apache-2.0 OR MIT | §164、§231 |
+| `syn` | 2.0.119 | MIT OR Apache-2.0 | §60、§140 |
+| `syn` | 3.0.10 | MIT OR Apache-2.0 | §60、§140 |
+| `synstructure` | 0.14.0 | MIT | §56 |
+| `sys-locale` | 0.3.2 | MIT OR Apache-2.0 | §132、§271 |
+| `sysinfo` | 0.31.4 | MIT | §146 |
 | `taffy` | 0.15.1 | MIT | （這個 crate 的上架包沒有附授權檔） |
-| `target-features` | 0.1.6 | MIT OR Apache-2.0 | §150、§261 |
-| `tempfile` | 3.27.0 | MIT OR Apache-2.0 | §194、§223 |
-| `tendril` | 0.4.3 | MIT/Apache-2.0 | §132、§223 |
-| `termcolor` | 1.4.1 | Unlicense OR MIT | §5、§33、§174 |
-| `thiserror` | 1.0.69 | MIT OR Apache-2.0 | §58、§136 |
-| `thiserror` | 2.0.21 | MIT OR Apache-2.0 | §58、§136 |
-| `tiff` | 0.11.3 | MIT | §52 |
-| `tiny-keccak` | 2.0.2 | CC0-1.0 | §222 |
-| `tiny-skia` | 0.11.4 | BSD-3-Clause | §151 |
-| `tiny-skia-path` | 0.11.4 | BSD-3-Clause | §151 |
-| `tinystr` | 0.8.5 | Unicode-3.0 | §316 |
-| `tinyvec` | 1.13.3 | Zlib OR Apache-2.0 OR MIT | §183、§261、§334 |
-| `tokenizers` | 0.23.2 | Apache-2.0 | §261 |
-| `toml` | 0.8.23 | MIT OR Apache-2.0 | §153、§246 |
-| `toml_datetime` | 0.6.11 | MIT OR Apache-2.0 | §153、§246 |
-| `toml_datetime` | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 | §15、§153 |
-| `toml_edit` | 0.22.27 | MIT OR Apache-2.0 | §153、§246 |
-| `toml_edit` | 0.25.19+spec-1.1.0 | MIT OR Apache-2.0 | §15、§153 |
-| `toml_parser` | 1.1.5+spec-1.1.0 | MIT OR Apache-2.0 | §15、§153 |
-| `toml_write` | 0.1.2 | MIT OR Apache-2.0 | §153、§246 |
-| `tracing` | 0.1.44 | MIT | §190 |
-| `tracing-core` | 0.1.36 | MIT | §190 |
-| `triomphe` | 0.1.17 | MIT OR Apache-2.0 | §39、§224 |
-| `ttf-parser` | 0.25.1 | MIT OR Apache-2.0 | §223、§254 |
-| `typed-path` | 0.13.0 | MIT OR Apache-2.0 | §58、§136 |
-| `typenum` | 1.20.1 | MIT OR Apache-2.0 | §82、§92、§228 |
-| `unicase` | 2.10.0 | MIT OR Apache-2.0 | §72、§223 |
-| `unicode-bidi` | 0.3.18 | MIT OR Apache-2.0 | §169、§223 |
-| `unicode-bidi-mirroring` | 0.4.0 | MIT/Apache-2.0 | §123、§223 |
-| `unicode-ccc` | 0.4.0 | MIT/Apache-2.0 | §123、§223 |
-| `unicode-id` | 0.3.7 | MIT OR Apache-2.0 | §169、§223 |
-| `unicode-ident` | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 | §58、§136、§325 |
-| `unicode-linebreak` | 0.1.5 | Apache-2.0 | §261 |
-| `unicode-normalization` | 0.1.26 | (MIT OR Apache-2.0) AND Unicode-3.0 | §169、§223、§325 |
-| `unicode-normalization-alignments` | 0.1.12 | MIT/Apache-2.0 | §169、§223 |
-| `unicode-properties` | 0.1.5 | (MIT OR Apache-2.0) AND Unicode-3.0 | §169、§223、§300 |
-| `unicode-script` | 0.5.9 | MIT OR Apache-2.0 | §39、§115 |
-| `unicode-segmentation` | 1.13.3 | MIT OR Apache-2.0 | §169、§223 |
-| `unicode-vo` | 0.1.0 | MIT/Apache-2.0 | §28、§223 |
-| `unicode-width` | 0.2.3 | MIT OR Apache-2.0 | §169、§223 |
-| `unicode_categories` | 0.1.1 | MIT OR Apache-2.0 | §212、§246 |
-| `untrusted` | 0.9.0 | ISC | §167 |
-| `ureq` | 3.5.2 | MIT OR Apache-2.0 | §175、§261 |
-| `ureq-proto` | 0.7.1 | MIT OR Apache-2.0 | §125、§261 |
-| `url` | 2.5.8 | MIT OR Apache-2.0 | §223、§243 |
-| `usvg` | 0.45.1 | Apache-2.0 OR MIT | §225、§321 |
-| `usvg` | 0.46.0 | Apache-2.0 OR MIT | §225、§321 |
-| `utf-8` | 0.7.6 | MIT OR Apache-2.0 | §58、§136 |
-| `utf8-zero` | 0.8.1 | MIT OR Apache-2.0 | §58、§136 |
-| `utf8_iter` | 1.1.0 | Apache-2.0 OR MIT | §95、§261 |
-| `utf8parse` | 0.2.2 | Apache-2.0 OR MIT | §136、§296 |
-| `utf_types` | 1.0.0 | Apache-2.0 OR MIT | §95、§261 |
-| `uuid` | 1.29.3 | Apache-2.0 OR MIT | §100、§223 |
-| `v_frame` | 0.3.9 | BSD-2-Clause | §9 |
-| `waker-fn` | 1.2.0 | Apache-2.0 OR MIT | §58、§223 |
-| `walkdir` | 2.5.0 | Unlicense/MIT | §5、§33、§174 |
-| `wasm-bindgen` | 0.2.130 | MIT OR Apache-2.0 | §83、§223 |
-| `wasm-bindgen-macro-support` | 0.2.130 | MIT OR Apache-2.0 | §83、§223 |
-| `wasm-bindgen-shared` | 0.2.130 | MIT OR Apache-2.0 | §83、§223 |
-| `wayland-backend` | 0.3.17 | MIT | §47 |
-| `wayland-client` | 0.31.15 | MIT | §47 |
-| `wayland-cursor` | 0.31.14 | MIT | §47 |
-| `wayland-protocols` | 0.32.13 | MIT | §47 |
-| `wayland-protocols-plasma` | 0.3.12 | MIT | §47 |
-| `wayland-protocols-wlr` | 0.3.12 | MIT | §47 |
-| `wayland-sys` | 0.31.11 | MIT | §47 |
-| `web-time` | 1.1.0 | MIT OR Apache-2.0 | §117、§319 |
-| `webpki-roots` | 1.0.12 | CDLA-Permissive-2.0 | §291 |
-| `weezl` | 0.1.12 | MIT OR Apache-2.0 | §164、§223 |
-| `wgpu` | 30.0.2 | MIT OR Apache-2.0 | §225、§287 |
-| `wgpu-core` | 30.0.2 | MIT OR Apache-2.0 | §225、§287 |
-| `wgpu-core-deps-windows-linux-android` | 30.0.2 | MIT OR Apache-2.0 | §225、§287 |
-| `wgpu-hal` | 30.0.2 | MIT OR Apache-2.0 | §225、§287 |
-| `wgpu-naga-bridge` | 30.0.2 | MIT OR Apache-2.0 | §225、§287 |
-| `wgpu-types` | 30.0.2 | MIT OR Apache-2.0 | §225、§287 |
-| `which` | 8.0.6 | MIT | §2 |
-| `widestring` | 1.2.1 | MIT OR Apache-2.0 | §113、§225 |
-| `winapi` | 0.3.9 | MIT/Apache-2.0 | §246、§274 |
-| `winapi-util` | 0.1.11 | Unlicense OR MIT | §5、§174、§270 |
-| `windows` | 0.57.0 | MIT OR Apache-2.0 | §257、§259 |
-| `windows` | 0.58.0 | MIT OR Apache-2.0 | §257、§259 |
-| `windows` | 0.61.3 | MIT OR Apache-2.0 | §257、§259 |
-| `windows` | 0.62.2 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-capture` | 1.5.0 | MIT | §311 |
-| `windows-collections` | 0.2.0 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-collections` | 0.3.2 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-core` | 0.57.0 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-core` | 0.58.0 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-core` | 0.61.2 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-core` | 0.62.2 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-future` | 0.2.1 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-future` | 0.3.2 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-link` | 0.1.3 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-link` | 0.2.1 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-numerics` | 0.2.0 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-numerics` | 0.3.1 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-registry` | 0.6.1 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-result` | 0.1.2 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-result` | 0.2.0 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-result` | 0.3.4 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-result` | 0.4.1 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-strings` | 0.1.0 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-strings` | 0.4.2 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-strings` | 0.5.1 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-sys` | 0.61.2 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-targets` | 0.52.6 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-threading` | 0.1.0 | MIT OR Apache-2.0 | §257、§259 |
-| `windows-threading` | 0.2.1 | MIT OR Apache-2.0 | §257、§259 |
-| `windows_i686_msvc` | 0.52.6 | MIT OR Apache-2.0 | §257、§259 |
-| `windows_x86_64_msvc` | 0.52.6 | MIT OR Apache-2.0 | §257、§259 |
-| `winnow` | 0.7.15 | MIT | §271 |
-| `winnow` | 1.0.5 | MIT | §271 |
-| `writeable` | 0.6.4 | Unicode-3.0 | §316 |
-| `x11` | 2.21.0 | MIT | §58 |
-| `x11rb` | 0.13.2 | MIT OR Apache-2.0 | §226、§261 |
-| `x11rb-protocol` | 0.13.2 | MIT OR Apache-2.0 | §226、§261 |
-| `xcb` | 1.7.1 | MIT | §292 |
-| `xcursor` | 0.3.11 | MIT | §79 |
+| `target-features` | 0.1.6 | MIT OR Apache-2.0 | §154、§271 |
+| `tempfile` | 3.27.0 | MIT OR Apache-2.0 | §201、§231 |
+| `tendril` | 0.4.3 | MIT/Apache-2.0 | §136、§231 |
+| `termcolor` | 1.4.1 | Unlicense OR MIT | §7、§35、§181 |
+| `thiserror` | 1.0.69 | MIT OR Apache-2.0 | §60、§140 |
+| `thiserror` | 2.0.21 | MIT OR Apache-2.0 | §60、§140 |
+| `tiff` | 0.11.3 | MIT | §54 |
+| `tiny-keccak` | 2.0.2 | CC0-1.0 | §230 |
+| `tiny-skia` | 0.11.4 | BSD-3-Clause | §155 |
+| `tiny-skia-path` | 0.11.4 | BSD-3-Clause | §155 |
+| `tinystr` | 0.8.5 | Unicode-3.0 | §329 |
+| `tinytemplate` | 1.2.1 | Apache-2.0 OR MIT | §231、§260 |
+| `tinyvec` | 1.13.3 | Zlib OR Apache-2.0 OR MIT | §190、§271、§347 |
+| `tokenizers` | 0.23.2 | Apache-2.0 | §271 |
+| `toml` | 0.8.23 | MIT OR Apache-2.0 | §157、§254 |
+| `toml_datetime` | 0.6.11 | MIT OR Apache-2.0 | §157、§254 |
+| `toml_datetime` | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 | §17、§157 |
+| `toml_edit` | 0.22.27 | MIT OR Apache-2.0 | §157、§254 |
+| `toml_edit` | 0.25.19+spec-1.1.0 | MIT OR Apache-2.0 | §17、§157 |
+| `toml_parser` | 1.1.5+spec-1.1.0 | MIT OR Apache-2.0 | §17、§157 |
+| `toml_write` | 0.1.2 | MIT OR Apache-2.0 | §157、§254 |
+| `tracing` | 0.1.44 | MIT | §197 |
+| `tracing-core` | 0.1.36 | MIT | §197 |
+| `triomphe` | 0.1.17 | MIT OR Apache-2.0 | §41、§232 |
+| `ttf-parser` | 0.25.1 | MIT OR Apache-2.0 | §231、§264 |
+| `typed-path` | 0.13.0 | MIT OR Apache-2.0 | §60、§140 |
+| `typenum` | 1.20.1 | MIT OR Apache-2.0 | §84、§94、§236 |
+| `unarray` | 0.1.4 | MIT OR Apache-2.0 | §2、§271 |
+| `unicase` | 2.10.0 | MIT OR Apache-2.0 | §74、§231 |
+| `unicode-bidi` | 0.3.18 | MIT OR Apache-2.0 | §175、§231 |
+| `unicode-bidi-mirroring` | 0.4.0 | MIT/Apache-2.0 | §126、§231 |
+| `unicode-ccc` | 0.4.0 | MIT/Apache-2.0 | §126、§231 |
+| `unicode-id` | 0.3.7 | MIT OR Apache-2.0 | §175、§231 |
+| `unicode-ident` | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 | §60、§140、§338 |
+| `unicode-linebreak` | 0.1.5 | Apache-2.0 | §271 |
+| `unicode-normalization` | 0.1.26 | (MIT OR Apache-2.0) AND Unicode-3.0 | §175、§231、§338 |
+| `unicode-normalization-alignments` | 0.1.12 | MIT/Apache-2.0 | §175、§231 |
+| `unicode-properties` | 0.1.5 | (MIT OR Apache-2.0) AND Unicode-3.0 | §175、§231、§313 |
+| `unicode-script` | 0.5.9 | MIT OR Apache-2.0 | §41、§118 |
+| `unicode-segmentation` | 1.13.3 | MIT OR Apache-2.0 | §175、§231 |
+| `unicode-vo` | 0.1.0 | MIT/Apache-2.0 | §30、§231 |
+| `unicode-width` | 0.2.3 | MIT OR Apache-2.0 | §175、§231 |
+| `unicode_categories` | 0.1.1 | MIT OR Apache-2.0 | §219、§254 |
+| `untrusted` | 0.9.0 | ISC | §173 |
+| `ureq` | 3.5.2 | MIT OR Apache-2.0 | §182、§271 |
+| `ureq-proto` | 0.7.1 | MIT OR Apache-2.0 | §128、§271 |
+| `url` | 2.5.8 | MIT OR Apache-2.0 | §231、§251 |
+| `usvg` | 0.45.1 | Apache-2.0 OR MIT | §233、§334 |
+| `usvg` | 0.46.0 | Apache-2.0 OR MIT | §233、§334 |
+| `utf-8` | 0.7.6 | MIT OR Apache-2.0 | §60、§140 |
+| `utf8-zero` | 0.8.1 | MIT OR Apache-2.0 | §60、§140 |
+| `utf8_iter` | 1.1.0 | Apache-2.0 OR MIT | §97、§271 |
+| `utf8parse` | 0.2.2 | Apache-2.0 OR MIT | §140、§309 |
+| `utf_types` | 1.0.0 | Apache-2.0 OR MIT | §97、§271 |
+| `uuid` | 1.29.3 | Apache-2.0 OR MIT | §102、§231 |
+| `v_frame` | 0.3.9 | BSD-2-Clause | §11 |
+| `wait-timeout` | 0.2.1 | MIT/Apache-2.0 | §85、§231 |
+| `waker-fn` | 1.2.0 | Apache-2.0 OR MIT | §60、§231 |
+| `walkdir` | 2.5.0 | Unlicense/MIT | §7、§35、§181 |
+| `wasm-bindgen` | 0.2.130 | MIT OR Apache-2.0 | §85、§231 |
+| `wasm-bindgen-macro-support` | 0.2.130 | MIT OR Apache-2.0 | §85、§231 |
+| `wasm-bindgen-shared` | 0.2.130 | MIT OR Apache-2.0 | §85、§231 |
+| `wayland-backend` | 0.3.17 | MIT | §49 |
+| `wayland-client` | 0.31.15 | MIT | §49 |
+| `wayland-cursor` | 0.31.14 | MIT | §49 |
+| `wayland-protocols` | 0.32.13 | MIT | §49 |
+| `wayland-protocols-plasma` | 0.3.12 | MIT | §49 |
+| `wayland-protocols-wlr` | 0.3.12 | MIT | §49 |
+| `wayland-sys` | 0.31.11 | MIT | §49 |
+| `web-time` | 1.1.0 | MIT OR Apache-2.0 | §120、§332 |
+| `webpki-roots` | 1.0.12 | CDLA-Permissive-2.0 | §304 |
+| `weezl` | 0.1.12 | MIT OR Apache-2.0 | §169、§231 |
+| `wgpu` | 30.0.1 | MIT OR Apache-2.0 | §233、§300 |
+| `wgpu-core` | 30.0.2 | MIT OR Apache-2.0 | §233、§300 |
+| `wgpu-core-deps-windows-linux-android` | 30.0.2 | MIT OR Apache-2.0 | §233、§300 |
+| `wgpu-hal` | 30.0.2 | MIT OR Apache-2.0 | §233、§300 |
+| `wgpu-naga-bridge` | 30.0.2 | MIT OR Apache-2.0 | §233、§300 |
+| `wgpu-types` | 30.0.2 | MIT OR Apache-2.0 | §233、§300 |
+| `which` | 8.0.6 | MIT | §3 |
+| `widestring` | 1.2.1 | MIT OR Apache-2.0 | §116、§233 |
+| `winapi` | 0.3.9 | MIT/Apache-2.0 | §254、§285 |
+| `winapi-util` | 0.1.11 | Unlicense OR MIT | §7、§181、§280 |
+| `windows` | 0.57.0 | MIT OR Apache-2.0 | §267、§269 |
+| `windows` | 0.58.0 | MIT OR Apache-2.0 | §267、§269 |
+| `windows` | 0.61.3 | MIT OR Apache-2.0 | §267、§269 |
+| `windows` | 0.62.2 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-capture` | 1.5.0 | MIT | §324 |
+| `windows-collections` | 0.2.0 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-collections` | 0.3.2 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-core` | 0.57.0 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-core` | 0.58.0 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-core` | 0.61.2 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-core` | 0.62.2 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-future` | 0.2.1 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-future` | 0.3.2 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-link` | 0.1.3 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-link` | 0.2.1 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-numerics` | 0.2.0 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-numerics` | 0.3.1 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-registry` | 0.6.1 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-result` | 0.1.2 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-result` | 0.2.0 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-result` | 0.3.4 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-result` | 0.4.1 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-strings` | 0.1.0 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-strings` | 0.4.2 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-strings` | 0.5.1 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-sys` | 0.48.0 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-sys` | 0.52.0 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-sys` | 0.61.2 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-targets` | 0.48.5 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-targets` | 0.52.6 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-threading` | 0.1.0 | MIT OR Apache-2.0 | §267、§269 |
+| `windows-threading` | 0.2.1 | MIT OR Apache-2.0 | §267、§269 |
+| `windows_i686_msvc` | 0.48.5 | MIT OR Apache-2.0 | §267、§269 |
+| `windows_i686_msvc` | 0.52.6 | MIT OR Apache-2.0 | §267、§269 |
+| `windows_x86_64_msvc` | 0.48.5 | MIT OR Apache-2.0 | §267、§269 |
+| `windows_x86_64_msvc` | 0.52.6 | MIT OR Apache-2.0 | §267、§269 |
+| `winnow` | 0.7.15 | MIT | §281 |
+| `winnow` | 1.0.5 | MIT | §281 |
+| `writeable` | 0.6.4 | Unicode-3.0 | §329 |
+| `x11` | 2.21.0 | MIT | §60 |
+| `x11rb` | 0.13.2 | MIT OR Apache-2.0 | §234、§271 |
+| `x11rb-protocol` | 0.13.2 | MIT OR Apache-2.0 | §234、§271 |
+| `xcb` | 1.7.1 | MIT | §305 |
+| `xcursor` | 0.3.11 | MIT | §81 |
 | `xim-ctext` | 0.3.0 | MIT | （這個 crate 的上架包沒有附授權檔） |
 | `xim-parser` | 0.2.2 | MIT | （這個 crate 的上架包沒有附授權檔） |
-| `xkbcommon` | 0.8.0 | MIT | §231 |
-| `xkeysym` | 0.2.1 | MIT OR Apache-2.0 OR Zlib | §4、§78、§187 |
-| `xml5ever` | 0.18.1 | MIT OR Apache-2.0 | §186、§223 |
-| `xmlwriter` | 0.1.0 | MIT | §71 |
-| `y4m` | 0.8.0 | MIT | §35 |
-| `yazi` | 0.2.2 | Apache-2.0 OR MIT | §189、§223 |
-| `yeslogic-fontconfig-sys` | 6.0.1 | MIT | §42 |
-| `yoke` | 0.8.4 | Unicode-3.0 | §316 |
-| `zbus` | 5.19.0 | MIT | §63 |
-| `zbus` | 6.4.0 | MIT | §63 |
-| `zbus-lockstep` | 0.5.2 | MIT | §58 |
-| `zbus_names` | 4.3.5 | MIT | §63 |
-| `zbus_utils` | 6.1.0 | MIT | §63 |
-| `zbus_xml` | 5.2.1 | MIT | §63 |
-| `zcheapstr` | 1.3.0 | MIT | §122 |
-| `zed-font-kit` | 0.14.1-zed | MIT OR Apache-2.0 | §58、§223 |
-| `zed-scap` | 0.0.8-zed | MIT | §310 |
-| `zed-xim` | 0.4.0-zed | MIT | §312 |
-| `zeno` | 0.3.3 | Apache-2.0 OR MIT | §160、§223 |
-| `zerocopy` | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT | §38、§62、§182 |
-| `zerofrom` | 0.1.8 | Unicode-3.0 | §316 |
-| `zeroize` | 1.9.2 | Apache-2.0 OR MIT | §200、§261 |
-| `zerotrie` | 0.2.5 | Unicode-3.0 | §316 |
-| `zerovec` | 0.11.9 | Unicode-3.0 | §316 |
-| `zip` | 9.7.3 | MIT | §120 |
-| `zlib-rs` | 0.6.8 | Zlib | §236 |
-| `zmij` | 1.0.23 | MIT | §58 |
-| `zruntime` | 0.2.4 | MIT | §307 |
-| `zune-core` | 0.4.12 | MIT OR Apache-2.0 OR Zlib | §223 |
-| `zune-core` | 0.5.3 | MIT OR Apache-2.0 OR Zlib | §261、§276、§279 |
-| `zune-inflate` | 0.2.54 | MIT OR Apache-2.0 OR Zlib | §223 |
-| `zune-jpeg` | 0.4.21 | MIT OR Apache-2.0 OR Zlib | §223 |
-| `zune-jpeg` | 0.5.15 | MIT OR Apache-2.0 OR Zlib | §261、§276、§279 |
-| `zvariant` | 5.15.1 | MIT | §63 |
-| `zvariant_utils` | 4.2.0 | MIT | §58 |
+| `xkbcommon` | 0.8.0 | MIT | §239 |
+| `xkeysym` | 0.2.1 | MIT OR Apache-2.0 OR Zlib | §6、§80、§194 |
+| `xml5ever` | 0.18.1 | MIT OR Apache-2.0 | §193、§231 |
+| `xmlwriter` | 0.1.0 | MIT | §73 |
+| `y4m` | 0.8.0 | MIT | §37 |
+| `yazi` | 0.2.2 | Apache-2.0 OR MIT | §196、§231 |
+| `yeslogic-fontconfig-sys` | 6.0.1 | MIT | §44 |
+| `yoke` | 0.8.4 | Unicode-3.0 | §329 |
+| `zbus` | 5.19.0 | MIT | §65 |
+| `zbus` | 6.4.0 | MIT | §65 |
+| `zbus-lockstep` | 0.5.2 | MIT | §60 |
+| `zbus_names` | 4.3.5 | MIT | §65 |
+| `zbus_utils` | 6.1.0 | MIT | §65 |
+| `zbus_xml` | 5.2.1 | MIT | §65 |
+| `zcheapstr` | 1.3.0 | MIT | §125 |
+| `zed-font-kit` | 0.14.1-zed | MIT OR Apache-2.0 | §60、§231 |
+| `zed-scap` | 0.0.8-zed | MIT | §323 |
+| `zed-xim` | 0.4.0-zed | MIT | §325 |
+| `zeno` | 0.3.3 | Apache-2.0 OR MIT | §164、§231 |
+| `zerocopy` | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT | §40、§64、§189 |
+| `zerofrom` | 0.1.8 | Unicode-3.0 | §329 |
+| `zeroize` | 1.9.2 | Apache-2.0 OR MIT | §207、§271 |
+| `zerotrie` | 0.2.5 | Unicode-3.0 | §329 |
+| `zerovec` | 0.11.9 | Unicode-3.0 | §329 |
+| `zip` | 9.7.3 | MIT | §123 |
+| `zlib-rs` | 0.6.8 | Zlib | §244 |
+| `zmij` | 1.0.23 | MIT | §60 |
+| `zruntime` | 0.2.4 | MIT | §320 |
+| `zune-core` | 0.4.12 | MIT OR Apache-2.0 OR Zlib | §231 |
+| `zune-core` | 0.5.3 | MIT OR Apache-2.0 OR Zlib | §271、§287、§290 |
+| `zune-inflate` | 0.2.54 | MIT OR Apache-2.0 OR Zlib | §231 |
+| `zune-jpeg` | 0.4.21 | MIT OR Apache-2.0 OR Zlib | §231 |
+| `zune-jpeg` | 0.5.15 | MIT OR Apache-2.0 OR Zlib | §271、§287、§290 |
+| `zvariant` | 5.15.1 | MIT | §65 |
+| `zvariant_utils` | 4.2.0 | MIT | §60 |
 
 ## 授權全文
 
@@ -858,7 +909,35 @@
    limitations under the License.
 ```
 
-### §2 Copyright (c) 2015 fangyuanziti
+### §2 MIT License
+
+使用這個全文的 crate（1 個）：`unarray` 0.1.4
+
+```text
+MIT License
+
+Copyright (c) [year] [fullname]
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### §3 Copyright (c) 2015 fangyuanziti
 
 使用這個全文的 crate（1 個）：`which` 8.0.6
 
@@ -884,7 +963,39 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §3 Apache License
+### §4 Copyright (c) 2014-2017 Jorge Aparicio
+
+使用這個全文的 crate（1 個）：`cast` 0.3.0
+
+```text
+Copyright (c) 2014-2017 Jorge Aparicio
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### §5 Apache License
 
 使用這個全文的 crate（1 個）：`gpu-allocator` 0.28.0
 
@@ -1092,7 +1203,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §4 Apache License
+### §6 Apache License
 
 使用這個全文的 crate（1 個）：`xkeysym` 0.2.1
 
@@ -1300,7 +1411,7 @@ limitations under the License.
    limitations under the License.
 ```
 
-### §5 This project is dual-licensed under the Unlicense and MIT licenses.
+### §7 This project is dual-licensed under the Unlicense and MIT licenses.
 
 使用這個全文的 crate（11 個）：`aho-corasick` 1.1.5、`byteorder` 1.5.0、`globset` 0.4.21、`ignore` 0.4.34、`jiff` 0.2.46、`jiff-core` 0.1.8、`memchr` 2.8.3、`same-file` 1.0.6、`termcolor` 1.4.1、`walkdir` 2.5.0、`winapi-util` 0.1.11
 
@@ -1310,7 +1421,7 @@ This project is dual-licensed under the Unlicense and MIT licenses.
 You may use this code under the terms of either license.
 ```
 
-### §6 Apache License
+### §8 Apache License
 
 使用這個全文的 crate（3 個）：`font-types` 0.11.3、`read-fonts` 0.37.0、`skrifa` 0.40.0
 
@@ -1384,7 +1495,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §7 Apache License
+### §9 Apache License
 
 使用這個全文的 crate（1 個）：`ppv-lite86` 0.2.21
 
@@ -1592,7 +1703,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §8 Copyright (c) 2014-2026 Alex Crichton
+### §10 Copyright (c) 2014-2026 Alex Crichton
 
 使用這個全文的 crate（1 個）：`flate2` 1.1.11
 
@@ -1624,7 +1735,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §9 BSD 2-Clause License
+### §11 BSD 2-Clause License
 
 使用這個全文的 crate（1 個）：`v_frame` 0.3.9
 
@@ -1656,7 +1767,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §10 Copyright (c) 2017 Jorge Aparicio
+### §12 Copyright (c) 2017 Jorge Aparicio
 
 使用這個全文的 crate（2 個）：`aligned` 0.4.3、`heapless` 0.9.4
 
@@ -1688,7 +1799,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §11 Copyright (c) 2018 Tom Kaitchuck
+### §13 Copyright (c) 2018 Tom Kaitchuck
 
 使用這個全文的 crate（1 個）：`ahash` 0.8.12
 
@@ -1720,7 +1831,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §12 BSD 3-Clause License
+### §14 BSD 3-Clause License
 
 使用這個全文的 crate（1 個）：`avif-serialize` 0.8.9
 
@@ -1756,7 +1867,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §13 Apache License
+### §15 Apache License
 
 使用這個全文的 crate（1 個）：`memmap2` 0.9.12
 
@@ -1964,9 +2075,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §14 Copyright (c) 2015 The quick-error Developers
+### §16 Copyright (c) 2015 The quick-error Developers
 
-使用這個全文的 crate（1 個）：`quick-error` 2.0.1
+使用這個全文的 crate（2 個）：`quick-error` 1.2.3、`quick-error` 2.0.1
 
 ```text
 Copyright (c) 2015 The quick-error Developers
@@ -1990,9 +2101,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §15 Apache License
+### §17 Apache License
 
-使用這個全文的 crate（4 個）：`annotate-snippets` 0.12.18、`toml_datetime` 1.1.3+spec-1.1.0、`toml_edit` 0.25.19+spec-1.1.0、`toml_parser` 1.1.5+spec-1.1.0
+使用這個全文的 crate（7 個）：`annotate-snippets` 0.12.18、`clap` 4.6.10、`clap_builder` 4.6.10、`clap_lex` 1.1.2、`toml_datetime` 1.1.3+spec-1.1.0、`toml_edit` 0.25.19+spec-1.1.0、`toml_parser` 1.1.5+spec-1.1.0
 
 ```text
                                  Apache License
@@ -2198,7 +2309,7 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### §16 MIT License
+### §18 MIT License
 
 使用這個全文的 crate（1 個）：`float_next_after` 1.0.0
 
@@ -2228,7 +2339,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §17 Copyright (c) 2010 The Rust Project Developers
+### §19 Copyright (c) 2010 The Rust Project Developers
 
 使用這個全文的 crate（2 個）：`rayon` 1.12.0、`rayon-core` 1.13.0
 
@@ -2260,7 +2371,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §18 Copyright (c) 2014 Carl Lerche and other MIO contributors
+### §20 Copyright (c) 2014 Carl Lerche and other MIO contributors
 
 使用這個全文的 crate（1 個）：`mio` 1.2.5
 
@@ -2286,7 +2397,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §19 Copyright (c) 2023 Kirill Chibisov
+### §21 Copyright (c) 2023 Kirill Chibisov
 
 使用這個全文的 crate（1 個）：`calloop-wayland-source` 0.4.1
 
@@ -2312,7 +2423,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §20 Copyright (c) 2019 Embark Studios
+### §22 Copyright (c) 2019 Embark Studios
 
 使用這個全文的 crate（1 個）：`presser` 0.3.1
 
@@ -2344,7 +2455,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §21 The MIT License (MIT)
+### §23 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`lsp-types` 0.97.0
 
@@ -2372,7 +2483,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §22 Copyright (c) 2015 The rust-float-ord Developers
+### §24 Copyright (c) 2015 The rust-float-ord Developers
 
 使用這個全文的 crate（1 個）：`float-ord` 0.3.2
 
@@ -2398,7 +2509,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §23 Copyright 2013-2014 RAD Game Tools and Valve Software
+### §25 Copyright 2013-2014 RAD Game Tools and Valve Software
 
 使用這個全文的 crate（2 個）：`miniz_oxide` 0.8.9、`miniz_oxide` 0.9.1
 
@@ -2419,7 +2530,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### §24 Apache License
+### §26 Apache License
 
 使用這個全文的 crate（2 個）：`ropey` 2.0.0-beta.1、`str_indices` 0.4.4
 
@@ -2627,7 +2738,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §25 The MIT License (MIT)
+### §27 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`arraydeque` 0.5.1
 
@@ -2655,7 +2766,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §26 The MIT License (MIT)
+### §28 The MIT License (MIT)
 
 使用這個全文的 crate（5 個）：`phf` 0.11.3、`phf` 0.13.1、`phf_generator` 0.13.1、`phf_shared` 0.11.3、`phf_shared` 0.13.1
 
@@ -2682,7 +2793,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §27 Copyright (c) 2018 The Servo Project Developers
+### §29 Copyright (c) 2018 The Servo Project Developers
 
 使用這個全文的 crate（1 個）：`smallvec` 1.16.5
 
@@ -2714,7 +2825,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §28 The MIT License (MIT)
+### §30 The MIT License (MIT)
 
 使用這個全文的 crate（2 個）：`simplecss` 0.2.2、`unicode-vo` 0.1.0
 
@@ -2742,7 +2853,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §29 Copyright (c) 2015 The Gimli Developers
+### §31 Copyright (c) 2015 The Gimli Developers
 
 使用這個全文的 crate（1 個）：`object` 0.40.0
 
@@ -2774,7 +2885,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §30 Copyright (c) 2020 Yevhenii Reizner
+### §32 Copyright (c) 2020 Yevhenii Reizner
 
 使用這個全文的 crate（1 個）：`memmap2` 0.9.12
 
@@ -2807,7 +2918,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §31 MIT License
+### §33 MIT License
 
 使用這個全文的 crate（1 個）：`compact_str` 0.9.1
 
@@ -2835,7 +2946,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §32 The MIT License (MIT)
+### §34 The MIT License (MIT)
 
 使用這個全文的 crate（2 個）：`base64` 0.13.1、`base64` 0.22.1
 
@@ -2863,7 +2974,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §33 The MIT License (MIT)
+### §35 The MIT License (MIT)
 
 使用這個全文的 crate（11 個）：`aho-corasick` 1.1.5、`byteorder` 1.5.0、`byteorder-lite` 0.1.0、`encoding_rs_io` 0.1.8、`globset` 0.4.21、`ignore` 0.4.34、`jiff` 0.2.46、`jiff-core` 0.1.8、`memchr` 2.8.3、`termcolor` 1.4.1、`walkdir` 2.5.0
 
@@ -2891,7 +3002,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §34 Copyright (c) The Rust Project Developers
+### §36 Copyright (c) The Rust Project Developers
 
 使用這個全文的 crate（1 個）：`libc` 0.2.191
 
@@ -2923,7 +3034,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §35 The MIT License (MIT)
+### §37 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`y4m` 0.8.0
 
@@ -2952,7 +3063,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §36 This project is licensed under either of
+### §38 This project is licensed under either of
 
 使用這個全文的 crate（1 個）：`encoding_rs_io` 0.1.8
 
@@ -2967,7 +3078,7 @@ This project is licensed under either of
 at your option.
 ```
 
-### §37 The MIT License (MIT)
+### §39 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`mime_guess` 2.0.5
 
@@ -2995,7 +3106,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §38 Apache License
+### §40 Apache License
 
 使用這個全文的 crate（1 個）：`zerocopy` 0.8.63
 
@@ -3203,7 +3314,7 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### §39 MIT License
+### §41 MIT License
 
 使用這個全文的 crate（2 個）：`triomphe` 0.1.17、`unicode-script` 0.5.9
 
@@ -3237,7 +3348,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §40 Copyright (c) 2015-2025 Sean McArthur
+### §42 Copyright (c) 2015-2025 Sean McArthur
 
 使用這個全文的 crate（2 個）：`httparse` 1.10.1、`num_cpus` 1.17.0
 
@@ -3263,7 +3374,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §41 MIT License
+### §43 MIT License
 
 使用這個全文的 crate（1 個）：`filedescriptor` 0.8.3
 
@@ -3291,7 +3402,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §42 The MIT License (MIT)
+### §44 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`yeslogic-fontconfig-sys` 6.0.1
 
@@ -3322,7 +3433,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §43 MIT License
+### §45 MIT License
 
 使用這個全文的 crate（1 個）：`schemars` 1.2.3
 
@@ -3350,7 +3461,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §44 Inherited license notices:
+### §46 Inherited license notices:
 
 使用這個全文的 crate（1 個）：`granit-parser` 1.3.0
 
@@ -3372,7 +3483,7 @@ Modifications after commit `825edf857426d034954523fed19599635cbb5043` are Copyri
 Redistributions of this Work must include all inherited and new license notices, including the notices for Chen Yuheng, Ethiraric, and Bourumir Wyngs.
 ```
 
-### §45 Copyright (c) 2015 David Roundy <roundyd@physics.oregonstate.edu>
+### §47 Copyright (c) 2015 David Roundy <roundyd@physics.oregonstate.edu>
 
 使用這個全文的 crate（1 個）：`arrayref` 0.3.9
 
@@ -3405,7 +3516,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §46 zlib License
+### §48 zlib License
 
 使用這個全文的 crate（1 個）：`macro_rules_attribute` 0.2.3
 
@@ -3431,7 +3542,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### §47 Copyright (c) 2015 Elinor Berger
+### §49 Copyright (c) 2015 Elinor Berger
 
 使用這個全文的 crate（7 個）：`wayland-backend` 0.3.17、`wayland-client` 0.31.15、`wayland-cursor` 0.31.14、`wayland-protocols` 0.32.13、`wayland-protocols-plasma` 0.3.12、`wayland-protocols-wlr` 0.3.12、`wayland-sys` 0.31.11
 
@@ -3457,7 +3568,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §48 Copyright (c) 2024 Orson Peters
+### §50 Copyright (c) 2024 Orson Peters
 
 使用這個全文的 crate（1 個）：`foldhash` 0.2.0
 
@@ -3483,7 +3594,7 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### §49 MIT License
+### §51 MIT License
 
 使用這個全文的 crate（1 個）：`av-scenechange` 0.14.1
 
@@ -3511,7 +3622,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §50 The MIT License (MIT)
+### §52 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`strsim` 0.11.1
 
@@ -3541,9 +3652,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §51 Copyright 2018 Developers of the Rand project
+### §53 Copyright 2018 Developers of the Rand project
 
-使用這個全文的 crate（6 個）：`rand` 0.8.8、`rand` 0.9.5、`rand_chacha` 0.3.1、`rand_chacha` 0.9.0、`rand_core` 0.6.4、`rand_core` 0.9.5
+使用這個全文的 crate（8 個）：`rand` 0.10.4、`rand` 0.8.8、`rand` 0.9.5、`rand_chacha` 0.3.1、`rand_chacha` 0.9.0、`rand_core` 0.6.4、`rand_core` 0.9.5、`rand_xorshift` 0.5.0
 
 ```text
 Copyright 2018 Developers of the Rand project
@@ -3574,7 +3685,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §52 MIT License
+### §54 MIT License
 
 使用這個全文的 crate（1 個）：`tiff` 0.11.3
 
@@ -3602,7 +3713,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §53 Copyright (c) 2013-2016 The rust-url developers
+### §55 Copyright (c) 2013-2016 The rust-url developers
 
 使用這個全文的 crate（1 個）：`form_urlencoded` 1.2.2
 
@@ -3634,7 +3745,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §54 Copyright 2016 Nika Layzell
+### §56 Copyright 2016 Nika Layzell
 
 使用這個全文的 crate（1 個）：`synstructure` 0.14.0
 
@@ -3648,7 +3759,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §55 Rust-chrono is dual-licensed under The MIT License [1] and
+### §57 Rust-chrono is dual-licensed under The MIT License [1] and
 
 使用這個全文的 crate（1 個）：`chrono` 0.4.45
 
@@ -3894,7 +4005,7 @@ limitations under the License.
 ~~~~
 ```
 
-### §56 The MIT License (MIT)
+### §58 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`bit_field` 0.10.4
 
@@ -3922,7 +4033,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §57 Copyright (c) 2018 Raph Levien
+### §59 Copyright (c) 2018 Raph Levien
 
 使用這個全文的 crate（3 個）：`kurbo` 0.11.3、`kurbo` 0.13.1、`polycool` 0.4.0
 
@@ -3954,9 +4065,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §58 Permission is hereby granted, free of charge, to any
+### §60 Permission is hereby granted, free of charge, to any
 
-使用這個全文的 crate（68 個）：`adler2` 2.0.1、`allocator-api2` 0.2.21、`anyhow` 1.0.104、`async-channel` 2.5.0、`async-executor` 1.14.1、`async-fs` 2.2.0、`async-io` 2.6.0、`async-lock` 3.5.0、`async-net` 2.0.0、`async-process` 2.5.0、`async-signal` 0.2.14、`async-task` 4.7.1、`atomic-waker` 1.1.2、`blocking` 1.7.0、`concurrent-queue` 2.5.0、`daachorse` 3.0.3、`dary_heap` 0.3.9、`dyn-clone` 1.0.20、`endi` 1.1.1、`event-listener` 5.4.2、`event-listener-strategy` 0.5.4、`fastrand` 2.5.0、`flume` 0.12.0、`futures-lite` 2.6.1、`glow` 0.17.0、`inventory` 0.3.25、`itoa` 1.0.19、`khronos-egl` 6.0.0、`lazy_static` 1.5.1、`linux-raw-sys` 0.12.1、`minimal-lexical` 0.2.1、`monostate` 0.1.18、`once_cell` 1.21.4、`ordered-stream` 0.2.0、`parking` 2.2.1、`pin-project` 1.2.0、`pin-project-lite` 0.2.17、`piper` 0.2.5、`polling` 3.11.0、`proc-macro-crate` 3.5.0、`proc-macro2` 1.0.107、`quote` 1.0.47、`ref-cast` 1.0.27、`rustc-hash` 1.1.0、`rustc-hash` 2.1.3、`rustix` 1.1.6、`serde` 1.0.229、`serde-saphyr` 1.3.0、`serde_bytes` 0.11.19、`serde_core` 1.0.229、`serde_derive_internals` 0.30.0、`serde_json` 1.0.154、`smol` 2.0.2、`smol_str` 0.3.7、`syn` 2.0.119、`syn` 3.0.10、`thiserror` 1.0.69、`thiserror` 2.0.21、`typed-path` 0.13.0、`unicode-ident` 1.0.27、`utf-8` 0.7.6、`utf8-zero` 0.8.1、`waker-fn` 1.2.0、`x11` 2.21.0、`zbus-lockstep` 0.5.2、`zed-font-kit` 0.14.1-zed、`zmij` 1.0.23、`zvariant_utils` 4.2.0
+使用這個全文的 crate（71 個）：`adler2` 2.0.1、`allocator-api2` 0.2.21、`anyhow` 1.0.104、`async-channel` 2.5.0、`async-executor` 1.14.1、`async-fs` 2.2.0、`async-io` 2.6.0、`async-lock` 3.5.0、`async-net` 2.0.0、`async-process` 2.5.0、`async-signal` 0.2.14、`async-task` 4.7.1、`atomic-waker` 1.1.2、`blocking` 1.7.0、`borsh` 1.8.1、`c-enum` 0.2.3、`concurrent-queue` 2.5.0、`daachorse` 3.0.3、`dary_heap` 0.3.9、`dyn-clone` 1.0.20、`endi` 1.1.1、`event-listener` 5.4.2、`event-listener-strategy` 0.5.4、`fastrand` 2.5.0、`flume` 0.12.0、`futures-lite` 2.6.1、`glow` 0.17.0、`inventory` 0.3.25、`itoa` 1.0.19、`khronos-egl` 6.0.0、`lazy_static` 1.5.1、`linux-raw-sys` 0.12.1、`minimal-lexical` 0.2.1、`monostate` 0.1.18、`once_cell` 1.21.4、`ordered-stream` 0.2.0、`parking` 2.2.1、`perf-event-data` 0.1.8、`pin-project` 1.2.0、`pin-project-lite` 0.2.17、`piper` 0.2.5、`polling` 3.11.0、`proc-macro-crate` 3.5.0、`proc-macro2` 1.0.107、`quote` 1.0.47、`ref-cast` 1.0.27、`rustc-hash` 1.1.0、`rustc-hash` 2.1.3、`rustix` 1.1.6、`serde` 1.0.229、`serde-saphyr` 1.3.0、`serde_bytes` 0.11.19、`serde_core` 1.0.229、`serde_derive_internals` 0.30.0、`serde_json` 1.0.154、`smol` 2.0.2、`smol_str` 0.3.7、`syn` 2.0.119、`syn` 3.0.10、`thiserror` 1.0.69、`thiserror` 2.0.21、`typed-path` 0.13.0、`unicode-ident` 1.0.27、`utf-8` 0.7.6、`utf8-zero` 0.8.1、`waker-fn` 1.2.0、`x11` 2.21.0、`zbus-lockstep` 0.5.2、`zed-font-kit` 0.14.1-zed、`zmij` 1.0.23、`zvariant_utils` 4.2.0
 
 ```text
 Permission is hereby granted, free of charge, to any
@@ -3984,7 +4095,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §59 Copyright (c) 2019-2026 Sean McArthur & Hyper Contributors
+### §61 Copyright (c) 2019-2026 Sean McArthur & Hyper Contributors
 
 使用這個全文的 crate（1 個）：`http-body` 1.1.0
 
@@ -4016,7 +4127,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §60 Copyright (c) 2022 Eyal Kalderon
+### §62 Copyright (c) 2022 Eyal Kalderon
 
 使用這個全文的 crate（1 個）：`renderdoc-sys` 1.1.0
 
@@ -4048,9 +4159,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §61 The MIT License (MIT)
+### §63 The MIT License (MIT)
 
-使用這個全文的 crate（1 個）：`async-broadcast` 0.7.2
+使用這個全文的 crate（2 個）：`async-broadcast` 0.7.2、`futures-concurrency` 7.7.1
 
 ```text
 The MIT License (MIT)
@@ -4076,7 +4187,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §62 Copyright 2023 The Fuchsia Authors
+### §64 Copyright 2023 The Fuchsia Authors
 
 使用這個全文的 crate（1 個）：`zerocopy` 0.8.63
 
@@ -4108,7 +4219,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §63 Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors
+### §65 Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors
 
 使用這個全文的 crate（6 個）：`zbus` 5.19.0、`zbus` 6.4.0、`zbus_names` 4.3.5、`zbus_utils` 6.1.0、`zbus_xml` 5.2.1、`zvariant` 5.15.1
 
@@ -4140,7 +4251,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §64 Apache License
+### §66 Apache License
 
 使用這個全文的 crate（8 個）：`futures` 0.3.34、`futures-channel` 0.3.34、`futures-core` 0.3.34、`futures-executor` 0.3.34、`futures-io` 0.3.34、`futures-sink` 0.3.34、`futures-task` 0.3.34、`futures-util` 0.3.34
 
@@ -4349,7 +4460,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §65 Copyright (c) 2018 Josh Stone
+### §67 Copyright (c) 2018 Josh Stone
 
 使用這個全文的 crate（1 個）：`rayon-cond` 0.4.0
 
@@ -4381,7 +4492,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §66 BSD 3-Clause License
+### §68 BSD 3-Clause License
 
 使用這個全文的 crate（1 個）：`sha1_smol` 1.0.1
 
@@ -4448,7 +4559,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §67 Copyright 2019 Jeffrey Parsons
+### §69 Copyright 2019 Jeffrey Parsons
 
 使用這個全文的 crate（1 個）：`rangemap` 1.8.0
 
@@ -4462,7 +4573,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §68 Copyright (c) 2018-2025 The rust-random Project Developers
+### §70 Copyright (c) 2018-2025 The rust-random Project Developers
 
 使用這個全文的 crate（1 個）：`getrandom` 0.3.4
 
@@ -4495,7 +4606,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §69 Creative Commons CC0 1.0 Universal
+### §71 Creative Commons CC0 1.0 Universal
 
 使用這個全文的 crate（1 個）：`notify` 8.2.2
 
@@ -4543,7 +4654,7 @@ For these and/or other purposes and motivations, and without any expectation of 
      d. Affirmer understands and acknowledges that Creative Commons is not a party to this document and has no duty or obligation with respect to this CC0 or use of the Work.
 ```
 
-### §70 Copyright (c) 2015 François Bernier
+### §72 Copyright (c) 2015 François Bernier
 
 使用這個全文的 crate（1 個）：`base62` 2.2.6
 
@@ -4569,7 +4680,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §71 The MIT License (MIT)
+### §73 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`xmlwriter` 0.1.0
 
@@ -4597,7 +4708,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §72 Copyright (c) 2014-2026 Sean McArthur
+### §74 Copyright (c) 2014-2026 Sean McArthur
 
 使用這個全文的 crate（1 個）：`unicase` 2.10.0
 
@@ -4623,7 +4734,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §73 Copyright 2020 Nicolas Silva
+### §75 Copyright 2020 Nicolas Silva
 
 使用這個全文的 crate（1 個）：`etagere` 0.2.15
 
@@ -4643,7 +4754,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §74 BSD 2-Clause License
+### §76 BSD 2-Clause License
 
 使用這個全文的 crate（1 個）：`rav1e` 0.8.1
 
@@ -4675,7 +4786,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §75 Copyright (c) 2017-2023 Maik Klein, Maja Kądziołka
+### §77 Copyright (c) 2017-2023 Maik Klein, Maja Kądziołka
 
 使用這個全文的 crate（1 個）：`enumflags2` 0.7.12
 
@@ -4707,7 +4818,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §76 Copyright (c) 2022 The RustCrypto Project Developers
+### §78 Copyright (c) 2022 The RustCrypto Project Developers
 
 使用這個全文的 crate（1 個）：`inout` 0.1.4
 
@@ -4740,7 +4851,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §77 Copyright (c) 2022 Yevhenii Reizner
+### §79 Copyright (c) 2022 Yevhenii Reizner
 
 使用這個全文的 crate（1 個）：`strict-num` 0.1.1
 
@@ -4766,7 +4877,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §78 Copyright (c) 2022-2023 John Nunley
+### §80 Copyright (c) 2022-2023 John Nunley
 
 使用這個全文的 crate（1 個）：`xkeysym` 0.2.1
 
@@ -4784,7 +4895,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### §79 MIT License
+### §81 MIT License
 
 使用這個全文的 crate（1 個）：`xcursor` 0.3.11
 
@@ -4812,7 +4923,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §80 Copyright (c) 2021 RustCrypto Developers
+### §82 Copyright (c) 2021 RustCrypto Developers
 
 使用這個全文的 crate（1 個）：`crypto-common` 0.1.7
 
@@ -4844,9 +4955,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §81 Apache License
+### §83 Apache License
 
-使用這個全文的 crate（3 個）：`rand` 0.8.8、`rand` 0.9.5、`rand_chacha` 0.9.0
+使用這個全文的 crate（5 個）：`rand` 0.10.4、`rand` 0.8.8、`rand` 0.9.5、`rand_chacha` 0.9.0、`rand_xorshift` 0.5.0
 
 ```text
                               Apache License
@@ -5027,7 +5138,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-### §82 MIT OR Apache-2.0
+### §84 MIT OR Apache-2.0
 
 使用這個全文的 crate（1 個）：`typenum` 1.20.1
 
@@ -5035,9 +5146,9 @@ END OF TERMS AND CONDITIONS
 MIT OR Apache-2.0
 ```
 
-### §83 Copyright (c) 2014 Alex Crichton
+### §85 Copyright (c) 2014 Alex Crichton
 
-使用這個全文的 crate（8 個）：`backtrace` 0.3.77、`cfg-if` 1.0.5、`rustc-demangle` 0.1.28、`scoped-tls` 1.0.1、`socket2` 0.6.5、`wasm-bindgen` 0.2.130、`wasm-bindgen-macro-support` 0.2.130、`wasm-bindgen-shared` 0.2.130
+使用這個全文的 crate（9 個）：`backtrace` 0.3.77、`cfg-if` 1.0.5、`rustc-demangle` 0.1.28、`scoped-tls` 1.0.1、`socket2` 0.6.5、`wait-timeout` 0.2.1、`wasm-bindgen` 0.2.130、`wasm-bindgen-macro-support` 0.2.130、`wasm-bindgen-shared` 0.2.130
 
 ```text
 Copyright (c) 2014 Alex Crichton
@@ -5067,7 +5178,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §84 rust-lang/libm as a whole is available for use under the MIT license:
+### §86 rust-lang/libm as a whole is available for use under the MIT license:
 
 使用這個全文的 crate（1 個）：`libm` 0.2.16
 
@@ -5332,7 +5443,7 @@ have been licensed under extremely permissive terms.
 Copyright notices are retained in src/* files where relevant.
 ```
 
-### §85 Apache License
+### §87 Apache License
 
 使用這個全文的 crate（1 個）：`macro_rules_attribute` 0.2.3
 
@@ -5540,7 +5651,7 @@ Copyright notices are retained in src/* files where relevant.
    limitations under the License.
 ```
 
-### §86 The MIT License (MIT)
+### §88 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`rustybuzz` 0.20.1
 
@@ -5569,7 +5680,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §87 Apache License
+### §89 Apache License
 
 使用這個全文的 crate（2 個）：`linux-raw-sys` 0.12.1、`rustix` 1.1.6
 
@@ -5794,7 +5905,7 @@ the License, but only in their entirety and only with respect to the Combined
 Software.
 ```
 
-### §88 MIT License
+### §90 MIT License
 
 使用這個全文的 crate（1 個）：`maybe-rayon` 0.1.1
 
@@ -5822,7 +5933,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §89 The MIT License
+### §91 The MIT License
 
 使用這個全文的 crate（2 個）：`fancy-regex` 0.17.0、`fancy-regex` 0.19.2
 
@@ -5850,7 +5961,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §90 Copyright (c) 2017 Robert Grosse
+### §92 Copyright (c) 2017 Robert Grosse
 
 使用這個全文的 crate（1 個）：`stable_deref_trait` 1.2.1
 
@@ -5882,7 +5993,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §91 Copyright 2019 Caleb Zulawski
+### §93 Copyright 2019 Caleb Zulawski
 
 使用這個全文的 crate（1 個）：`multiversion` 0.8.1
 
@@ -5896,7 +6007,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §92 Apache License
+### §94 Apache License
 
 使用這個全文的 crate（1 個）：`typenum` 1.20.1
 
@@ -6104,7 +6215,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §93 The MIT License (MIT)
+### §95 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`crunchy` 0.2.4
 
@@ -6132,7 +6243,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §94 Mozilla Public License Version 2.0
+### §96 Mozilla Public License Version 2.0
 
 使用這個全文的 crate（1 個）：`option-ext` 0.2.0
 
@@ -6512,7 +6623,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
-### §95 Copyright Mozilla Foundation
+### §97 Copyright Mozilla Foundation
 
 使用這個全文的 crate（3 個）：`encoding_rs` 0.8.44、`utf8_iter` 1.1.0、`utf_types` 1.0.0
 
@@ -6544,7 +6655,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §96 Copyright (c) 2014-2020 Optimal Computing (NZ) Ltd
+### §98 Copyright (c) 2014-2020 Optimal Computing (NZ) Ltd
 
 使用這個全文的 crate（1 個）：`float-cmp` 0.9.0
 
@@ -6570,7 +6681,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 IN THE SOFTWARE.
 ```
 
-### §97 MIT License
+### §99 MIT License
 
 使用這個全文的 crate（2 個）：`miniz_oxide` 0.8.9、`miniz_oxide` 0.9.1
 
@@ -6602,7 +6713,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §98 MIT License
+### §100 MIT License
 
 使用這個全文的 crate（1 個）：`simd-adler32` 0.3.10
 
@@ -6630,7 +6741,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §99 Copyright (c) 2018-2024 The rust-random Project Developers
+### §101 Copyright (c) 2018-2024 The rust-random Project Developers
 
 使用這個全文的 crate（1 個）：`getrandom` 0.2.17
 
@@ -6663,7 +6774,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §100 Copyright (c) 2014 The Rust Project Developers
+### §102 Copyright (c) 2014 The Rust Project Developers
 
 使用這個全文的 crate（1 個）：`uuid` 1.29.3
 
@@ -6696,7 +6807,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §101 MIT License
+### §103 MIT License
 
 使用這個全文的 crate（1 個）：`rgb` 0.8.53
 
@@ -6724,7 +6835,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §102 The MIT License (MIT)
+### §104 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`freetype-sys` 0.20.1
 
@@ -6752,7 +6863,39 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §103 Copyright (c) 2022 Ivan Smirnov
+### §105 Copyright (c) 2014 Jorge Aparicio
+
+使用這個全文的 crate（2 個）：`criterion` 0.8.2、`criterion-plot` 0.8.2
+
+```text
+Copyright (c) 2014 Jorge Aparicio
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### §106 Copyright (c) 2022 Ivan Smirnov
 
 使用這個全文的 crate（1 個）：`qoi` 0.4.1
 
@@ -6784,7 +6927,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §104 Copyright (c) 2018 Carl Lerche
+### §107 Copyright (c) 2018 Carl Lerche
 
 使用這個全文的 crate（1 個）：`bytes` 1.12.1
 
@@ -6816,7 +6959,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §105 Apache License
+### §108 Apache License
 
 使用這個全文的 crate（1 個）：`rustls-pki-types` 1.16.0
 
@@ -7024,7 +7167,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §106 MIT License
+### §109 MIT License
 
 使用這個全文的 crate（1 個）：`core_maths` 0.1.1
 
@@ -7052,7 +7195,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §107 Copyright (c) Radzivon Bartoshyk. All rights reserved.
+### §110 Copyright (c) Radzivon Bartoshyk. All rights reserved.
 
 使用這個全文的 crate（2 個）：`moxcms` 0.8.1、`pxfm` 0.1.30
 
@@ -7085,7 +7228,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §108 Copyright (c) 2018 Victor Berger
+### §111 Copyright (c) 2018 Victor Berger
 
 使用這個全文的 crate（1 個）：`calloop` 0.14.5
 
@@ -7111,7 +7254,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §109 Copyright (c) 2019 The CryptoCorrosion Contributors
+### §112 Copyright (c) 2019 The CryptoCorrosion Contributors
 
 使用這個全文的 crate（1 個）：`ppv-lite86` 0.2.21
 
@@ -7143,7 +7286,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §110 Copyright (c) Ulrik Sverdrup "bluss" 2015-2023
+### §113 Copyright (c) Ulrik Sverdrup "bluss" 2015-2023
 
 使用這個全文的 crate（1 個）：`arrayvec` 0.7.8
 
@@ -7175,7 +7318,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §111 Copyright (c) 2014-2019 Geoffroy Couprie
+### §114 Copyright (c) 2014-2019 Geoffroy Couprie
 
 使用這個全文的 crate（2 個）：`nom` 7.1.3、`nom` 8.0.0
 
@@ -7202,7 +7345,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §112 Copyright (c) 2017 tokio-jsonrpc developers
+### §115 Copyright (c) 2017 tokio-jsonrpc developers
 
 使用這個全文的 crate（1 個）：`signal-hook-registry` 1.4.8
 
@@ -7234,7 +7377,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §113 MIT License
+### §116 MIT License
 
 使用這個全文的 crate（6 個）：`half` 2.7.1、`ident_case` 1.0.1、`linebender_resource_handle` 0.1.1、`simdutf8` 0.1.5、`str_indices` 0.4.4、`widestring` 1.2.1
 
@@ -7260,7 +7403,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §114 Apache License
+### §117 Apache License
 
 使用這個全文的 crate（3 個）：`atspi` 0.29.0、`atspi-common` 0.13.0、`atspi-proxies` 0.13.0
 
@@ -7468,7 +7611,7 @@ Apache License
    limitations under the License.
 ```
 
-### §115 Apache License
+### §118 Apache License
 
 使用這個全文的 crate（1 個）：`unicode-script` 0.5.9
 
@@ -7676,7 +7819,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §116 Copyright (c) 2018-2026 The rust-random Project Developers
+### §119 Copyright (c) 2018-2026 The rust-random Project Developers
 
 使用這個全文的 crate（1 個）：`getrandom` 0.4.3
 
@@ -7709,7 +7852,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §117 Apache License
+### §120 Apache License
 
 使用這個全文的 crate（1 個）：`web-time` 1.1.0
 
@@ -7917,9 +8060,9 @@ DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### §118 The MIT License (MIT)
+### §121 The MIT License (MIT)
 
-使用這個全文的 crate（3 個）：`crossbeam-deque` 0.8.8、`crossbeam-epoch` 0.9.21、`crossbeam-utils` 0.8.23
+使用這個全文的 crate（4 個）：`crossbeam-deque` 0.8.8、`crossbeam-epoch` 0.9.21、`crossbeam-queue` 0.3.14、`crossbeam-utils` 0.8.23
 
 ```text
 The MIT License (MIT)
@@ -7951,7 +8094,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §119 The MIT License (MIT)
+### §122 The MIT License (MIT)
 
 使用這個全文的 crate（2 個）：`rust-embed` 8.14.0、`rust-embed-utils` 8.14.0
 
@@ -7979,7 +8122,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §120 The MIT License (MIT)
+### §123 The MIT License (MIT)
 
 使用這個全文的 crate（3 個）：`spin` 0.10.1、`spin` 0.9.9、`zip` 9.7.3
 
@@ -8007,7 +8150,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §121 The MIT License (MIT)
+### §124 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`color_quant` 1.1.0
 
@@ -8035,7 +8178,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §122 Copyright (c) 2026 Zeeshan Ali Khan & zcheapstr contributors
+### §125 Copyright (c) 2026 Zeeshan Ali Khan & zcheapstr contributors
 
 使用這個全文的 crate（1 個）：`zcheapstr` 1.3.0
 
@@ -8067,7 +8210,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §123 The MIT License (MIT)
+### §126 The MIT License (MIT)
 
 使用這個全文的 crate（3 個）：`fontdb` 0.23.0、`unicode-bidi-mirroring` 0.4.0、`unicode-ccc` 0.4.0
 
@@ -8095,7 +8238,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §124 The MIT License (MIT)
+### §127 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`raw-cpuid` 11.6.0
 
@@ -8123,7 +8266,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §125 Copyright 2022 Martin Algesten
+### §128 Copyright 2022 Martin Algesten
 
 使用這個全文的 crate（1 個）：`ureq-proto` 0.7.1
 
@@ -8137,7 +8280,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §126 Except as otherwise noted, this project is licensed under the following
+### §129 Except as otherwise noted, this project is licensed under the following
 
 使用這個全文的 crate（1 個）：`rustls-webpki` 0.103.17
 
@@ -8163,7 +8306,7 @@ The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
 ```
 
-### §127 Apache License
+### §130 Apache License
 
 使用這個全文的 crate（1 個）：`ash` 0.38.0+1.3.281
 
@@ -8237,7 +8380,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §128 Copyright (c) 2016-2020 RustCrypto Developers
+### §131 Copyright (c) 2016-2020 RustCrypto Developers
 
 使用這個全文的 crate（1 個）：`cipher` 0.4.4
 
@@ -8269,7 +8412,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §129 MIT License
+### §132 MIT License
 
 使用這個全文的 crate（1 個）：`sys-locale` 0.3.2
 
@@ -8297,7 +8440,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §130 Apache License
+### §133 Apache License
 
 使用這個全文的 crate（1 個）：`enumflags2` 0.7.12
 
@@ -8372,7 +8515,220 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §131 MIT License
+### §134 Copyright 2022 - 2025 Zed Industries, Inc.
+
+使用這個全文的 crate（5 個）：`gpui-fast` 0.1.17、`gpui-fast-linux` 0.1.17、`gpui-fast-platform` 0.1.17、`gpui-fast-wgpu` 0.1.17、`gpui-fast-windows` 0.1.17
+
+```text
+Copyright 2022 - 2025 Zed Industries, Inc.
+Copyright 2026 Longbridge.
+
+
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+
+   1. Definitions.
+
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+
+   END OF TERMS AND CONDITIONS
+```
+
+### §135 MIT License
 
 使用這個全文的 crate（1 個）：`macro_rules_attribute` 0.2.3
 
@@ -8400,7 +8756,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §132 Copyright (c) 2015 Keegan McAllister
+### §136 Copyright (c) 2015 Keegan McAllister
 
 使用這個全文的 crate（2 個）：`futf` 0.1.5、`tendril` 0.4.3
 
@@ -8432,7 +8788,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §133 MIT License
+### §137 MIT License
 
 使用這個全文的 crate（1 個）：`crc32fast` 1.5.4
 
@@ -8460,7 +8816,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §134 Copyright (c) 2012-2013 Mozilla Foundation
+### §138 Copyright (c) 2012-2013 Mozilla Foundation
 
 使用這個全文的 crate（2 個）：`euclid` 0.22.14、`string_cache` 0.8.9
 
@@ -8492,7 +8848,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §135 ========================================================================
+### §139 ========================================================================
 
 使用這個全文的 crate（2 個）：`atomic-waker` 1.1.2、`futures-lite` 2.6.1
 
@@ -8544,7 +8900,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §136 Apache License
+### §140 Apache License
 
 使用這個全文的 crate（32 個）：`allocator-api2` 0.2.21、`anyhow` 1.0.104、`constant_time_eq` 0.6.1、`daachorse` 3.0.3、`dary_heap` 0.3.9、`dyn-clone` 1.0.20、`inventory` 0.3.25、`itoa` 1.0.19、`libc` 0.2.191、`litrs` 1.0.1、`monostate` 0.1.18、`proc-macro2` 1.0.107、`quote` 1.0.47、`ref-cast` 1.0.27、`rustc-hash` 2.1.3、`ryu` 1.0.23、`serde` 1.0.229、`serde-saphyr` 1.3.0、`serde_bytes` 0.11.19、`serde_core` 1.0.229、`serde_derive_internals` 0.30.0、`serde_json` 1.0.154、`serde_urlencoded` 0.7.1、`syn` 2.0.119、`syn` 3.0.10、`thiserror` 1.0.69、`thiserror` 2.0.21、`typed-path` 0.13.0、`unicode-ident` 1.0.27、`utf-8` 0.7.6、`utf8-zero` 0.8.1、`utf8parse` 0.2.2
 
@@ -8727,7 +9083,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-### §137 Copyright (c) 2018-2022 RustCrypto Developers
+### §141 Copyright (c) 2018-2022 RustCrypto Developers
 
 使用這個全文的 crate（1 個）：`cbc` 0.1.2
 
@@ -8760,9 +9116,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §138 Copyright (c) 2014 The Rust Project Developers
+### §142 Copyright (c) 2014 The Rust Project Developers
 
-使用這個全文的 crate（16 個）：`bitflags` 1.3.2、`bitflags` 2.13.2、`glob` 0.3.4、`log` 0.4.35、`num` 0.4.3、`num-bigint` 0.4.8、`num-bigint-dig` 0.9.1、`num-complex` 0.4.6、`num-integer` 0.1.47、`num-iter` 0.1.46、`num-rational` 0.4.2、`num-traits` 0.2.19、`regex` 1.13.2、`regex-automata` 0.4.19、`regex-syntax` 0.8.12、`serde_plain` 1.0.2
+使用這個全文的 crate（17 個）：`bitflags` 1.3.2、`bitflags` 2.13.2、`glob` 0.3.4、`log` 0.4.35、`num` 0.4.3、`num-bigint` 0.4.8、`num-bigint-dig` 0.9.1、`num-complex` 0.4.6、`num-integer` 0.1.47、`num-iter` 0.1.46、`num-rational` 0.4.2、`num-traits` 0.2.19、`page_size` 0.6.0、`regex` 1.13.2、`regex-automata` 0.4.19、`regex-syntax` 0.8.12、`serde_plain` 1.0.2
 
 ```text
 Copyright (c) 2014 The Rust Project Developers
@@ -8792,7 +9148,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §139 Copyright (c) 2019 Nick Fitzgerald
+### §143 Copyright (c) 2019 Nick Fitzgerald
 
 使用這個全文的 crate（1 個）：`bumpalo` 3.20.4
 
@@ -8824,7 +9180,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §140 Copyright (c) 2017 Contributors
+### §144 Copyright (c) 2017 Contributors
 
 使用這個全文的 crate（1 個）：`fnv` 1.0.7
 
@@ -8856,7 +9212,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §141 Copyright (c) 2016 Alex Crichton
+### §145 Copyright (c) 2016 Alex Crichton
 
 使用這個全文的 crate（8 個）：`futures` 0.3.34、`futures-channel` 0.3.34、`futures-core` 0.3.34、`futures-executor` 0.3.34、`futures-io` 0.3.34、`futures-sink` 0.3.34、`futures-task` 0.3.34、`futures-util` 0.3.34
 
@@ -8889,7 +9245,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §142 The MIT License (MIT)
+### §146 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`sysinfo` 0.31.4
 
@@ -8917,7 +9273,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §143 This project is licensed under either of
+### §147 This project is licensed under either of
 
 使用這個全文的 crate（1 個）：`bstr` 1.14.0
 
@@ -8932,7 +9288,7 @@ This project is licensed under either of
 at your option.
 ```
 
-### §144 Apache License
+### §148 Apache License
 
 使用這個全文的 crate（1 個）：`iana-time-zone` 0.1.65
 
@@ -9140,7 +9496,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §145 Copyright (c) 2018-2019 dirs-rs contributors
+### §149 Copyright (c) 2018-2019 dirs-rs contributors
 
 使用這個全文的 crate（4 個）：`dirs` 5.0.1、`dirs` 6.0.0、`dirs-sys` 0.4.1、`dirs-sys` 0.5.0
 
@@ -9166,7 +9522,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §146 Copyright (c) 2026 The Rust Project Developers
+### §150 Copyright (c) 2026 The Rust Project Developers
 
 使用這個全文的 crate（1 個）：`bit-set` 0.10.0
 
@@ -9198,7 +9554,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §147 The MIT License (MIT)
+### §151 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`bstr` 1.14.0
 
@@ -9226,7 +9582,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §148 ========================================================================
+### §152 ========================================================================
 
 使用這個全文的 crate（1 個）：`normpath` 1.5.2
 
@@ -9677,7 +10033,7 @@ https://github.com/nvzqz/fruity/blob/320efcf715c2c5fbd2f3084f671f2be2e03a6f2b/LI
    limitations under the License.
 ```
 
-### §149 Copyright (c) 2021 Orson Peters <orsonpeters@gmail.com>
+### §153 Copyright (c) 2021 Orson Peters <orsonpeters@gmail.com>
 
 使用這個全文的 crate（1 個）：`slotmap` 1.1.1
 
@@ -9703,7 +10059,7 @@ the following restrictions:
  3. This notice may not be removed or altered from any source distribution.
 ```
 
-### §150 Copyright 2022 Caleb Zulawski
+### §154 Copyright 2022 Caleb Zulawski
 
 使用這個全文的 crate（1 個）：`target-features` 0.1.6
 
@@ -9717,7 +10073,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §151 Copyright (c) 2011 Google Inc. All rights reserved.
+### §155 Copyright (c) 2011 Google Inc. All rights reserved.
 
 使用這個全文的 crate（2 個）：`tiny-skia` 0.11.4、`tiny-skia-path` 0.11.4
 
@@ -9754,7 +10110,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §152 Apache License
+### §156 Apache License
 
 使用這個全文的 crate（4 個）：`rand_core` 0.10.1、`rand_core` 0.6.4、`rand_core` 0.9.5、`rand_distr` 0.5.1
 
@@ -9948,9 +10304,9 @@ APPENDIX: How to apply the Apache License to your work.
    identification within third-party archives.
 ```
 
-### §153 Copyright (c) Individual contributors
+### §157 Copyright (c) Individual contributors
 
-使用這個全文的 crate（19 個）：`annotate-snippets` 0.12.18、`anstream` 1.0.0、`anstyle` 1.0.14、`anstyle-parse` 1.0.0、`anstyle-query` 1.1.5、`anstyle-wincon` 3.0.11、`colorchoice` 1.0.5、`env_filter` 2.0.0、`env_logger` 0.11.11、`is_terminal_polyfill` 1.70.2、`once_cell_polyfill` 1.70.2、`serde_spanned` 0.6.9、`toml` 0.8.23、`toml_datetime` 0.6.11、`toml_datetime` 1.1.3+spec-1.1.0、`toml_edit` 0.22.27、`toml_edit` 0.25.19+spec-1.1.0、`toml_parser` 1.1.5+spec-1.1.0、`toml_write` 0.1.2
+使用這個全文的 crate（22 個）：`annotate-snippets` 0.12.18、`anstream` 1.0.0、`anstyle` 1.0.14、`anstyle-parse` 1.0.0、`anstyle-query` 1.1.5、`anstyle-wincon` 3.0.11、`clap` 4.6.10、`clap_builder` 4.6.10、`clap_lex` 1.1.2、`colorchoice` 1.0.5、`env_filter` 2.0.0、`env_logger` 0.11.11、`is_terminal_polyfill` 1.70.2、`once_cell_polyfill` 1.70.2、`serde_spanned` 0.6.9、`toml` 0.8.23、`toml_datetime` 0.6.11、`toml_datetime` 1.1.3+spec-1.1.0、`toml_edit` 0.22.27、`toml_edit` 0.25.19+spec-1.1.0、`toml_parser` 1.1.5+spec-1.1.0、`toml_write` 0.1.2
 
 ```text
 Copyright (c) Individual contributors
@@ -9974,7 +10330,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §154 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
+### §158 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
 
 使用這個全文的 crate（1 個）：`rustls` 0.23.46
 
@@ -10006,7 +10362,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §155 Copyright (c) 2022-2026 The RustCrypto Project Developers
+### §159 Copyright (c) 2022-2026 The RustCrypto Project Developers
 
 使用這個全文的 crate（1 個）：`hybrid-array` 0.4.15
 
@@ -10038,7 +10394,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §156 Copyright © 2021 The pdf-rs contributers.
+### §160 Copyright © 2021 The pdf-rs contributers.
 
 使用這個全文的 crate（1 個）：`fax` 0.2.7
 
@@ -10052,7 +10408,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §157 Copyright (c) 2016--2023
+### §161 Copyright (c) 2016--2023
 
 使用這個全文的 crate（1 個）：`equivalent` 1.0.3
 
@@ -10084,7 +10440,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §158 MIT License
+### §162 MIT License
 
 使用這個全文的 crate（2 個）：`is-docker` 0.2.0、`is-wsl` 0.4.0
 
@@ -10112,7 +10468,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §159 Copyright (c) 2020-2026 The RustCrypto Project Developers
+### §163 Copyright (c) 2020-2026 The RustCrypto Project Developers
 
 使用這個全文的 crate（2 個）：`const-oid` 0.10.3、`cpufeatures` 0.3.1
 
@@ -10144,7 +10500,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §160 Copyright (c) 2020 Chad Brokaw
+### §164 Copyright (c) 2020 Chad Brokaw
 
 使用這個全文的 crate（2 個）：`swash` 0.2.10、`zeno` 0.3.3
 
@@ -10176,9 +10532,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §161 Copyright 2022 - 2025 Zed Industries, Inc.
+### §165 Copyright 2022 - 2025 Zed Industries, Inc.
 
-使用這個全文的 crate（13 個）：`gpui-pre` 0.3.12、`gpui-pre-collections` 0.3.12、`gpui-pre-http-client` 0.3.12、`gpui-pre-linux` 0.3.12、`gpui-pre-platform` 0.3.12、`gpui-pre-refineable` 0.3.12、`gpui-pre-scheduler` 0.3.12、`gpui-pre-shared-string` 0.3.12、`gpui-pre-sum-tree` 0.3.12、`gpui-pre-util` 0.3.12、`gpui-pre-wgpu` 0.3.12、`gpui-pre-windows` 0.3.12、`gpui-pre-ztracing` 0.3.12
+使用這個全文的 crate（14 個）：`gpui-pre` 0.3.12、`gpui-pre-bench-metrics` 0.3.12、`gpui-pre-collections` 0.3.12、`gpui-pre-http-client` 0.3.12、`gpui-pre-linux` 0.3.12、`gpui-pre-platform` 0.3.12、`gpui-pre-refineable` 0.3.12、`gpui-pre-scheduler` 0.3.12、`gpui-pre-shared-string` 0.3.12、`gpui-pre-sum-tree` 0.3.12、`gpui-pre-util` 0.3.12、`gpui-pre-wgpu` 0.3.12、`gpui-pre-windows` 0.3.12、`gpui-pre-ztracing` 0.3.12
 
 ```text
 Copyright 2022 - 2025 Zed Industries, Inc.
@@ -10405,7 +10761,7 @@ Apache License
    END OF TERMS AND CONDITIONS
 ```
 
-### §162 Copyright (c) 2015
+### §166 Copyright (c) 2015
 
 使用這個全文的 crate（4 個）：`either` 1.19.0、`itertools` 0.11.0、`itertools` 0.13.0、`itertools` 0.14.0
 
@@ -10437,7 +10793,35 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §163 The MIT License (MIT)
+### §167 The MIT License (MIT)
+
+使用這個全文的 crate（1 個）：`oorandom` 11.1.5
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2019 Simon Heath
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### §168 The MIT License (MIT)
 
 使用這個全文的 crate（2 個）：`gif` 0.13.3、`gif` 0.14.2
 
@@ -10465,7 +10849,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §164 The MIT License (MIT)
+### §169 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`weezl` 0.1.12
 
@@ -10493,7 +10877,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §165 MIT License
+### §170 MIT License
 
 使用這個全文的 crate（2 個）：`miniz_oxide` 0.8.9、`miniz_oxide` 0.9.1
 
@@ -10524,7 +10908,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §166 Copyright (c) 2017 Brian Langenberger
+### §171 Copyright (c) 2017 Brian Langenberger
 
 使用這個全文的 crate（1 個）：`bitstream-io` 4.10.0
 
@@ -10556,7 +10940,15 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §167 // Copyright 2015-2016 Brian Smith.
+### §172 ../LICENSE
+
+使用這個全文的 crate（3 個）：`plotters` 0.3.7、`plotters-backend` 0.3.7、`plotters-svg` 0.3.7
+
+```text
+../LICENSE
+```
+
+### §173 // Copyright 2015-2016 Brian Smith.
 
 使用這個全文的 crate（1 個）：`untrusted` 0.9.0
 
@@ -10576,7 +10968,7 @@ DEALINGS IN THE SOFTWARE.
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### §168 Copyright (c) 2019 Fontations Developers
+### §174 Copyright (c) 2019 Fontations Developers
 
 使用這個全文的 crate（3 個）：`font-types` 0.12.7、`read-fonts` 0.41.0、`skrifa` 0.44.0
 
@@ -10608,7 +11000,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §169 Copyright (c) 2015 The Rust Project Developers
+### §175 Copyright (c) 2015 The Rust Project Developers
 
 使用這個全文的 crate（9 個）：`gimli` 0.34.0、`heck` 0.5.0、`unicode-bidi` 0.3.18、`unicode-id` 0.3.7、`unicode-normalization` 0.1.26、`unicode-normalization-alignments` 0.1.12、`unicode-properties` 0.1.5、`unicode-segmentation` 1.13.3、`unicode-width` 0.2.3
 
@@ -10640,7 +11032,215 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §170 Copyright (c) 2015 Victor Berger
+### §176 Apache License
+
+使用這個全文的 crate（1 個）：`borsh` 1.8.1
+
+```text
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright 2019 Near
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+```
+
+### §177 Copyright (c) 2015 Victor Berger
 
 使用這個全文的 crate（1 個）：`dlib` 0.5.3
 
@@ -10666,7 +11266,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §171 MIT License
+### §178 MIT License
 
 使用這個全文的 crate（1 個）：`precomputed-hash` 0.1.1
 
@@ -10694,7 +11294,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §172 ISC License (ISC)
+### §179 ISC License (ISC)
 
 使用這個全文的 crate（1 個）：`rustls` 0.23.46
 
@@ -10716,7 +11316,7 @@ ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ```
 
-### §173 Copyright (c) 2020 Project Developers
+### §180 Copyright (c) 2020 Project Developers
 
 使用這個全文的 crate（1 個）：`litrs` 1.0.1
 
@@ -10748,7 +11348,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §174 This is free and unencumbered software released into the public domain.
+### §181 This is free and unencumbered software released into the public domain.
 
 使用這個全文的 crate（12 個）：`aho-corasick` 1.1.5、`byteorder` 1.5.0、`byteorder-lite` 0.1.0、`globset` 0.4.21、`ignore` 0.4.34、`jiff` 0.2.46、`jiff-core` 0.1.8、`memchr` 2.8.3、`same-file` 1.0.6、`termcolor` 1.4.1、`walkdir` 2.5.0、`winapi-util` 0.1.11
 
@@ -10779,7 +11379,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ```
 
-### §175 MIT License
+### §182 MIT License
 
 使用這個全文的 crate（1 個）：`ureq` 3.5.2
 
@@ -10807,7 +11407,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §176 Copyright (c) Hanno Braun and contributors
+### §183 Copyright (c) Hanno Braun and contributors
 
 使用這個全文的 crate（2 個）：`inotify` 0.11.5、`inotify-sys` 0.1.8
 
@@ -10827,7 +11427,7 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ```
 
-### §177 Apache License
+### §184 Apache License
 
 使用這個全文的 crate（1 個）：`interprocess` 2.4.9
 
@@ -11010,9 +11610,9 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-### §178 Apache License
+### §185 Apache License
 
-使用這個全文的 crate（8 個）：`bit-set` 0.10.0、`bit-set` 0.8.0、`bit-vec` 0.8.0、`bit-vec` 0.9.1、`downcast-rs` 1.2.1、`minimal-lexical` 0.2.1、`presser` 0.3.1、`qoi` 0.4.1
+使用這個全文的 crate（10 個）：`bit-set` 0.10.0、`bit-set` 0.11.1、`bit-set` 0.8.0、`bit-vec` 0.10.2、`bit-vec` 0.8.0、`bit-vec` 0.9.1、`downcast-rs` 1.2.1、`minimal-lexical` 0.2.1、`presser` 0.3.1、`qoi` 0.4.1
 
 ```text
                               Apache License
@@ -11218,7 +11818,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §179 GNU GENERAL PUBLIC LICENSE
+### §186 GNU GENERAL PUBLIC LICENSE
 
 使用這個全文的 crate（1 個）：`self_cell` 1.3.0
 
@@ -11564,7 +12164,7 @@ library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.
 ```
 
-### §180 Copyright (c) 2016-2026 The RustCrypto Project Developers
+### §187 Copyright (c) 2016-2026 The RustCrypto Project Developers
 
 使用這個全文的 crate（1 個）：`sha2` 0.11.1
 
@@ -11599,7 +12199,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §181 Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
+### §188 Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
 
 使用這個全文的 crate（1 個）：`encoding_rs` 0.8.44
 
@@ -11632,7 +12232,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §182 Copyright 2019 The Fuchsia Authors.
+### §189 Copyright 2019 The Fuchsia Authors.
 
 使用這個全文的 crate（1 個）：`zerocopy` 0.8.63
 
@@ -11663,7 +12263,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §183 Copyright (c) 2019 Daniel "Lokathor" Gee.
+### §190 Copyright (c) 2019 Daniel "Lokathor" Gee.
 
 使用這個全文的 crate（2 個）：`bytemuck` 1.25.2、`tinyvec` 1.13.3
 
@@ -11681,7 +12281,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### §184 Copyright (c) 2017-2020 The Rust Project Developers
+### §191 Copyright (c) 2017-2020 The Rust Project Developers
 
 使用這個全文的 crate（1 個）：`core_detect` 1.0.0
 
@@ -11713,7 +12313,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §185 Copyright (C) Jonas Schievink <jonasschievink@gmail.com>
+### §192 Copyright (C) Jonas Schievink <jonasschievink@gmail.com>
 
 使用這個全文的 crate（1 個）：`adler2` 2.0.1
 
@@ -11732,7 +12332,7 @@ AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### §186 Copyright (c) 2014 The html5ever Project Developers
+### §193 Copyright (c) 2014 The html5ever Project Developers
 
 使用這個全文的 crate（4 個）：`html5ever` 0.27.0、`markup5ever` 0.12.1、`markup5ever_rcdom` 0.3.0、`xml5ever` 0.18.1
 
@@ -11764,7 +12364,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §187 Copyright (c) 2022-2023 John Nunley
+### §194 Copyright (c) 2022-2023 John Nunley
 
 使用這個全文的 crate（1 個）：`xkeysym` 0.2.1
 
@@ -11790,7 +12390,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §188 Copyright (c) 2014 Chris Wong
+### §195 Copyright (c) 2014 Chris Wong
 
 使用這個全文的 crate（1 個）：`errno` 0.3.15
 
@@ -11822,7 +12422,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §189 Copyright (c) 2020 Chad Brokaw
+### §196 Copyright (c) 2020 Chad Brokaw
 
 使用這個全文的 crate（1 個）：`yazi` 0.2.2
 
@@ -11848,7 +12448,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §190 Copyright (c) 2019 Tokio Contributors
+### §197 Copyright (c) 2019 Tokio Contributors
 
 使用這個全文的 crate（2 個）：`tracing` 0.1.44、`tracing-core` 0.1.36
 
@@ -11880,7 +12480,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §191 The MIT License (MIT)
+### §198 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`derive_more` 2.1.1
 
@@ -11908,7 +12508,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §192 Copyright (c) 2019 Colin Rothfels
+### §199 Copyright (c) 2019 Colin Rothfels
 
 使用這個全文的 crate（3 個）：`font-types` 0.11.3、`read-fonts` 0.37.0、`skrifa` 0.40.0
 
@@ -11940,7 +12540,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §193 Apache License
+### §200 Apache License
 
 使用這個全文的 crate（2 個）：`adler2` 2.0.1、`proc-macro-crate` 3.5.0
 
@@ -12148,7 +12748,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §194 Copyright (c) 2015 Steven Allen
+### §201 Copyright (c) 2015 Steven Allen
 
 使用這個全文的 crate（1 個）：`tempfile` 3.27.0
 
@@ -12180,7 +12780,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §195 Copyright (c) The rust-url developers
+### §202 Copyright (c) The rust-url developers
 
 使用這個全文的 crate（1 個）：`idna_adapter` 1.2.2
 
@@ -12212,7 +12812,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §196 Copyright (c) 2018-2026 The Rand Project Developers
+### §203 Copyright (c) 2018-2026 The Rand Project Developers
 
 使用這個全文的 crate（1 個）：`rand_core` 0.10.1
 
@@ -12244,7 +12844,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §197 Copyright (c) 2014 Sean McArthur
+### §204 Copyright (c) 2014 Sean McArthur
 
 使用這個全文的 crate（1 個）：`mime` 0.3.18
 
@@ -12270,7 +12870,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §198 Apache License
+### §205 Apache License
 
 使用這個全文的 crate（1 個）：`http` 1.5.0
 
@@ -12478,7 +13078,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §199 MIT License
+### §206 MIT License
 
 使用這個全文的 crate（1 個）：`strum` 0.28.0
 
@@ -12506,7 +13106,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §200 Copyright (c) 2018-2026 The RustCrypto Project Developers
+### §207 Copyright (c) 2018-2026 The RustCrypto Project Developers
 
 使用這個全文的 crate（1 個）：`zeroize` 1.9.2
 
@@ -12538,7 +13138,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §201 The MIT License (MIT)
+### §208 The MIT License (MIT)
 
 使用這個全文的 crate（2 個）：`derive_builder` 0.20.2、`derive_builder_core` 0.20.2
 
@@ -12566,7 +13166,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §202 Copyright (c) 2019 Carl Lerche
+### §209 Copyright (c) 2019 Carl Lerche
 
 使用這個全文的 crate（1 個）：`slab` 0.4.12
 
@@ -12598,7 +13198,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §203 Copyright (c) 2017 Artyom Pavlov
+### §210 Copyright (c) 2017 Artyom Pavlov
 
 使用這個全文的 crate（1 個）：`pbkdf2` 0.12.2
 
@@ -12631,7 +13231,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §204 MIT License
+### §211 MIT License
 
 使用這個全文的 crate（2 個）：`darling` 0.20.11、`darling_core` 0.20.11
 
@@ -12659,7 +13259,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §205 BSD Zero Clause License
+### §212 BSD Zero Clause License
 
 使用這個全文的 crate（1 個）：`interprocess` 2.4.9
 
@@ -12680,7 +13280,7 @@ OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### §206 Apache License
+### §213 Apache License
 
 使用這個全文的 crate（2 個）：`moxcms` 0.8.1、`pxfm` 0.1.30
 
@@ -12888,7 +13488,7 @@ PERFORMANCE OF THIS SOFTWARE.
    limitations under the License.
 ```
 
-### §207 Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl>
+### §214 Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl>
 
 使用這個全文的 crate（1 個）：`rustls-pki-types` 1.16.0
 
@@ -12920,7 +13520,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §208 Copyright 2019 as-raw-xcb-connection Contributers
+### §215 Copyright 2019 as-raw-xcb-connection Contributers
 
 使用這個全文的 crate（1 個）：`as-raw-xcb-connection` 1.0.1
 
@@ -12952,7 +13552,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §209 The MIT License (MIT)
+### §216 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`cosmic-text` 0.19.0
 
@@ -12980,7 +13580,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §210 MIT License
+### §217 MIT License
 
 使用這個全文的 crate（1 個）：`equator` 0.4.2
 
@@ -13008,7 +13608,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §211 Copyright (c) 2018-2025 The RustCrypto Project Developers
+### §218 Copyright (c) 2018-2025 The RustCrypto Project Developers
 
 使用這個全文的 crate（1 個）：`block-buffer` 0.12.1
 
@@ -13040,7 +13640,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §212 Copyright (c) 2015 The unicode-categories Developers
+### §219 Copyright (c) 2015 The unicode-categories Developers
 
 使用這個全文的 crate（1 個）：`unicode_categories` 0.1.1
 
@@ -13066,7 +13666,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §213 Permission is hereby granted, free of charge, to any person obtaining a
+### §220 Permission is hereby granted, free of charge, to any person obtaining a
 
 使用這個全文的 crate（1 個）：`constant_time_eq` 0.6.1
 
@@ -13087,7 +13687,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §214 ========================================================================
+### §221 ========================================================================
 
 使用這個全文的 crate（1 個）：`parking` 2.2.1
 
@@ -13103,7 +13703,7 @@ option. All files in the project carrying such notice may not be
 copied, modified, or distributed except according to those terms.
 ```
 
-### §215 BSD Zero Clause License
+### §222 BSD Zero Clause License
 
 使用這個全文的 crate（1 個）：`enum-iterator` 2.3.0
 
@@ -13124,7 +13724,35 @@ OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### §216 MIT License
+### §223 MIT License
+
+使用這個全文的 crate（1 個）：`alloca` 0.4.0
+
+```text
+MIT License
+
+Copyright (c) 2021 Adel Prokurov
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### §224 MIT License
 
 使用這個全文的 crate（1 個）：`raw-window-handle` 0.6.2
 
@@ -13152,7 +13780,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §217 MIT License
+### §225 MIT License
 
 使用這個全文的 crate（1 個）：`float8` 0.7.0
 
@@ -13180,7 +13808,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §218 The MIT License (MIT)
+### §226 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`etagere` 0.2.15
 
@@ -13207,7 +13835,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §219 MIT License
+### §227 MIT License
 
 使用這個全文的 crate（1 個）：`bytemuck` 1.25.2
 
@@ -13223,7 +13851,7 @@ The above copyright notice and this permission notice (including the next paragr
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §220 MIT License
+### §228 MIT License
 
 使用這個全文的 crate（1 個）：`fluent-uri` 0.1.4
 
@@ -13251,7 +13879,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §221 Copyright (c) 2017 Artyom Pavlov
+### §229 Copyright (c) 2017 Artyom Pavlov
 
 使用這個全文的 crate（2 個）：`digest` 0.10.7、`hmac` 0.12.1
 
@@ -13283,7 +13911,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §222 Creative Commons Legal Code
+### §230 Creative Commons Legal Code
 
 使用這個全文的 crate（4 個）：`constant_time_eq` 0.6.1、`dunce` 1.0.5、`imgref` 1.12.3、`tiny-keccak` 2.0.2
 
@@ -13411,9 +14039,9 @@ express Statement of Purpose.
     this CC0 or use of the Work.
 ```
 
-### §223 Apache License
+### §231 Apache License
 
-使用這個全文的 crate（170 個）：`accesskit` 0.24.1、`accesskit_atspi_common` 0.19.1、`accesskit_consumer` 0.38.0、`accesskit_unix` 0.22.1、`accesskit_windows` 0.34.0、`addr2line` 0.27.1、`ahash` 0.8.12、`aligned` 0.4.3、`arc-swap` 1.9.5、`arrayvec` 0.7.8、`as-slice` 0.2.1、`async-channel` 2.5.0、`async-executor` 1.14.1、`async-fs` 2.2.0、`async-io` 2.6.0、`async-lock` 3.5.0、`async-net` 2.0.0、`async-process` 2.5.0、`async-signal` 0.2.14、`async-task` 4.7.1、`atomic-waker` 1.1.2、`backtrace` 0.3.77、`base64` 0.13.1、`base64` 0.22.1、`base64` 0.23.1、`bitflags` 1.3.2、`bitflags` 2.13.2、`bitstream-io` 4.10.0、`blocking` 1.7.0、`bstr` 1.14.0、`bumpalo` 3.20.4、`candle-nn` 0.11.1、`candle-transformers` 0.11.1、`cfg-if` 1.0.5、`concurrent-queue` 2.5.0、`const-random` 0.1.18、`core_detect` 1.0.0、`crossbeam-deque` 0.8.8、`crossbeam-epoch` 0.9.21、`crossbeam-utils` 0.8.23、`data-url` 0.3.2、`either` 1.19.0、`encoding_rs_io` 0.1.8、`equivalent` 1.0.3、`errno` 0.3.15、`euclid` 0.22.14、`event-listener` 5.4.2、`event-listener-strategy` 0.5.4、`fastrand` 2.5.0、`flate2` 1.1.11、`fnv` 1.0.7、`form_urlencoded` 1.2.2、`futf` 0.1.5、`futures-lite` 2.6.1、`gethostname` 1.1.0、`gif` 0.13.3、`gif` 0.14.2、`gimli` 0.34.0、`glob` 0.3.4、`glow` 0.17.0、`gpui-kit` 0.10.0、`hash32` 0.3.1、`hashbrown` 0.14.5、`hashbrown` 0.16.1、`hashbrown` 0.17.1、`heapless` 0.9.4、`heck` 0.5.0、`html5ever` 0.27.0、`httparse` 1.10.1、`idna` 1.1.0、`idna_adapter` 1.2.2、`indexmap` 2.14.2、`itertools` 0.11.0、`itertools` 0.13.0、`itertools` 0.14.0、`khronos-egl` 6.0.0、`lazy_static` 1.5.1、`linux-raw-sys` 0.12.1、`lock_api` 0.4.14、`log` 0.4.35、`lyon` 1.0.19、`lyon_algorithms` 1.0.22、`lyon_geom` 1.0.20、`lyon_path` 1.0.19、`lyon_tessellation` 1.0.23、`markup5ever` 0.12.1、`markup5ever_rcdom` 0.3.0、`mime` 0.3.18、`num` 0.4.3、`num-bigint` 0.4.8、`num-bigint-dig` 0.9.1、`num-complex` 0.4.6、`num-integer` 0.1.47、`num-iter` 0.1.46、`num-rational` 0.4.2、`num-traits` 0.2.19、`num_cpus` 1.17.0、`object` 0.40.0、`once_cell` 1.21.4、`ordered-stream` 0.2.0、`parking` 2.2.1、`parking_lot` 0.12.5、`parking_lot_core` 0.9.12、`pathfinder_simd` 0.5.6、`percent-encoding` 2.3.2、`piper` 0.2.5、`png` 0.17.16、`png` 0.18.1、`polling` 3.11.0、`pollster` 0.4.0、`profiling` 1.0.18、`prost` 0.14.4、`rayon` 1.12.0、`rayon-cond` 0.4.0、`rayon-core` 1.13.0、`regex` 1.13.2、`regex-automata` 0.4.19、`regex-syntax` 0.8.12、`renderdoc-sys` 1.1.0、`roxmltree` 0.20.0、`roxmltree` 0.21.2、`rustc-demangle` 0.1.28、`rustc-hash` 1.1.0、`rustix` 1.1.6、`rustls` 0.23.46、`scoped-tls` 1.0.1、`scopeguard` 1.2.0、`serde_plain` 1.0.2、`shellexpand` 3.1.2、`signal-hook-registry` 1.4.8、`similar` 2.7.0、`simplecss` 0.2.2、`smallvec` 1.16.5、`smol` 2.0.2、`smol_str` 0.3.7、`socket2` 0.6.5、`spirv` 0.4.0+sdk-1.4.341.0、`stable_deref_trait` 1.2.1、`string_cache` 0.8.9、`svgtypes` 0.15.3、`svgtypes` 0.16.2、`swash` 0.2.10、`tempfile` 3.27.0、`tendril` 0.4.3、`ttf-parser` 0.25.1、`unicase` 2.10.0、`unicode-bidi` 0.3.18、`unicode-bidi-mirroring` 0.4.0、`unicode-ccc` 0.4.0、`unicode-id` 0.3.7、`unicode-normalization` 0.1.26、`unicode-normalization-alignments` 0.1.12、`unicode-properties` 0.1.5、`unicode-segmentation` 1.13.3、`unicode-vo` 0.1.0、`unicode-width` 0.2.3、`url` 2.5.8、`uuid` 1.29.3、`waker-fn` 1.2.0、`wasm-bindgen` 0.2.130、`wasm-bindgen-macro-support` 0.2.130、`wasm-bindgen-shared` 0.2.130、`weezl` 0.1.12、`xml5ever` 0.18.1、`yazi` 0.2.2、`zed-font-kit` 0.14.1-zed、`zeno` 0.3.3、`zune-core` 0.4.12、`zune-inflate` 0.2.54、`zune-jpeg` 0.4.21
+使用這個全文的 crate（187 個）：`accesskit` 0.24.1、`accesskit_atspi_common` 0.19.1、`accesskit_consumer` 0.38.0、`accesskit_unix` 0.22.1、`accesskit_windows` 0.34.0、`addr2line` 0.27.1、`ahash` 0.8.12、`aligned` 0.4.3、`anes` 0.1.6、`arc-swap` 1.9.5、`arrayvec` 0.7.8、`as-slice` 0.2.1、`async-channel` 2.5.0、`async-executor` 1.14.1、`async-fs` 2.2.0、`async-io` 2.6.0、`async-lock` 3.5.0、`async-net` 2.0.0、`async-process` 2.5.0、`async-signal` 0.2.14、`async-task` 4.7.1、`atomic` 0.5.3、`atomic-waker` 1.1.2、`backtrace` 0.3.77、`base64` 0.13.1、`base64` 0.22.1、`base64` 0.23.1、`bitflags` 1.3.2、`bitflags` 2.13.2、`bitstream-io` 4.10.0、`blocking` 1.7.0、`bstr` 1.14.0、`bumpalo` 3.20.4、`c-enum` 0.2.3、`candle-nn` 0.11.1、`candle-transformers` 0.11.1、`cast` 0.3.0、`cfg-if` 1.0.5、`concurrent-queue` 2.5.0、`const-random` 0.1.18、`core_detect` 1.0.0、`criterion` 0.8.2、`criterion-plot` 0.8.2、`crossbeam-deque` 0.8.8、`crossbeam-epoch` 0.9.21、`crossbeam-queue` 0.3.14、`crossbeam-utils` 0.8.23、`data-url` 0.3.2、`either` 1.19.0、`encoding_rs_io` 0.1.8、`equivalent` 1.0.3、`errno` 0.3.15、`euclid` 0.22.14、`event-listener` 5.4.2、`event-listener-strategy` 0.5.4、`fastrand` 2.5.0、`fixedbitset` 0.5.9、`flate2` 1.1.11、`fnv` 1.0.7、`form_urlencoded` 1.2.2、`futf` 0.1.5、`futures-lite` 2.6.1、`gethostname` 1.1.0、`gif` 0.13.3、`gif` 0.14.2、`gimli` 0.34.0、`glob` 0.3.4、`glow` 0.17.0、`gpui-kit` 0.10.0、`hash32` 0.3.1、`hashbrown` 0.14.5、`hashbrown` 0.16.1、`hashbrown` 0.17.1、`heapless` 0.9.4、`heck` 0.5.0、`html5ever` 0.27.0、`httparse` 1.10.1、`idna` 1.1.0、`idna_adapter` 1.2.2、`indexmap` 2.14.2、`itertools` 0.11.0、`itertools` 0.13.0、`itertools` 0.14.0、`khronos-egl` 6.0.0、`lazy_static` 1.5.1、`linux-raw-sys` 0.12.1、`lock_api` 0.4.14、`log` 0.4.35、`lyon` 1.0.19、`lyon_algorithms` 1.0.22、`lyon_geom` 1.0.20、`lyon_path` 1.0.19、`lyon_tessellation` 1.0.23、`markup5ever` 0.12.1、`markup5ever_rcdom` 0.3.0、`mime` 0.3.18、`num` 0.4.3、`num-bigint` 0.4.8、`num-bigint-dig` 0.9.1、`num-complex` 0.4.6、`num-integer` 0.1.47、`num-iter` 0.1.46、`num-rational` 0.4.2、`num-traits` 0.2.19、`num_cpus` 1.17.0、`object` 0.40.0、`once_cell` 1.21.4、`ordered-stream` 0.2.0、`page_size` 0.6.0、`parking` 2.2.1、`parking_lot` 0.12.5、`parking_lot_core` 0.9.12、`pathfinder_simd` 0.5.6、`percent-encoding` 2.3.2、`perf-event-data` 0.1.8、`perf-event-open-sys2` 5.0.6、`perf-event2` 0.7.4、`piper` 0.2.5、`png` 0.17.16、`png` 0.18.1、`polling` 3.11.0、`pollster` 0.2.5、`pollster` 0.4.0、`profiling` 1.0.18、`proptest` 1.12.0、`prost` 0.14.4、`rayon` 1.12.0、`rayon-cond` 0.4.0、`rayon-core` 1.13.0、`regex` 1.13.2、`regex-automata` 0.4.19、`regex-syntax` 0.8.12、`renderdoc-sys` 1.1.0、`roxmltree` 0.20.0、`roxmltree` 0.21.2、`rustc-demangle` 0.1.28、`rustc-hash` 1.1.0、`rustix` 1.1.6、`rustls` 0.23.46、`rusty-fork` 0.3.1、`scoped-tls` 1.0.1、`scopeguard` 1.2.0、`serde_plain` 1.0.2、`shellexpand` 3.1.2、`signal-hook-registry` 1.4.8、`similar` 2.7.0、`simplecss` 0.2.2、`smallvec` 1.16.5、`smol` 2.0.2、`smol_str` 0.3.7、`socket2` 0.6.5、`spirv` 0.4.0+sdk-1.4.341.0、`stable_deref_trait` 1.2.1、`string_cache` 0.8.9、`svgtypes` 0.15.3、`svgtypes` 0.16.2、`swash` 0.2.10、`tempfile` 3.27.0、`tendril` 0.4.3、`tinytemplate` 1.2.1、`ttf-parser` 0.25.1、`unicase` 2.10.0、`unicode-bidi` 0.3.18、`unicode-bidi-mirroring` 0.4.0、`unicode-ccc` 0.4.0、`unicode-id` 0.3.7、`unicode-normalization` 0.1.26、`unicode-normalization-alignments` 0.1.12、`unicode-properties` 0.1.5、`unicode-segmentation` 1.13.3、`unicode-vo` 0.1.0、`unicode-width` 0.2.3、`url` 2.5.8、`uuid` 1.29.3、`wait-timeout` 0.2.1、`waker-fn` 1.2.0、`wasm-bindgen` 0.2.130、`wasm-bindgen-macro-support` 0.2.130、`wasm-bindgen-shared` 0.2.130、`weezl` 0.1.12、`xml5ever` 0.18.1、`yazi` 0.2.2、`zed-font-kit` 0.14.1-zed、`zeno` 0.3.3、`zune-core` 0.4.12、`zune-inflate` 0.2.54、`zune-jpeg` 0.4.21
 
 ```text
                               Apache License
@@ -13619,7 +14247,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §224 Apache License
+### §232 Apache License
 
 使用這個全文的 crate（1 個）：`triomphe` 0.1.17
 
@@ -13827,9 +14455,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §225 Apache License
+### §233 Apache License
 
-使用這個全文的 crate（25 個）：`fdeflate` 0.3.7、`half` 2.7.1、`image` 0.25.10、`image-webp` 0.2.4、`linebender_resource_handle` 0.1.1、`miniz_oxide` 0.8.9、`miniz_oxide` 0.9.1、`naga` 30.0.2、`naga-types` 30.0.2、`normpath` 1.5.2、`pin-project` 1.2.0、`pin-project-lite` 0.2.17、`raw-window-handle` 0.6.2、`resvg` 0.45.1、`resvg` 0.46.0、`simdutf8` 0.1.5、`usvg` 0.45.1、`usvg` 0.46.0、`wgpu` 30.0.2、`wgpu-core` 30.0.2、`wgpu-core-deps-windows-linux-android` 30.0.2、`wgpu-hal` 30.0.2、`wgpu-naga-bridge` 30.0.2、`wgpu-types` 30.0.2、`widestring` 1.2.1
+使用這個全文的 crate（25 個）：`fdeflate` 0.3.7、`half` 2.7.1、`image` 0.25.10、`image-webp` 0.2.4、`linebender_resource_handle` 0.1.1、`miniz_oxide` 0.8.9、`miniz_oxide` 0.9.1、`naga` 30.0.2、`naga-types` 30.0.2、`normpath` 1.5.2、`pin-project` 1.2.0、`pin-project-lite` 0.2.17、`raw-window-handle` 0.6.2、`resvg` 0.45.1、`resvg` 0.46.0、`simdutf8` 0.1.5、`usvg` 0.45.1、`usvg` 0.46.0、`wgpu` 30.0.1、`wgpu-core` 30.0.2、`wgpu-core-deps-windows-linux-android` 30.0.2、`wgpu-hal` 30.0.2、`wgpu-naga-bridge` 30.0.2、`wgpu-types` 30.0.2、`widestring` 1.2.1
 
 ```text
                                  Apache License
@@ -14010,7 +14638,7 @@ limitations under the License.
    END OF TERMS AND CONDITIONS
 ```
 
-### §226 Copyright 2019 x11rb Contributers
+### §234 Copyright 2019 x11rb Contributers
 
 使用這個全文的 crate（2 個）：`x11rb` 0.13.2、`x11rb-protocol` 0.13.2
 
@@ -14042,7 +14670,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §227 Copyright 2018 Developers of the Rand project
+### §235 Copyright 2018 Developers of the Rand project
 
 使用這個全文的 crate（1 個）：`rand_distr` 0.5.1
 
@@ -14074,7 +14702,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §228 The MIT License (MIT)
+### §236 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`typenum` 1.20.1
 
@@ -14102,9 +14730,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §229 Apache License
+### §237 Apache License
 
-使用這個全文的 crate（21 個）：`aes` 0.8.4、`block-buffer` 0.10.4、`block-buffer` 0.12.1、`block-padding` 0.3.3、`cbc` 0.1.2、`cipher` 0.4.4、`const-oid` 0.10.3、`cpufeatures` 0.2.17、`cpufeatures` 0.3.1、`crypto-common` 0.1.7、`crypto-common` 0.2.2、`digest` 0.10.7、`digest` 0.11.3、`hkdf` 0.12.4、`hmac` 0.12.1、`hybrid-array` 0.4.15、`inout` 0.1.4、`md-5` 0.10.6、`pbkdf2` 0.12.2、`sha2` 0.10.9、`sha2` 0.11.1
+使用這個全文的 crate（22 個）：`aes` 0.8.4、`block-buffer` 0.10.4、`block-buffer` 0.12.1、`block-padding` 0.3.3、`cbc` 0.1.2、`chacha20` 0.10.2、`cipher` 0.4.4、`const-oid` 0.10.3、`cpufeatures` 0.2.17、`cpufeatures` 0.3.1、`crypto-common` 0.1.7、`crypto-common` 0.2.2、`digest` 0.10.7、`digest` 0.11.3、`hkdf` 0.12.4、`hmac` 0.12.1、`hybrid-array` 0.4.15、`inout` 0.1.4、`md-5` 0.10.6、`pbkdf2` 0.12.2、`sha2` 0.10.9、`sha2` 0.11.1
 
 ```text
                               Apache License
@@ -14310,7 +14938,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §230 Copyright (c) 2022 Tait Hoyem <tait@tait.tech>
+### §238 Copyright (c) 2022 Tait Hoyem <tait@tait.tech>
 
 使用這個全文的 crate（3 個）：`atspi` 0.29.0、`atspi-common` 0.13.0、`atspi-proxies` 0.13.0
 
@@ -14336,7 +14964,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §231 Copyright (c) 2016 Remi Thebault <remi.thebault@gmail.com>
+### §239 Copyright (c) 2016 Remi Thebault <remi.thebault@gmail.com>
 
 使用這個全文的 crate（1 個）：`xkbcommon` 0.8.0
 
@@ -14368,7 +14996,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §232 Apache License
+### §240 Apache License
 
 使用這個全文的 crate（4 個）：`getrandom` 0.2.17、`getrandom` 0.3.4、`getrandom` 0.4.3、`rand_chacha` 0.3.1
 
@@ -14576,7 +15204,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §233 The MIT License (MIT)
+### §241 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`base64` 0.23.1
 
@@ -14604,7 +15232,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §234 Licenses
+### §242 Licenses
 
 使用這個全文的 crate（1 個）：`exr` 1.74.3
 
@@ -14644,7 +15272,7 @@ Redistribution and use in source and binary forms, with or without modification,
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §235 BSD 2-Clause License
+### §243 BSD 2-Clause License
 
 使用這個全文的 crate（1 個）：`av1-grain` 0.2.5
 
@@ -14676,7 +15304,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §236 (C) 2024 Trifecta Tech Foundation
+### §244 (C) 2024 Trifecta Tech Foundation
 
 使用這個全文的 crate（1 個）：`zlib-rs` 0.6.8
 
@@ -14702,7 +15330,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### §237 MIT License
+### §245 MIT License
 
 使用這個全文的 crate（1 個）：`ashpd` 0.13.13
 
@@ -14730,7 +15358,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §238 Copyright (c) 2020 Osspial
+### §246 Copyright (c) 2020 Osspial
 
 使用這個全文的 crate（1 個）：`raw-window-handle` 0.6.2
 
@@ -14748,7 +15376,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### §239 Copyright (c) 2020-2025 The RustCrypto Project Developers
+### §247 Copyright (c) 2020-2025 The RustCrypto Project Developers
 
 使用這個全文的 crate（1 個）：`cpufeatures` 0.2.17
 
@@ -14780,7 +15408,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §240 Copyright (c) 2017-2025 RustCrypto Developers
+### §248 Copyright (c) 2017-2025 RustCrypto Developers
 
 使用這個全文的 crate（1 個）：`digest` 0.11.3
 
@@ -14813,7 +15441,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §241 © Kornel Lesiński
+### §249 © Kornel Lesiński
 
 使用這個全文的 crate（1 個）：`loop9` 0.1.5
 
@@ -14827,7 +15455,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §242 Copyright © 2015, Simonas Kazlauskas
+### §250 Copyright © 2015, Simonas Kazlauskas
 
 使用這個全文的 crate（1 個）：`libloading` 0.8.9
 
@@ -14846,7 +15474,7 @@ NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE US
 THIS SOFTWARE.
 ```
 
-### §243 Copyright (c) 2013-2025 The rust-url developers
+### §251 Copyright (c) 2013-2025 The rust-url developers
 
 使用這個全文的 crate（4 個）：`data-url` 0.3.2、`idna` 1.1.0、`percent-encoding` 2.3.2、`url` 2.5.8
 
@@ -14878,7 +15506,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §244 *ring* uses an "ISC" license, like BoringSSL used to use, for new code
+### §252 *ring* uses an "ISC" license, like BoringSSL used to use, for new code
 
 使用這個全文的 crate（1 個）：`ring` 0.17.14
 
@@ -14894,7 +15522,7 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ```
 
-### §245 This software is provided 'as-is', without any express or implied
+### §253 This software is provided 'as-is', without any express or implied
 
 使用這個全文的 crate（1 個）：`glow` 0.17.0
 
@@ -14916,9 +15544,9 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### §246 Apache License
+### §254 Apache License
 
-使用這個全文的 crate（26 個）：`anstream` 1.0.0、`anstyle` 1.0.14、`anstyle-parse` 1.0.0、`anstyle-query` 1.1.5、`anstyle-wincon` 3.0.11、`bit_field` 0.10.4、`colorchoice` 1.0.5、`crc32fast` 1.5.4、`derive_builder` 0.20.2、`derive_builder_core` 0.20.2、`env_filter` 2.0.0、`env_logger` 0.11.11、`float-ord` 0.3.2、`hex` 0.4.3、`is_terminal_polyfill` 1.70.2、`no_std_io2` 0.9.4、`notify-rust` 4.19.0、`once_cell_polyfill` 1.70.2、`quick-error` 2.0.1、`serde_spanned` 0.6.9、`toml` 0.8.23、`toml_datetime` 0.6.11、`toml_edit` 0.22.27、`toml_write` 0.1.2、`unicode_categories` 0.1.1、`winapi` 0.3.9
+使用這個全文的 crate（27 個）：`anstream` 1.0.0、`anstyle` 1.0.14、`anstyle-parse` 1.0.0、`anstyle-query` 1.1.5、`anstyle-wincon` 3.0.11、`bit_field` 0.10.4、`colorchoice` 1.0.5、`crc32fast` 1.5.4、`derive_builder` 0.20.2、`derive_builder_core` 0.20.2、`env_filter` 2.0.0、`env_logger` 0.11.11、`float-ord` 0.3.2、`hex` 0.4.3、`is_terminal_polyfill` 1.70.2、`no_std_io2` 0.9.4、`notify-rust` 4.19.0、`once_cell_polyfill` 1.70.2、`quick-error` 1.2.3、`quick-error` 2.0.1、`serde_spanned` 0.6.9、`toml` 0.8.23、`toml_datetime` 0.6.11、`toml_edit` 0.22.27、`toml_write` 0.1.2、`unicode_categories` 0.1.1、`winapi` 0.3.9
 
 ```text
                                  Apache License
@@ -15124,7 +15752,7 @@ freely, subject to the following restrictions:
    limitations under the License.
 ```
 
-### §247 ISC License
+### §255 ISC License
 
 使用這個全文的 crate（1 個）：`gpui-kit-assets` 0.10.0
 
@@ -15174,7 +15802,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §248 Copyright (c) 2006-2009 Graydon Hoare
+### §256 Copyright (c) 2006-2009 Graydon Hoare
 
 使用這個全文的 crate（2 個）：`md-5` 0.10.6、`sha2` 0.10.9
 
@@ -15208,7 +15836,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §249 BSD Zero Clause License
+### §257 BSD Zero Clause License
 
 使用這個全文的 crate（1 個）：`recvmsg` 1.0.0
 
@@ -15229,7 +15857,7 @@ OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### §250 Apache License
+### §258 Apache License
 
 使用這個全文的 crate（1 個）：`notify-types` 2.3.1
 
@@ -15437,7 +16065,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §251 Copyright (c) 2023 Notify Contributors
+### §259 Copyright (c) 2023 Notify Contributors
 
 使用這個全文的 crate（1 個）：`notify-types` 2.3.1
 
@@ -15469,7 +16097,71 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §252 Copyright (c) 2016 Anthony Ramine
+### §260 Copyright (c) 2019 Brook Heisler
+
+使用這個全文的 crate（1 個）：`tinytemplate` 1.2.1
+
+```text
+Copyright (c) 2019 Brook Heisler
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### §261 Copyright (c) 2019-2026 The RustCrypto Project Developers
+
+使用這個全文的 crate（1 個）：`chacha20` 0.10.2
+
+```text
+Copyright (c) 2019-2026 The RustCrypto Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### §262 Copyright (c) 2016 Anthony Ramine
 
 使用這個全文的 crate（1 個）：`serde_urlencoded` 0.7.1
 
@@ -15501,7 +16193,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §253 Copyright (c) 2021 Traverse Research B.V.
+### §263 Copyright (c) 2021 Traverse Research B.V.
 
 使用這個全文的 crate（1 個）：`gpu-allocator` 0.28.0
 
@@ -15515,7 +16207,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §254 Copyright (c) 2018 Yevhenii Reizner
+### §264 Copyright (c) 2018 Yevhenii Reizner
 
 使用這個全文的 crate（3 個）：`svgtypes` 0.15.3、`svgtypes` 0.16.2、`ttf-parser` 0.25.1
 
@@ -15541,7 +16233,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §255 Copyright (c) 2019 Yevhenii Reizner
+### §265 Copyright (c) 2019 Yevhenii Reizner
 
 使用這個全文的 crate（1 個）：`pico-args` 0.5.0
 
@@ -15567,7 +16259,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §256 MIT License
+### §266 MIT License
 
 使用這個全文的 crate（3 個）：`aligned-vec` 0.6.4、`dyn-stack` 0.13.2、`reborrow` 0.5.5
 
@@ -15595,9 +16287,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §257 Apache License
+### §267 Apache License
 
-使用這個全文的 crate（30 個）：`windows` 0.57.0、`windows` 0.58.0、`windows` 0.61.3、`windows` 0.62.2、`windows-collections` 0.2.0、`windows-collections` 0.3.2、`windows-core` 0.57.0、`windows-core` 0.58.0、`windows-core` 0.61.2、`windows-core` 0.62.2、`windows-future` 0.2.1、`windows-future` 0.3.2、`windows-link` 0.1.3、`windows-link` 0.2.1、`windows-numerics` 0.2.0、`windows-numerics` 0.3.1、`windows-registry` 0.6.1、`windows-result` 0.1.2、`windows-result` 0.2.0、`windows-result` 0.3.4、`windows-result` 0.4.1、`windows-strings` 0.1.0、`windows-strings` 0.4.2、`windows-strings` 0.5.1、`windows-sys` 0.61.2、`windows-targets` 0.52.6、`windows-threading` 0.1.0、`windows-threading` 0.2.1、`windows_i686_msvc` 0.52.6、`windows_x86_64_msvc` 0.52.6
+使用這個全文的 crate（35 個）：`windows` 0.57.0、`windows` 0.58.0、`windows` 0.61.3、`windows` 0.62.2、`windows-collections` 0.2.0、`windows-collections` 0.3.2、`windows-core` 0.57.0、`windows-core` 0.58.0、`windows-core` 0.61.2、`windows-core` 0.62.2、`windows-future` 0.2.1、`windows-future` 0.3.2、`windows-link` 0.1.3、`windows-link` 0.2.1、`windows-numerics` 0.2.0、`windows-numerics` 0.3.1、`windows-registry` 0.6.1、`windows-result` 0.1.2、`windows-result` 0.2.0、`windows-result` 0.3.4、`windows-result` 0.4.1、`windows-strings` 0.1.0、`windows-strings` 0.4.2、`windows-strings` 0.5.1、`windows-sys` 0.48.0、`windows-sys` 0.52.0、`windows-sys` 0.61.2、`windows-targets` 0.48.5、`windows-targets` 0.52.6、`windows-threading` 0.1.0、`windows-threading` 0.2.1、`windows_i686_msvc` 0.48.5、`windows_i686_msvc` 0.52.6、`windows_x86_64_msvc` 0.48.5、`windows_x86_64_msvc` 0.52.6
 
 ```text
                                  Apache License
@@ -15803,7 +16495,7 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### §258 MIT License
+### §268 MIT License
 
 使用這個全文的 crate（1 個）：`ropey` 2.0.0-beta.1
 
@@ -15831,9 +16523,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §259 MIT License
+### §269 MIT License
 
-使用這個全文的 crate（30 個）：`windows` 0.57.0、`windows` 0.58.0、`windows` 0.61.3、`windows` 0.62.2、`windows-collections` 0.2.0、`windows-collections` 0.3.2、`windows-core` 0.57.0、`windows-core` 0.58.0、`windows-core` 0.61.2、`windows-core` 0.62.2、`windows-future` 0.2.1、`windows-future` 0.3.2、`windows-link` 0.1.3、`windows-link` 0.2.1、`windows-numerics` 0.2.0、`windows-numerics` 0.3.1、`windows-registry` 0.6.1、`windows-result` 0.1.2、`windows-result` 0.2.0、`windows-result` 0.3.4、`windows-result` 0.4.1、`windows-strings` 0.1.0、`windows-strings` 0.4.2、`windows-strings` 0.5.1、`windows-sys` 0.61.2、`windows-targets` 0.52.6、`windows-threading` 0.1.0、`windows-threading` 0.2.1、`windows_i686_msvc` 0.52.6、`windows_x86_64_msvc` 0.52.6
+使用這個全文的 crate（35 個）：`windows` 0.57.0、`windows` 0.58.0、`windows` 0.61.3、`windows` 0.62.2、`windows-collections` 0.2.0、`windows-collections` 0.3.2、`windows-core` 0.57.0、`windows-core` 0.58.0、`windows-core` 0.61.2、`windows-core` 0.62.2、`windows-future` 0.2.1、`windows-future` 0.3.2、`windows-link` 0.1.3、`windows-link` 0.2.1、`windows-numerics` 0.2.0、`windows-numerics` 0.3.1、`windows-registry` 0.6.1、`windows-result` 0.1.2、`windows-result` 0.2.0、`windows-result` 0.3.4、`windows-result` 0.4.1、`windows-strings` 0.1.0、`windows-strings` 0.4.2、`windows-strings` 0.5.1、`windows-sys` 0.48.0、`windows-sys` 0.52.0、`windows-sys` 0.61.2、`windows-targets` 0.48.5、`windows-targets` 0.52.6、`windows-threading` 0.1.0、`windows-threading` 0.2.1、`windows_i686_msvc` 0.48.5、`windows_i686_msvc` 0.52.6、`windows_x86_64_msvc` 0.48.5、`windows_x86_64_msvc` 0.52.6
 
 ```text
     MIT License
@@ -15859,7 +16551,7 @@ SOFTWARE.
     SOFTWARE
 ```
 
-### §260 The MIT License (MIT)
+### §270 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`shellexpand` 3.1.2
 
@@ -15887,9 +16579,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §261 Apache License
+### §271 Apache License
 
-使用這個全文的 crate（31 個）：`as-raw-xcb-connection` 1.0.1、`candle-core` 0.11.1、`codespan-reporting` 0.13.1、`encoding_rs` 0.8.44、`esaxx-rs` 0.1.10、`imgref` 1.12.3、`kurbo` 0.11.3、`kurbo` 0.13.1、`multiversion` 0.8.1、`nohash-hasher` 0.2.0、`ntapi` 0.4.3、`polycool` 0.4.0、`safetensors` 0.8.0、`self_cell` 1.3.0、`siphasher` 1.0.4、`spm_precompiled` 0.1.4、`static_assertions` 1.1.0、`sys-locale` 0.3.2、`target-features` 0.1.6、`tinyvec` 1.13.3、`tokenizers` 0.23.2、`unicode-linebreak` 0.1.5、`ureq` 3.5.2、`ureq-proto` 0.7.1、`utf8_iter` 1.1.0、`utf_types` 1.0.0、`x11rb` 0.13.2、`x11rb-protocol` 0.13.2、`zeroize` 1.9.2、`zune-core` 0.5.3、`zune-jpeg` 0.5.15
+使用這個全文的 crate（35 個）：`as-raw-xcb-connection` 1.0.1、`candle-core` 0.11.1、`ciborium` 0.2.2、`ciborium-io` 0.2.2、`ciborium-ll` 0.2.2、`codespan-reporting` 0.13.1、`encoding_rs` 0.8.44、`esaxx-rs` 0.1.10、`imgref` 1.12.3、`kurbo` 0.11.3、`kurbo` 0.13.1、`multiversion` 0.8.1、`nohash-hasher` 0.2.0、`ntapi` 0.4.3、`polycool` 0.4.0、`safetensors` 0.8.0、`self_cell` 1.3.0、`siphasher` 1.0.4、`spm_precompiled` 0.1.4、`static_assertions` 1.1.0、`sys-locale` 0.3.2、`target-features` 0.1.6、`tinyvec` 1.13.3、`tokenizers` 0.23.2、`unarray` 0.1.4、`unicode-linebreak` 0.1.5、`ureq` 3.5.2、`ureq-proto` 0.7.1、`utf8_iter` 1.1.0、`utf_types` 1.0.0、`x11rb` 0.13.2、`x11rb-protocol` 0.13.2、`zeroize` 1.9.2、`zune-core` 0.5.3、`zune-jpeg` 0.5.15
 
 ```text
                                  Apache License
@@ -16095,7 +16787,7 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### §262 Copyright (c) 2016 ASH
+### §272 Copyright (c) 2016 ASH
 
 使用這個全文的 crate（1 個）：`ash` 0.38.0+1.3.281
 
@@ -16127,7 +16819,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §263 MIT License
+### §273 MIT License
 
 使用這個全文的 crate（3 個）：`fdeflate` 0.3.7、`image` 0.25.10、`image-webp` 0.2.4
 
@@ -16159,7 +16851,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §264 Copyright 2012-2016 The Rust Project Developers.
+### §274 Copyright 2012-2016 The Rust Project Developers.
 
 使用這個全文的 crate（1 個）：`siphasher` 1.0.4
 
@@ -16173,7 +16865,7 @@ http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 option.
 ```
 
-### §265 Apache License
+### §275 Apache License
 
 使用這個全文的 crate（1 個）：`rangemap` 1.8.0
 
@@ -16370,7 +17062,7 @@ option.
    limitations under the License.
 ```
 
-### §266 Copyright (c) 2018 Jorge Aparicio
+### §276 Copyright (c) 2018 Jorge Aparicio
 
 使用這個全文的 crate（2 個）：`as-slice` 0.2.1、`hash32` 0.3.1
 
@@ -16402,9 +17094,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §267 Copyright (c) 2016 The Rust Project Developers
+### §277 Copyright (c) 2016 The Rust Project Developers
 
-使用這個全文的 crate（3 個）：`lock_api` 0.4.14、`parking_lot` 0.12.5、`parking_lot_core` 0.9.12
+使用這個全文的 crate（4 個）：`atomic` 0.5.3、`lock_api` 0.4.14、`parking_lot` 0.12.5、`parking_lot_core` 0.9.12
 
 ```text
 Copyright (c) 2016 The Rust Project Developers
@@ -16434,7 +17126,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §268 Boost Software License - Version 1.0 - August 17th, 2003
+### §278 Boost Software License - Version 1.0 - August 17th, 2003
 
 使用這個全文的 crate（1 個）：`ryu` 1.0.23
 
@@ -16464,7 +17156,7 @@ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §269 Copyright (c) 2019, Sébastien Crozet
+### §279 Copyright (c) 2019, Sébastien Crozet
 
 使用這個全文的 crate（1 個）：`instant` 0.1.13
 
@@ -16498,7 +17190,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §270 The MIT License (MIT)
+### §280 The MIT License (MIT)
 
 使用這個全文的 crate（2 個）：`same-file` 1.0.6、`winapi-util` 0.1.11
 
@@ -16526,7 +17218,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §271 Permission is hereby granted, free of charge, to any person obtaining
+### §281 Permission is hereby granted, free of charge, to any person obtaining
 
 使用這個全文的 crate（2 個）：`winnow` 0.7.15、`winnow` 1.0.5
 
@@ -16551,9 +17243,9 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §272 Copyright (c) 2020-2021 Joshua Barretto
+### §282 Copyright (c) 2020-2021 Joshua Barretto
 
-使用這個全文的 crate（1 個）：`pollster` 0.4.0
+使用這個全文的 crate（2 個）：`pollster` 0.2.5、`pollster` 0.4.0
 
 ```text
 Copyright (c) 2020-2021 Joshua Barretto
@@ -16583,7 +17275,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §273 Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All righ
+### §283 Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All righ
 
 使用這個全文的 crate（1 個）：`subtle` 2.6.1
 
@@ -16619,7 +17311,39 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §274 Copyright (c) 2015-2018 The winapi-rs Developers
+### §284 Copyright (c) 2015-2017
+
+使用這個全文的 crate（1 個）：`fixedbitset` 0.5.9
+
+```text
+Copyright (c) 2015-2017
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### §285 Copyright (c) 2015-2018 The winapi-rs Developers
 
 使用這個全文的 crate（1 個）：`winapi` 0.3.9
 
@@ -16645,7 +17369,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §275 Copyright 2024 - 2026 Longbridge <https://longbridge.com>
+### §286 Copyright 2024 - 2026 Longbridge <https://longbridge.com>
 
 使用這個全文的 crate（2 個）：`gpui-base` 0.10.0、`gpui-component` 0.10.0
 
@@ -16843,7 +17567,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-### §276 zlib License
+### §287 zlib License
 
 使用這個全文的 crate（2 個）：`zune-core` 0.5.3、`zune-jpeg` 0.5.15
 
@@ -16869,7 +17593,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### §277 Copyright (c) 2015-2018 Vlad Filippov
+### §288 Copyright (c) 2015-2018 Vlad Filippov
 
 使用這個全文的 crate（1 個）：`hkdf` 0.12.4
 
@@ -16902,7 +17626,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §278 Copyright (c) 2021-2026 RustCrypto Developers
+### §289 Copyright (c) 2021-2026 RustCrypto Developers
 
 使用這個全文的 crate（1 個）：`crypto-common` 0.2.2
 
@@ -16934,7 +17658,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §279 MIT License
+### §290 MIT License
 
 使用這個全文的 crate（2 個）：`zune-core` 0.5.3、`zune-jpeg` 0.5.15
 
@@ -16962,7 +17686,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §280 Apache License
+### §291 Apache License
 
 使用這個全文的 crate（4 個）：`dirs` 5.0.1、`dirs` 6.0.0、`dirs-sys` 0.4.1、`dirs-sys` 0.5.0
 
@@ -17143,7 +17867,35 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
    of your accepting any such warranty or additional liability.
 ```
 
-### §281 Copyright (c) 2018-2019 The RustCrypto Project Developers
+### §292 MIT License
+
+使用這個全文的 crate（1 個）：`postage` 0.5.0
+
+```text
+MIT License
+
+Copyright (c) 2022 Austin Jones
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### §293 Copyright (c) 2018-2019 The RustCrypto Project Developers
 
 使用這個全文的 crate（2 個）：`block-buffer` 0.10.4、`block-padding` 0.3.3
 
@@ -17175,7 +17927,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §282 MIT License
+### §294 MIT License
 
 使用這個全文的 crate（8 個）：`gemm` 0.19.0、`gemm-c32` 0.19.0、`gemm-c64` 0.19.0、`gemm-common` 0.19.0、`gemm-f16` 0.19.0、`gemm-f32` 0.19.0、`gemm-f64` 0.19.0、`pulp` 0.22.3
 
@@ -17203,7 +17955,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §283 MIT License
+### §295 MIT License
 
 使用這個全文的 crate（1 個）：`rust-i18n` 4.2.4
 
@@ -17231,7 +17983,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §284 MIT License
+### §296 MIT License
 
 使用這個全文的 crate（1 個）：`notify-rust` 4.19.0
 
@@ -17259,7 +18011,39 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §285 Copyright (c) 2020 Andrew D. Straw
+### §297 Copyright (c) 2016 FullContact, Inc
+
+使用這個全文的 crate（2 個）：`proptest` 1.12.0、`rusty-fork` 0.3.1
+
+```text
+Copyright (c) 2016 FullContact, Inc
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### §298 Copyright (c) 2020 Andrew D. Straw
 
 使用這個全文的 crate（1 個）：`iana-time-zone` 0.1.65
 
@@ -17291,7 +18075,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §286 Minimal-lexical is dual licensed under the Apache 2.0 license as well as
+### §299 Minimal-lexical is dual licensed under the Apache 2.0 license as well as
 
 使用這個全文的 crate（1 個）：`minimal-lexical` 0.2.1
 
@@ -17335,9 +18119,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §287 MIT License
+### §300 MIT License
 
-使用這個全文的 crate（8 個）：`naga` 30.0.2、`naga-types` 30.0.2、`wgpu` 30.0.2、`wgpu-core` 30.0.2、`wgpu-core-deps-windows-linux-android` 30.0.2、`wgpu-hal` 30.0.2、`wgpu-naga-bridge` 30.0.2、`wgpu-types` 30.0.2
+使用這個全文的 crate（8 個）：`naga` 30.0.2、`naga-types` 30.0.2、`wgpu` 30.0.1、`wgpu-core` 30.0.2、`wgpu-core-deps-windows-linux-android` 30.0.2、`wgpu-hal` 30.0.2、`wgpu-naga-bridge` 30.0.2、`wgpu-types` 30.0.2
 
 ```text
 MIT License
@@ -17363,7 +18147,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §288 Copyright (c) 2017 http-rs authors
+### §301 Copyright (c) 2017 http-rs authors
 
 使用這個全文的 crate（1 個）：`http` 1.5.0
 
@@ -17395,7 +18179,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §289 MIT License
+### §302 MIT License
 
 使用這個全文的 crate（1 個）：`normpath` 1.5.2
 
@@ -17423,9 +18207,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §290 MIT License
+### §303 MIT License
 
-使用這個全文的 crate（1 個）：`convert_case` 0.10.0
+使用這個全文的 crate（2 個）：`convert_case` 0.10.0、`convert_case` 0.11.0
 
 ```text
 MIT License
@@ -17451,7 +18235,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §291 Community Data License Agreement - Permissive - Version 2.0
+### §304 Community Data License Agreement - Permissive - Version 2.0
 
 使用這個全文的 crate（1 個）：`webpki-roots` 1.0.12
 
@@ -17519,7 +18303,7 @@ of Data, including for example machine learning models and models'
 insights.
 ```
 
-### §292 Copyright (c) 2013 James Miller <james@aatch.net>
+### §305 Copyright (c) 2013 James Miller <james@aatch.net>
 
 使用這個全文的 crate（1 個）：`xcb` 1.7.1
 
@@ -17552,7 +18336,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §293 Apache License
+### §306 Apache License
 
 使用這個全文的 crate（1 個）：`bytemuck` 1.25.2
 
@@ -17620,9 +18404,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §294 Apache License
+### §307 Apache License
 
-使用這個全文的 crate（1 個）：`async-broadcast` 0.7.2
+使用這個全文的 crate（2 個）：`async-broadcast` 0.7.2、`futures-concurrency` 7.7.1
 
 ```text
                                  Apache License
@@ -17817,7 +18601,7 @@ limitations under the License.
    limitations under the License.
 ```
 
-### §295 Apache License
+### §308 Apache License
 
 使用這個全文的 crate（1 個）：`flume` 0.12.0
 
@@ -18025,7 +18809,7 @@ limitations under the License.
    limitations under the License.
 ```
 
-### §296 Copyright (c) 2016 Joe Wilm
+### §309 Copyright (c) 2016 Joe Wilm
 
 使用這個全文的 crate（1 個）：`utf8parse` 0.2.2
 
@@ -18057,7 +18841,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §297 Copyright (c) 2022 Contributors to the lebe Project. All rights reserved
+### §310 Copyright (c) 2022 Contributors to the lebe Project. All rights reserved
 
 使用這個全文的 crate（1 個）：`lebe` 0.5.3
 
@@ -18090,7 +18874,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §298 (The MIT License)
+### §311 (The MIT License)
 
 使用這個全文的 crate（1 個）：`markdown` 1.0.0
 
@@ -18119,7 +18903,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §299 The MIT License (MIT)
+### §312 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`open` 5.4.5
 
@@ -18151,7 +18935,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §300 UNICODE LICENSE V3
+### §313 UNICODE LICENSE V3
 
 使用這個全文的 crate（1 個）：`unicode-properties` 0.1.5
 
@@ -18197,7 +18981,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-### §301 Copyright (c) 2016-2018 The gimli Developers
+### §314 Copyright (c) 2016-2018 The gimli Developers
 
 使用這個全文的 crate（1 個）：`addr2line` 0.27.1
 
@@ -18229,7 +19013,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §302 MIT License
+### §315 MIT License
 
 使用這個全文的 crate（1 個）：`static_assertions` 1.1.0
 
@@ -18257,7 +19041,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §303 Copyright (c) 2015 nwin
+### §316 Copyright (c) 2015 nwin
 
 使用這個全文的 crate（2 個）：`png` 0.17.16、`png` 0.18.1
 
@@ -18289,7 +19073,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §304 The MIT License (MIT)
+### §317 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`generic-array` 0.14.7
 
@@ -18317,9 +19101,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §305 Copyright (c) 2017 Gilad Naaman
+### §318 Copyright (c) 2017 Gilad Naaman
 
-使用這個全文的 crate（1 個）：`globwalk` 0.8.1
+使用這個全文的 crate（2 個）：`globwalk` 0.8.1、`memoffset` 0.9.1
 
 ```text
 Copyright (c) 2017 Gilad Naaman
@@ -18343,7 +19127,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §306 Apache License
+### §319 Apache License
 
 使用這個全文的 crate（3 個）：`font-types` 0.12.7、`read-fonts` 0.41.0、`skrifa` 0.44.0
 
@@ -18417,7 +19201,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### §307 Copyright (c) 2026 Zeeshan Ali Khan & zruntime contributors
+### §320 Copyright (c) 2026 Zeeshan Ali Khan & zruntime contributors
 
 使用這個全文的 crate（1 個）：`zruntime` 0.2.4
 
@@ -18455,7 +19239,7 @@ benchmark (`benches/broadcast.rs`) come from the async-broadcast crate
 Copyright (c) 2020 Yoshua Wuyts, Stjepan Glavina & Zeeshan Ali Khan
 ```
 
-### §308 Copyright 2018 Parity Technologies (UK) Ltd.
+### §321 Copyright 2018 Parity Technologies (UK) Ltd.
 
 使用這個全文的 crate（1 個）：`nohash-hasher` 0.2.0
 
@@ -18480,7 +19264,7 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §309 Copyright (c) 2016--2017
+### §322 Copyright (c) 2016--2017
 
 使用這個全文的 crate（1 個）：`indexmap` 2.14.2
 
@@ -18512,7 +19296,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §310 MIT License
+### §323 MIT License
 
 使用這個全文的 crate（1 個）：`zed-scap` 0.0.8-zed
 
@@ -18541,7 +19325,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §311 MIT License
+### §324 MIT License
 
 使用這個全文的 crate（1 個）：`windows-capture` 1.5.0
 
@@ -18569,7 +19353,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §312 MIT License
+### §325 MIT License
 
 使用這個全文的 crate（1 個）：`zed-xim` 0.4.0-zed
 
@@ -18597,7 +19381,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §313 Copyright 2015-2025 Brian Smith.
+### §326 Copyright 2015-2025 Brian Smith.
 
 使用這個全文的 crate（1 個）：`ring` 0.17.14
 
@@ -18617,7 +19401,7 @@ OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### §314 The MIT License (MIT)
+### §327 The MIT License (MIT)
 
 使用這個全文的 crate（1 個）：`quick-xml` 0.41.0
 
@@ -18647,7 +19431,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### §315 Copyright (c) 2020-2021 Brendan Molloy <brendan@bbqsrc.net>
+### §328 Copyright (c) 2020-2021 Brendan Molloy <brendan@bbqsrc.net>
 
 使用這個全文的 crate（1 個）：`no_std_io2` 0.9.4
 
@@ -18673,7 +19457,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §316 UNICODE LICENSE V3
+### §329 UNICODE LICENSE V3
 
 使用這個全文的 crate（19 個）：`icu_collections` 2.4.0、`icu_locale_core` 2.4.0、`icu_locale_fallback` 2.4.0、`icu_locale_fallback_data` 2.4.0、`icu_normalizer` 2.4.0、`icu_normalizer_data` 2.4.0、`icu_properties` 2.4.0、`icu_properties_data` 2.4.0、`icu_provider` 2.4.0、`icu_segmenter` 2.4.0、`icu_segmenter_data` 2.4.0、`litemap` 0.8.3、`potential_utf` 0.1.6、`tinystr` 0.8.5、`writeable` 0.6.4、`yoke` 0.8.4、`zerofrom` 0.1.8、`zerotrie` 0.2.5、`zerovec` 0.11.9
 
@@ -18726,7 +19510,7 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ```
 
-### §317 Permission is hereby granted, free of charge, to any person obtaining a 
+### §330 Permission is hereby granted, free of charge, to any person obtaining a 
 
 使用這個全文的 crate（1 個）：`ntapi` 0.4.3
 
@@ -18750,7 +19534,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §318 MIT License
+### §331 MIT License
 
 使用這個全文的 crate（1 個）：`fontconfig-parser` 0.5.8
 
@@ -18778,7 +19562,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §319 MIT License
+### §332 MIT License
 
 使用這個全文的 crate（1 個）：`web-time` 1.1.0
 
@@ -18806,9 +19590,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §320 Copyright (c) 2023 The Rust Project Developers
+### §333 Copyright (c) 2023 The Rust Project Developers
 
-使用這個全文的 crate（3 個）：`bit-set` 0.8.0、`bit-vec` 0.8.0、`bit-vec` 0.9.1
+使用這個全文的 crate（5 個）：`bit-set` 0.11.1、`bit-set` 0.8.0、`bit-vec` 0.10.2、`bit-vec` 0.8.0、`bit-vec` 0.9.1
 
 ```text
 Copyright (c) 2023 The Rust Project Developers
@@ -18838,7 +19622,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §321 Copyright 2017 the Resvg Authors
+### §334 Copyright 2017 the Resvg Authors
 
 使用這個全文的 crate（4 個）：`resvg` 0.45.1、`resvg` 0.46.0、`usvg` 0.45.1、`usvg` 0.46.0
 
@@ -18870,7 +19654,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §322 Copyright (c) 2015 Jonathan Reem
+### §335 Copyright (c) 2015 Jonathan Reem
 
 使用這個全文的 crate（2 個）：`new_debug_unreachable` 1.0.6、`ordered-float` 5.5.1
 
@@ -18902,7 +19686,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §323 BSD 3-Clause License
+### §336 BSD 3-Clause License
 
 使用這個全文的 crate（1 個）：`ravif` 0.13.0
 
@@ -18938,7 +19722,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §324 Copyright (c) 2013-2014 The Rust Project Developers.
+### §337 Copyright (c) 2013-2014 The Rust Project Developers.
 
 使用這個全文的 crate（1 個）：`hex` 0.4.3
 
@@ -18965,7 +19749,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §325 UNICODE LICENSE V3
+### §338 UNICODE LICENSE V3
 
 使用這個全文的 crate（2 個）：`unicode-ident` 1.0.27、`unicode-normalization` 0.1.26
 
@@ -19011,7 +19795,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-### §326 Copyright (c) 2018 Artyom Pavlov
+### §339 Copyright (c) 2018 Artyom Pavlov
 
 使用這個全文的 crate（1 個）：`aes` 0.8.4
 
@@ -19043,7 +19827,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §327 MIT License
+### §340 MIT License
 
 使用這個全文的 crate（1 個）：`castaway` 0.2.4
 
@@ -19071,7 +19855,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §328 Permission is hereby granted, free of charge, to any person obtaining a 
+### §341 Permission is hereby granted, free of charge, to any person obtaining a 
 
 使用這個全文的 crate（1 個）：`siphasher` 1.0.4
 
@@ -19095,7 +19879,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §329 MIT License
+### §342 MIT License
 
 使用這個全文的 crate（2 個）：`imagesize` 0.13.0、`imagesize` 0.14.0
 
@@ -19123,7 +19907,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §330 MIT License
+### §343 MIT License
 
 使用這個全文的 crate（1 個）：`oo7` 0.6.0
 
@@ -19151,7 +19935,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### §331 Copyright (c) 2020 Ashish Myles and contributors
+### §344 Copyright (c) 2020 Ashish Myles and contributors
 
 使用這個全文的 crate（1 個）：`downcast-rs` 1.2.1
 
@@ -19183,7 +19967,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §332 Copyright (c) 2016-2019 Ulrik Sverdrup "bluss" and scopeguard developers
+### §345 Copyright (c) 2016-2019 Ulrik Sverdrup "bluss" and scopeguard developers
 
 使用這個全文的 crate（1 個）：`scopeguard` 1.2.0
 
@@ -19215,7 +19999,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §333 Apache License
+### §346 Apache License
 
 使用這個全文的 crate（1 個）：`ring` 0.17.14
 
@@ -19493,7 +20277,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### §334 Permission is hereby granted, free of charge, to any person obtaining a 
+### §347 Permission is hereby granted, free of charge, to any person obtaining a 
 
 使用這個全文的 crate（1 個）：`tinyvec` 1.13.3
 
@@ -19505,7 +20289,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### §335 Copyright (c) 2017 arc-swap developers
+### §348 Copyright (c) 2017 arc-swap developers
 
 使用這個全文的 crate（1 個）：`arc-swap` 1.9.5
 
@@ -19537,7 +20321,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §336 Copyright (c) 2016 Amanieu d'Antras
+### §349 Copyright (c) 2016 Amanieu d'Antras
 
 使用這個全文的 crate（4 個）：`const-random` 0.1.18、`hashbrown` 0.14.5、`hashbrown` 0.16.1、`hashbrown` 0.17.1
 
@@ -19569,7 +20353,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### §337 The MIT License (MIT)
+### §350 The MIT License (MIT)
 
 使用這個全文的 crate（2 個）：`roxmltree` 0.20.0、`roxmltree` 0.21.2
 
