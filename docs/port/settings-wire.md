@@ -120,7 +120,7 @@ TSF 在 `Ready` 拿到 bindings；`OnSetFocus`／`OnSetThreadFocus` 各刷新一
 | `simplified_hotkey` | 簡體輸出的外殼快捷鍵 | 本版忽略（外殼） |
 | `keybinds` | `symbol_menu`／`emoji_palette` 的 chord；引擎解析後呼叫 `Session::command`，TSF 只轉發 | 生效（熱重載） |
 | `all_symbols_halfwidth` | 不直接寫 `SessionConfig`；只經由 `effective_ctrl_punctuation`／`effective_toneless` 影響 | 間接生效 |
-| `caps_lock_english` | Caps Lock 直接打英文；外殼決定按鍵怎麼送 | 本版忽略（外殼） |
+| `caps_lock_english` | Caps Lock 直接打英文；關閉時 Caps Lock 的字母仍是大寫字面（不進注音狀態機）；外殼決定按鍵怎麼送 | 本版忽略（外殼） |
 | `ja_input_method` | 日文只有羅馬字（`RomajiInput`），沒有直接かな | 本版忽略 |
 | `ja_ambiguous` | 解碼器在建構時固定 `both`，`SessionConfig` 沒有欄位 | 本版忽略 |
 | `ja_symbols` | 候選是否列記号／顔文字；解碼器開關未接線 | 本版忽略 |

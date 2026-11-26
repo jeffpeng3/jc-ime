@@ -1144,6 +1144,28 @@ mod tests {
         assert_eq!(snap.preedit, "我a", "Shift＋字母仍照 shift_letter=lower");
     }
 
+    /// Caps Lock 的大寫接在未完成的注音後面（`w96j0` + `A` → `台ㄨㄢA`），
+    /// 不進注音狀態機，也不套 `shift_letter=lower`。
+    #[test]
+    fn test_caps_uppercase_after_pending_zhuyin_keeps_literal() {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
+        let mut style = InputStyle::preset("0c").expect("預設存在");
+        style.rules.shift_letter = "lower".to_string();
+        config.style = style;
+        let mut s = Session::new(config);
+        type_keys(&mut s, "w96j0");
+
+        let snap = s.press(Key::char('A', false));
+        assert_eq!(
+            snap.preedit, "台ㄨㄢA",
+            "Caps Lock 大寫要接在未完成的注音後面"
+        );
+        assert_eq!(snap.cursor_rune, 4, "游標要落在 A 後面");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "台ㄨㄢA");
+    }
+
     /// 對照 `TestMcBopomofoCycleAndShiftSpace` 的空白與全形標點。
     #[test]
     fn test_mcbopomofo_space_and_backslash() {

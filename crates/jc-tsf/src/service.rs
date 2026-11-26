@@ -347,7 +347,8 @@ impl State {
         let shift = keys::shift_down();
         let caps = keys::caps_lock_on();
         let shift_space = key == " " && shift && self.session.style_shift_space();
-        let caps_lower = caps && self.session.style_caps_lower();
+        // 「Caps Lock 預設小寫」只套英文模式；中文／混合模式的大寫一律是字面（#168 反轉）。
+        let caps_lower = english && caps && self.session.style_caps_lower();
         Some(keys::style_key(key, shift, caps, shift_space, caps_lower))
     }
 

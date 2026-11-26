@@ -101,7 +101,10 @@ Tab 在英文組字期間一律由輸入法吃掉，宿主不能用 Tab 切換�
 
 - `shift_letter` 只管 Shift＋字母。Caps Lock 是使用者的鍵盤狀態，不是 IME 的
   Shift 模式，所以 Caps Lock 的大寫不套用 `commit`／`lower`，固定保留原字元。
+- TSF 在中文／混合模式也照 Caps Lock 送大寫字面（不再消掉鎖定位元），字母
+  因此不會落進注音狀態機；標點、數字與 Shift 符號不受 Caps Lock 影響。
+  Caps Lock＋Shift 仍照系統反轉成小寫。
 - 混打的英數流本來就把大寫留在字面；這條只在注音／日文狀態機或字面尾巴存在時
   接手，以免破壞 `ABC DEF` 這種英數流的順序。
-- `caps_lock_english=true` 仍由 TSF 在英文模式先處理（Caps Lock 直接打英文）；
-  核心這條只處理漏進引擎、沒有 Shift 的大寫，兩者不重複。
+- `caps_lock_english=true` 仍優先：TSF 看到 Caps Lock 直接切英文模式，按鍵走
+  英文路徑，核心這條只處理漏進引擎、沒有 Shift 的大寫，兩者不重複。

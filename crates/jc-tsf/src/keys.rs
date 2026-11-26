@@ -5,6 +5,9 @@
 //!
 //! 排列由核心解讀：只把可見的 ASCII 交給核心；具名鍵用協定名稱；帶 Ctrl／Alt 的組合鍵交還應用程式，
 //! 只有中文模式的 Ctrl＋標點（#168，見 [`ctrl_punct`]）例外。
+//!
+//! Caps Lock 開著時字母一律送大寫字面（中文／混合模式也一樣，#168 反轉），
+//! 不會變成小寫注音鍵；`caps_lock_english=true` 仍由外殼先切英文模式。
 use jc_proto::{Key, KeyCode};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetKeyState, GetKeyboardState, ToUnicode, VK_BACK, VK_CAPITAL, VK_CONTROL,
@@ -145,24 +148,27 @@ pub fn is_space_key(vk: u32) -> bool {
 }
 
 /// 依目前鍵盤狀態把虛擬鍵轉成字元；只接受可見 ASCII（0x21–0x7e）。
-/// `caps_lock` 為 false（中文模式，#168）時不理 Caps Lock：字母照沒開 Caps Lock 時的大小寫，沒按 Shift 是小寫注音鍵，
-/// Shift＋字母是大寫；英文模式傳 true，照 Caps Lock 打大寫。
-pub fn printable(vk: u32, lparam: isize, caps_lock: bool) -> Option<String> {
+///
+/// Caps Lock 一律照鍵盤狀態（#168 反轉）：開著時字母是大寫字面，中文／混合模式也一樣，
+/// 不因模式消掉鎖定位元。標點、數字與 Shift 符號不受 Caps Lock 影響。
+/// `caps_lock` 只保留呼叫端的模式語意（英文模式傳 true、中文傳 false），不再改變大小寫；
+/// `caps_lock_english=true` 由外殼先切英文模式，與這裡無關。
+pub fn printable(vk: u32, lparam: isize, _caps_lock: bool) -> Option<String> {
     let mut state = [0u8; 256];
     unsafe {
         if GetKeyboardState(&mut state).is_err() {
             return None;
         }
     }
-    printable_with(vk, lparam, &mut state, caps_lock)
+    printable_with(vk, lparam, &mut state, _caps_lock)
 }
 
-/// [`printable`] 用指定的鍵盤狀態轉換（測試走同一條路）。
+/// [`printable`] 用指定的鍵盤狀態轉換（測試走同一條路）。`caps_lock` 見 [`printable`]。
 pub fn printable_with(
     vk: u32,
     lparam: isize,
     state: &mut [u8; 256],
-    caps_lock: bool,
+    _caps_lock: bool,
 ) -> Option<String> {
     let scan = ((lparam >> 16) & 0xff) as u32;
     // 不讓 Ctrl／Alt 影響轉換（組合鍵已在 modifier_down 擋掉；Ctrl＋標點要的是不按 Ctrl 時的字元）
@@ -175,9 +181,6 @@ pub fn printable_with(
         VK_RMENU,
     ] {
         state[k.0 as usize] = 0;
-    }
-    if !caps_lock {
-        state[VK_CAPITAL.0 as usize] &= !1; // 只清掉鎖定（toggle）位元
     }
     unsafe {
         let mut buf = [0u16; 8];
@@ -304,7 +307,7 @@ pub fn composing_wants(english: bool, protocol: Option<&str>) -> bool {
 
 /// 協定的 Key；不該交給輸入法的按鍵回傳 None。數字鍵盤送 "KP" 加上產生的字元，核心不當注音鍵（#75）。
 /// `vocab` 見 [`named_with`]；只有 Shift（沒有 Ctrl／Alt／Win，組合鍵在這裡已回 None）時才換成新鍵名。
-/// `caps_lock` 見 [`printable`]：英文模式傳 true，中文模式傳 false（不理 Caps Lock，#168）。
+/// `caps_lock` 見 [`printable`]：大小寫一律照實際 Caps Lock；參數只是呼叫端的模式語意，不改變字母。
 pub fn style_key(
     key: String,
     shift: bool,
@@ -1312,8 +1315,9 @@ mod tests {
     }
 
     #[test]
-    fn caps_lock_follows_mode() {
-        // #168：中文模式（caps_lock=false）不理 Caps Lock；英文模式照 Caps Lock 打大寫。Shift＋字母照沒開 Caps Lock 時。
+    fn caps_lock_letters_are_uppercase_in_every_mode() {
+        // #168 反轉：Caps Lock 開著時字母一律大寫字面，中文模式（caps_lock=false）也一樣；
+        // 參數只保留模式語意，不再消掉鎖定位元。Shift＋字母仍照系統反轉。
         // 用美式排列的掃描碼（A=0x1e、逗號=0x33、1=0x02、斜線=0x35）。
         const VK_A: u32 = 0x41;
         let lp = |scan: isize| scan << 16;
@@ -1333,8 +1337,8 @@ mod tests {
             s
         };
         for (caps, shift, honor, want) in [
-            (true, false, false, "a"), // 中文模式、Caps Lock：小寫注音鍵
-            (true, true, false, "A"),  // 中文模式、Caps Lock＋Shift：照沒開 Caps Lock 時，大寫
+            (true, false, false, "A"), // 中文模式、Caps Lock：大寫字面，不是注音鍵
+            (true, true, false, "a"),  // Caps Lock＋Shift：系統反轉成小寫
             (true, false, true, "A"),  // 英文模式照 Caps Lock
             (true, true, true, "a"),   // 英文模式 Caps Lock＋Shift 反轉（系統行為）
             (false, false, false, "a"),
@@ -1346,19 +1350,29 @@ mod tests {
                 "caps={caps} shift={shift} honor={honor}"
             );
         }
-        // 數字與標點不受 Caps Lock 影響；Ctrl 不影響轉換（Ctrl＋標點用不按 Ctrl 的字元）。
-        assert_eq!(
-            printable_with(0xbc, lp(0x33), &mut state(true, false, true), false).as_deref(),
-            Some(",")
-        );
-        assert_eq!(
-            printable_with(0x31, lp(0x02), &mut state(true, true, true), false).as_deref(),
-            Some("!")
-        );
-        assert_eq!(
-            printable_with(0xbf, lp(0x35), &mut state(false, true, true), false).as_deref(),
-            Some("?")
-        );
+        // 數字、標點與 Shift 符號不受 Caps Lock 影響；Ctrl 不影響轉換（Ctrl＋標點用不按 Ctrl 的字元）。
+        for honor in [false, true] {
+            assert_eq!(
+                printable_with(0xbc, lp(0x33), &mut state(true, false, true), honor).as_deref(),
+                Some(","),
+                "Caps Lock 不影響逗號 honor={honor}"
+            );
+            assert_eq!(
+                printable_with(0x31, lp(0x02), &mut state(true, true, true), honor).as_deref(),
+                Some("!"),
+                "Caps Lock 不影響 Shift＋1 honor={honor}"
+            );
+            assert_eq!(
+                printable_with(0xbf, lp(0x35), &mut state(true, true, true), honor).as_deref(),
+                Some("?"),
+                "Caps Lock 不影響 Shift＋/ honor={honor}"
+            );
+            assert_eq!(
+                printable_with(0xbf, lp(0x35), &mut state(false, true, true), honor).as_deref(),
+                Some("?"),
+                "沒開 Caps Lock 的 Shift＋/ honor={honor}"
+            );
+        }
     }
 
     #[test]
