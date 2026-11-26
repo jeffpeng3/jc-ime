@@ -170,6 +170,7 @@
 | 文件 | 一句話 |
 |---|---|
 | [`testing.md`](testing.md) | 內圈用 `scripts/test-plan.sh` 只跑受影響測試，gate 仍跑完整 workspace |
+| [`mbx.md`](mbx.md) | clippy／check 走 `scripts/check.sh`（mbx 共用快取），test 與 CI 不走 mbx |
 
 ### 任務書索引對照
 

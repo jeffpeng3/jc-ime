@@ -2,7 +2,12 @@
 
 `cargo test --workspace` 是 gate 的標準，不能拿掉。內圈（agent 自己驗一個小改動）
 改用 `scripts/test-plan.sh`，只編譯、執行受影響的 crate 與模組，省下無關測試的
-執行時間。mbx 只快取編譯，不會幫忙挑測試，所以這一層要自己選。
+執行時間。mbx 只快取編譯，不會幫忙挑測試，所以這一層要自己選；**test 一律不走
+mbx**。
+
+clippy／check 則統一走 `scripts/check.sh`：有 mbx 就用共用快取，沒有就退回
+cargo，`JC_NO_MBX=1` 可強制走 cargo。範圍與 gc 政策見
+[`docs/port/mbx.md`](mbx.md)。
 
 ## 兩層分工
 
