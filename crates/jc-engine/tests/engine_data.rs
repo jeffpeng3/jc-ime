@@ -5,7 +5,7 @@
 use std::io::{BufReader, Write};
 use std::process::{Child, Command, Stdio};
 
-use jc_core::Key;
+use jc_core::{Key, KeyCode};
 use jc_proto::message::{read_message, write_message};
 use jc_proto::{Request, Response, DEFAULT_MAX_FRAME, PROTOCOL_VERSION};
 
@@ -228,6 +228,93 @@ fn japanese_live_preview_advances_on_every_key() {
         seen.last().map(|(_, preedit)| preedit.as_str()),
         Some("watashi"),
         "最後一鍵應已進入轉換，而不是原樣羅馬字：{seen:?}"
+    );
+    shutdown(child);
+    std::fs::remove_dir_all(&settings_dir).ok();
+}
+
+/// 實機疊字回歸：`watashi` → F6 → `a` → Tab → Enter 不得把「わたし」接兩次。
+#[test]
+fn japanese_tab_enter_does_not_duplicate_prefix() {
+    let Some(root) = jc_testdata::root() else {
+        eprintln!("缺少測試資料：JC_TESTDATA");
+        return;
+    };
+    let settings_dir =
+        std::env::temp_dir().join(format!("jc-ja-dup-prefix-{}", std::process::id()));
+    std::fs::create_dir_all(&settings_dir).expect("建立暫存設定目錄");
+    let settings_path = settings_dir.join("settings.json");
+    std::fs::write(
+        &settings_path,
+        r#"{"schema":2,"primary_language":"ja","ja_input_method":"romaji"}"#,
+    )
+    .expect("寫入暫存設定");
+
+    let root = root.into_os_string();
+    let settings = settings_path.clone().into_os_string();
+    let mut child = spawn(&[
+        std::ffi::OsStr::new("--data"),
+        &root,
+        std::ffi::OsStr::new("--settings"),
+        &settings,
+    ]);
+    let mut output = hello(&mut child);
+    let mut preedits = Vec::new();
+    let mut send = |key: Key, output: &mut BufReader<std::process::ChildStdout>| {
+        let input = child.stdin.as_mut().expect("stdin");
+        write_message(input, &Request::Key { key }, DEFAULT_MAX_FRAME).unwrap();
+        input.flush().unwrap();
+        read_message::<_, Response>(output, DEFAULT_MAX_FRAME)
+            .unwrap()
+            .expect("要有按鍵回應")
+    };
+    for ch in "watashi".chars() {
+        let reply = send(Key::char(ch, false), &mut output);
+        let Response::State { preedit, .. } = reply else {
+            panic!("按鍵 {ch:?} 應回 State，得到 {reply:?}");
+        };
+        preedits.push(preedit);
+    }
+    for (label, key) in [
+        ("F6", Key::new(KeyCode::F(6), None, false)),
+        ("a", Key::char('a', false)),
+        ("Tab", Key::new(KeyCode::Tab, None, false)),
+    ] {
+        let reply = send(key, &mut output);
+        let Response::State { preedit, .. } = reply else {
+            panic!("{label} 應回 State，得到 {reply:?}");
+        };
+        preedits.push(preedit);
+    }
+    assert_eq!(
+        preedits,
+        [
+            "w",
+            "わ",
+            "わt",
+            "わた",
+            "わたs",
+            "わたsh",
+            "私",
+            "わたし",
+            "わたしあ",
+            "わたしあ"
+        ],
+        "每個中間 preedit 都要逐鍵前進，Tab 不能疊字"
+    );
+    for preedit in &preedits {
+        assert!(
+            !preedit.contains("わたしわたし"),
+            "preedit 疊字：{preedit:?}；序列={preedits:?}"
+        );
+    }
+    let reply = send(Key::new(KeyCode::Enter, None, false), &mut output);
+    assert_eq!(
+        reply,
+        Response::Committed {
+            text: "わたしあ".into()
+        },
+        "Enter 應送出一次わたしあ；preedits={preedits:?}"
     );
     shutdown(child);
     std::fs::remove_dir_all(&settings_dir).ok();

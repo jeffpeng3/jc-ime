@@ -436,6 +436,13 @@ pub struct Session {
     pub(super) highlighted: usize,
     /// 候選視窗是否由 Tab／方向鍵開啟；數字鍵只在開啟時選字。
     pub(super) candidate_window: bool,
+    /// 目前日文候選清單是否是整段組字的候選。
+    ///
+    /// Tab 也可能用自動產生的目前轉換打開候選窗；那種清單不是片段候選，
+    /// Enter 不能拿它去替換游標所在片段。
+    pub(super) ja_candidates_whole: bool,
+    /// 目前日文片段候選對應的讀音範圍（單位索引）。
+    pub(super) ja_candidates_span: Option<(usize, usize)>,
     /// 使用者是否已進入明確的候選選取模式。
     ///
     /// 對照上游 `navigating`：候選窗顯示中不代表要選字；方向鍵、翻頁鍵或
@@ -613,6 +620,8 @@ impl Session {
             candidates: Vec::new(),
             highlighted: 0,
             candidate_window: false,
+            ja_candidates_whole: false,
+            ja_candidates_span: None,
             navigating: false,
             segments: Vec::new(),
             composition: Composition::new(),
@@ -3802,6 +3811,126 @@ mod tests {
         for want in ["su", "す", "ス"] {
             assert!(surfaces.contains(&want), "{want} 不在 {surfaces:?}");
         }
+    }
+
+    /// preedit 裡相鄰重複的片段（長度至少 2，包含前後重疊）。
+    ///
+    /// 正常轉換不會把同一段接兩次；`ワタしワタしわ` 這種「前段＋新內容＋舊
+    /// 尾巴」也會命中 `ワタし`。
+    fn repeated_fragment(text: &str) -> Option<String> {
+        let chars: Vec<char> = text.chars().collect();
+        for len in 2..=chars.len() / 2 {
+            for at in 0..=chars.len() - 2 * len {
+                let first: String = chars[at..at + len].iter().collect();
+                let second: String = chars[at + len..at + 2 * len].iter().collect();
+                if first == second {
+                    return Some(first);
+                }
+            }
+        }
+        None
+    }
+
+    /// 延遲整句模式把游標移到後段時，↓ 要列該段的目前值、原始羅馬字與推薦。
+    #[test]
+    fn test_ja_down_inside_segment_lists_kana_and_raw() {
+        let source = LiveTestSource(vec![
+            ja_entry("私", "わたし", 10),
+            ja_entry("詩", "し", 30),
+            ja_entry("し", "し", 20),
+        ]);
+        let decoder = Arc::new(JaDecoder::new(Arc::new(source)));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.ja = Some(decoder);
+        config.ja_only = true;
+        config.ja_live = live::Config {
+            enabled: true,
+            idle_delay: std::time::Duration::ZERO,
+            ..live::Config::default()
+        };
+        let mut s = Session::new(config);
+        type_ja(&mut s, "watashishi");
+        s.ja_live_idle();
+        assert_eq!(s.snapshot().preedit, "私し", "先分成兩個片段");
+        // 游標移到最後一段「し」之前。
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        let down = s.press(Key::new(KeyCode::Down, None, false));
+        let surfaces: Vec<&str> = down.candidates.iter().map(|c| c.surface.as_str()).collect();
+        assert_eq!(surfaces[0], "し", "第 0 項是該段目前值：{surfaces:?}");
+        assert_eq!(surfaces[1], "shi", "第 1 項是該段原始羅馬字：{surfaces:?}");
+        assert!(
+            surfaces[2..].contains(&"詩"),
+            "推薦候選接在後面：{surfaces:?}"
+        );
+        // Enter 套用目前值、關窗；第二次 Enter 才送出。
+        let picked = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(picked.preedit, "私し", "選目前值要保留整段");
+        let committed = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(committed.preedit, "");
+        assert_eq!(s.commit(), "私し");
+    }
+
+    /// 片段候選換掉推薦詞時只換該段，前面的片段不能消失。
+    #[test]
+    fn test_ja_segment_candidate_keeps_earlier_clause() {
+        let source = LiveTestSource(vec![
+            ja_entry("私", "わたし", 10),
+            ja_entry("詩", "し", 30),
+            ja_entry("し", "し", 20),
+        ]);
+        let decoder = Arc::new(JaDecoder::new(Arc::new(source)));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.ja = Some(decoder);
+        config.ja_only = true;
+        config.ja_live = live::Config {
+            enabled: true,
+            idle_delay: std::time::Duration::ZERO,
+            ..live::Config::default()
+        };
+        let mut s = Session::new(config);
+        type_ja(&mut s, "watashishi");
+        s.ja_live_idle();
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        let down = s.press(Key::new(KeyCode::Down, None, false));
+        let index = down
+            .candidates
+            .iter()
+            .position(|candidate| candidate.surface == "詩")
+            .expect("詩 候選");
+        let picked = s.choose_candidate(index).expect("選推薦詞");
+        assert_eq!(picked.preedit, "私詩", "只換第二段，前段保留");
+        let committed = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(committed.preedit, "");
+        assert_eq!(s.commit(), "私詩");
+    }
+
+    /// Tab 用自動產生的整段轉換開窗時，Enter 不得拿它去替換片段而疊字。
+    #[test]
+    fn test_ja_tab_candidate_does_not_duplicate_prefix() {
+        assert_eq!(
+            repeated_fragment("ワタしワタしわ").as_deref(),
+            Some("ワタし"),
+            "重疊也要抓"
+        );
+        let mut s = ja_live_session(live::Config::default());
+        let mut preedits = Vec::new();
+        for ch in "watashi".chars() {
+            preedits.push(s.press(Key::char(ch, false)).preedit);
+        }
+        preedits.push(s.press(Key::new(KeyCode::F(6), None, false)).preedit);
+        preedits.push(s.press(Key::char('a', false)).preedit);
+        preedits.push(s.press(Key::new(KeyCode::Tab, None, false)).preedit);
+        let enter = s.press(Key::new(KeyCode::Enter, None, false));
+        preedits.push(enter.preedit.clone());
+        for preedit in &preedits {
+            assert_eq!(
+                repeated_fragment(preedit),
+                None,
+                "preedit 疊字：{preedit:?}；序列={preedits:?}"
+            );
+        }
+        assert_eq!(enter.preedit, "", "Enter 應送出整段");
+        assert_eq!(s.commit(), "わたしあ", "不得疊成 わたしわたしあ");
     }
 
     /// 逐字変換的片段游標、Space 開片段候選與 Enter 套用。

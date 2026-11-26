@@ -2,6 +2,8 @@
 //!
 //! 型別、設定與公開 API 在上層模組；這裡只放實作細節。
 
+use std::borrow::Cow;
+
 use super::*;
 use crate::ja::decode::mean_candidates;
 use crate::score::BigramLm;
@@ -277,6 +279,9 @@ impl Session {
     }
 
     pub(super) fn press_char(&mut self, ch: char) {
+        // 新字元讓先前的片段候選失效；Tab 用自動轉換開的窗不能沿用。
+        self.ja_candidates_whole = false;
+        self.ja_candidates_span = None;
         // 字面尾巴要先併回組字，下一個按鍵才會接在它後面。
         if !self.literal_tail.is_empty() && !self.candidate_window {
             self.absorb_literal_tail();
@@ -921,6 +926,8 @@ impl Session {
     /// 選字完成後與 `press` 相同的收尾：關掉候選窗並重建顯示。
     pub(super) fn finish_choice(&mut self) -> Snapshot {
         self.candidate_window = false;
+        self.ja_candidates_whole = false;
+        self.ja_candidates_span = None;
         self.candidate_expanded = false;
         self.mixed_target = None;
         self.mixed_choices.clear();
@@ -992,12 +999,18 @@ impl Session {
             return false;
         }
         let at = rune_offset(&text, self.ja_cursor.min(text.len()));
-        // 日文的 ↓ 只開候選，不移動游標：延遲整句模式列出整段組字的轉換
-        // 結果，逐字変換模式仍只列游標所在片段。
-        let whole = self
-            .live
-            .as_ref()
-            .is_some_and(LiveController::sentence_mode);
+        // 日文的 ↓ 只開候選，不移動游標。游標在組字結尾時，延遲整句模式
+        // 列出整段組字的轉換結果；游標已經移到某個片段內時，即使還在延遲
+        // 整句模式，也只列那一段的候選（`私|は` 的 `は` 要有「は」可選）。
+        let at_end = self.ja_cursor >= text.len();
+        let whole = at_end
+            && self
+                .live
+                .as_ref()
+                .is_some_and(LiveController::sentence_mode);
+        // 原始按鍵要在開窗之前取；開窗後 `displayed_base()` 會換成高亮候選，
+        // 片段索引就對不回原本的讀音了。
+        let segment_raw = (!whole).then(|| self.active_segment_raw()).flatten();
         let opened = if self.live.is_some() {
             if whole {
                 self.open_ja_all_candidates()
@@ -1010,35 +1023,23 @@ impl Session {
         if !opened {
             return false;
         }
-        // 原始羅馬字也是一個可選回來的候選；`ja_only` 模式同樣保留按鍵。
-        let raw = if !self.ja_run_keys.is_empty() {
-            self.ja_run_keys.clone()
-        } else {
-            self.romaji
-                .units()
-                .iter()
-                .map(Unit::as_str)
-                .collect::<String>()
-        };
-        // 固定順序：目前值、原始羅馬字、其餘轉換。原始羅馬字原本排在最後，
-        // 轉成カナ（ス）之後很難選回來；現在永遠是第二項。
-        if !raw.is_empty() && self.candidates.first().map(|c| c.surface.as_str()) != Some(&raw) {
-            if let Some(at) = self
-                .candidates
-                .iter()
-                .position(|candidate| candidate.surface == raw)
-            {
-                let candidate = self.candidates.remove(at);
-                let at = at.min(1);
-                self.candidates.insert(at, candidate);
-            } else {
-                let at = self.candidates.len().min(1);
-                self.candidates.insert(
-                    at,
-                    Candidate::new(raw.clone(), raw.clone(), i32::MAX, CandidateSource::Literal),
-                );
+        // 只有一個文節時，整段清單就等於該片段清單；記成片段候選，選字後
+        // 游標才會留在第一個字之後（既有單段編輯行為）。
+        if whole {
+            if let Some(live) = self.live.as_ref() {
+                let spans = live.clause_spans();
+                if let [span] = spans.as_slice() {
+                    self.ja_candidates_whole = false;
+                    self.ja_candidates_span = Some((span.start, span.end));
+                }
             }
         }
+        let raw = if whole {
+            self.whole_raw_keys()
+        } else {
+            segment_raw.unwrap_or_default()
+        };
+        self.insert_ja_raw_candidate(&raw);
         self.highlighted = 0;
         self.candidate_window = true;
         self.candidate_expanded = false;
@@ -1060,6 +1061,55 @@ impl Session {
             ja: true,
         });
         true
+    }
+
+    /// 整段組字的原始按鍵；沒有按鍵記錄時退回かな讀音。
+    fn whole_raw_keys(&self) -> String {
+        if !self.ja_run_keys.is_empty() {
+            self.ja_run_keys.clone()
+        } else {
+            self.romaji
+                .units()
+                .iter()
+                .map(Unit::as_str)
+                .collect::<String>()
+        }
+    }
+
+    /// 游標所在片段的原始羅馬字按鍵。
+    fn active_segment_raw(&self) -> Option<String> {
+        let index = self.active_segment()?;
+        let live = self.live.as_ref()?;
+        let span = live.clause_spans().get(index).cloned()?;
+        Some(
+            self.romaji
+                .raw_units()
+                .get(span.start..span.end)
+                .unwrap_or_default()
+                .concat(),
+        )
+    }
+
+    /// 把原始按鍵插到候選清單第二項；選回原始輸入時不必記羅馬字。
+    fn insert_ja_raw_candidate(&mut self, raw: &str) {
+        if raw.is_empty() || self.candidates.first().map(|c| c.surface.as_str()) == Some(raw) {
+            return;
+        }
+        if let Some(at) = self
+            .candidates
+            .iter()
+            .position(|candidate| candidate.surface == raw)
+        {
+            let candidate = self.candidates.remove(at);
+            let at = at.min(1);
+            self.candidates.insert(at, candidate);
+        } else {
+            let at = self.candidates.len().min(1);
+            self.candidates.insert(
+                at,
+                Candidate::new(raw, raw, i32::MAX, CandidateSource::Literal),
+            );
+        }
     }
 
     /// 開啟整段日文組字的候選；日文的 ↓ 用，游標不動。
@@ -1102,6 +1152,8 @@ impl Session {
         self.candidates = list;
         self.highlighted = 0;
         self.candidate_window = true;
+        self.ja_candidates_whole = true;
+        self.ja_candidates_span = None;
         self.navigating = false;
         self.keep_candidates = true;
         true
@@ -1153,6 +1205,8 @@ impl Session {
         self.candidates = list;
         self.highlighted = 0;
         self.candidate_window = true;
+        self.ja_candidates_whole = false;
+        self.ja_candidates_span = Some((span.start, span.end));
         self.navigating = false;
         self.keep_candidates = true;
         true
@@ -1161,19 +1215,33 @@ impl Session {
     /// 把候選套到游標所在片段，其他片段不變。
     pub(super) fn apply_ja_candidate(&mut self, index: usize) -> bool {
         // ↓ 開的是整段組字的候選時，選字換掉整段，不是只換游標所在文節。
-        if self
-            .mixed_target
-            .as_ref()
-            .is_some_and(|target| target.ja && target.rune_len > 1)
+        if self.ja_candidates_whole
+            || self
+                .mixed_target
+                .as_ref()
+                .is_some_and(|target| target.ja && target.rune_len > 1)
         {
             return self.apply_ja_whole_candidate(index);
         }
-        let Some(segment) = self.active_segment() else {
+        // 候選清單不是為游標所在片段開的（例如 Tab 用自動產生的目前轉換
+        // 開窗），不能拿整段候選去替換片段，否則會變成 `わたし`＋`わたしあ`。
+        let Some(range) = self.ja_candidates_span else {
             return false;
         };
         let Some(candidate) = self.candidates.get(index).cloned() else {
             return false;
         };
+        let Some(live) = self.live.as_ref() else {
+            return false;
+        };
+        let spans = live.clause_spans();
+        let Some(segment) = spans
+            .iter()
+            .position(|span| (span.start, span.end) == range)
+        else {
+            return false;
+        };
+        let same = spans[segment].surface == candidate.surface;
         let segment_start = self
             .segments()
             .get(segment)
@@ -1182,7 +1250,7 @@ impl Session {
         let Some(live) = self.live.as_mut() else {
             return false;
         };
-        if !live.replace_clause(segment, candidate.surface.clone()) {
+        if !same && !live.replace_clause(segment, candidate.surface.clone()) {
             return false;
         }
         // 非延遲模式沒有 user_segments 路徑，要用鎖定前綴讓下一次重建
@@ -1193,7 +1261,20 @@ impl Session {
         // 學習由 [`CandidateAction::learn`] 在套用成功後執行；這裡只負責套用，
         // 讓「換文節」與「記一次學習」不會因為重畫順序而漏掉或重複。
         self.capture_ja_users();
+        // 選到目前片段值時不 replace，但還是要重畫：開窗期間
+        // `displayed_base()` 會用高亮候選蓋掉整段，關窗後必須恢復完整前後文。
         self.refresh_ja_live();
+        if same {
+            self.candidate_window = false;
+            self.ja_candidates_whole = false;
+            self.ja_candidates_span = None;
+            self.navigating = false;
+            self.keep_candidates = false;
+            self.candidate_expanded = false;
+            self.mixed_target = None;
+            self.mixed_choices.clear();
+            return true;
+        }
         if let Some(segment) = self.segments().get(segment) {
             // 比一個 rune 長的替換（私→わたし）游標放在第一個字元之後。
             let first = candidate
@@ -2274,6 +2355,8 @@ impl Session {
     }
 
     pub(super) fn clear_composition(&mut self) {
+        self.ja_candidates_whole = false;
+        self.ja_candidates_span = None;
         self.ja_run = false;
         self.ja_run_keys.clear();
         self.zh.reset();
@@ -2363,39 +2446,72 @@ impl Session {
     }
 
     /// 顯示用的轉換結果：接受的補全或高亮候選，混合模式維持中文片段。
-    pub(super) fn displayed_base(&self) -> &str {
+    pub(super) fn displayed_base(&self) -> Cow<'_, str> {
         if self.menu.is_some() {
             // 選單開啟時組字區維持原樣，候選只是待選清單。
-            return &self.base;
+            return Cow::Borrowed(&self.base);
         }
         // 片段編輯時候選只涵蓋游標那一段，不能拿來取代整個組字字串。
         if self.edit.is_some() {
-            return &self.base;
+            return Cow::Borrowed(&self.base);
         }
         // 純注音組字的 Mixed 顯示整段最佳路徑；候選只供選字，不取代組字區。
         if self.config.mode == Mode::Mixed && self.zh_lane {
-            return &self.base;
+            return Cow::Borrowed(&self.base);
+        }
+        // 日文片段候選只替換游標那一段，前後文要留在畫面上。
+        if self.candidate_window {
+            if let Some(range) = self.ja_candidates_span {
+                if let Some(candidate) = self.candidates.get(self.highlighted) {
+                    if let Some(display) = self.ja_segment_display(range, &candidate.surface) {
+                        return Cow::Owned(display);
+                    }
+                }
+            }
         }
         match (
             &self.accepted_completion,
             self.candidates.get(self.highlighted),
         ) {
-            (Some(text), _) => text.as_str(),
+            (Some(text), _) => Cow::Borrowed(text),
             // 混合模式的候選只取代待定英數按鍵，`base` 已含前面的中文片段；
             // 直接拿候選當整個組字字串會把中文吃掉。純注音路徑照注音處理。
             (None, _)
                 if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() =>
             {
-                &self.base
+                Cow::Borrowed(&self.base)
             }
-            (None, Some(candidate)) => candidate.surface.as_str(),
-            (None, None) => &self.base,
+            (None, Some(candidate)) => Cow::Borrowed(candidate.surface.as_str()),
+            (None, None) => Cow::Borrowed(&self.base),
         }
+    }
+
+    /// 片段候選的顯示字串：只把指定讀音範圍換成候選詞面。
+    fn ja_segment_display(&self, range: (usize, usize), surface: &str) -> Option<String> {
+        let live = self.live.as_ref()?;
+        let spans = live.clause_spans();
+        let index = spans
+            .iter()
+            .position(|span| (span.start, span.end) == range)?;
+        let segment = self.segments.get(index)?;
+        let (start, end) = (
+            segment.start.min(self.base.len()),
+            segment.end.min(self.base.len()),
+        );
+        if start > end || !self.base.is_char_boundary(start) || !self.base.is_char_boundary(end) {
+            return None;
+        }
+        Some(format!(
+            "{}{}{}",
+            &self.base[..start],
+            surface,
+            &self.base[end..]
+        ))
     }
 
     /// 顯示用字串：高亮候選反映在組字區，未完成的注音插在游標位置。
     pub(super) fn base_with_highlight(&self) -> String {
-        let base = self.insert_literal(self.displayed_base());
+        let base = self.insert_literal(&self.displayed_base());
         let mut out = if self.pending.is_empty() {
             base
         } else if !self.in_zh_lane() || self.cursor >= self.syllables.len() {

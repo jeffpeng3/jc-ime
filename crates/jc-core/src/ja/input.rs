@@ -347,6 +347,11 @@ pub fn default_romaji_table() -> &'static Table {
 pub struct RomajiInput {
     table: Table,
     units: Vec<Unit>,
+    /// 每個已完成單位對應的原始按鍵（羅馬字）。
+    ///
+    /// 一個對照表項可能產生多個かな（`kya` → `きゃ`）；按鍵只記在第一個
+    /// 單位，其餘留空。片段候選要顯示該段的原始羅馬字時會用到。
+    raw: Vec<String>,
     pending: String,
     /// 剛打完 `nn` 並已輸出 `ん`；第二個 `n` 仍可和下一個母音或 `y`
     /// 組成な行かな。
@@ -364,6 +369,7 @@ impl RomajiInput {
         Self {
             table,
             units: Vec::new(),
+            raw: Vec::new(),
             pending: String::new(),
             carry_n: false,
         }
@@ -401,6 +407,7 @@ impl RomajiInput {
         if self.carry_n {
             self.carry_n = false;
             self.units.pop();
+            self.raw.pop();
             return true;
         }
         if !self.pending.is_empty() {
@@ -409,6 +416,7 @@ impl RomajiInput {
         }
         if !self.units.is_empty() {
             self.units.pop();
+            self.raw.pop();
             return true;
         }
         false
@@ -417,6 +425,7 @@ impl RomajiInput {
     /// 清空所有組字狀態。
     pub fn reset(&mut self) {
         self.units.clear();
+        self.raw.clear();
         self.pending.clear();
         self.carry_n = false;
     }
@@ -437,7 +446,7 @@ impl RomajiInput {
     pub fn flush(&mut self) -> Vec<Unit> {
         if self.pending == "n" {
             self.pending.clear();
-            return self.emit(Unit::new("ん"));
+            return self.emit(Unit::new("ん"), "n".to_string());
         }
         Vec::new()
     }
@@ -445,6 +454,14 @@ impl RomajiInput {
     /// 已完成的讀音單位。
     pub fn units(&self) -> &[Unit] {
         &self.units
+    }
+
+    /// 每個已完成單位對應的原始羅馬字按鍵。
+    ///
+    /// 長度與 [`RomajiInput::units`] 相同；一個對照表項產生多個かな時，按鍵
+    /// 只記在第一個單位，其餘是空字串。
+    pub fn raw_units(&self) -> &[String] {
+        &self.raw
     }
 
     /// 尚未完成的按鍵，例如 `k`；沒有時為空字串。
@@ -502,18 +519,18 @@ impl RomajiInput {
         if key == 'n' {
             self.pending.clear();
             self.carry_n = true;
-            return PushResult::Accepted(self.emit(Unit::new("ん")));
+            return PushResult::Accepted(self.emit(Unit::new("ん"), "nn".to_string()));
         }
         if key == '\'' {
             self.pending.clear();
-            return PushResult::Accepted(self.emit(Unit::new("ん")));
+            return PushResult::Accepted(self.emit(Unit::new("ん"), "n'".to_string()));
         }
         if is_vowel_or_y(key) {
             return self.push_generic(key);
         }
         if self.known_start(key) {
             self.pending.clear();
-            return self.emit_then(Unit::new("ん"), key);
+            return self.emit_then(Unit::new("ん"), "n".to_string(), key);
         }
         PushResult::Rejected
     }
@@ -524,8 +541,9 @@ impl RomajiInput {
         if let Some(kana) = self.table.lookup(&candidate).map(str::to_string) {
             self.pending.clear();
             let units = split_units(&kana);
-            self.units.extend(units.iter().cloned());
-            return PushResult::Accepted(units);
+            let count = units.len();
+            self.push_units(units, candidate);
+            return PushResult::Accepted(self.units[self.units.len() - count..].to_vec());
         }
 
         if self.table.is_prefix(&candidate) {
@@ -539,19 +557,32 @@ impl RomajiInput {
         if chars.len() == 2 && chars[0] == chars[1] && can_sokuon(chars[0]) {
             self.pending.clear();
             self.pending.push(chars[1]);
-            return PushResult::Accepted(self.emit(Unit::new("っ")));
+            return PushResult::Accepted(self.emit(Unit::new("っ"), chars[0].to_string()));
         }
 
         PushResult::Rejected
     }
 
-    fn emit(&mut self, unit: Unit) -> Vec<Unit> {
+    /// 把一個對照表項產生的單位與原始按鍵一起放進狀態。
+    fn push_units(&mut self, units: Vec<Unit>, raw: String) {
+        for (index, unit) in units.into_iter().enumerate() {
+            self.units.push(unit);
+            self.raw.push(if index == 0 {
+                raw.clone()
+            } else {
+                String::new()
+            });
+        }
+    }
+
+    fn emit(&mut self, unit: Unit, raw: String) -> Vec<Unit> {
         self.units.push(unit.clone());
+        self.raw.push(raw);
         vec![unit]
     }
 
-    fn emit_then(&mut self, unit: Unit, key: char) -> PushResult {
-        let mut done = self.emit(unit);
+    fn emit_then(&mut self, unit: Unit, raw: String, key: char) -> PushResult {
+        let mut done = self.emit(unit, raw);
         match self.push(key) {
             PushResult::Rejected => PushResult::Rejected,
             PushResult::Accepted(rest) => {

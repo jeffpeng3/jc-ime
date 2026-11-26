@@ -4985,6 +4985,10 @@ mod tests {
         let snap = s.press(Key::new(KeyCode::Down, None, false));
         assert_eq!(snap.highlighted, 0);
         assert_eq!(snap.candidates[0].surface, "私", "漢字是預設");
+        assert_eq!(
+            snap.candidates[1].surface, "watashi",
+            "整段候選第 2 項是整段原始羅馬字"
+        );
         assert!(snap
             .candidates
             .iter()

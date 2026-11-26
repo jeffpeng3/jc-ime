@@ -118,7 +118,7 @@ impl Session {
                 return text.len();
             }
             let base = self.displayed_base();
-            let Some(mut byte) = self.cell_byte(base, at) else {
+            let Some(mut byte) = self.cell_byte(&base, at) else {
                 return text.len();
             };
             // 未完成的注音插在游標位置；游標在它後面。
