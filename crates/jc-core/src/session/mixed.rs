@@ -1524,16 +1524,17 @@ impl Session {
             && self.literal_spans.is_empty()
             && !self.candidates.is_empty()
         {
-            let choices: Vec<Option<MixedChoice>> = self
+            let choices: Vec<Option<CandidateAction>> = self
                 .candidates
                 .iter()
                 .map(|candidate| {
-                    Some(MixedChoice {
+                    Some(CandidateAction {
                         insert: candidate.surface.clone(),
                         leftover: String::new(),
                         force_literal: true,
                         cursor: ChoiceCursor::TokenEnd,
                         syllable_edit: None,
+                        ..CandidateAction::default()
                     })
                 })
                 .collect();
@@ -1581,7 +1582,7 @@ impl Session {
     fn mixed_candidates_for(
         &self,
         target: &MixedTarget,
-    ) -> (Vec<Candidate>, Vec<Option<MixedChoice>>) {
+    ) -> (Vec<Candidate>, Vec<Option<CandidateAction>>) {
         let text = self.base_with_highlight();
         let start = Self::rune_byte(&text, target.rune_start);
         let end = text[start..]
@@ -1591,7 +1592,7 @@ impl Session {
             .sum::<usize>()
             + start;
         let surface = text[start..end].to_string();
-        let mut out: Vec<(Candidate, MixedChoice)> = Vec::new();
+        let mut out: Vec<(Candidate, CandidateAction)> = Vec::new();
         // 字面片段：只列這一個字元（英文 `hello` 的 `o`），不往左組詞。
         if target.reading.is_none() && !target.ja {
             out.push((
@@ -1601,24 +1602,26 @@ impl Session {
                     0,
                     CandidateSource::Literal,
                 ),
-                MixedChoice {
+                CandidateAction {
                     insert: surface.clone(),
                     leftover: String::new(),
                     force_literal: false,
                     cursor: ChoiceCursor::AfterInsert,
                     syllable_edit: None,
+                    ..CandidateAction::default()
                 },
             ));
             if let Some(full) = crate::symbols::width_variant(&surface) {
                 if full != surface {
                     out.push((
                         Candidate::new(full.clone(), surface.clone(), 1, CandidateSource::Literal),
-                        MixedChoice {
+                        CandidateAction {
                             insert: full,
                             leftover: String::new(),
                             force_literal: false,
                             cursor: ChoiceCursor::AfterInsert,
                             syllable_edit: None,
+                            ..CandidateAction::default()
                         },
                     ));
                 }
@@ -1640,12 +1643,13 @@ impl Session {
                             1,
                             CandidateSource::Literal,
                         ),
-                        MixedChoice {
+                        CandidateAction {
                             insert: (*variant).to_string(),
                             leftover: String::new(),
                             force_literal: false,
                             cursor: ChoiceCursor::AfterInsert,
                             syllable_edit: None,
+                            ..CandidateAction::default()
                         },
                     ));
                 }
@@ -1655,7 +1659,7 @@ impl Session {
         // 日文片段：目前值、原始羅馬字，再來才是漢字／かな／カナ。
         if target.ja {
             if let Some(kana) = target.reading.as_deref() {
-                let mut ranked: Vec<(Candidate, MixedChoice)> = Vec::new();
+                let mut ranked: Vec<(Candidate, CandidateAction)> = Vec::new();
                 if let Some(decoder) = self.config.ja.clone() {
                     let chars: Vec<char> = kana.chars().collect();
                     let results = decoder.results(
@@ -1679,7 +1683,7 @@ impl Session {
                                 conversion.cost,
                                 CandidateSource::Lexicon,
                             ),
-                            MixedChoice {
+                            CandidateAction {
                                 insert: text.clone(),
                                 leftover: String::new(),
                                 force_literal: false,
@@ -1689,6 +1693,7 @@ impl Session {
                                     ChoiceCursor::AfterInsert
                                 },
                                 syllable_edit: None,
+                                ..CandidateAction::default()
                             },
                         ));
                     }
@@ -1705,12 +1710,13 @@ impl Session {
                             0,
                             CandidateSource::Literal,
                         ),
-                        MixedChoice {
+                        CandidateAction {
                             insert: kana.to_string(),
                             leftover: String::new(),
                             force_literal: false,
                             cursor: ChoiceCursor::AfterFirst,
                             syllable_edit: None,
+                            ..CandidateAction::default()
                         },
                     ));
                 }
@@ -1725,7 +1731,7 @@ impl Session {
                             0,
                             CandidateSource::Lexicon,
                         ),
-                        MixedChoice {
+                        CandidateAction {
                             insert: surface.clone(),
                             leftover: String::new(),
                             force_literal: is_raw,
@@ -1735,6 +1741,7 @@ impl Session {
                                 ChoiceCursor::AfterInsert
                             },
                             syllable_edit: None,
+                            ..CandidateAction::default()
                         },
                     ));
                 }
@@ -1746,12 +1753,13 @@ impl Session {
                             i32::MAX,
                             CandidateSource::Literal,
                         ),
-                        MixedChoice {
+                        CandidateAction {
                             insert: target.raw.clone(),
                             leftover: String::new(),
                             force_literal: true,
                             cursor: ChoiceCursor::Start,
                             syllable_edit: None,
+                            ..CandidateAction::default()
                         },
                     ));
                 }
@@ -1817,9 +1825,9 @@ impl Session {
         raw: &str,
         current: &str,
         syllable_edit: Option<EditWindow>,
-    ) -> (Vec<Candidate>, Vec<Option<MixedChoice>>) {
+    ) -> (Vec<Candidate>, Vec<Option<CandidateAction>>) {
         let raw = zh_raw_keys(reading, raw);
-        let mut out: Vec<(Candidate, MixedChoice)> = Vec::new();
+        let mut out: Vec<(Candidate, CandidateAction)> = Vec::new();
         if !current.is_empty() {
             let literal = current == reading || current == raw || current.is_ascii();
             out.push((
@@ -1833,7 +1841,7 @@ impl Session {
                         CandidateSource::Lexicon
                     },
                 ),
-                MixedChoice {
+                CandidateAction {
                     insert: current.to_string(),
                     leftover: String::new(),
                     force_literal: literal,
@@ -1845,6 +1853,7 @@ impl Session {
                         ChoiceCursor::AfterInsert
                     },
                     syllable_edit: if literal { None } else { syllable_edit },
+                    ..CandidateAction::default()
                 },
             ));
         }
@@ -1856,24 +1865,26 @@ impl Session {
                     0,
                     CandidateSource::Literal,
                 ),
-                MixedChoice {
+                CandidateAction {
                     insert: raw.clone(),
                     leftover: String::new(),
                     force_literal: true,
                     cursor: ChoiceCursor::Start,
                     syllable_edit: None,
+                    ..CandidateAction::default()
                 },
             ));
         }
         for candidate in self.zh_syllable_candidates(reading) {
             out.push((
                 candidate.clone(),
-                MixedChoice {
+                CandidateAction {
                     insert: candidate.surface.clone(),
                     leftover: String::new(),
                     force_literal: false,
                     cursor: ChoiceCursor::AfterInsert,
                     syllable_edit,
+                    ..CandidateAction::default()
                 },
             ));
         }
@@ -1919,15 +1930,17 @@ impl Session {
         .then_some(out)
     }
 
-    /// 把候選套用動作寫進按鍵流；`None` 表示這一個候選不存在。
-    pub(super) fn apply_mixed_choice(&mut self, index: usize) -> Option<Snapshot> {
-        let choice = self.mixed_choices.get(index).cloned().flatten()?;
-        let target = self.mixed_target.clone()?;
-        if let Some(edit) = choice.syllable_edit {
+    /// 把混打候選的套用動作寫進按鍵流；回傳是否真的套用。
+    pub(super) fn apply_mixed_action(&mut self, action: &CandidateAction) -> bool {
+        let Some(target) = self.mixed_target.clone() else {
+            return false;
+        };
+        if let Some(edit) = action.syllable_edit {
+            let candidate = self.candidates.get(action.index).cloned();
             self.edit = Some(edit);
             self.mixed_target = None;
             self.mixed_choices.clear();
-            let applied = self.select_window_candidate(index);
+            let applied = self.select_window_candidate(action.index);
             self.candidate_window = false;
             self.candidate_expanded = false;
             self.navigating = false;
@@ -1936,22 +1949,24 @@ impl Session {
             if applied {
                 // 選字後游標往右一格；比一個 rune 長的替換放到第一個字元之後。
                 self.cursor = (edit.start + 1).min(self.syllables.len());
+                if action.learn {
+                    if let Some(candidate) = candidate {
+                        self.learn_window_candidate(edit, &candidate);
+                    }
+                }
             }
-            return Some(self.finish_choice());
+            return applied;
         }
         if let Some(index) = target.syllable {
             self.mixed_target = None;
             self.mixed_choices.clear();
             self.candidate_expanded = false;
-            if self.materialize_zh_choice(index, &choice) {
-                return Some(self.snapshot());
-            }
-            return None;
+            return self.materialize_zh_choice(index, action);
         }
         let typed = self.ascii.typed().to_string();
-        let (start, end) = target.typed;
+        let (start, end) = action.typed_span.unwrap_or(target.typed);
         if start > end || end > typed.len() || !typed.is_char_boundary(start) {
-            return None;
+            return false;
         }
         // 字面候選只換掉被取代的那一個字元；前段已經轉換好的注音、日文與
         // 英文照目前顯示留下，不再跟著原始按鍵整串重播（`ji3hello` 選全形
@@ -1965,18 +1980,18 @@ impl Session {
         // 前段真的被轉換過才需要凍結；純英文字面照原按鍵重播結果相同。
         let prefix_converted = prefix != typed[..start];
         let mut next =
-            String::with_capacity(typed.len() + choice.insert.len() + choice.leftover.len());
+            String::with_capacity(typed.len() + action.insert.len() + action.leftover.len());
         next.push_str(&prefix);
         let insert_start = next.len();
-        next.push_str(&choice.insert);
-        next.push_str(&choice.leftover);
+        next.push_str(&action.insert);
+        next.push_str(&action.leftover);
         next.push_str(&typed[end..]);
         self.ascii.replay(&next, &self.lexicon);
         self.literal_spans.clear();
         if insert_start > 0 && prefix_converted {
             self.literal_spans.push((0, insert_start));
         }
-        if choice.force_literal {
+        if action.force_literal {
             let span = (insert_start, next.len().saturating_sub(typed[end..].len()));
             self.literal_spans.push(span);
         }
@@ -1991,14 +2006,14 @@ impl Session {
         let rune_start = target
             .rune_start
             .min(self.base_with_highlight().chars().count());
-        let cursor = match choice.cursor {
+        let cursor = match action.cursor {
             ChoiceCursor::Start => rune_start,
             ChoiceCursor::AfterFirst => rune_start + 1,
-            ChoiceCursor::AfterInsert => rune_start + choice.insert.chars().count(),
+            ChoiceCursor::AfterInsert => rune_start + action.insert.chars().count(),
             ChoiceCursor::TokenEnd => self.base_with_highlight().chars().count(),
         };
         self.mixed_cursor = cursor.min(self.base_with_highlight().chars().count());
-        Some(self.snapshot())
+        true
     }
 
     /// ↓ 在純注音組字上開候選：只列游標右側那一個音節。
@@ -2078,15 +2093,15 @@ impl Session {
     }
 
     /// 把純注音組字的一個音節換成字面並退出注音路徑。
-    fn materialize_zh_choice(&mut self, index: usize, choice: &MixedChoice) -> bool {
+    fn materialize_zh_choice(&mut self, index: usize, action: &CandidateAction) -> bool {
         let keyboard = self.zh.keyboard();
         let mut keys = String::new();
         let mut span = (0usize, 0usize);
         for (at, syllable) in self.syllables.iter().enumerate() {
             if at == index {
                 span.0 = keys.len();
-                keys.push_str(&choice.insert);
-                keys.push_str(&choice.leftover);
+                keys.push_str(&action.insert);
+                keys.push_str(&action.leftover);
                 span.1 = keys.len();
                 continue;
             }
@@ -2129,16 +2144,16 @@ impl Session {
         self.pending_tone = None;
         self.ascii.replay(&keys, &self.lexicon);
         self.literal_spans.clear();
-        if choice.force_literal {
+        if action.force_literal {
             self.literal_spans.push(span);
         }
         self.mixed_cursor = Self::MIXED_CURSOR_END;
         self.rebuild();
         let len = self.base_with_highlight().chars().count();
-        let cursor = match choice.cursor {
+        let cursor = match action.cursor {
             ChoiceCursor::Start => rune_start,
             ChoiceCursor::AfterFirst => rune_start + 1,
-            ChoiceCursor::AfterInsert => rune_start + choice.insert.chars().count(),
+            ChoiceCursor::AfterInsert => rune_start + action.insert.chars().count(),
             ChoiceCursor::TokenEnd => self.base_with_highlight().chars().count(),
         };
         self.mixed_cursor = cursor.min(len);
@@ -3067,7 +3082,9 @@ pub(super) fn english_candidates(
 }
 
 /// 把（候選, 動作）清單拆成候選與平行動作；同字面只留第一項。
-fn split_choices(out: Vec<(Candidate, MixedChoice)>) -> (Vec<Candidate>, Vec<Option<MixedChoice>>) {
+fn split_choices(
+    out: Vec<(Candidate, CandidateAction)>,
+) -> (Vec<Candidate>, Vec<Option<CandidateAction>>) {
     let mut candidates = Vec::with_capacity(out.len());
     let mut choices = Vec::with_capacity(out.len());
     let mut seen: Vec<String> = Vec::new();
@@ -3084,49 +3101,52 @@ fn split_choices(out: Vec<(Candidate, MixedChoice)>) -> (Vec<Candidate>, Vec<Opt
 
 /// 把注音讀音、原始按鍵、無聲調按鍵與日文解讀排進候選。
 fn push_decomposition(
-    out: &mut Vec<(Candidate, MixedChoice)>,
+    out: &mut Vec<(Candidate, CandidateAction)>,
     reading: &str,
     raw: &str,
     raw_toneless: &str,
     tone_key: Option<char>,
 ) {
-    let push = |out: &mut Vec<(Candidate, MixedChoice)>, surface: String, choice: MixedChoice| {
-        if surface.is_empty() {
-            return;
-        }
-        if out
-            .iter()
-            .any(|(candidate, _)| candidate.surface == surface)
-        {
-            return;
-        }
-        out.push((
-            Candidate::new(surface, reading.to_string(), 0, CandidateSource::Literal),
-            choice,
-        ));
-    };
+    let push =
+        |out: &mut Vec<(Candidate, CandidateAction)>, surface: String, choice: CandidateAction| {
+            if surface.is_empty() {
+                return;
+            }
+            if out
+                .iter()
+                .any(|(candidate, _)| candidate.surface == surface)
+            {
+                return;
+            }
+            out.push((
+                Candidate::new(surface, reading.to_string(), 0, CandidateSource::Literal),
+                choice,
+            ));
+        };
     push(
         out,
         reading.to_string(),
-        MixedChoice {
+        CandidateAction {
             insert: reading.to_string(),
             leftover: String::new(),
             force_literal: true,
             // 注音字面整段留在起點，再開候選才拆得回同一個音節。
             cursor: ChoiceCursor::Start,
             syllable_edit: None,
+            ..CandidateAction::default()
         },
     );
     if !raw.is_empty() {
         push(
             out,
             raw.to_string(),
-            MixedChoice {
+            CandidateAction {
                 insert: raw.to_string(),
                 leftover: String::new(),
                 force_literal: true,
                 cursor: ChoiceCursor::Start,
                 syllable_edit: None,
+                ..CandidateAction::default()
             },
         );
     }
@@ -3134,12 +3154,13 @@ fn push_decomposition(
         push(
             out,
             raw_toneless.to_string(),
-            MixedChoice {
+            CandidateAction {
                 insert: raw_toneless.to_string(),
                 leftover: tone_key.map(|key| key.to_string()).unwrap_or_default(),
                 force_literal: true,
                 cursor: ChoiceCursor::AfterInsert,
                 syllable_edit: None,
+                ..CandidateAction::default()
             },
         );
     }
@@ -3156,12 +3177,13 @@ fn push_decomposition(
                 push(
                     out,
                     surface.clone(),
-                    MixedChoice {
+                    CandidateAction {
                         insert: surface,
                         leftover: String::new(),
                         force_literal: false,
                         cursor: ChoiceCursor::AfterFirst,
                         syllable_edit: None,
+                        ..CandidateAction::default()
                     },
                 );
             }

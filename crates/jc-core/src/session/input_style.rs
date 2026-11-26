@@ -555,12 +555,13 @@ impl Session {
                 0,
                 CandidateSource::Literal,
             ));
-            choices.push(Some(MixedChoice {
+            choices.push(Some(CandidateAction {
                 insert: (*surface).to_string(),
                 leftover: String::new(),
                 force_literal: false,
                 cursor: ChoiceCursor::AfterInsert,
                 syllable_edit: None,
+                ..CandidateAction::default()
             }));
         }
         self.candidates = candidates;

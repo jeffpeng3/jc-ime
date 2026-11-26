@@ -303,9 +303,21 @@ pub(super) struct MixedTarget {
     pub(super) ja: bool,
 }
 
-/// 一個候選套用後要怎麼改按鍵流與游標。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct MixedChoice {
+/// 一個候選套用後要怎麼改狀態。
+///
+/// 這是「套用什麼」的唯一資料來源：`choose_candidate` 只找 action、交給
+/// [`Session::apply_candidate_action`] 執行、再收尾；`finish_composition`
+/// 也用同一份 action 判斷 Enter 要先套用還是直接送出。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct CandidateAction {
+    /// 由哪一條 lane 執行套用。
+    pub(super) lane: ActionLane,
+    /// 候選在目前清單裡的索引；學習與片段套用要用。
+    pub(super) index: usize,
+    /// 要取代的原始按鍵範圍（`AsciiInput::typed()` 位元組）；沒有時為 `None`。
+    pub(super) typed_span: Option<(usize, usize)>,
+    /// 要取代的顯示範圍（rune 起點與長度）；沒有時為 `None`。
+    pub(super) rune_span: Option<(usize, usize)>,
     /// 插進按鍵流的字面。
     pub(super) insert: String,
     /// 插在字面後面、仍屬於原本音節的尾巴（例如 `ji3` 的 `3`）。
@@ -316,16 +328,41 @@ pub(super) struct MixedChoice {
     pub(super) cursor: ChoiceCursor,
     /// 走既有的音節片段選字，不重播按鍵流。
     pub(super) syllable_edit: Option<EditWindow>,
+    /// 成功套用後要不要記一次學習；只在套用成功後執行，且每次套用只執行一次。
+    pub(super) learn: bool,
+    /// 選單候選為 `true`：一次送出，不保留組字。
+    pub(super) commit_on_apply: bool,
+}
+
+/// 候選套用要走哪一條 lane。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum ActionLane {
+    /// 重播按鍵流的混打候選。
+    #[default]
+    Mixed,
+    /// 符號／表情選單：插入即送出。
+    Menu,
+    /// 注音片段或 `zh_window_last` 的音節替換。
+    ZhSyllable,
+    /// 日文游標所在文節。
+    JaClause,
+    /// 日文整段組字。
+    JaWhole,
+    /// 混打游標候選的英文補完、拼字建議與注音替換。
+    MixedGeneral,
+    /// 直接插入字面並送出整段組字。
+    Insert,
 }
 
 /// 套用候選後的游標位置。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum ChoiceCursor {
     /// 留在目標起點（選回原始按鍵）。
     Start,
     /// 放在插入字面的第一個 rune 之後。
     AfterFirst,
     /// 放在整個插入字面之後。
+    #[default]
     AfterInsert,
     /// 放在整段組字結尾；整串英文候選（拼字建議）用。
     TokenEnd,
@@ -361,7 +398,7 @@ pub struct Session {
     /// 這一次開啟的候選窗要作用在哪裡；`None` 時沿用舊的片段／音節路徑。
     pub(super) mixed_target: Option<MixedTarget>,
     /// 與 [`Session::candidates`] 平行的套用動作；`None` 表示走既有路徑。
-    pub(super) mixed_choices: Vec<Option<MixedChoice>>,
+    pub(super) mixed_choices: Vec<Option<CandidateAction>>,
     /// 使用者把某些原始按鍵固定成字面的範圍（相對 `AsciiInput::typed`）。
     pub(super) literal_spans: Vec<(usize, usize)>,
     /// 游標所在片段的編輯視窗；有值時候選清單只算這一段。
@@ -3895,6 +3932,34 @@ mod tests {
         let picked = s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(picked.preedit, "きょう", "日文 Enter 只換片段");
         assert!(s.pending_commit.is_none(), "日文候選 Enter 不送出整段");
+    }
+
+    /// `CandidateAction` 的日文文節 Enter：換掉游標所在文節，不送出整段。
+    #[test]
+    fn test_candidate_action_ja_clause_enter_keeps_composition() {
+        let mut s = ja_romaji_session();
+        type_ja(&mut s, "su");
+        let opened = s.press(Key::new(KeyCode::Down, None, false));
+        assert!(
+            opened
+                .candidates
+                .iter()
+                .any(|candidate| candidate.surface == "ス"),
+            "日文候選要有 ス：{:?}",
+            opened
+                .candidates
+                .iter()
+                .map(|candidate| candidate.surface.as_str())
+                .collect::<Vec<_>>()
+        );
+        highlight_surface(&mut s, "ス");
+
+        let applied = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(applied.preedit, "ス", "Enter 只換文節");
+        assert!(!applied.preedit.is_empty(), "換文節不能送出整段");
+
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "ス", "第二次 Enter 才送出");
     }
 
     /// 同讀音、成本差距可被學習翻盤的日文 session。

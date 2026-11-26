@@ -680,83 +680,242 @@ impl Session {
 
     /// 依絕對索引套用候選，回傳套用後的快照；越界或無法套用時回 `None`。
     ///
-    /// 數字鍵選字與候選窗滑鼠點選共用這條路徑，包含片段編輯窗、Mixed
-    /// 只選最後一個音節、英文補完、Mixed 注音片段與一般插入。呼叫端不必
-    /// 先開候選窗；是否為合法選字由呼叫端判斷。
+    /// 只做三件事：找出這個候選的 [`CandidateAction`]、交給對應 lane 套用、
+    /// 關窗收尾。數字鍵選字與候選窗滑鼠點選共用這條路徑。
     pub fn choose_candidate(&mut self, index: usize) -> Option<Snapshot> {
+        let action = self.candidate_action(index)?;
+        if !self.apply_candidate_action(&action) {
+            return None;
+        }
+        Some(self.finish_choice())
+    }
+
+    /// 找出候選的套用動作；所有 lane 的差異都收在這一份資料裡。
+    ///
+    /// 優先序與原本的 `choose_candidate` 相同：選單、逐字元候選窗、日文
+    /// 片段、注音片段／`zh_window_last`、混打游標候選，最後才是直接插入。
+    fn candidate_action(&self, index: usize) -> Option<CandidateAction> {
         if index >= self.candidates.len() {
             return None;
         }
-        // 逐字元候選窗有自己的套用動作（拆回原始輸入、換假名等）。
-        if self.candidate_window && self.mixed_choices.get(index).is_some_and(Option::is_some) {
-            return self.apply_mixed_choice(index);
+        let insert = self.candidates[index].surface.clone();
+        if self.menu.is_some() {
+            return Some(CandidateAction {
+                lane: ActionLane::Menu,
+                index,
+                insert,
+                commit_on_apply: true,
+                ..CandidateAction::default()
+            });
         }
-        // 日文片段候選換掉游標所在文節。
-        if self.in_ja_lane() && self.candidate_window {
-            return self.apply_ja_candidate(index).then(|| self.finish_choice());
+        if self.candidate_window {
+            // 逐字元候選窗有自己的套用動作（拆回原始輸入、換假名等）。
+            if let Some(Some(mut action)) = self.mixed_choices.get(index).cloned() {
+                action.lane = ActionLane::Mixed;
+                action.index = index;
+                action.learn = action.syllable_edit.is_some();
+                if let Some(target) = &self.mixed_target {
+                    action.typed_span = Some(target.typed);
+                    action.rune_span = Some((target.rune_start, target.rune_len));
+                }
+                return Some(action);
+            }
+            // 日文片段候選換掉游標所在文節；`rune_len > 1` 是整段組字的候選。
+            if self.in_ja_lane() {
+                let whole = self
+                    .mixed_target
+                    .as_ref()
+                    .is_some_and(|target| target.ja && target.rune_len > 1);
+                return Some(CandidateAction {
+                    lane: if whole {
+                        ActionLane::JaWhole
+                    } else {
+                        ActionLane::JaClause
+                    },
+                    index,
+                    insert,
+                    rune_span: self
+                        .mixed_target
+                        .as_ref()
+                        .map(|target| (target.rune_start, target.rune_len)),
+                    learn: true,
+                    ..CandidateAction::default()
+                });
+            }
         }
         // 游標移到中間或調過詞長時，選字只鎖定這一段，不送出整段組字。
         if let Some(edit) = self.edit {
-            let applied = self.select_window_candidate(index);
-            self.edit = None;
-            if applied {
-                self.cursor = (edit.start + 1).min(self.syllables.len());
-            }
-            return applied.then(|| self.finish_choice());
+            return Some(self.zh_syllable_action(index, edit));
         }
         // ↓／空白開的純注音候選只涵蓋最後一個音節：選字換那一段，整段留著。
         if self.config.mode == Mode::Mixed && self.in_zh_lane() && self.zh_window_last {
-            self.zh_window_last = false;
             let start = self.syllables.len().saturating_sub(1);
-            let applied = self.select_window_candidate_for_zh_window_last(index, start);
-            return applied.then(|| self.finish_choice());
+            return Some(self.zh_syllable_action(index, EditWindow { start, len: 1 }));
         }
-        // 混合模式的候選是英文補完、拼字建議或已完成的注音詞；英文候選
-        // 取代待定按鍵，注音候選換掉結尾的注音片段。純注音路徑（含 Mixed
-        // 的 zh_lane）與選單照注音的通用路徑處理。
-        if self.config.mode == Mode::Mixed
-            && !self.in_zh_lane()
-            && !self.in_ja_lane()
-            && self.menu.is_none()
-        {
-            let candidate = self.candidates[index].clone();
-            let raw = self.ascii.pending().to_string();
-            if !raw.is_empty() && candidate.surface == raw {
-                // 選回原始按鍵：固定成字面，不再讓切分器把它解成羅馬字。
-                self.ascii.force_literal();
-                self.learn_english_choice(&raw, &candidate.surface);
-                self.candidate_window = false;
-                self.navigating = false;
-                self.highlighted = 0;
-                self.mixed_cursor = Self::MIXED_CURSOR_END;
-                return Some(self.finish_choice());
-            }
-            if !raw.is_empty() && self.ascii.accept(&candidate.surface) {
-                self.learn_english_choice(&raw, &candidate.surface);
-                self.candidate_window = false;
-                self.navigating = false;
-                self.highlighted = 0;
-                self.mixed_cursor = Self::MIXED_CURSOR_END;
-                return Some(self.finish_choice());
-            }
-            if self.select_mixed_zh_candidate(&candidate.surface) {
-                self.candidate_window = false;
-                self.navigating = false;
-                self.highlighted = 0;
-                return Some(self.finish_choice());
-            }
+        // 混合模式的候選是英文補完、拼字建議或已完成的注音詞；純注音路徑
+        // （含 Mixed 的 zh_lane）與選單走上面的動作。
+        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
+            return Some(CandidateAction {
+                lane: ActionLane::MixedGeneral,
+                index,
+                insert,
+                cursor: ChoiceCursor::AfterInsert,
+                learn: true,
+                ..CandidateAction::default()
+            });
         }
-        let candidate = self.candidates[index].clone();
-        self.remember_text(&candidate.surface);
-        self.learn_candidate(index);
-        let text = if self.menu.is_some() {
-            self.compose_literal(&candidate.surface)
-        } else {
-            self.insert_literal(&candidate.surface)
-        };
+        Some(CandidateAction {
+            lane: ActionLane::Insert,
+            index,
+            insert,
+            cursor: ChoiceCursor::AfterInsert,
+            learn: true,
+            ..CandidateAction::default()
+        })
+    }
+
+    /// 注音音節替代動作；`edit` 是 `syllables` 裡要換掉的片段。
+    fn zh_syllable_action(&self, index: usize, edit: EditWindow) -> CandidateAction {
+        let start = edit.start.min(self.syllables.len());
+        let end = start.saturating_add(edit.len).min(self.syllables.len());
+        let rune_start: usize = self.syllables[..start]
+            .iter()
+            .map(|syllable| self.decode_syllable(syllable).chars().count())
+            .sum();
+        let rune_len: usize = self.syllables[start..end]
+            .iter()
+            .map(|syllable| self.decode_syllable(syllable).chars().count())
+            .sum();
+        CandidateAction {
+            lane: ActionLane::ZhSyllable,
+            index,
+            rune_span: Some((rune_start, rune_len)),
+            insert: self.candidates[index].surface.clone(),
+            syllable_edit: Some(edit),
+            learn: true,
+            ..CandidateAction::default()
+        }
+    }
+
+    /// 執行一個候選動作；回傳是否真的套用成功。
+    ///
+    /// 學習由 action 的 `learn` 控制，成功套用後才執行，且每次套用只執行一次。
+    fn apply_candidate_action(&mut self, action: &CandidateAction) -> bool {
+        // 選單候選代表立即插入；`commit_on_apply` 讓「一次送出」變成資料，
+        // 不在每個呼叫端各自判斷選單。
+        if action.commit_on_apply {
+            return self.apply_menu_action(action);
+        }
+        match action.lane {
+            ActionLane::Menu => self.apply_menu_action(action),
+            ActionLane::Mixed => self.apply_mixed_action(action),
+            ActionLane::ZhSyllable => self.apply_zh_syllable_action(action),
+            ActionLane::JaClause | ActionLane::JaWhole => self.apply_ja_action(action),
+            ActionLane::MixedGeneral => self.apply_mixed_general_action(action),
+            ActionLane::Insert => self.apply_insert_action(action),
+        }
+    }
+
+    /// 選單候選：插入字面並一次送出。
+    fn apply_menu_action(&mut self, action: &CandidateAction) -> bool {
+        self.remember_text(&action.insert);
+        let text = self.compose_literal(&action.insert);
         self.pending_commit = Some(self.finalize(text));
         self.clear_composition();
-        Some(self.finish_choice())
+        true
+    }
+
+    /// 注音片段或 `zh_window_last`：只換那幾個音節，整段組字留著。
+    fn apply_zh_syllable_action(&mut self, action: &CandidateAction) -> bool {
+        let Some(edit) = action.syllable_edit else {
+            return false;
+        };
+        let candidate = self.candidates.get(action.index).cloned();
+        // `zh_window_last` 只屬於「↓／空白只開最後一格」的視窗；一般片段
+        // 編輯不動這個旗標。
+        if self.edit.is_none() && self.zh_window_last {
+            self.zh_window_last = false;
+        }
+        self.edit = Some(edit);
+        let applied = self.select_window_candidate(action.index);
+        self.edit = None;
+        if !applied {
+            return false;
+        }
+        self.cursor = (edit.start + 1).min(self.syllables.len());
+        if action.learn {
+            if let Some(candidate) = candidate {
+                self.learn_window_candidate(edit, &candidate);
+            }
+        }
+        true
+    }
+
+    /// 日文片段或整段候選；學習用套用前的候選快照，避免重建後找不到這一項。
+    fn apply_ja_action(&mut self, action: &CandidateAction) -> bool {
+        let candidate = self.candidates.get(action.index).cloned();
+        // 明確手選的證據量取決於套用前的候選窗狀態；套用會先關窗。
+        let manual = self.candidate_window;
+        let applied = match action.lane {
+            ActionLane::JaWhole => self.apply_ja_whole_candidate(action.index),
+            _ => self.apply_ja_candidate(action.index),
+        };
+        if applied && action.learn {
+            if let Some(candidate) = candidate {
+                self.learn_ja_choice(action.index, &candidate, manual);
+            }
+        }
+        applied
+    }
+
+    /// 混打游標候選：先後嘗試原始按鍵、英文補完與注音片段，最後才直接插入。
+    fn apply_mixed_general_action(&mut self, action: &CandidateAction) -> bool {
+        let Some(candidate) = self.candidates.get(action.index).cloned() else {
+            return false;
+        };
+        let raw = self.ascii.pending().to_string();
+        if !raw.is_empty() && candidate.surface == raw {
+            // 選回原始按鍵：固定成字面，不再讓切分器把它解成羅馬字。
+            self.ascii.force_literal();
+            if action.learn {
+                self.learn_english_choice(&raw, &candidate.surface);
+            }
+            self.close_mixed_choice_window();
+            return true;
+        }
+        if !raw.is_empty() && self.ascii.accept(&candidate.surface) {
+            if action.learn {
+                self.learn_english_choice(&raw, &candidate.surface);
+            }
+            self.close_mixed_choice_window();
+            return true;
+        }
+        if self.select_mixed_zh_candidate(&candidate.surface) {
+            self.candidate_window = false;
+            self.navigating = false;
+            self.highlighted = 0;
+            return true;
+        }
+        self.apply_insert_action(action)
+    }
+
+    fn close_mixed_choice_window(&mut self) {
+        self.candidate_window = false;
+        self.navigating = false;
+        self.highlighted = 0;
+        self.mixed_cursor = Self::MIXED_CURSOR_END;
+    }
+
+    /// 一般插入：字面接到組字結果後送出整段。
+    fn apply_insert_action(&mut self, action: &CandidateAction) -> bool {
+        self.remember_text(&action.insert);
+        if action.learn {
+            self.learn_candidate(action.index);
+        }
+        let text = self.insert_literal(&action.insert);
+        self.pending_commit = Some(self.finalize(text));
+        self.clear_composition();
+        true
     }
 
     /// 選字完成後與 `press` 相同的收尾：關掉候選窗並重建顯示。
@@ -783,6 +942,18 @@ impl Session {
         if edit.len == 0 || edit.start.saturating_add(edit.len) > self.syllables.len() {
             return false;
         }
+        self.mark_zh_user_syllables(edit.start, edit.len, &candidate.surface);
+        self.segment_manual = None;
+        self.rebuild();
+        self.highlighted = 0;
+        self.candidate_window = true;
+        self.navigating = true;
+        self.keep_candidates = true;
+        true
+    }
+
+    /// 片段候選成功套用後的學習；與「套用」分開，呼叫端只在成功後執行一次。
+    pub(super) fn learn_window_candidate(&mut self, edit: EditWindow, candidate: &Candidate) {
         let readings = self.zh_readings(&self.syllables[edit.start..edit.start + edit.len]);
         let reading = readings.join(" ");
         if self.config.learning
@@ -800,25 +971,6 @@ impl Session {
         } else if self.config.learning && crate::learn_guard::is_sensitive(&candidate.surface) {
             log::debug!("學習守門：片段候選像敏感資料，跳過寫入");
         }
-        self.mark_zh_user_syllables(edit.start, edit.len, &candidate.surface);
-        self.segment_manual = None;
-        self.rebuild();
-        self.highlighted = 0;
-        self.candidate_window = true;
-        self.navigating = true;
-        self.keep_candidates = true;
-        true
-    }
-
-    /// 套用 Mixed 純注音候選窗的高亮項：只換最後一個音節，關窗、組字留著。
-    fn select_window_candidate_for_zh_window_last(&mut self, index: usize, start: usize) -> bool {
-        self.edit = Some(EditWindow { start, len: 1 });
-        let applied = self.select_window_candidate(index);
-        self.edit = None;
-        if applied {
-            self.cursor = (start + 1).min(self.syllables.len());
-        }
-        applied
     }
 
     pub(super) fn space(&mut self) {
@@ -1091,9 +1243,8 @@ impl Session {
         if !live.sentence_mode() {
             live.lock_through(segment);
         }
-        // 片段選字也要進個人學習。重畫會清掉候選清單，必須在清掉前記錄，
-        // 否則 commit 時已經找不到被選的候選。
-        self.learn_candidate(index);
+        // 學習由 [`CandidateAction::learn`] 在套用成功後執行；這裡只負責套用，
+        // 讓「換文節」與「記一次學習」不會因為重畫順序而漏掉或重複。
         self.capture_ja_users();
         self.refresh_ja_live();
         if let Some(segment) = self.segments().get(segment) {
@@ -1141,7 +1292,6 @@ impl Session {
             surface: candidate.surface.clone(),
         }]);
         let plan = live.convert_now();
-        self.learn_candidate(index);
         self.capture_ja_users();
         self.apply_live_plan(&plan, &units, &reading);
         self.candidate_window = false;
@@ -1593,82 +1743,29 @@ impl Session {
         Some(&self.committed[start..])
     }
 
+    /// Enter：候選窗有動作就先套用並保留組字，否則走 lane 的送出流程。
+    ///
+    /// 兩段式、選單一次送出與前導變體例外都由 [`CandidateAction`] 決定，
+    /// 不再為每個 lane 各寫一份。
     pub(super) fn finish_composition(&mut self) {
-        // 逐字元候選窗的 Enter：套用目前高亮並關窗，不送出整段。
-        //
-        // 例外：高亮項就是組字裡已經顯示的字面（反引號前導的變體窗，游標
-        // 停在剛插入的預設符號上）。這時套用等於什麼都沒換，Enter 直接送出
-        // 整段，不要讓使用者多按一次。
-        if !self.highlighted_choice_is_current_literal()
-            && self.candidate_window
-            && self
-                .mixed_choices
-                .get(self.highlighted)
-                .is_some_and(Option::is_some)
-            && self.apply_mixed_choice(self.highlighted).is_some()
-        {
-            return;
-        }
-        // Mixed 的純注音候選窗只列游標那一格：Enter 套用高亮候選、關窗，
-        // 組字留著；第二次 Enter（窗已關）才送出整段。
-        if self.config.mode == Mode::Mixed
-            && self.in_zh_lane()
-            && self.zh_window_last
-            && self.candidate_window
-            && !self.candidates.is_empty()
-        {
-            if self.choose_candidate(self.highlighted).is_some() {
+        self.prepare_ja_conversion();
+        if let Some(action) = self.enter_action() {
+            if self.apply_candidate_action(&action) {
+                self.finish_choice();
                 return;
             }
-            self.zh_window_last = false;
-            self.rebuild();
-        }
-        // 延遲整句模式：還在假名就同步轉換一次再提交，不默默送出假名。
-        if self.in_ja_lane() {
-            let pending = self
-                .live_plan
-                .as_ref()
-                .is_none_or(|plan| plan.result.is_none());
-            let has_units = !self.romaji.units().is_empty();
-            if pending && has_units {
-                if let Some(live) = self.live.as_mut() {
-                    if live.sentence_mode() {
-                        let plan = live.convert_now();
-                        let units = self.romaji.units().to_vec();
-                        let reading: String = units.iter().map(Unit::as_str).collect();
-                        self.apply_live_plan(&plan, &units, &reading);
-                    }
-                }
+            // `zh_window_last` 套用失敗時回到整段候選，再照一般流程送出；
+            // 與舊行為一致，下一次 Enter 不會重試同一個壞掉的清單。
+            if self.zh_window_last {
+                self.zh_window_last = false;
+                self.rebuild();
             }
         }
-        // 日文逐字変換：Enter 先把游標所在片段的候選套上去，不送出整段。
-        if self.in_ja_lane()
-            && self.candidate_window
-            && !self.candidates.is_empty()
-            && self.apply_ja_candidate(self.highlighted)
-        {
-            return;
-        }
-        // 游標在片段中且候選窗開著：Enter 先把候選套到這一段，關窗、組字留著。
-        if self.in_zh_lane()
-            && self.edit.is_some()
-            && self.candidate_window
-            && !self.candidates.is_empty()
-            && self.choose_candidate(self.highlighted).is_some()
-        {
-            return;
-        }
-        // 其他來源（英文補全、字面候選）只要候選窗開著，Enter 一律
-        // 套用高亮項、關窗、保留組字。前導符號的「高亮項就是現值」例外
-        // 已在上面處理，這裡不重複攔。選單候選代表立即插入，仍走原本的
-        // 一次送出，不套用兩段式。
-        if self.candidate_window
-            && !self.candidates.is_empty()
-            && !self.highlighted_choice_is_current_literal()
-            && self.choose_candidate(self.highlighted).is_some()
-        {
-            return;
-        }
+        self.finalize_lane();
+    }
+
+    /// 沒有要先套用的候選時，把整段組字交給 lane 送出。
+    fn finalize_lane(&mut self) {
         if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
             self.ascii.flush();
             self.trim_mixed_candidate_space();
@@ -1681,6 +1778,44 @@ impl Session {
             self.pending_commit = Some(text);
         }
         self.clear_composition();
+    }
+
+    /// 這次 Enter 要套用的候選動作；沒有候選窗或前導變體的高亮即現值時回 `None`。
+    fn enter_action(&self) -> Option<CandidateAction> {
+        if !self.candidate_window || self.candidates.is_empty() {
+            return None;
+        }
+        let action = self.candidate_action(self.highlighted)?;
+        // 反引號前導的多變體符號：高亮項就是組字已顯示的字面，套用等於
+        // 什麼都沒換，Enter 直接送出整段，不要讓使用者多按一次。
+        if matches!(action.lane, ActionLane::Mixed | ActionLane::Insert)
+            && self.highlighted_choice_is_current_literal()
+        {
+            return None;
+        }
+        Some(action)
+    }
+
+    /// 延遲整句模式：還在假名就同步轉換一次再提交，不默默送出假名。
+    fn prepare_ja_conversion(&mut self) {
+        if !self.in_ja_lane() {
+            return;
+        }
+        let pending = self
+            .live_plan
+            .as_ref()
+            .is_none_or(|plan| plan.result.is_none());
+        let has_units = !self.romaji.units().is_empty();
+        if pending && has_units {
+            if let Some(live) = self.live.as_mut() {
+                if live.sentence_mode() {
+                    let plan = live.convert_now();
+                    let units = self.romaji.units().to_vec();
+                    let reading: String = units.iter().map(Unit::as_str).collect();
+                    self.apply_live_plan(&plan, &units, &reading);
+                }
+            }
+        }
     }
 
     /// 目前高亮的候選是否就是組字裡已經顯示的字面。
@@ -2164,11 +2299,29 @@ impl Session {
         let Some(candidate) = self.candidates.get(index).cloned() else {
             return;
         };
+        let manual = self.candidate_window;
+        self.learn_ja_candidate_data(index, &candidate, manual);
+    }
+
+    /// 日文候選套用成功後的學習；候選由套用前先留下，重建後仍記得到這一項。
+    fn learn_ja_choice(&mut self, index: usize, candidate: &Candidate, manual: bool) {
+        if self.private {
+            log::debug!("私密欄位：跳過候選學習");
+            return;
+        }
+        if !self.config.learning || self.menu.is_some() {
+            return;
+        }
+        self.personal.begin_rollback(now_millis());
+        self.note_learning_event();
+        self.learn_ja_candidate_data(index, candidate, manual);
+    }
+
+    fn learn_ja_candidate_data(&mut self, index: usize, candidate: &Candidate, manual: bool) {
         if crate::learn_guard::is_sensitive(&candidate.surface) {
             log::debug!("學習守門：日文候選像敏感資料，跳過寫入");
             return;
         }
-        let manual = self.candidate_window;
         let weight = if manual {
             ja_personal::UNIFIED_MANUAL_WEIGHT
         } else {
