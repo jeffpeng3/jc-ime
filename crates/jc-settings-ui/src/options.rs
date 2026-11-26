@@ -204,6 +204,26 @@ pub fn description(opt: &Opt, defaults: &Settings) -> String {
     format!("{}\n預設值：{}", opt.help, default_label(opt, defaults))
 }
 
+/// chord 語法說明，順序固定：格式、修飾鍵、可用按鍵。
+pub struct ChordHelp {
+    /// 「格式：…」；使用該欄位的平台預設值。
+    pub format: String,
+    /// 修飾鍵規則。
+    pub modifiers: &'static str,
+    /// 可用按鍵清單。
+    pub keys: &'static str,
+}
+
+/// 文字快捷鍵欄位要顯示的 chord 語法說明。
+pub fn chord_help(opt: &Opt, defaults: &Settings) -> ChordHelp {
+    ChordHelp {
+        format: format!("格式：{}", default_label(opt, defaults)),
+        modifiers: "可用修飾鍵：ctrl、alt、shift；至少要有一個 ctrl 或 alt",
+        keys: "按鍵：單一字母或數字、f1–f12、enter／escape／space／tab／delete／\
+               home／end／pageup／pagedown／up／down／left／right",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +290,31 @@ mod tests {
                 opt.key
             );
         }
+    }
+
+    #[test]
+    fn test_keybind_help_uses_each_fields_default_chord() {
+        let defaults = Settings::default_for_platform("linux");
+        let symbol = INPUT
+            .iter()
+            .find(|opt| opt.key == "keybind-symbol-menu")
+            .expect("符號選單欄位");
+        let help = chord_help(symbol, &defaults);
+        assert_eq!(help.format, "格式：ctrl+alt+,");
+        assert_eq!(
+            help.modifiers,
+            "可用修飾鍵：ctrl、alt、shift；至少要有一個 ctrl 或 alt"
+        );
+        assert!(help.keys.starts_with("按鍵：單一字母或數字、f1–f12、"));
+        assert!(help
+            .keys
+            .contains("home／end／pageup／pagedown／up／down／left／right"));
+
+        let emoji = INPUT
+            .iter()
+            .find(|opt| opt.key == "keybind-emoji-palette")
+            .expect("表情選單欄位");
+        assert_eq!(chord_help(emoji, &defaults).format, "格式：ctrl+alt+.");
     }
 
     #[test]

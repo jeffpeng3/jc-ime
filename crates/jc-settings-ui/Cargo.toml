@@ -11,3 +11,6 @@ jc-data = { path = "../jc-data" }
 jc-settings = { path = "../jc-settings" }
 serde_json.workspace = true
 env_logger.workspace = true
+
+[dev-dependencies]
+gpui-kit = { version = "0.10", features = ["test-support"] }

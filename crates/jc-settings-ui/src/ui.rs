@@ -245,10 +245,9 @@ fn data_page(this: &Entity<SettingsView>, view: &SettingsView) -> SettingPage {
 }
 
 fn option_item(this: &Entity<SettingsView>, view: &SettingsView, opt: &Opt) -> SettingItem {
-    let description = options::description(opt, &view.defaults);
     let disabled = !view.editable();
 
-    let item = match &opt.kind {
+    match &opt.kind {
         Kind::Switch => {
             let read_view = this.clone();
             let write_view = this.clone();
@@ -265,6 +264,8 @@ fn option_item(this: &Entity<SettingsView>, view: &SettingsView, opt: &Opt) -> S
                     },
                 ),
             )
+            .description(options::description(opt, &view.defaults))
+            .disabled(disabled)
         }
         Kind::Choice(choices) => {
             let read_view = this.clone();
@@ -287,77 +288,139 @@ fn option_item(this: &Entity<SettingsView>, view: &SettingsView, opt: &Opt) -> S
                     },
                 ),
             )
+            .description(options::description(opt, &view.defaults))
+            .disabled(disabled)
         }
-        Kind::Text => {
-            let read_view = this.clone();
-            let write_view = this.clone();
-            let key = opt.key;
-            let title = opt.title;
-            // 快捷鍵要整段打完才能驗證，所以不像開關／下拉那樣每個 Change 都存檔；
-            // 只有在 Enter 或失焦時才交給 Settings::set，錯誤會留在狀態列。
-            SettingItem::new(
-                opt.title,
-                SettingField::render(move |options, window, cx| {
-                    let value = SharedString::from(read_view.read(cx).value(key));
-                    let state = window.use_keyed_state(
-                        SharedString::from(format!(
-                            "text-state-{}-{}-{}",
-                            options.page_ix(),
-                            options.group_ix(),
-                            options.item_ix()
-                        )),
-                        cx,
-                        {
-                            let write_view = write_view.clone();
-                            let value = value.clone();
-                            move |window, cx| {
-                                let input =
-                                    cx.new(|cx| InputState::new(window, cx).default_value(value));
-                                let _subscription = cx.subscribe(&input, {
-                                    move |_, input, event: &InputEvent, cx| {
-                                        if matches!(
-                                            event,
-                                            InputEvent::PressEnter { .. } | InputEvent::Blur
-                                        ) {
-                                            let value = input.read(cx).value();
-                                            write_view.update(cx, |view, cx| {
-                                                view.apply(key, &value);
-                                                cx.notify();
-                                            });
-                                        }
-                                    }
-                                });
-                                TextFieldState {
-                                    input,
-                                    _subscription,
-                                }
-                            }
-                        },
-                    );
+        Kind::Text => keybind_item(this, view, opt, disabled),
+    }
+}
 
-                    // 外部改動（或存檔失敗後離開欄位）時把顯示值拉回設定值；
-                    // 正在輸入時不要覆蓋使用者打到一半的內容。
-                    state.update(cx, |state, cx| {
-                        let editing = state.input.read(cx).focus_handle(cx).is_focused(window);
-                        if !editing && state.input.read(cx).value() != value {
-                            state.input.update(cx, |input, cx| {
-                                input.set_value(value.clone(), window, cx);
-                            });
+/// 快捷鍵欄位：輸入框、重設按鈕、chord 語法說明與欄位錯誤都在同一區塊。
+fn keybind_item(
+    this: &Entity<SettingsView>,
+    view: &SettingsView,
+    opt: &Opt,
+    disabled: bool,
+) -> SettingItem {
+    let read_view = this.clone();
+    let write_view = this.clone();
+    let reset_view = this.clone();
+    let key = opt.key;
+    let title = opt.title;
+    let help = options::chord_help(opt, &view.defaults);
+
+    // 快捷鍵要整段打完才能驗證，所以不像開關／下拉那樣每個 Change 都存檔；
+    // 只有在 Enter 或失焦時才交給 Settings::set，錯誤會留在欄位下方與狀態列。
+    SettingItem::render(move |options, window, cx| {
+        let value = SharedString::from(read_view.read(cx).value(key));
+        let error = read_view.read(cx).field_error(key).map(ToOwned::to_owned);
+        let muted = cx.theme().muted_foreground;
+        let state = window.use_keyed_state(
+            SharedString::from(format!(
+                "text-state-{}-{}-{}",
+                options.page_ix(),
+                options.group_ix(),
+                options.item_ix()
+            )),
+            cx,
+            {
+                let write_view = write_view.clone();
+                let value = value.clone();
+                move |window, cx| {
+                    let input = cx.new(|cx| InputState::new(window, cx).default_value(value));
+                    let _subscription = cx.subscribe(&input, {
+                        move |_, input, event: &InputEvent, cx| {
+                            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                                let value = input.read(cx).value();
+                                write_view.update(cx, |view, cx| {
+                                    view.apply(key, &value);
+                                    cx.notify();
+                                });
+                            }
                         }
                     });
+                    TextFieldState {
+                        input,
+                        _subscription,
+                    }
+                }
+            },
+        );
 
-                    let state = state.read(cx);
-                    Input::new(&state.input)
-                        .aria_label(title)
-                        .disabled(options.is_disabled())
-                        .with_size(options.size())
-                        .w_full()
-                        .into_any_element()
-                }),
+        // 外部改動（或存檔失敗後離開欄位）時把顯示值拉回設定值；
+        // 正在輸入時不要覆蓋使用者打到一半的內容。
+        state.update(cx, |state, cx| {
+            let editing = state.input.read(cx).focus_handle(cx).is_focused(window);
+            if !editing && state.input.read(cx).value() != value {
+                state.input.update(cx, |input, cx| {
+                    input.set_value(value.clone(), window, cx);
+                });
+            }
+        });
+
+        let reset_view = reset_view.clone();
+        let state = state.read(cx);
+        let input = Input::new(&state.input)
+            .id(SharedString::from(format!("keybind-input-{key}")))
+            .aria_label(title)
+            .disabled(options.is_disabled())
+            .with_size(options.size())
+            .w_full()
+            .into_any_element();
+        let reset = Button::new(SharedString::from(format!("reset-keybind-{key}")))
+            .label("重設為預設")
+            .small()
+            .disabled(options.is_disabled())
+            .on_click(move |_, _, cx| {
+                reset_view.update(cx, |view, cx| {
+                    view.reset_to_default(key);
+                    cx.notify();
+                });
+            })
+            .into_any_element();
+
+        let mut item = v_flex()
+            .w_full()
+            .gap_2()
+            .child(Label::new(title).text_sm())
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().child(input))
+                    .child(reset),
             )
+            .child(
+                Label::new(help.format.clone())
+                    .id(SharedString::from(format!("keybind-help-format-{key}")))
+                    .text_sm()
+                    .text_color(muted),
+            )
+            .child(
+                Label::new(help.modifiers)
+                    .id(SharedString::from(format!("keybind-help-modifiers-{key}")))
+                    .text_sm()
+                    .text_color(muted),
+            )
+            .child(
+                Label::new(help.keys)
+                    .id(SharedString::from(format!("keybind-help-keys-{key}")))
+                    .text_sm()
+                    .text_color(muted),
+            );
+        if let Some(error) = error {
+            item = item.child(
+                Label::new(error)
+                    .id(SharedString::from(format!("keybind-error-{key}")))
+                    .text_sm()
+                    .text_color(cx.theme().danger),
+            );
         }
-    };
-    item.description(description).disabled(disabled)
+        item.into_any_element()
+    })
+    .keywords([opt.title, "快捷鍵", "chord"])
+    .disabled(disabled)
 }
 
 fn info_item(

@@ -12,6 +12,9 @@ mod options;
 mod state;
 mod ui;
 
+#[cfg(test)]
+mod a11y_tests;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 

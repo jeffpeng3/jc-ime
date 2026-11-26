@@ -4,6 +4,7 @@
 //! `Settings::set` 負責驗證，`settings::save` 先寫暫存檔再改名。UI 只拿這裡的
 //! 值，不自己拼 JSON。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use jc_settings::{read, save, FileState, ProfileAction, Settings, SettingsError};
@@ -66,6 +67,8 @@ pub struct SettingsView {
     pub notes: Vec<String>,
     /// 上一次操作的結果。
     pub status: Status,
+    /// 各設定鍵最近一次的錯誤；顯示在欄位旁，不只留在狀態列。
+    pub field_errors: BTreeMap<String, String>,
     /// 資料根目錄的檢查結果。
     pub data: DataStatus,
 }
@@ -129,6 +132,7 @@ impl SettingsView {
             load_error,
             notes,
             status: Status::Idle,
+            field_errors: BTreeMap::new(),
             data,
         }
     }
@@ -166,19 +170,21 @@ impl SettingsView {
     ///
     /// 舊檔若還用著內建風格，第一次修改時自動轉成自訂快照，不需要先複製。
     pub fn apply(&mut self, key: &str, value: &str) {
+        self.field_errors.remove(key);
         if !self.editable() {
-            self.status = Status::Failed(self.blocked_reason());
+            let reason = self.blocked_reason();
+            self.fail(key, reason);
             return;
         }
         let mut next = self.settings.clone();
         if self.locked(key) {
             if let Err(err) = make_editable(&mut next, self.goos) {
-                self.status = Status::Failed(self.explain(&err));
+                self.fail(key, self.explain(&err));
                 return;
             }
         }
         if let Err(err) = next.set(key, value, self.goos) {
-            self.status = Status::Failed(self.explain(&err));
+            self.fail(key, self.explain(&err));
             return;
         }
         match save(&self.settings_path, &next) {
@@ -190,9 +196,25 @@ impl SettingsView {
                 self.file_state = FileState::Ok;
             }
             Err(err) => {
-                self.status = Status::Failed(format!("存檔失敗：{err}"));
+                self.fail(key, format!("存檔失敗：{err}"));
             }
         }
+    }
+
+    /// 回到某個設定鍵的平台預設值，存檔後交給既有熱重載。
+    pub fn reset_to_default(&mut self, key: &str) {
+        let value = self.defaults.value(key).unwrap_or_default();
+        self.apply(key, &value);
+    }
+
+    /// 某個設定鍵最近一次的錯誤；文字欄位會顯示在輸入框下方。
+    pub fn field_error(&self, key: &str) -> Option<&str> {
+        self.field_errors.get(key).map(String::as_str)
+    }
+
+    fn fail(&mut self, key: &str, reason: String) {
+        self.field_errors.insert(key.to_string(), reason.clone());
+        self.status = Status::Failed(reason);
     }
 
     /// 套用開／關。
@@ -361,6 +383,37 @@ mod tests {
         let report = read(&dir.0.join("settings.json"), "linux");
         assert_eq!(report.settings.keybinds.symbol_menu, "ctrl+shift+s");
         assert_eq!(report.settings.keybinds.emoji_palette, "ctrl+alt+.");
+    }
+
+    #[test]
+    fn test_invalid_chord_sets_field_error_and_reset_clears_it() {
+        let dir = TempDir::new("field-error");
+        let mut view = view(&dir);
+
+        view.apply("keybind-symbol-menu", "a");
+        assert!(matches!(view.status, Status::Failed(_)));
+        assert_eq!(
+            view.field_error("keybind-symbol-menu"),
+            Some("快捷鍵需要 Ctrl 或 Alt（不能是純按鍵）")
+        );
+        assert_eq!(
+            view.value("keybind-symbol-menu"),
+            "ctrl+alt+,",
+            "不合法 chord 不覆寫目前值"
+        );
+
+        view.apply("keybind-symbol-menu", "ctrl+shift+s");
+        assert_eq!(view.value("keybind-symbol-menu"), "ctrl+shift+s");
+        assert!(
+            view.field_error("keybind-symbol-menu").is_none(),
+            "成功存檔後欄位錯誤要消失"
+        );
+
+        view.reset_to_default("keybind-symbol-menu");
+        assert_eq!(view.value("keybind-symbol-menu"), "ctrl+alt+,");
+        assert!(matches!(view.status, Status::Saved));
+        let report = read(&dir.0.join("settings.json"), "linux");
+        assert_eq!(report.settings.keybinds.symbol_menu, "ctrl+alt+,");
     }
 
     #[test]
