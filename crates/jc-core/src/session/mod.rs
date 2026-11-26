@@ -1176,6 +1176,10 @@ impl Session {
         self.personal.accept_learning();
         let undone = self.personal.undo_language_note();
         if undone {
+            // 排名資料變了，已鎖定的文節不能沿用；重建時重新轉換。
+            if let Some(live) = &mut self.live {
+                live.reset();
+            }
             self.rebuild();
         }
         undone
@@ -2634,6 +2638,16 @@ mod tests {
         }
     }
 
+    /// preedit 扣掉尾巴未完成的羅馬字與最後一個かな單位。
+    fn prev_prefix(preedit: &str) -> &str {
+        let without_pending = preedit.trim_end_matches(|ch: char| ch.is_ascii_lowercase());
+        without_pending
+            .char_indices()
+            .next_back()
+            .map(|(at, _)| &without_pending[..at])
+            .unwrap_or(without_pending)
+    }
+
     fn ja_entry(
         surface: &'static str,
         reading: &'static str,
@@ -2665,6 +2679,101 @@ mod tests {
             ..live::Config::default()
         };
         Some(Session::new(config))
+    }
+
+    /// 逐鍵輸入時，未完成的羅馬字留在尾巴，已顯示的前綴不抽動。
+    #[test]
+    fn test_ja_live_partial_romaji_and_stable_prefix() {
+        let Some(mut s) = real_ja_live_session() else {
+            eprintln!("缺少測試資料：packs/ja-lexicon-mozc-v2.pack");
+            return;
+        };
+        type_ja(&mut s, "watashi");
+        let base = s.snapshot().preedit;
+        assert!(base == "私" || base == "わたし", "watashi → {base:?}");
+        let prefix = base.clone();
+        let mut prev = base;
+        for ch in "wa t".chars().filter(|ch| !ch.is_whitespace()) {
+            let next = s.press(Key::char(ch, false)).preedit;
+            assert!(
+                next.starts_with(&prefix),
+                "未完成單位 {ch:?} 讓前綴變動：{prev:?} → {next:?}"
+            );
+            if ch == 'w' || ch == 't' {
+                assert!(next.ends_with(ch), "未完成的羅馬字 {ch:?} 消失在 {next:?}");
+            }
+            assert!(
+                prev_prefix(&next).starts_with(prev_prefix(&prev)),
+                "已確定前綴被改掉：{prev:?} → {next:?}"
+            );
+            prev = next;
+        }
+        // 未完成的 `t` 先留在畫面，倒退鍵刪掉後再停頓補完。
+        assert!(prev.ends_with('t'), "未完成的羅馬字消失：{prev:?}");
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        // 停頓補完最後一個文節；已顯示的前綴不得退回かな。
+        let idled = s.ja_live_idle().preedit;
+        assert!(idled.starts_with(&prefix), "停頓後退回前綴：{idled:?}");
+        assert_eq!(idled, "私は", "停頓要補完最後一個文節");
+
+        // 停頓後繼續打字：已顯示的漢字不能退回平假名。
+        for ch in "desu".chars() {
+            let next = s.press(Key::char(ch, false)).preedit;
+            assert!(next.starts_with("私"), "停頓後退回かな：{next:?}");
+        }
+        let done = s.ja_live_idle().preedit;
+        assert!(done.starts_with("私"), "第二次停頓退回かな：{done:?}");
+        assert!(!done.contains("わたし"), "已顯示的漢字被退回：{done:?}");
+    }
+
+    /// 逐鍵轉換成本：10／20／40 音節都要落在互動預算內。
+    #[test]
+    fn test_ja_live_per_key_cost_budget() {
+        let Some(path) = jc_testdata::path("packs/ja-lexicon-mozc-v2.pack") else {
+            eprintln!("缺少測試資料：packs/ja-lexicon-mozc-v2.pack");
+            return;
+        };
+        let decoder = Arc::new(
+            crate::ja::decode::JaDecoder::open_with_context(&path)
+                .expect("載入 ja pack")
+                .with_particle_rewrite(true),
+        );
+        let mut table = Vec::new();
+        for (label, repeat) in [("10", 2usize), ("20", 4), ("40", 8)] {
+            let mut config = SessionConfig::new(Mode::Mixed);
+            config.ja = Some(Arc::clone(&decoder));
+            config.ja_only = true;
+            config.ja_live = live::Config {
+                enabled: true,
+                idle_delay: std::time::Duration::ZERO,
+                ..live::Config::default()
+            };
+            let mut s = Session::new(config);
+            let keys = "watashidesu".repeat(repeat);
+            let mut times = Vec::with_capacity(keys.len());
+            for ch in keys.chars() {
+                let started = std::time::Instant::now();
+                s.press(Key::char(ch, false));
+                times.push(started.elapsed().as_secs_f64() * 1_000.0);
+            }
+            let idle_started = std::time::Instant::now();
+            s.ja_live_idle();
+            let idle = idle_started.elapsed().as_secs_f64() * 1_000.0;
+            times.sort_by(f64::total_cmp);
+            let p50 = times[times.len() / 2];
+            let p95 = times[(times.len() * 95 / 100).min(times.len() - 1)];
+            let max = *times.last().expect("有按鍵");
+            eprintln!(
+                "ja 逐鍵成本 {label} 音節：按鍵 {}，p50 {p50:.2} ms，p95 {p95:.2} ms，max {max:.2} ms，停頓 {idle:.2} ms",
+                times.len()
+            );
+            table.push((label, p50, p95, max, idle));
+            assert!(
+                max < 100.0,
+                "{label} 音節單鍵 {max:.2} ms 超過互動預算 100 ms"
+            );
+        }
+        assert_eq!(table.len(), 3);
     }
 
     /// 日文的 ↓ 不移動游標，候選窗列出整段組字。

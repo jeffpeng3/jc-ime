@@ -18,7 +18,9 @@
 ## 預設值
 
 `live::Config::default()` 現在是 `enabled: true`、`deferred_sentence: true`、
-`idle_delay: 300 ms`。日文打字期間只顯示假名，停頓後做一次完整轉換；
+`idle_delay: 300 ms`。`deferred_sentence` 現在是逐鍵部分預覽：每個新單位先
+顯示已確定的前綴與かな尾巴，最後一個文節等停頓再補完。已顯示的漢字會鎖定，
+後續按鍵只轉換它後面的內容；未完成的羅馬字原樣留在 preedit 尾巴。
 `ja_conversion = sentence` 或 CLI `--no-live` 回到手動整句轉換。
 
 `trigger`／`neural_scope`／`keep_tail` 仍保留給邊界觸發對照，預設不參與
@@ -26,7 +28,8 @@
 
 ## 外殼觸發（`idle`）
 
-`jc-core` 只在使用者停頓後執行轉換；停頓本身由外殼計時器判斷。
+`jc-core` 每個按鍵都給部分預覽；停頓只補完最後一個文節。停頓本身由外殼
+計時器判斷。
 
 - TSF 在每次按鍵處理完、且引擎回應仍是組字中時，重排一個 300 ms 的
   `WM_TIMER`。計時器掛在候選窗的訊息視窗上，與 `settle_focus` 共用訊息迴圈，

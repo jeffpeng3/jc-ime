@@ -393,10 +393,12 @@ pub struct Config {
     /// 開啟時忽略長度／邊界／停頓觸發，每一鍵都會先顯示統計結果，模型在
     /// 背景跑；期間的新輸入只增加尾巴，不排隊。
     pub neural_flight: bool,
-    /// 延遲整句轉換：打字期間只顯示假名，停頓後才做一次完整轉換。
+    /// 逐鍵部分預覽：每個新單位先顯示可確定的前綴與かな尾巴，停頓只補完
+    /// 最後一個文節。
     ///
-    /// 轉換後才顯示漢字；任何輸入讓目前轉換失效，回到假名。同一時間最多
-    /// 一次推論；停頓後又開始打字時，尚未完成的結果直接丟棄。
+    /// 已顯示的漢字會鎖定，後續按鍵只轉換它後面的內容；未完成的羅馬字由
+    /// `Session` 接在 preedit 尾巴。關閉時改走 `trigger`／`debounce` 控制
+    /// 的傳統逐字変換路徑。
     pub deferred_sentence: bool,
     /// 用「前綴快取＋失效重算」取代鎖定片段。
     ///
@@ -442,7 +444,7 @@ impl std::fmt::Debug for Config {
 }
 
 impl Default for Config {
-    /// 建議值。`enabled` 保持 `false`，符合「預設關閉」。
+    /// 建議值：開啟逐鍵部分預覽，停頓只補完最後一個文節。
     fn default() -> Self {
         Self {
             enabled: true,
@@ -687,8 +689,6 @@ pub struct Controller {
     cache: PrefixCache,
     /// 等待中的 single-flight 推論。
     flight: Option<FlightRequest>,
-    /// 延遲整句模式上一次轉換的讀音；用來判斷是單純追加還是編輯。
-    sentence_reading: String,
     /// 使用者固定的片段；重轉時不變。
     user_segments: Vec<UserSegment>,
     /// 最近一次統計結果的總成本。
@@ -727,7 +727,6 @@ impl Controller {
             provisional: false,
             cache: PrefixCache::default(),
             flight: None,
-            sentence_reading: String::new(),
             user_segments: Vec::new(),
             last_cost: 0.0,
             last_score: 0.0,
@@ -791,17 +790,13 @@ impl Controller {
             self.stats.stale_discards += 1;
         }
         if self.cfg.deferred_sentence {
+            // 每鍵都給部分預覽：已完成的文節先轉成漢字並鎖定，最後一個
+            // 文節保持かな，讓後續かな還能繼續長成完整的詞。停頓只用來
+            // 補完最後這個文節。
             self.pending = false;
             self.due = None;
-            let current: String = self.seq.iter().map(Unit::as_str).collect();
-            // 單純往後追加時保留已顯示的轉換；刪除或改中間才讓編輯點之後的
-            // Auto 片段失效。哪些 User 片段還在由 `Composition` 決定，
-            // `Session` 會在每次重建前先裁好再推進來。
-            if !self.sentence_reading.is_empty() && !current.starts_with(&self.sentence_reading) {
-                self.invalidate_sentence();
-            }
             self.idle_due = Some(self.now() + self.cfg.idle_delay);
-            return self.preview_plan();
+            return self.preview_input();
         }
         if self.cfg.prefix_cache {
             self.pending = false;
@@ -1182,7 +1177,6 @@ impl Controller {
         self.provisional = false;
         self.cache = PrefixCache::default();
         self.flight = None;
-        self.sentence_reading.clear();
         self.user_segments.clear();
     }
 
@@ -1483,61 +1477,145 @@ impl Controller {
         plan
     }
 
-    /// 讓目前的整句轉換失效，回到假名並記錄系統造成的變動。
-    fn invalidate_sentence(&mut self) {
-        if self.draft.is_some() {
-            let changed = self
-                .prev_display
-                .iter()
-                .filter(|fragment| !fragment.kana)
-                .count();
-            self.stats.fragments_shown += changed;
-            self.stats.fragments_changed += changed;
-            self.stats.settled_shown += changed;
-            self.stats.settled_changed += changed;
-            self.draft = None;
-            self.prev_display.clear();
-        }
+    /// 丟掉已鎖定的前綴與尾巴，但保留使用者固定的片段。
+    ///
+    /// 倒退鍵或編輯讓讀音不再是鎖定前綴的延伸時呼叫。下一次轉換會從共同
+    /// 前綴重新開始；`UserSegment` 由 `Composition` 決定，不能跟著清掉。
+    fn drop_locks(&mut self) {
+        self.locked.clear();
+        self.locked_seq.clear();
         self.tail.clear();
         self.cut = 0;
         self.converted_upto = 0;
-        self.sentence_reading.clear();
-        self.user_segments.clear();
+        self.draft = None;
+        self.prev_display.clear();
+        self.pending_neural = None;
+        self.provisional = false;
+        self.tail_neural = false;
     }
 
-    /// 停頓後做一次完整轉換；這是延遲整句模式的唯一轉換點。
-    fn convert_sentence(&mut self) -> Plan {
-        if self.seq.is_empty() {
-            return self.preview_plan();
+    /// 把鎖定前綴裁到 `cut` 之前，讓被編輯到的 User 片段回到尾巴重轉。
+    fn truncate_locked(&mut self, units: usize) {
+        let mut kept = 0usize;
+        let mut count = 0usize;
+        for clause in &self.locked {
+            let size = clause_units(clause);
+            if kept + size > units {
+                break;
+            }
+            kept += size;
+            count += 1;
         }
-        let reading: String = self.seq.iter().map(Unit::as_str).collect();
-        let chars: Vec<char> = reading.chars().collect();
-        let total = self.seq.len();
-        let mut users = self.user_segments.clone();
+        self.locked.truncate(count);
+        self.locked_seq.truncate(kept);
+        self.cut = kept;
+    }
+
+    /// 鎖定範圍內已顯示的詞面。
+    fn locked_surface(&self, start: usize, units: usize) -> Option<String> {
+        let end = start.checked_add(units)?;
+        let mut at = 0usize;
+        let mut out = String::new();
+        for clause in &self.locked {
+            let clause_end = at + clause_units(clause);
+            let from = at.max(start);
+            let to = clause_end.min(end);
+            if from < to {
+                if clause_end > end || from > at {
+                    // 只截到片段中間時，位元組切不準；交給重轉處理。
+                    return None;
+                }
+                out.push_str(&clause.surface);
+            }
+            at = clause_end;
+            if at >= end {
+                break;
+            }
+        }
+        if at >= end {
+            Some(out)
+        } else {
+            None
+        }
+    }
+
+    /// 鎖定邊界不能停在 User 片段中間；退回該片段起點重轉。
+    ///
+    /// 片段剛好在邊界結束時，只有顯示詞面和使用者固定詞面不同才需要退回；
+    /// 一般往後輸入時 `cut` 本來就停在最後一個 User 片段結尾。
+    fn align_cut_to_users(&mut self) {
+        let mut start = None;
+        for segment in &self.user_segments {
+            if segment.start >= self.cut {
+                continue;
+            }
+            let end = segment.start + segment.units;
+            let overlaps = end > self.cut;
+            let changed = end == self.cut
+                && self
+                    .locked_surface(segment.start, segment.units)
+                    .is_none_or(|surface| surface != segment.surface);
+            if overlaps || changed {
+                start = Some(start.map_or(segment.start, |at: usize| at.min(segment.start)));
+            }
+        }
+        if let Some(start) = start {
+            self.truncate_locked(start);
+        }
+    }
+
+    /// 讀音前綴加上已組好的文節，當作轉換的左文脈。
+    fn left_context(&self, clauses: &[JaClause]) -> String {
+        let mut left = self.ctx.left.clone();
+        left.push_str(&self.locked_text());
+        for clause in clauses {
+            left.push_str(&clause.surface);
+        }
+        left
+    }
+
+    /// 轉換 `seq[start..end]`，User 片段原樣插入，其餘缺口各自轉換。
+    ///
+    /// `neural` 為 `false` 時只跑統計轉換；逐鍵預覽不應在每一鍵呼叫模型。
+    fn convert_suffix(
+        &self,
+        start: usize,
+        end: usize,
+        neural: bool,
+    ) -> Option<(Vec<JaClause>, f64, f64)> {
+        if start >= end {
+            return None;
+        }
+        let mut users: Vec<UserSegment> = self
+            .user_segments
+            .iter()
+            .filter(|segment| {
+                segment.start >= start && segment.start + segment.units <= end && segment.units > 0
+            })
+            .cloned()
+            .collect();
         users.sort_by_key(|segment| segment.start);
-        users.retain(|segment| segment.start + segment.units <= total);
 
         let mut clauses: Vec<JaClause> = Vec::new();
         let mut cost = 0.0;
         let mut score = 0.0;
-        let mut cursor = 0usize;
-        let mut elapsed = Duration::ZERO;
+        let mut cursor = start;
+
         for (index, segment) in users.iter().enumerate() {
-            let gap: String = chars[cursor..segment.start].iter().collect();
-            if !gap.is_empty() {
-                let left = format!("{}{}", self.ctx.left, surface_of(&clauses));
-                let mut right = self.ctx.right.clone();
-                for later in &users[index..] {
-                    right.push_str(&later.surface);
-                }
-                let started = self.now();
-                let Some((result, _)) = self.convert_range(&gap, &JaContext { left, right }) else {
-                    return self.preview_plan();
-                };
-                elapsed += self.now().saturating_duration_since(started);
-                cost += result.cost;
-                score += result.score;
-                clauses.extend(result.clauses);
+            let mut right = self.ctx.right.clone();
+            for later in &users[index..] {
+                right.push_str(&later.surface);
+            }
+            if segment.start > cursor {
+                self.convert_gap_into(
+                    &mut clauses,
+                    &mut cost,
+                    &mut score,
+                    cursor,
+                    segment.start,
+                    &right,
+                    neural,
+                )?;
             }
             clauses.push(JaClause {
                 reading: segment.reading.clone(),
@@ -1547,40 +1625,240 @@ impl Controller {
             });
             cursor = segment.start + segment.units;
         }
-        if cursor < chars.len() {
-            let gap: String = chars[cursor..].iter().collect();
-            let left = format!("{}{}", self.ctx.left, surface_of(&clauses));
-            let started = self.now();
-            let Some((result, _)) = self.convert_range(
-                &gap,
-                &JaContext {
-                    left,
-                    right: self.ctx.right.clone(),
-                },
-            ) else {
-                return self.preview_plan();
-            };
-            elapsed += self.now().saturating_duration_since(started);
-            cost += result.cost;
-            score += result.score;
-            clauses.extend(result.clauses);
+        if cursor < end {
+            self.convert_gap_into(
+                &mut clauses,
+                &mut cost,
+                &mut score,
+                cursor,
+                end,
+                &self.ctx.right,
+                neural,
+            )?;
         }
-        if clauses.is_empty() || clauses_units(&clauses) != total {
+        if clauses.is_empty() || clauses_units(&clauses) != end - start {
+            return None;
+        }
+        Some((clauses, cost, score))
+    }
+
+    /// 轉換一個缺口並接進 `clauses`；不符合完整覆蓋時回傳 `None`。
+    #[allow(clippy::too_many_arguments)]
+    fn convert_gap_into(
+        &self,
+        clauses: &mut Vec<JaClause>,
+        cost: &mut f64,
+        score: &mut f64,
+        from: usize,
+        to: usize,
+        right: &str,
+        neural: bool,
+    ) -> Option<()> {
+        if from >= to {
+            return Some(());
+        }
+        let reading: String = self.seq[from..to].iter().map(Unit::as_str).collect();
+        let ctx = JaContext {
+            left: self.left_context(clauses),
+            right: right.to_string(),
+        };
+        let (result, _) = if neural {
+            self.convert_range(&reading, &ctx)?
+        } else {
+            let result = self.conv.convert(&reading, &ctx).ok()?;
+            if result.clauses.is_empty()
+                || clauses_units(&result.clauses) != reading.chars().count()
+            {
+                return None;
+            }
+            (result, false)
+        };
+        *cost += result.cost;
+        *score += result.score;
+        clauses.extend(result.clauses);
+        Some(())
+    }
+
+    /// 逐鍵預覽：轉出可確定的文節，最後一個文節保持かな。
+    fn preview_input(&mut self) -> Plan {
+        if self.seq.is_empty() {
             return self.preview_plan();
         }
+        if !self.prefix_intact(&self.seq) {
+            self.drop_locks();
+        }
+        self.align_cut_to_users();
+        let total = self.seq.len();
+        if self.cut >= total {
+            return self.preview_plan();
+        }
+        // 未完成的羅馬字還沒有新單位：不要重新規劃，否則同一個音節打到
+        // 一半（`w`→`wa`→`wat`）畫面會抽動。等新單位完成再交給轉換器。
+        if self.converted_upto >= total && self.draft.is_some() {
+            return self.preview_plan();
+        }
+        // 尾巴只有一兩個單位時先累積，避免把 `わ` 這種半截輸入提早轉成
+        // 助詞；累積到三個單位或一次進來多個單位才交給轉換器。已鎖定的
+        // 前綴不會重算，所以 `わたし`→`わたしわ` 的顯示前綴保持穩定。
+        let added = total.saturating_sub(self.converted_upto);
+        let tail_units = clauses_units(&self.tail);
+        if added < 2 && tail_units < 2 {
+            return self.append_preview(total);
+        }
+        let started = self.now();
+        let converted = self.convert_suffix(self.cut, total, false);
+        let elapsed = self.now().saturating_duration_since(started);
         self.stats.conversions += 1;
         self.stats.last_duration = elapsed;
         if self.cfg.budget > Duration::ZERO && elapsed > self.cfg.budget {
             self.stats.timeouts += 1;
             return self.preview_plan();
         }
+        let (clauses, cost, score) = match converted {
+            Some(value) => value,
+            None => return self.preview_plan(),
+        };
         self.last_cost = cost;
         self.last_score = score;
         self.tail = clauses;
+        // 已完成的文節立刻鎖住；最後一個文節留給停頓補完，模型與學習
+        // 排序還有機會在停頓時修正它。尾巴的かな不鎖，跨界的詞才長得出
+        // 來；完整的かな詞另外鎖，避免尾巴隨句子長度無限長大。
+        self.advance_lock();
+        self.lock_complete_kana_words();
+        let mut display = self.all_clauses();
+        // 只有多個文節時才把尾巴壓回かな；單一文節（例如 `わたし`）先照
+        // 目前規則顯示，停頓時再交給完整轉換。
+        if self.tail.len() > 1 {
+            if let Some(last) = display.last_mut() {
+                if !last.reading.is_empty() {
+                    last.surface = last.reading.clone();
+                    last.segments.clear();
+                }
+            }
+        }
+        self.record_stability(&display);
+        self.draft = Some(JaResult {
+            clauses: display,
+            cost,
+            score,
+        });
+        self.converted_upto = total;
+        Plan {
+            preview: true,
+            result: self.draft.clone(),
+            ..Plan::default()
+        }
+    }
+
+    /// 鎖定尾巴開頭已完整的かな詞，留下最後一個文節繼續長。
+    ///
+    /// 只處理兩個單位以上且詞典認為完整的かな詞（例如 `です`）。單一
+    /// かな可能是下一個詞的一部分（`と`＋`う`＋`き`…），不能提早鎖定。
+    fn lock_complete_kana_words(&mut self) {
+        while self.tail.len() > 1 {
+            let first = &self.tail[0];
+            if !is_kana_clause(first) {
+                break;
+            }
+            let units = clause_units(first);
+            if units < 2 || !self.conv.is_complete_word(&clause_reading(first)) {
+                break;
+            }
+            let clause = self.tail.remove(0);
+            self.locked.push(clause);
+            self.locked_seq
+                .extend_from_slice(&self.seq[self.cut..self.cut + units]);
+            self.cut += units;
+            self.tail_neural = false;
+        }
+    }
+
+    /// 把新完成的一個單位接到尾巴，不重新轉換前面的顯示。
+    fn append_preview(&mut self, total: usize) -> Plan {
+        let covered = clauses_units(&self.all_clauses());
+        if covered >= total {
+            return self.preview_plan();
+        }
+        let reading: String = self.seq[covered..total].iter().map(Unit::as_str).collect();
+        self.tail.push(JaClause {
+            reading: reading.clone(),
+            surface: reading,
+            segments: Vec::new(),
+            cost: 0,
+        });
+        let mut display = self.all_clauses();
+        if let Some(last) = display.last_mut() {
+            if !last.reading.is_empty() {
+                last.surface = last.reading.clone();
+                last.segments.clear();
+            }
+        }
+        self.record_stability(&display);
+        self.draft = Some(JaResult {
+            clauses: display,
+            cost: self.last_cost,
+            score: self.last_score,
+        });
+        self.converted_upto = total;
+        Plan {
+            preview: true,
+            result: self.draft.clone(),
+            ..Plan::default()
+        }
+    }
+
+    /// 鎖定尾巴中非かな的部分；停頓補完最後文節後呼叫。
+    fn lock_completed(&mut self) {
+        let mut end = self.tail.len();
+        while end > 0 && is_kana_clause(&self.tail[end - 1]) {
+            end -= 1;
+        }
+        if end == 0 {
+            return;
+        }
+        let units = clauses_units(&self.tail[..end]);
+        if units == 0 || self.cut + units > self.seq.len() {
+            return;
+        }
+        self.locked.extend(self.tail.drain(..end));
+        self.locked_seq
+            .extend_from_slice(&self.seq[self.cut..self.cut + units]);
+        self.cut += units;
         self.tail_neural = false;
-        self.cut = 0;
-        self.converted_upto = self.seq.len();
-        self.sentence_reading = reading;
+    }
+
+    /// 停頓後補完最後一個文節；已鎖定的前綴不重算。
+    fn convert_sentence(&mut self) -> Plan {
+        if self.seq.is_empty() {
+            return self.preview_plan();
+        }
+        if !self.prefix_intact(&self.seq) {
+            self.drop_locks();
+        }
+        self.align_cut_to_users();
+        let total = self.seq.len();
+        if self.cut >= total {
+            return self.preview_plan();
+        }
+        let started = self.now();
+        let converted = self.convert_suffix(self.cut, total, true);
+        let elapsed = self.now().saturating_duration_since(started);
+        self.stats.conversions += 1;
+        self.stats.last_duration = elapsed;
+        if self.cfg.budget > Duration::ZERO && elapsed > self.cfg.budget {
+            self.stats.timeouts += 1;
+            return self.preview_plan();
+        }
+        let (clauses, cost, score) = match converted {
+            Some(value) => value,
+            None => return self.preview_plan(),
+        };
+        self.last_cost = cost;
+        self.last_score = score;
+        self.tail = clauses;
+        self.lock_completed();
+        self.converted_upto = total;
         self.publish(0, cost, score)
     }
 
@@ -2307,14 +2585,6 @@ fn display_fragments(clauses: &[JaClause]) -> Vec<DisplayFragment> {
         pos += units;
     }
     out
-}
-
-/// 文節序列的詞面串接。
-fn surface_of(clauses: &[JaClause]) -> String {
-    clauses
-        .iter()
-        .map(|clause| clause.surface.as_str())
-        .collect()
 }
 
 /// 兩段讀音的共同前綴單位數。
