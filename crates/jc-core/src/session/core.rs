@@ -921,18 +921,24 @@ impl Session {
                 .map(Unit::as_str)
                 .collect::<String>()
         };
-        if !raw.is_empty()
-            && !self
+        // 固定順序：目前值、原始羅馬字、其餘轉換。原始羅馬字原本排在最後，
+        // 轉成カナ（ス）之後很難選回來；現在永遠是第二項。
+        if !raw.is_empty() && self.candidates.first().map(|c| c.surface.as_str()) != Some(&raw) {
+            if let Some(at) = self
                 .candidates
                 .iter()
-                .any(|candidate| candidate.surface == raw)
-        {
-            self.candidates.push(Candidate::new(
-                raw.clone(),
-                raw.clone(),
-                i32::MAX,
-                CandidateSource::Literal,
-            ));
+                .position(|candidate| candidate.surface == raw)
+            {
+                let candidate = self.candidates.remove(at);
+                let at = at.min(1);
+                self.candidates.insert(at, candidate);
+            } else {
+                let at = self.candidates.len().min(1);
+                self.candidates.insert(
+                    at,
+                    Candidate::new(raw.clone(), raw.clone(), i32::MAX, CandidateSource::Literal),
+                );
+            }
         }
         self.highlighted = 0;
         self.candidate_window = true;
@@ -2757,52 +2763,17 @@ impl Session {
             return Vec::new();
         }
         let readings = self.zh_readings(&self.syllables[edit.start..end]);
-        let units: Vec<&str> = readings.iter().map(String::as_str).collect();
         let reading = readings.join(" ");
-        let mut out: Vec<Candidate> = Vec::new();
-        if let Some(lock) = self.locks.get(&edit.start) {
-            if lock.len == edit.len {
-                out.push(Candidate::new(
-                    lock.word.clone(),
-                    reading.clone(),
-                    0,
-                    CandidateSource::Lexicon,
-                ));
-            }
-        }
-        if let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) {
-            let scorer = zh_scorer(&self.ctx, self.zh_lm.as_deref());
-            let decoder = zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
-            let (hypotheses, _) =
-                decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
-            for hypothesis in hypotheses {
-                if out
-                    .iter()
-                    .any(|candidate| candidate.surface == hypothesis.text)
-                {
-                    continue;
-                }
-                if hypothesis.text == readings.join("") {
-                    continue;
-                }
-                out.push(Candidate::new(
-                    hypothesis.text,
-                    reading.clone(),
-                    hypothesis.cost,
-                    CandidateSource::Lexicon,
-                ));
-            }
-        }
-        if out.is_empty() {
-            out.push(Candidate::new(
-                readings.join(""),
-                reading,
-                0,
-                CandidateSource::Literal,
-            ));
-        }
-        out.truncate(self.max_candidates().max(1));
-        out
+        // 鎖定的詞就是目前顯示值；沒鎖定時用這一段自己的最佳解。
+        let current = match self.locks.get(&edit.start) {
+            Some(lock) if lock.len == edit.len => lock.word.clone(),
+            _ => self.decode_reading(&reading),
+        };
+        // 原始輸入用讀音傳進去，由共用排序還原成按鍵（多音節時就是整段
+        // 按鍵）；第一項固定是目前值，第二項是原始輸入。
+        let (candidates, _) =
+            self.zh_choice_candidates(&reading, &readings.join(""), &current, Some(edit));
+        candidates
     }
 
     /// 目前音節要交給詞格的讀音。
@@ -3311,6 +3282,19 @@ mod tests {
         Session::new(config)
     }
 
+    /// 按 k 把反白移到指定字面；候選順序改變時測試不必硬寫索引。
+    fn highlight_surface(session: &mut Session, surface: &str) -> Snapshot {
+        let target = session
+            .candidates()
+            .iter()
+            .position(|candidate| candidate.surface == surface)
+            .unwrap_or_else(|| panic!("找不到候選 {surface}"));
+        while session.snapshot().highlighted < target {
+            session.press(Key::char('k', false));
+        }
+        session.snapshot()
+    }
+
     fn type_syllable(session: &mut Session, reading: &str) {
         let keyboard = crate::zh::keyboard::Keyboard::standard();
         for syllable in crate::zh::syllable::parse_reading(reading) {
@@ -3645,10 +3629,18 @@ mod tests {
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         assert_eq!(s.snapshot().cursor_rune, 1);
 
-        s.press(Key::new(KeyCode::Down, None, false));
-        let moved = s.press(Key::char('k', false));
-        assert_eq!(moved.highlighted, 1, "k 換下一個候選");
-        assert_eq!(moved.candidates[1].surface, "像");
+        let opened = s.press(Key::new(KeyCode::Down, None, false));
+        let target = opened
+            .candidates
+            .iter()
+            .position(|candidate| candidate.surface == "像")
+            .expect("像 應在候選中");
+        let mut moved = opened;
+        for _ in 0..target {
+            moved = s.press(Key::char('k', false));
+        }
+        assert_eq!(moved.highlighted, target, "k 換下一個候選");
+        assert_eq!(moved.candidates[target].surface, "像");
 
         let applied = s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(applied.preedit, "我像吃", "只替換游標所在片段");
@@ -3666,7 +3658,7 @@ mod tests {
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         s.press(Key::new(KeyCode::Down, None, false));
-        s.press(Key::char('k', false));
+        highlight_surface(&mut s, "像");
         let changed = s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(changed.preedit, "我像吃");
         assert!(!changed.navigating, "換字後候選窗關閉");
@@ -3686,7 +3678,7 @@ mod tests {
         // 游標移到「想」的片段，換成同音字「像」。
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         s.press(Key::new(KeyCode::Down, None, false));
-        s.press(Key::char('k', false));
+        highlight_surface(&mut s, "像");
         let changed = s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(changed.preedit, "我像");
         assert_eq!(s.user_marks().len(), 1, "選字要留下 User 標記");

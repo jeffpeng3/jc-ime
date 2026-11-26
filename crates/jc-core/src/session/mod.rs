@@ -1558,8 +1558,8 @@ mod tests {
     fn test_digit_selects_candidate() {
         let mut s = session();
         type_syllable(&mut s, "ㄐㄧㄥˇ");
-        let candidates = s.candidates().to_vec();
         s.press(Key::new(KeyCode::Down, None, false));
+        let candidates = s.candidates().to_vec();
         s.press(Key::char('2', false));
         assert_eq!(s.commit(), candidates[1].surface);
     }
@@ -1574,8 +1574,8 @@ mod tests {
         type_syllable(&mut chosen, "ㄐㄧㄥˇ");
         chosen.press(Key::new(KeyCode::Down, None, false));
 
-        let from_digit = digit.press(Key::char('2', false));
-        let from_choose = chosen.choose_candidate(1).expect("索引 1 應可選");
+        let from_digit = digit.press(Key::char('3', false));
+        let from_choose = chosen.choose_candidate(2).expect("索引 2 應可選");
         assert_eq!(from_choose.preedit, from_digit.preedit);
         assert_eq!(from_choose.candidates, from_digit.candidates);
         assert_eq!(chosen.commit(), digit.commit());
@@ -1751,10 +1751,11 @@ mod tests {
         assert!(s.config.learning, "學習預設必須開啟");
         type_syllable(&mut s, "ㄨㄛˇ");
         assert_eq!(s.candidates()[0].surface, "我");
-        // 開候選窗，移到第二候選，用 Enter 送出手選。
+        // 開候選窗，移到「窩」，用 Enter 送出手選。
         s.press(Key::new(KeyCode::Down, None, false));
-        s.press(Key::new(KeyCode::Down, None, false));
-        assert_eq!(s.highlighted_text(), Some("窩"));
+        while s.highlighted_text() != Some("窩") {
+            s.press(Key::new(KeyCode::Down, None, false));
+        }
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "窩");
         // 同一讀音再打一次：手選過的字排第一。
@@ -1773,7 +1774,9 @@ mod tests {
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄨㄛˇ");
         s.press(Key::new(KeyCode::Down, None, false));
-        s.press(Key::new(KeyCode::Down, None, false));
+        while s.highlighted_text() != Some("窩") {
+            s.press(Key::new(KeyCode::Down, None, false));
+        }
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "窩");
         type_syllable(&mut s, "ㄨㄛˇ");
@@ -3685,6 +3688,97 @@ mod tests {
         assert_eq!(count, 1, "平假名候選不得重複");
     }
 
+    /// 日文候選也走固定順序：目前值、原始羅馬字、其餘轉換。
+    fn ja_romaji_session() -> Session {
+        let source = LiveTestSource(vec![ja_entry("酢", "す", 0)]);
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_only = true;
+        config.ja_live = live::Config {
+            enabled: true,
+            debounce: std::time::Duration::ZERO,
+            trigger: live::Trigger::EveryKey,
+            deferred_sentence: false,
+            ..live::Config::default()
+        };
+        Session::new(config)
+    }
+
+    /// 候選窗已開時，按 ↓ 把反白移到指定字面。
+    fn ja_highlight(session: &mut Session, surface: &str) {
+        while session.highlighted_text() != Some(surface) {
+            session.press(Key::new(KeyCode::Down, None, false));
+        }
+    }
+
+    /// 按 ↓ 開日文候選，並選取指定字面。
+    fn ja_choose(session: &mut Session, surface: &str) -> Snapshot {
+        let opened = session.press(Key::new(KeyCode::Down, None, false));
+        let surfaces: Vec<&str> = opened
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        let index = opened
+            .candidates
+            .iter()
+            .position(|candidate| candidate.surface == surface)
+            .unwrap_or_else(|| panic!("找不到日文候選 {surface}：{surfaces:?}"));
+        session.choose_candidate(index).expect("套用日文候選")
+    }
+
+    #[test]
+    fn test_ja_candidates_second_is_raw_romaji() {
+        let mut s = ja_romaji_session();
+        type_ja(&mut s, "su");
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(snap.candidates[0].surface, snap.preedit, "第一項是目前值");
+        assert_eq!(snap.candidates[1].surface, "su", "第二項是原始羅馬字");
+    }
+
+    #[test]
+    fn test_ja_katakana_can_revert_to_romaji() {
+        let mut s = ja_romaji_session();
+        type_ja(&mut s, "su");
+        let chosen = ja_choose(&mut s, "ス");
+        assert_eq!(chosen.preedit, "ス");
+
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        assert!(
+            snap.candidates
+                .iter()
+                .any(|candidate| candidate.surface == "su"),
+            "轉成カナ後仍要有 su：{:?}",
+            snap.candidates
+                .iter()
+                .map(|candidate| candidate.surface.as_str())
+                .collect::<Vec<_>>()
+        );
+        let reverted = ja_choose(&mut s, "su");
+        assert_eq!(reverted.preedit, "su", "選 su 要退回原始羅馬字");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "su");
+    }
+
+    #[test]
+    fn test_ja_selection_keeps_full_candidate_list() {
+        let mut s = ja_romaji_session();
+        type_ja(&mut s, "su");
+        let chosen = ja_choose(&mut s, "ス");
+        assert_eq!(chosen.preedit, "ス");
+
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        let surfaces: Vec<&str> = snap
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        assert!(surfaces.len() > 1, "選カナ後清單不能只剩一項：{surfaces:?}");
+        for want in ["su", "す", "ス"] {
+            assert!(surfaces.contains(&want), "{want} 不在 {surfaces:?}");
+        }
+    }
+
     /// 逐字変換的片段游標、Space 開片段候選與 Enter 套用。
     #[test]
     fn test_ja_live_cursor_and_segment_candidates() {
@@ -3718,8 +3812,8 @@ mod tests {
             .iter()
             .any(|candidate| candidate.surface == "キョウ"));
 
-        // 再按一下 ↓ 移到「きょう」。
-        s.press(Key::new(KeyCode::Down, None, false));
+        // 再按 ↓ 移到「きょう」。
+        ja_highlight(&mut s, "きょう");
         let picked = s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(picked.preedit, "きょう", "選字只換游標所在片段");
         let right = s.press(Key::new(KeyCode::ArrowRight, None, false));
@@ -3749,7 +3843,7 @@ mod tests {
         s.ja_live_flush();
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         s.press(Key::new(KeyCode::Down, None, false));
-        s.press(Key::new(KeyCode::Down, None, false));
+        ja_highlight(&mut s, "きょう");
 
         let picked = s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(picked.preedit, "きょう", "日文 Enter 只換片段");
@@ -3780,9 +3874,9 @@ mod tests {
         // 預設延遲整句：停頓後才轉換並產生候選。
         s.ja_live_idle();
         assert_eq!(s.candidates()[0].surface, "今日");
-        // 第一次 ↓ 開候選窗，第二次移到第二候選。
+        // 第一次 ↓ 開候選窗，再移到「京」。
         s.press(Key::new(KeyCode::Down, None, false));
-        s.press(Key::new(KeyCode::Down, None, false));
+        ja_highlight(&mut s, "京");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "京");
         assert_eq!(
@@ -3810,7 +3904,7 @@ mod tests {
         type_ja(&mut s, "kyou");
         s.ja_live_idle();
         s.press(Key::new(KeyCode::Down, None, false));
-        s.press(Key::new(KeyCode::Down, None, false));
+        ja_highlight(&mut s, "京");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "京");
         type_ja(&mut s, "kyou");
