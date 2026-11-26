@@ -318,6 +318,12 @@ impl Session {
     ///
     /// 回傳 `true` 表示這一鍵已經處理完；`false` 表示仍要交給一般按鍵路徑。
     pub(super) fn segments_press(&mut self, key: &Key) -> bool {
+        // 日文 lane 的數字不是注音聲調：直接交給 `press_char`，由羅馬字
+        // 狀態機判斷接不上而結束推斷、把按鍵交回混打。
+        if self.in_ja_lane() {
+            self.pending_tone = None;
+            return false;
+        }
         // 混打已經有英數待定按鍵時，聲調鍵是那個詞的一部分，不是孤立聲調。
         if !self.ascii.is_empty() {
             self.pending_tone = None;

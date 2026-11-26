@@ -16,6 +16,8 @@ pub(super) enum KeyAction {
     Backspace,
     ToggleJapaneseScript,
     JapaneseTransform(crate::ja::live::KanaTransform),
+    /// 日文「無変換」：拆回讀音。
+    JapaneseUnconvert,
     Space,
     Down,
     Up,
@@ -70,6 +72,9 @@ impl Session {
             }
             KeyAction::JapaneseTransform(kind) => {
                 self.ja_transform(kind);
+            }
+            KeyAction::JapaneseUnconvert => {
+                self.ja_unconvert();
             }
             KeyAction::Space => self.space(),
             KeyAction::Down => self.down(),
@@ -146,6 +151,9 @@ impl Session {
             KeyCode::F(10) => Some(KeyAction::JapaneseTransform(
                 crate::ja::live::KanaTransform::HalfwidthLatin,
             )),
+            // 変換開游標候選；無変換拆回讀音。
+            KeyCode::Convert => Some(KeyAction::Down),
+            KeyCode::NonConvert => Some(KeyAction::JapaneseUnconvert),
             KeyCode::Space => Some(KeyAction::Space),
             KeyCode::ArrowRight if key.shift => Some(KeyAction::ResizeSegment(1)),
             KeyCode::ArrowLeft if key.shift => Some(KeyAction::ResizeSegment(-1)),

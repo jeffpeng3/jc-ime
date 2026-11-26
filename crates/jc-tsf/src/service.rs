@@ -247,13 +247,11 @@ enum EnglishKey {
     Eat(bool),
     /// 直接交給應用程式的字面文字（IMM32 相容層用）。
     Literal(String),
-    /// 原樣送進引擎 `literal` op 的字面文字。
-    EngineLiteral(String),
-    /// 英文模式組字中由輸入法處理的鍵；實際送引擎只發生在 `OnKeyDown`。
+    /// 英文組字中的 Enter：送出後要把按鍵重排給宿主。
     ///
     /// `OnTestKeyDown` 只查詢，不能有副作用，所以政策只回這個決策，由
-    /// [`TextService_Impl::english_ime_key`] 執行一次。
-    ImeHandled(&'static str),
+    /// [`TextService_Impl::english_enter`] 執行一次。
+    EnterRepost,
     WordEnd {
         key: String,
         typed: String,
@@ -341,7 +339,7 @@ struct State {
 }
 
 /// 按鍵判斷的 helper 都放在 `State` 上（與 0c 相同）：呼叫端持有單一 `borrow_mut()`
-/// 就能連續問 japanese_key／styled_key／vocab_keys，不會對同一個 RefCell 重入借用。
+/// 就能連續問 convert_key／styled_key／vocab_keys，不會對同一個 RefCell 重入借用。
 impl State {
     /// 保留風格需要的 Shift＋Space 與 Caps 字母語意；預判和送鍵共用。
     fn styled_key(&mut self, vk: u32, lparam: isize, vocab: bool, english: bool) -> Option<String> {
@@ -352,9 +350,10 @@ impl State {
         // 「Caps Lock 預設小寫」只套英文模式；中文／混合模式的大寫一律是字面（#168 反轉）。
         let caps_lower = english && caps && self.session.style_caps_lower();
         let styled = keys::style_key(key, shift, caps, shift_space, caps_lower);
-        // Caps Lock 只改最後字面的大小寫，不改變路由：送給引擎的鍵仍用基礎
-        // 小寫，caps 由 Key 旗標帶過去。英文模式照原本的 `styled_key`。
-        if !english && caps && styled.len() == 1 && styled.as_bytes()[0].is_ascii_alphabetic() {
+        // Caps Lock 只改最後字面的大小寫，不改變路由：送給引擎的鍵一律用
+        // 基礎小寫，caps 由 Key 旗標帶過去。「Caps Lock 預設小寫」的英文
+        // 樣式已在 `style_key` 反轉大小寫，不再帶 caps。
+        if caps && !caps_lower && styled.len() == 1 && styled.as_bytes()[0].is_ascii_alphabetic() {
             Some(styled.to_ascii_lowercase())
         } else {
             Some(styled)
@@ -362,7 +361,7 @@ impl State {
     }
 
     fn vocab_keys(&self) -> bool {
-        self.session.vocab_keys() && !self.session.english() && !self.session.japanese()
+        self.session.vocab_keys()
     }
 
     /// 組字中的 Shift＋可列印鍵：走字面，不讓前面的注音被重新規劃。
@@ -377,19 +376,17 @@ impl State {
         keys::shift_literal(&keys::literal(vk, lparam, false)?)
     }
 
-    /// 英文模式的可列印鍵（含空白）；Caps Lock 照英文語意套用。
-    fn english_literal_key(&self, vk: u32, lparam: isize) -> Option<String> {
-        keys::literal(vk, lparam, true)
-    }
-
-    fn japanese_key(&mut self, vk: u32) -> Option<&'static str> {
+    /// 日文變換鍵（轉換／無轉換、F6–F10）；只有引擎回報能力才送。
+    ///
+    /// 不再看外殼的日文輸入模式：日文片段由 core 依混打推斷，外殼只問
+    /// capability。
+    fn convert_key(&mut self, vk: u32) -> Option<&'static str> {
         let key = keys::japanese_named(vk)?;
-        (self.session.japanese() && self.session.available() && self.session.convert_keys())
-            .then_some(key)
+        (self.session.available() && self.session.convert_keys()).then_some(key)
     }
 
     fn ctrl_punct_key(&mut self, vk: u32, lparam: isize) -> Option<&'static str> {
-        if self.session.english() || self.session.japanese() {
+        if self.session.english() {
             return None;
         }
         let key = keys::ctrl_punct(vk, lparam)?;
@@ -397,10 +394,7 @@ impl State {
     }
 
     fn simplified_hotkey(&mut self, vk: u32) -> bool {
-        keys::simplified_hotkey(vk)
-            && !self.session.japanese()
-            && self.session.available()
-            && self.session.simplified_hotkey()
+        keys::simplified_hotkey(vk) && self.session.available() && self.session.simplified_hotkey()
     }
 
     fn tap(&mut self, side: keys::Side) -> &mut keys::ShiftTap {
@@ -681,20 +675,15 @@ impl TextService_Impl {
         };
         let after = {
             let st = self.state.borrow();
-            (
-                st.session.mode_known(),
-                st.session.english(),
-                st.session.japanese(),
-            )
+            (st.session.mode_known(), st.session.english())
         };
         zlog!(
-            "learn_mode 後 vk={}({}) mode_known={} changed={} english={} japanese={}",
+            "learn_mode 後 vk={}({}) mode_known={} changed={} english={}",
             vk,
             vk_label(vk),
             after.0,
             changed,
-            after.1,
-            after.2
+            after.1
         );
         if changed {
             self.sync_langbar();
@@ -724,13 +713,7 @@ impl TextService_Impl {
     fn sync_langbar(&self) {
         let st = self.state.borrow();
         if let Some((_, button)) = st.langbar.as_ref() {
-            langbar::set_state(
-                button,
-                st.session.english(),
-                st.session.simplified(),
-                st.session.japanese(),
-                st.session.input_method(),
-            );
+            langbar::set_state(button, st.session.english(), st.session.simplified());
         }
     }
 
@@ -1179,7 +1162,9 @@ impl TextService_Impl {
     /// 修復後 `su` + `3` 應是聲調鍵，補 Down 會讓它又被 suggestion 取代。
     fn handle_key(&self, ctx: Option<&ITfContext>, key: &str) -> bool {
         zlog!("handle_key 送引擎 key={}", key);
-        let caps = keys::caps_lock_on() && !self.state.borrow().session.english();
+        let caps_lower = self.state.borrow_mut().session.english()
+            && self.state.borrow_mut().session.style_caps_lower();
+        let caps = keys::caps_lock_on() && !caps_lower;
         let shift = keys::shift_down();
         let snapshot = self
             .state
@@ -1590,69 +1575,33 @@ impl TextService_Impl {
                 return None;
             }
             // 候選窗開著時 Enter 屬於候選介面：交給一般按鍵路徑送引擎，
-            // 由核心套用高亮項、關窗、保留組字。英文補全政策不能先把
-            // Enter 吃掉或直接送出整段。
+            // 由核心套用高亮項、關窗、保留組字。
             if snap.navigating && !snap.candidates.is_empty() {
                 return None;
             }
             zlog!(
-                "english_key_policy vk={}({}) snap ok={} english_autocomplete={} full_width={} caps_lower={} english_pending={} composing={}",
+                "english_key_policy vk={}({}) snap ok={} full_width={} caps_lower={} suggestion_kind={:?} english_pending={} composing={}",
                 vk,
                 vk_label(vk),
                 snap.ok,
-                snap.english_autocomplete,
                 snap.full_width,
                 caps_lower,
+                snap.suggestion_kind,
                 snap.english_pending,
                 snap.composing()
             );
-            // 有組字、又沒有英文補全時，所有可列印鍵都是字面：直接送引擎
-            // 的 literal op。空白也算字面，不當一聲、不選第一個候選。
-            if snap.ok && snap.composing() && !snap.english_pending && !keys::modifier_down() {
-                if let Some(text) = self.state.borrow_mut().english_literal_key(vk, lparam) {
-                    return Some(EnglishKey::EngineLiteral(text));
-                }
-            }
-            // 英文模式組字中、沒有補全：Enter／Backspace／Esc／Tab 比照組字區，
-            // 由輸入法自己處理。這裡只回決策；實際送引擎與 present 只在
-            // OnKeyDown 發生一次，OnTestKeyDown 不能有副作用。
-            // Tab 在英文模式是 raw input，沒有 suggestion 時不動作，只吃掉按鍵。
-            if snap.ok && snap.composing() && !snap.english_pending && !keys::modifier_down() {
-                if let Some(key) = keys::named(vk)
-                    .filter(|key| matches!(*key, "Enter" | "Backspace" | "Escape" | "Tab"))
-                {
-                    return Some(EnglishKey::ImeHandled(key));
-                }
-            }
-            if !snap.ok
-                || (!snap.english_autocomplete && !snap.full_width && !caps_lower)
-                || snap.composing() && !snap.english_pending
-            {
-                return None;
-            }
+            // Ctrl／Alt／Win 組合鍵不能送 core：先把英文待選字送出，再放行給宿主。
             if keys::modifier_down() {
                 self.commit_english_pending(ctx, &snap);
                 return Some(EnglishKey::Eat(false));
             }
             let key = self.state.borrow_mut().styled_key(vk, lparam, false, true);
+            // Shift＋空白是全形切換，核心沒有對應請求，外殼自己吃掉。
             if key.as_deref() == Some("ShiftSpace") {
                 return Some(EnglishKey::Eat(true));
             }
             let flags = self.state.borrow().activate_flags;
-            if !snap.english_pending && ctx.is_some_and(|c| privacy::english_passthrough(c, flags))
-            {
-                if let Some(text) = keys::caps_lower_literal(caps_lower, key.as_deref()) {
-                    return Some(EnglishKey::Literal(text));
-                }
-                log::once("英文模式：IMM32 程式的焦點沒有插入點，不開始英文補字，按鍵直接交給程式");
-                return Some(EnglishKey::Eat(false));
-            }
-            if key.as_ref().is_some_and(|k| {
-                snap.english_wants_key(k)
-                    || caps_lower && k.len() == 1 && k.as_bytes()[0].is_ascii_alphabetic()
-            }) {
-                return Some(EnglishKey::Eat(true));
-            }
+            // IMM32 程式：英文補字要走單字邊界，讓程式收到完整單字與這個標點。
             if snap.english_pending && ctx.is_some_and(|c| privacy::imm32_context(c, flags)) {
                 if let Some(key) = key.as_deref() {
                     if let Some(typed) = keys::imm32_word_end(key) {
@@ -1663,30 +1612,21 @@ impl TextService_Impl {
                     }
                 }
             }
-            if let Some(key) = key {
-                zlog!(
-                    "english_key_policy vk={}({}) 送引擎 key={}",
-                    vk,
-                    vk_label(vk),
-                    key
-                );
-                let next = self.state.borrow_mut().session.key(&key);
-                zlog!(
-                    "english_key_policy vk={}({}) 引擎回 key={} ok={} handled={} preedit={}",
-                    vk,
-                    vk_label(vk),
-                    key,
-                    next.ok,
-                    next.handled,
-                    next.text()
-                );
-                if next.ok && (!next.commit.is_empty() || snap.english_pending) {
-                    self.present(ctx, &next);
+            // 沒有插入點的 IMM32 程式無法組字：字面直接交給程式。
+            if !snap.english_pending && ctx.is_some_and(|c| privacy::english_passthrough(c, flags))
+            {
+                if let Some(text) = keys::caps_lower_literal(caps_lower, key.as_deref()) {
+                    return Some(EnglishKey::Literal(text));
                 }
-                return Some(EnglishKey::Eat(next.handled));
+                log::once("英文模式：IMM32 程式的焦點沒有插入點，按鍵直接交給程式");
+                return Some(EnglishKey::Eat(false));
             }
-            self.commit_english_pending(ctx, &snap);
-            Some(EnglishKey::Eat(false))
+            // 英文組字中的 Enter 送出後要把換行重排給宿主；其餘按鍵一律
+            // 走一般路徑送 core，由 handled 決定是否放行。
+            if snap.composing() && keys::named(vk) == Some("Enter") {
+                return Some(EnglishKey::EnterRepost);
+            }
+            None
         })();
         zlog!(
             "english_key_policy vk={}({}) result={:?} eats={}",
@@ -1712,7 +1652,7 @@ impl TextService_Impl {
         if !self.state.borrow().composing {
             return false;
         }
-        if self.state.borrow_mut().japanese_key(vk).is_some() {
+        if self.state.borrow_mut().convert_key(vk).is_some() {
             return false;
         }
         if keys::modifier_down() && self.state.borrow_mut().ctrl_punct_key(vk, lparam).is_some() {
@@ -1809,22 +1749,20 @@ impl TextService_Impl {
             let available = st.session.available();
             available_seen.set(Some(available));
             zlog!(
-                "wants_key vk={}({}) available={} english={} japanese={} composing={}",
+                "wants_key vk={}({}) available={} english={} composing={}",
                 vk,
                 vk_label(vk),
                 available,
                 st.session.english(),
-                st.session.japanese(),
                 st.composing
             );
             if !available {
                 return false;
             }
-            if st.japanese_key(vk).is_some() {
+            if st.composing && st.convert_key(vk).is_some() {
                 return true;
             }
             let english = st.session.english();
-            let japanese = st.session.japanese();
             let style_key = st.styled_key(vk, lparam, false, english);
             zlog!(
                 "wants_key vk={}({}) style_key={:?}",
@@ -1844,25 +1782,19 @@ impl TextService_Impl {
             // 選單開著時由選單吃鍵，英文模式也一樣：Tab／Shift+Tab 換分頁、
             // 方向鍵移動、數字選字、Enter 插入、Esc 關閉。
             if st.menu_open {
-                return keys::composing_wants(false, style_key.as_deref());
+                return keys::composing_wants(style_key.as_deref());
             }
-            // 英文由外殼直接放行：引擎只處理注音與日文，不再收到英文鍵。
-            // 樣式鍵（Shift＋空白、全形）已在上面的分支處理。
+            // 英文模式的 printable 一律送 core：依 handled 決定要不要吃。
+            // 具名鍵只在組字中送，沒有組字時交給宿主。
             if english {
-                return false;
+                if keys::named(vk).is_some() {
+                    return st.composing;
+                }
+                return style_key.is_some();
             }
             if st.composing {
                 let vocab = st.vocab_keys();
-                return keys::composing_wants(
-                    english,
-                    st.styled_key(vk, lparam, vocab, english).as_deref(),
-                );
-            }
-            if japanese {
-                if keys::is_keypad(vk) || keys::named(vk).is_some() {
-                    return false;
-                }
-                return keys::printable(vk, lparam, false).is_some();
+                return keys::composing_wants(st.styled_key(vk, lparam, vocab, english).as_deref());
             }
             if keys::is_keypad(vk) {
                 return style_key
@@ -1876,17 +1808,16 @@ impl TextService_Impl {
                 .map(|key| st.session.idle_key(&key))
                 .unwrap_or(false)
         })();
-        let (english, japanese, composing) = {
+        let (english, composing) = {
             let st = self.state.borrow();
-            (st.session.english(), st.session.japanese(), st.composing)
+            (st.session.english(), st.composing)
         };
         zlog!(
-            "wants_key 最終 vk={}({}) available={:?} english={} japanese={} composing={} -> wants={}",
+            "wants_key 最終 vk={}({}) available={:?} english={} composing={} -> wants={}",
             vk,
             vk_label(vk),
             available_seen.get(),
             english,
-            japanese,
             composing,
             wants
         );
@@ -2002,61 +1933,38 @@ impl TextService_Impl {
         self.type_text(ctx, vk, text)
     }
 
-    /// 英文模式組字中的 Enter／Backspace／Escape／Tab：只在 `OnKeyDown` 呼叫。
+    /// 英文組字中的 Enter：只在 `OnKeyDown` 呼叫。
     ///
     /// 回傳 true＝吃掉。Enter 送出組字後再重排給宿主，讓一次 Enter 同時送出與
     /// 換行：相容層程式（IMM32）用 [`Self::complete_and_repost_enter`] 經 CUAS
     /// 完成組字；一般 TSF 程式送 key 後用 [`Self::repost_enter_key`] 把 Enter
     /// 排回焦點視窗。兩條路徑都維持「TestKeyDown 吃、KeyDown 也吃」的一致，
     /// 重排失敗才回 false 放行原本的 Enter。
-    fn english_ime_key(
-        &self,
-        ctx: Option<&ITfContext>,
-        vk: u32,
-        lparam: isize,
-        key: &'static str,
-    ) -> bool {
-        if key == "Enter" {
-            let flags = self.state.borrow().activate_flags;
-            if ctx.is_some_and(|c| privacy::imm32_context(c, flags)) {
-                let reposted = self.complete_and_repost_enter(ctx, vk, lparam);
-                zlog!("英文組字 Enter：相容層完成組字 reposted={}", reposted);
-                // 重排成功時吃掉原本的鍵；失敗時放行原本的 Enter，仍只換行一次。
-                return reposted;
-            }
-            let next = self.state.borrow_mut().session.key(key);
-            zlog!(
-                "英文組字 Enter：引擎回 ok={} handled={} preedit={}",
-                next.ok,
-                next.handled,
-                next.text()
-            );
-            if !next.ok {
-                zlog!("英文組字 Enter 傳輸失敗：保留組字，吃掉按鍵");
-                return true;
-            }
-            self.present(ctx, &next);
-            let reposted = self.repost_enter_key(vk, lparam);
-            zlog!("英文組字 Enter：重排給宿主 reposted={}", reposted);
-            // 重排成功：吃掉原本的鍵，重排回來的 Enter 只作用一次。
-            // 重排失敗：放行原本的 Enter，讓宿主仍然收到換行。
+    fn english_enter(&self, ctx: Option<&ITfContext>, vk: u32, lparam: isize) -> bool {
+        let flags = self.state.borrow().activate_flags;
+        if ctx.is_some_and(|c| privacy::imm32_context(c, flags)) {
+            let reposted = self.complete_and_repost_enter(ctx, vk, lparam);
+            zlog!("英文組字 Enter：相容層完成組字 reposted={}", reposted);
+            // 重排成功時吃掉原本的鍵；失敗時放行原本的 Enter，仍只換行一次。
             return reposted;
         }
-        let next = self.state.borrow_mut().session.key(key);
+        let next = self.state.borrow_mut().session.key("Enter");
         zlog!(
-            "英文組字鍵 key={}：引擎回 ok={} handled={} preedit={}",
-            key,
+            "英文組字 Enter：引擎回 ok={} handled={} preedit={}",
             next.ok,
             next.handled,
             next.text()
         );
         if !next.ok {
-            zlog!("英文組字鍵 key={} 傳輸失敗：保留組字，吃掉按鍵", key);
+            zlog!("英文組字 Enter 傳輸失敗：保留組字，吃掉按鍵");
             return true;
         }
         self.present(ctx, &next);
-        self.state.borrow_mut().eaten.insert(vk);
-        true
+        let reposted = self.repost_enter_key(vk, lparam);
+        zlog!("英文組字 Enter：重排給宿主 reposted={}", reposted);
+        // 重排成功：吃掉原本的鍵，重排回來的 Enter 只作用一次。
+        // 重排失敗：放行原本的 Enter，讓宿主仍然收到換行。
+        reposted
     }
 
     /// 把 Enter 排回焦點視窗，讓一般 TSF 程式也能在組字送出後收到 Enter。
@@ -2246,8 +2154,6 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                 st.session.learn_mode(false);
                 let english = st.session.english();
                 let simplified = st.session.simplified();
-                let japanese = st.session.japanese();
-                let input_method = st.session.input_method().to_string();
                 drop(st);
                 // 輸入指示器的中／英按鈕與選單；按鈕持有本服務的參考，Deactivate 時移除以解開循環。
                 let tm = self.state.borrow().thread_mgr.clone();
@@ -2258,8 +2164,6 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                     let button = langbar::LangBarButton::create(
                         english,
                         simplified,
-                        japanese,
-                        input_method,
                         Box::new(move || service.toggle_mode()),
                         Box::new(move |on| simplify.set_output_simplified(on)),
                         Box::new(move || recheck.recheck_simplified()),
@@ -2479,8 +2383,14 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             self.learn_mode(vk);
             self.sync_caps(pic.as_ref(), vk);
             let wants = match self.english_key_policy(pic.as_ref(), vk, lparam.0) {
-                Some(policy) => policy.eats(),
-                None => self.wants_key(vk, lparam.0),
+                // 這幾條路徑都會由輸入法自己處理或直接寫入文件。
+                Some(
+                    EnglishKey::Eat(true)
+                    | EnglishKey::Literal(_)
+                    | EnglishKey::EnterRepost
+                    | EnglishKey::WordEnd { .. },
+                ) => true,
+                Some(EnglishKey::Eat(false)) | None => self.wants_key(vk, lparam.0),
             };
             self.state.borrow_mut().key_tested.record(vk, wants);
             zlog!(
@@ -2634,24 +2544,13 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                     );
                     return Ok(self.type_text(pic.as_ref(), vk, text).into());
                 }
-                Some(EnglishKey::EngineLiteral(text)) => {
+                Some(EnglishKey::EnterRepost) => {
                     zlog!(
-                        "OnKeyDown vk={}({}) 結束：英文 EngineLiteral={:?}",
+                        "OnKeyDown vk={}({}) 結束：英文組字 Enter 送出後重排",
                         vk,
-                        vk_label(vk),
-                        text
+                        vk_label(vk)
                     );
-                    return Ok(self.handle_literal(pic.as_ref(), &text).into());
-                }
-                Some(EnglishKey::ImeHandled(key)) => {
-                    zlog!(
-                        "OnKeyDown vk={}({}) 結束：英文組字鍵 key={}",
-                        vk,
-                        vk_label(vk),
-                        key
-                    );
-                    // 只在這裡送引擎一次，且不再落到下面的 styled_key／handle_key。
-                    return Ok(self.english_ime_key(pic.as_ref(), vk, lparam.0, key).into());
+                    return Ok(self.english_enter(pic.as_ref(), vk, lparam.0).into());
                 }
                 Some(EnglishKey::WordEnd { key, typed }) => {
                     zlog!(
@@ -2664,7 +2563,8 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                     self.confirm_document_context(pic.as_ref());
                     return Ok(self.end_word_with(pic.as_ref(), vk, &key, typed).into());
                 }
-                Some(policy) => policy.eats(),
+                Some(EnglishKey::Eat(true)) => true,
+                Some(EnglishKey::Eat(false)) => self.wants_key(vk, lparam.0),
                 None => self.wants_key(vk, lparam.0),
             };
             let composing = self.state.borrow().composing;
@@ -2701,8 +2601,8 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             } else {
                 None
             };
-            let japanese = self.state.borrow_mut().japanese_key(vk);
-            let Some(key) = japanese
+            let convert = self.state.borrow_mut().convert_key(vk);
+            let Some(key) = convert
                 .map(str::to_string)
                 .or_else(|| ctrl.map(str::to_string))
                 .or_else(|| {
@@ -3024,17 +2924,15 @@ mod english_key_policy_tests {
         }
     }
 
-    /// 英文模式、組字 "abc"、沒有 suggestion（english_autocomplete／pending 都是 false）。
+    /// 英文模式、組字 "abc"、沒有 suggestion（english_pending 是 false）。
     fn english_composing(service: &TextService) {
         let mut st = service.state.borrow_mut();
         st.session = super::support::session();
-        let mode = st.session.handle(json!({"type": "mode", "on": true}));
-        assert!(mode.ok && mode.english);
+        assert!(st.session.toggle().english, "外殼自己切英文");
         let snap = Snapshot {
             ok: true,
             handled: true,
             english: true,
-            english_autocomplete: false,
             english_pending: false,
             preedit: vec![Segment {
                 text: "abc".into(),
@@ -3069,8 +2967,8 @@ mod english_key_policy_tests {
         let before = key_ops(&service);
         let decision = service.english_key_policy(None, VK_BACKSPACE, BACKSPACE_LPARAM);
         assert!(
-            matches!(decision, Some(EnglishKey::ImeHandled("Backspace"))),
-            "英文組字中的 Backspace 要回 IME 處理：{decision:?}"
+            decision.is_none(),
+            "Backspace 交給一般按鍵路徑送 core：{decision:?}"
         );
         assert_eq!(
             key_ops(&service),
@@ -3115,6 +3013,49 @@ mod english_key_policy_tests {
         assert!(!tested_up, "新的 keyup 不能還說要吃");
         let up = unsafe { sink.OnKeyUp(&ctx, wu, lu) }.unwrap().as_bool();
         assert!(!up, "宿主自己的 keyup 要放行");
+    }
+
+    /// 英文補全時字母仍要送 core，不能再由外殼直接 Eat(true) 吃掉。
+    #[test]
+    fn english_letter_goes_to_core_and_eats_by_handled() {
+        plain_keyboard();
+        let service = ComObject::new(TextService::new());
+        english_composing(&service);
+        let (_doc, ctx) = super::support::host(super::support::Sync::Run);
+        let sink: ITfKeyEventSink = service.to_interface();
+        let (w, l) = (WPARAM(0x41), LPARAM(0x1e));
+
+        // 政策不再自己吃字母，交給一般按鍵路徑。
+        assert!(
+            service.english_key_policy(Some(&ctx), 0x41, 0x1e).is_none(),
+            "字母要送 core，不由英文政策先吃"
+        );
+        let before = key_ops(&service);
+        let tested = unsafe { sink.OnTestKeyDown(&ctx, w, l) }.unwrap().as_bool();
+        assert!(tested, "TestKeyDown 要吃");
+        assert_eq!(key_ops(&service), before, "TestKeyDown 不得送 key");
+        let eaten = unsafe { sink.OnKeyDown(&ctx, w, l) }.unwrap().as_bool();
+        assert!(eaten, "core 回 handled=true 才吃");
+        assert_eq!(key_ops(&service), before + 1, "字母只送 core 一次");
+    }
+
+    /// F6–F10／Convert 只看 capability，不再需要 legacy 日文輸入模式。
+    #[test]
+    fn convert_keys_follow_capability_not_language_mode() {
+        plain_keyboard();
+        let service = ComObject::new(TextService::new());
+        let mut st = service.state.borrow_mut();
+        st.session = super::support::session();
+        st.session.set_japanese_for_test(true);
+        assert!(!st.session.english(), "不是英文模式");
+        assert_eq!(st.convert_key(0x75), Some("F6"), "VK_F6 要送 core");
+        assert_eq!(
+            st.convert_key(0x1c),
+            Some("Convert"),
+            "VK_CONVERT 要送 core"
+        );
+        st.session.set_japanese_for_test(false);
+        assert_eq!(st.convert_key(0x75), None, "沒有 capability 就不送");
     }
 
     /// Enter 送出組字後重排給宿主，TestKeyDown／KeyDown 都回吃掉。

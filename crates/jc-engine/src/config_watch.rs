@@ -58,6 +58,8 @@ pub(crate) fn chord_of_key(key: &Key) -> Option<Chord> {
         KeyCode::PageDown => "pagedown".to_string(),
         KeyCode::Tab | KeyCode::ShiftTab => "tab".to_string(),
         KeyCode::Delete => "delete".to_string(),
+        KeyCode::Convert => "convert".to_string(),
+        KeyCode::NonConvert => "nonconvert".to_string(),
         KeyCode::F(n) => format!("f{n}"),
     };
     Some(Chord {

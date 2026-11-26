@@ -1,6 +1,6 @@
 //! 0c `platforms/windows/tsf/src/session.rs`（main 8f443af）的移植。
 //!
-//! 狀態機、generation、log 重播、`restore_requests`、3 次重試加 20ms 等待
+//! 狀態機、generation、log 重播、3 次重試加 20ms 等待
 //! 與快照結構照抄。Adapter 只改兩處：`open_request` 改送 jc `hello`，
 //! `parse()` 前先將 jc `Response::State` 轉成 0c snapshot 的 JSON 形狀。
 //!
@@ -223,6 +223,8 @@ pub mod keys {
             KeyCode::Backspace => "Backspace",
             KeyCode::Delete if key.shift => "ShiftDelete",
             KeyCode::Delete => "Delete",
+            KeyCode::Convert => "Convert",
+            KeyCode::NonConvert => "NonConvert",
             KeyCode::Tab | KeyCode::ShiftTab => "BackTab",
             KeyCode::ArrowLeft if key.shift => "ShiftLeft",
             KeyCode::ArrowRight if key.shift => "ShiftRight",
@@ -321,16 +323,14 @@ pub struct Snapshot {
     ///
     /// 候選窗只在這個狀態顯示（新注音的習慣：打字時看組字，按方向鍵才開清單）。
     pub navigating: bool,
-    /// jc wire 沒有整體 mode；由 `segments[].mode` 推導，沒有時 false。
+    /// 外殼的英文模式。jc wire 沒有整體模式；由外殼保存並在每個回覆補回。
     pub english: bool,
     /// jc 尚無對應；false。
     pub full_width: bool,
-    /// jc 尚無對應的獨立旗標；由 `suggestion` 是否存在推導。
-    pub english_autocomplete: bool,
-    /// 直接影響 su 問題：必須由 jc `suggestion` 映射，不能給預設值。
+    /// 補全尾綴的來源；外殼只依來源決定要不要走英文補全。
+    pub suggestion_kind: SuggestionKind,
+    /// 英文補全的待選字；只由 [`SuggestionKind::English`] 設定。
     pub english_pending: bool,
-    /// jc 尚無對應；false。
-    pub english_can_start: bool,
     /// jc 尚無對應；false。
     pub caps_lock: bool,
     /// jc 尚無對應；false。
@@ -347,12 +347,6 @@ pub struct Snapshot {
     pub output_simplified: bool,
     /// jc 尚無對應；false。
     pub bell: bool,
-    /// jc wire 沒有整體 mode；由 `segments[].mode == "japanese"` 推導。
-    pub japanese: bool,
-    /// jc 尚無對應；空字串。
-    pub language: String,
-    /// jc 尚無對應；空字串。
-    pub input_method: String,
     /// jc 尚無對應；false。
     pub converting: bool,
     /// jc 尚無對應；0。
@@ -361,6 +355,36 @@ pub struct Snapshot {
     pub clause_count: i64,
     /// jc `State::menu`：開啟中的符號／表情選單；沒有開選單時為 `None`。
     pub menu: Option<MenuState>,
+}
+
+/// 補全尾綴的來源。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SuggestionKind {
+    /// 沒有補全。
+    #[default]
+    None,
+    /// 注音補全；不能拿來當英文補全。
+    Zhuyin,
+    /// 英文拼字補全。
+    English,
+}
+
+impl SuggestionKind {
+    fn from_wire(value: &Value) -> SuggestionKind {
+        match value.as_str() {
+            Some("zhuyin") => SuggestionKind::Zhuyin,
+            Some("english") => SuggestionKind::English,
+            _ => SuggestionKind::None,
+        }
+    }
+
+    fn as_wire(self) -> &'static str {
+        match self {
+            SuggestionKind::None => "",
+            SuggestionKind::Zhuyin => "zhuyin",
+            SuggestionKind::English => "english",
+        }
+    }
 }
 
 impl Snapshot {
@@ -387,28 +411,6 @@ impl Snapshot {
             && key
                 .strip_prefix("KP")
                 .is_some_and(|c| c.len() == 1 && c.as_bytes()[0].is_ascii_graphic())
-    }
-
-    /// Predict only keys the English word buffer will actually consume.
-    pub fn english_wants_key(&self, key: &str) -> bool {
-        let literal = key.strip_prefix("KP").unwrap_or(key);
-        if self.english
-            && self.full_width
-            && (literal.len() == 1 && literal.as_bytes()[0].is_ascii_graphic() || key == " ")
-        {
-            return true;
-        }
-        if !self.english_autocomplete || !self.english {
-            return false;
-        }
-        let letter = key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic();
-        if self.english_pending {
-            letter && self.text().len() < 48
-                || matches!(key, "Backspace" | "Escape" | "Enter")
-                || (!self.candidates.is_empty() && matches!(key, "Tab" | "Up" | "Down"))
-        } else {
-            self.english_can_start && letter
-        }
     }
 
     /// 是否正在組字。
@@ -548,8 +550,14 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
     };
 
     let all_english = !segments.is_empty() && segments.iter().all(|s| s.mode == "english");
-    let japanese = segments.iter().any(|s| s.mode == "japanese");
     let pending = suggestion.is_some();
+    // 補全來源要跟外殼模式分開：只有英文片段的補全才是英文補全。
+    // 注音補全（例如 `su`）不能變成 english_pending。
+    let suggestion_kind = match (pending, all_english) {
+        (true, true) => SuggestionKind::English,
+        (true, false) => SuggestionKind::Zhuyin,
+        (false, _) => SuggestionKind::None,
+    };
     // 引擎可以明確說「這次沒處理」（例如候選 index 越界）；有值時尊重它。
     // 組字中或選單開著時的 Backspace／Delete，即使把 preedit 或候選刪空，
     // 引擎也會明確回 `handled = true`；這裡不能改用 preedit 猜，否則那一鍵
@@ -592,9 +600,7 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
             "tabs": menu.tabs,
             "tab": menu.tab,
         })),
-        "mode": if japanese { "japanese" } else if all_english { "english" } else { "zhuyin" },
-        "english_autocomplete": pending,
-        "english_pending": pending,
+        "suggestion_kind": suggestion_kind.as_wire(),
     })
 }
 
@@ -950,33 +956,9 @@ impl Client {
     }
 }
 
-/// 會開候選窗的翻頁鍵；英文組字中不交給引擎。
+/// 會開候選窗的翻頁鍵；英文組字中不交給引擎，選單開著時例外。
 fn is_page_navigation(key: &str) -> bool {
     matches!(key, "Up" | "Down" | "PageUp" | "PageDown")
-}
-
-/// 重開 session（引擎重啟、斷線）時要不要送「設定模式」還原外殼記得的模式。
-fn restore_mode(known: bool, want_english: bool, start_english: bool) -> Option<bool> {
-    (known && want_english != start_english).then_some(want_english)
-}
-
-/// 重開 session 時依序送出的還原請求。
-fn restore_requests(
-    known: bool,
-    want_english: bool,
-    caps_english: bool,
-    caps_lock_english: bool,
-    start_english: bool,
-) -> Vec<Value> {
-    let caps = want_english && caps_english;
-    let mut out: Vec<Value> = restore_mode(known, want_english && !caps, start_english)
-        .map(|english| json!({"type": "mode", "on": english}))
-        .into_iter()
-        .collect();
-    if caps && caps_lock_english {
-        out.push(json!({"type": "caps_lock", "on": true}));
-    }
-    out
 }
 
 /// health 回報的新 session 開始時的模式。
@@ -984,14 +966,14 @@ fn restore_requests(
 pub enum Mode {
     Chinese,
     English,
-    Japanese,
 }
 
 fn initial_mode(info: &Value) -> Option<Mode> {
     match info["initial_mode"].as_str()? {
         "english" => Some(Mode::English),
-        "japanese" => Some(Mode::Japanese),
         "zhuyin" => Some(Mode::Chinese),
+        // `japanese` 不再是外殼的輸入模式：日文由 core 依片段推斷，
+        // 能力只看 health 的 capability。
         _ => None,
     }
 }
@@ -1043,20 +1025,6 @@ fn downgrade_vocab_key(request: &mut Value) {
     }
 }
 
-/// 引擎沒有回報 clause_display 時，文節樣式退回一般組字。
-fn apply_clause_capability(s: &mut Snapshot, clause_display: bool) {
-    if clause_display {
-        return;
-    }
-    for segment in &mut s.preedit {
-        if segment.style == "clause" || segment.style == "clause_active" {
-            segment.style = "normal".to_string();
-        }
-    }
-    s.clause_index = 0;
-    s.clause_count = 0;
-}
-
 /// 0c 的 `parse()`：吃 0c reply 的 `snapshot` 物件，原樣移植。
 fn parse(reply: &Value) -> Snapshot {
     let mut s = Snapshot::default();
@@ -1068,17 +1036,12 @@ fn parse(reply: &Value) -> Snapshot {
     s.commit = j["commit"].as_str().unwrap_or("").to_string();
     s.context_id = j["context_id"].as_u64().unwrap_or(0);
     s.suggestion = j["suggestion"].as_str().unwrap_or("").to_string();
-    s.english = j["mode"].as_str() == Some("english");
-    s.japanese = j["mode"].as_str() == Some("japanese");
-    s.language = j["language"].as_str().unwrap_or("").to_string();
-    s.input_method = j["input_method"].as_str().unwrap_or("").to_string();
+    s.suggestion_kind = SuggestionKind::from_wire(&j["suggestion_kind"]);
+    s.english_pending = s.suggestion_kind == SuggestionKind::English;
     s.converting = j["converting"].as_bool().unwrap_or(false);
     s.clause_index = j["clause_index"].as_i64().unwrap_or(0);
     s.clause_count = j["clause_count"].as_i64().unwrap_or(0);
     s.full_width = j["full_width"].as_bool().unwrap_or(false);
-    s.english_autocomplete = j["english_autocomplete"].as_bool().unwrap_or(false);
-    s.english_pending = j["english_pending"].as_bool().unwrap_or(false);
-    s.english_can_start = j["english_can_start"].as_bool().unwrap_or(false);
     s.caps_lock = j["caps_lock"].as_bool().unwrap_or(false);
     s.caps_english = j["caps_english"].as_bool().unwrap_or(false);
     s.reading_hint = j["reading_hint"]["text"].as_str().unwrap_or("").to_string();
@@ -1188,11 +1151,9 @@ pub struct Session {
     caps_lock_english: bool,
     caps_generation: u32,
     caps_english: bool,
-    japanese: bool,
     japanese_cap: bool,
     convert_keys_cap: bool,
     clause_display_cap: bool,
-    live_conversion_cap: bool,
     simplified_live: bool,
     simplified: bool,
     simplified_at: Option<Instant>,
@@ -1247,11 +1208,9 @@ impl Session {
             caps_lock_english: false,
             caps_generation: 0,
             caps_english: false,
-            japanese: false,
             japanese_cap: false,
             convert_keys_cap: false,
             clause_display_cap: false,
-            live_conversion_cap: false,
             simplified_live: false,
             simplified: false,
             simplified_at: None,
@@ -1279,10 +1238,12 @@ impl Session {
         self.japanese_cap = info["japanese"] == "true";
         self.convert_keys_cap = info["convert_keys"] == "true";
         self.clause_display_cap = info["clause_display"] == "true";
-        self.live_conversion_cap = info["live_conversion"] == "true";
         self.caps_generation = generation;
-        if !self.japanese_cap {
-            self.japanese = false;
+        // 引擎說沒有 Caps Lock 英文能力時，暫時英文要退回程式模式，
+        // 不讓重連後停在英文。
+        if !self.caps_lock_english {
+            self.caps_english = false;
+            self.english = self.base_english;
         }
         self.learn_shift_config(info);
     }
@@ -1444,45 +1405,29 @@ impl Session {
         self.shared = reply["info"]["mode_memory"] == "shared";
         self.learn_capabilities(&reply["info"], generation);
         let simplified = self.learn_simplified(&reply["info"]);
-        let before = (self.english, self.japanese);
+        let before = self.english;
         if let Some(mode) = initial_mode(&reply["info"]) {
             self.english = mode == Mode::English;
             self.base_english = self.english;
-            self.japanese = mode == Mode::Japanese;
             self.caps_english = false;
         }
-        let changed = before != (self.english, self.japanese) || simplified;
+        let changed = before != self.english || simplified;
         zlog!(
-            "learn_mode 結束 changed={} mode_known={} english={} japanese={}",
+            "learn_mode 結束 changed={} mode_known={} english={}",
             changed,
             self.mode_known,
-            self.english,
-            self.japanese
+            self.english
         );
         changed
     }
 
-    /// 測試：設定日文模式與能力（不經引擎）。
+    /// 測試：設定日文能力（不經引擎）。
     #[cfg(test)]
     #[allow(dead_code)]
-    pub(crate) fn set_japanese_for_test(&mut self, japanese: bool, convert_keys: bool) {
+    pub(crate) fn set_japanese_for_test(&mut self, convert_keys: bool) {
         self.japanese_cap = true;
         self.convert_keys_cap = convert_keys;
         self.clause_display_cap = convert_keys;
-        self.japanese = japanese;
-    }
-
-    /// 目前的日文模式。
-    pub fn japanese(&self) -> bool {
-        self.japanese && self.japanese_cap
-    }
-
-    /// 目前的輸入方式。
-    pub fn input_method(&self) -> &str {
-        match self.english_state.input_method.as_str() {
-            "" if self.japanese() => "romaji",
-            method => method,
-        }
     }
 
     /// 引擎是否支援日文。
@@ -1498,12 +1443,6 @@ impl Session {
     /// 引擎是否回報文節樣式與目前文節。
     pub fn clause_display(&self) -> bool {
         self.japanese_supported() && self.clause_display_cap
-    }
-
-    /// 引擎是否回報ライブ変換。
-    #[allow(dead_code)]
-    pub fn live_conversion(&self) -> bool {
-        self.japanese_supported() && self.live_conversion_cap
     }
 
     /// 目前的 session 是否可以送 #123 的新鍵名。
@@ -1708,9 +1647,6 @@ impl Session {
             self.english = true;
             self.base_english = true;
         }
-        if reply["info"]["start_mode"] == "japanese" && self.japanese_cap && !self.english {
-            self.japanese = true;
-        }
         self.pending_context = None;
         if self.context_enabled {
             let _ = self.client.call(
@@ -1730,30 +1666,6 @@ impl Session {
                     .map(|s| &s[..s.len().min(12)])
                     .unwrap_or("?")
             );
-        }
-        let want = if self.log.is_empty() {
-            self.english
-        } else {
-            self.replay_english
-        };
-        for req in restore_requests(
-            self.mode_known,
-            want,
-            self.caps_english,
-            self.caps_lock_english,
-            start_english,
-        ) {
-            let restored = self
-                .client
-                .call(&json!({"op": "handle", "session": self.id, "req": req}));
-            if !restored
-                .as_ref()
-                .and_then(|r| r["ok"].as_bool())
-                .unwrap_or(false)
-            {
-                self.id = 0;
-                return false;
-            }
         }
         let log = self.log.clone();
         for req in &log {
@@ -1832,11 +1744,6 @@ impl Session {
         let mut want_english = self.english;
         let mut want_caps = self.caps_english;
         match kind.as_str() {
-            "mode" => {
-                base = request["on"].as_bool().unwrap_or(false);
-                want_english = base;
-                want_caps = false;
-            }
             "toggle" => {
                 base = !base;
                 want_english = base;
@@ -1884,6 +1791,13 @@ impl Session {
                 }
                 continue;
             }
+            // 重開 session 可能剛學到新的能力（例如 Caps Lock 英文被關掉），
+            // 按鍵請求要用重連後的模式，而不是進迴圈前的快照。
+            if !matches!(kind.as_str(), "toggle" | "caps_lock") {
+                base = self.base_english;
+                want_english = self.english;
+                want_caps = self.caps_english;
+            }
             if !self.vocab_keys {
                 downgrade_vocab_key(&mut request);
             }
@@ -1917,25 +1831,13 @@ impl Session {
             }
             let mut s = parse(&reply);
             s.reconnected = generation_before != self.client.generation();
-            // 引擎的 `Snapshot.mode` 是「這一段組字是什麼語言」，不是中英模式。
-            // mixed 模式打英文單字時它會是 english，但那只是一段字，不該把整個
-            // 輸入法切成英文模式——實機症狀是「打到一半變全英文」。
-            // 所以按鍵請求一律用外殼記住的中英模式；其他請求才照原邏輯，
-            // 在組字中採用引擎回報的語言（給 UI 顯示用）。
-            // Caps Lock 英文是暫時狀態，引擎才是權威（重連後設定可能已被關掉）；
-            // 一般按鍵則一律用外殼記住的中英模式。
-            let adopt_engine_mode = (!matches!(kind.as_str(), "key" | "literal" | "idle")
-                || self.caps_english)
-                && s.commit.is_empty()
-                && !s.preedit.is_empty();
-            if !adopt_engine_mode {
-                s.english = want_english;
-                s.japanese = self.japanese && self.japanese_cap;
-            }
+            // 引擎的片段模式只描述組字語言，不是外殼的中英模式。外殼模式
+            // 一律由自己保存；片段語言留在 `preedit` 樣式與 suggestion 來源。
+            s.english = want_english;
             s.caps_english = want_caps;
             s.caps_lock = want_caps;
             s.output_simplified = self.simplified;
-            if matches!(kind.as_str(), "mode" | "caps_lock" | "output_simplified") {
+            if matches!(kind.as_str(), "caps_lock" | "output_simplified") {
                 s.handled = true;
             }
             if !s.commit.is_empty() {
@@ -1948,8 +1850,6 @@ impl Session {
             self.english = s.english;
             self.base_english = base;
             self.caps_english = s.caps_english;
-            self.japanese = s.japanese && self.japanese_cap;
-            apply_clause_capability(&mut s, self.clause_display());
             if self.simplified_live {
                 self.simplified = s.output_simplified;
                 self.simplified_at = Some(Instant::now());
@@ -2013,9 +1913,6 @@ impl Session {
     }
 
     /// 送一個按鍵。
-    ///
-    /// 英文組字中不把翻頁鍵送進引擎；即使引擎有候選，也不能用
-    /// `↓`／`↑`／`PageUp`／`PageDown` 開候選窗。
     pub fn key(&mut self, key: &str) -> Snapshot {
         self.key_with_flags(key, false, false)
     }
@@ -2146,60 +2043,46 @@ mod parse_tests {
     }
 
     #[test]
-    fn full_width_english_preflight_consumes_printable_keys_without_completion() {
-        let snap = parse(&json!({"snapshot":{"mode":"english","full_width":true}}));
-        for key in ["a", "A", "0", "9", " ", "'", "\\"] {
-            assert!(snap.english_wants_key(key), "{key}");
-        }
-        for key in ["KP1", "KP0", "KP*", "KP+", "KP."] {
-            assert!(snap.english_wants_key(key), "{key}");
-        }
-        for key in ["Tab", "Escape", "Left", "KP"] {
-            assert!(!snap.english_wants_key(key), "{key}");
-        }
-        assert!(!parse(&json!({"snapshot":{"mode":"english"}})).english_wants_key("a"));
-        assert!(
-            !parse(&json!({"snapshot":{"mode":"english"}})).english_wants_key("KP1"),
-            "半形數字鍵盤照舊交給宿主"
-        );
-    }
+    fn suggestion_source_separates_zhuyin_from_english() {
+        let state = |mode: &str, suggestion: Option<&str>| Response::State {
+            preedit: "su".into(),
+            cursor: 2,
+            candidates: Vec::new(),
+            details: Vec::new(),
+            segments: vec![jc_proto::SegmentInfo {
+                start: 0,
+                end: 2,
+                mode: mode.into(),
+                script: "latin".into(),
+            }],
+            highlighted: 0,
+            cursor_rune: 2,
+            suggestion: suggestion.map(str::to_string),
+            label: None,
+            navigating: false,
+            rows: 0,
+            columns: 0,
+            handled: None,
+            menu: None,
+        };
+        // 注音補全不是英文補全：`su` 後面按數字不能被英文補全搶走。
+        let zhuyin = parse(&response_to_reply(&state("zhuyin", Some("你"))));
+        assert_eq!(zhuyin.suggestion_kind, SuggestionKind::Zhuyin);
+        assert!(!zhuyin.english_pending);
 
-    #[test]
-    fn english_key_preflight_matches_buffer_boundaries() {
-        let mut s = parse(
-            &json!({"snapshot": {"mode": "english", "english_autocomplete": true,
-            "english_pending": true, "preedit": [{"text":"hel"}],
-            "candidates": {"items":[{"id":0,"text":"hello"}]}}}),
-        );
-        assert!(s.english_pending);
-        for k in [
-            "h",
-            "H",
-            "Backspace",
-            "Escape",
-            "Enter",
-            "Tab",
-            "Up",
-            "Down",
-        ] {
-            assert!(s.english_wants_key(k), "{}", k);
-        }
-        for k in [
-            " ", ".", "1", "Left", "Right", "Delete", "Home", "End", "PageUp", "PageDown",
-        ] {
-            assert!(!s.english_wants_key(k), "must pass host action: {}", k);
-        }
-        s.candidates.clear();
-        for k in ["Tab", "Up", "Down"] {
-            assert!(!s.english_wants_key(k));
-        }
-        s.preedit[0].text = "a".repeat(48);
-        assert!(
-            !s.english_wants_key("a"),
-            "word limit must pass the next letter"
-        );
-        let legacy = parse(&json!({"snapshot":{"mode":"english"}}));
-        assert!(!legacy.english_pending && !legacy.english_wants_key("a"));
+        let english = parse(&response_to_reply(&state("english", Some("lo"))));
+        assert_eq!(english.suggestion_kind, SuggestionKind::English);
+        assert!(english.english_pending);
+
+        let none = parse(&response_to_reply(&state("english", None)));
+        assert_eq!(none.suggestion_kind, SuggestionKind::None);
+        assert!(!none.english_pending);
+
+        // 片段語言不再變成外殼模式。
+        let wire = state_to_snapshot_value(&state("english", Some("lo")));
+        assert!(wire.get("mode").is_none(), "{wire}");
+        assert_eq!(wire["suggestion_kind"], "english");
+        assert!(!english.english, "片段語言不是外殼模式");
     }
 
     #[test]
@@ -2219,12 +2102,7 @@ mod parse_tests {
     }
 
     #[test]
-    fn restore_mode_only_when_it_differs_from_the_start() {
-        assert_eq!(restore_mode(true, true, false), Some(true));
-        assert_eq!(restore_mode(true, false, false), None);
-        assert_eq!(restore_mode(true, false, true), Some(false));
-        assert_eq!(restore_mode(true, true, true), None);
-        assert_eq!(restore_mode(false, false, true), None);
+    fn initial_mode_has_no_japanese_input_mode() {
         assert_eq!(
             initial_english(&json!({"initial_mode": "english"})),
             Some(true)
@@ -2235,11 +2113,13 @@ mod parse_tests {
         );
         assert_eq!(
             initial_english(&json!({"initial_mode": "japanese"})),
-            Some(false)
+            None,
+            "japanese 不再是外殼模式"
         );
         assert_eq!(
             initial_mode(&json!({"initial_mode": "japanese"})),
-            Some(Mode::Japanese)
+            None,
+            "日文只看 capability"
         );
         assert_eq!(
             initial_mode(&json!({"initial_mode": "zhuyin"})),
@@ -2247,41 +2127,6 @@ mod parse_tests {
         );
         assert_eq!(initial_mode(&json!({"initial_mode": "future"})), None);
         assert_eq!(initial_english(&json!({"version": "old"})), None);
-    }
-
-    #[test]
-    fn caps_english_is_restored_as_temporary() {
-        let caps_on = json!({"type": "caps_lock", "on": true});
-        let zhuyin = json!({"type": "mode", "on": false});
-        let english = json!({"type": "mode", "on": true});
-        assert_eq!(
-            restore_requests(true, true, true, true, false),
-            vec![caps_on.clone()]
-        );
-        assert_eq!(
-            restore_requests(true, true, true, true, true),
-            vec![zhuyin.clone(), caps_on.clone()]
-        );
-        assert_eq!(
-            restore_requests(true, true, true, false, false),
-            Vec::<Value>::new()
-        );
-        assert_eq!(
-            restore_requests(true, true, true, false, true),
-            vec![zhuyin.clone()]
-        );
-        assert_eq!(
-            restore_requests(true, true, false, true, false),
-            vec![english.clone()]
-        );
-        assert_eq!(
-            restore_requests(true, false, false, true, true),
-            vec![zhuyin.clone()]
-        );
-        assert_eq!(
-            restore_requests(false, true, true, true, false),
-            vec![caps_on]
-        );
     }
 
     #[test]
@@ -2355,7 +2200,7 @@ mod parse_tests {
         let s = parse(&response_to_reply(&response));
         assert_eq!(s.candidate_keys, vec!["1", "2"]);
         assert_eq!(s.candidate_notes, vec!["問候", "help"]);
-        assert!(s.english, "英文模式仍由 segments 推導");
+        assert!(!s.english, "片段語言不再推導成外殼模式");
     }
 
     #[test]
@@ -2416,29 +2261,25 @@ mod parse_tests {
     #[test]
     fn japanese_snapshot_fields_are_parsed() {
         let s = parse(&json!({"snapshot": {
-            "handled": true, "mode": "japanese", "language": "ja", "input_method": "romaji",
-            "converting": true, "clause_index": 1, "clause_count": 2,
+            "handled": true, "converting": true, "clause_index": 1, "clause_count": 2,
             "preedit": [{"text": "今日", "style": "clause"}, {"text": "は", "style": "clause_active"}]
         }}));
-        assert!(s.japanese && !s.english);
-        assert_eq!(s.language, "ja");
-        assert_eq!(s.input_method, "romaji");
+        assert!(!s.english, "片段語言不是外殼模式");
         assert!(s.converting);
         assert_eq!((s.clause_index, s.clause_count), (1, 2));
         assert_eq!(s.clause_title(), "文節 2/2");
         assert_eq!(s.candidate_title(), "文節 2/2");
+        // 引擎沒有 capability 時仍保留核心給的文節樣式。
         assert_eq!(s.preedit[0].style, "clause");
         assert_eq!(s.preedit[1].style, "clause_active");
-        let old = parse(&json!({"snapshot": {"handled": true, "mode": "zhuyin"}}));
-        assert!(!old.japanese && !old.converting && old.clause_title().is_empty());
+        let old = parse(&json!({"snapshot": {"handled": true}}));
+        assert!(!old.converting && old.clause_title().is_empty());
         assert_eq!(old.candidate_title(), "");
-        let english = parse(&json!({"snapshot": {"mode": "english", "language": "ja"}}));
-        assert!(!english.japanese && english.english);
     }
 
     #[test]
     fn clause_title_combines_with_candidate_title_and_guards_bad_indexes() {
-        let mut s = parse(&json!({"snapshot": {"mode": "japanese",
+        let mut s = parse(&json!({"snapshot": {
             "clause_index": 0, "clause_count": 3, "candidates": {"title": "変換", "items": []}}}));
         assert_eq!(s.clause_title(), "文節 1/3");
         assert_eq!(s.candidate_title(), "変換　文節 1/3");
@@ -2451,43 +2292,22 @@ mod parse_tests {
     }
 
     #[test]
-    fn clause_styles_fall_back_when_the_engine_lacks_the_capability() {
-        let mut s = parse(
-            &json!({"snapshot": {"mode": "japanese", "clause_index": 1, "clause_count": 2,
-            "preedit": [{"text": "今日", "style": "clause"}, {"text": "は", "style": "clause_active"}]}}),
-        );
-        apply_clause_capability(&mut s, false);
-        assert!(s.preedit.iter().all(|g| g.style == "normal"));
-        assert_eq!((s.clause_index, s.clause_count), (0, 0));
-        assert!(s.clause_title().is_empty());
-        let mut supported = parse(&json!({"snapshot": {"mode": "japanese", "clause_index": 1,
-            "clause_count": 2, "preedit": [{"text": "は", "style": "clause_active"}]}}));
-        apply_clause_capability(&mut supported, true);
-        assert_eq!(supported.preedit[0].style, "clause_active");
-        assert_eq!(supported.clause_title(), "文節 2/2");
-    }
-
-    #[test]
     fn japanese_capabilities_gate_the_new_keys() {
         let mut s = Session::new();
         s.learn_capabilities(&json!({}), 0);
         assert!(!s.japanese_supported() && !s.convert_keys() && !s.clause_display());
         s.learn_capabilities(
-            &json!({"japanese": "true", "convert_keys": "true", "clause_display": "true", "live_conversion": "true"}),
+            &json!({"japanese": "true", "convert_keys": "true", "clause_display": "true"}),
             0,
         );
-        assert!(
-            s.japanese_supported() && s.convert_keys() && s.clause_display() && s.live_conversion()
-        );
-        s.set_japanese_for_test(true, true);
-        assert!(s.japanese());
+        assert!(s.japanese_supported() && s.convert_keys() && s.clause_display());
+        s.set_japanese_for_test(true);
+        assert!(s.japanese_supported());
         s.learn_capabilities(&json!({}), 0);
-        assert!(
-            !s.japanese_supported() && !s.japanese() && !s.convert_keys() && !s.clause_display()
-        );
+        assert!(!s.japanese_supported() && !s.convert_keys() && !s.clause_display());
         s.learn_capabilities(&json!({"japanese": "true"}), 0);
-        s.set_japanese_for_test(true, false);
-        assert!(s.japanese() && !s.convert_keys() && !s.clause_display());
+        s.set_japanese_for_test(false);
+        assert!(!s.convert_keys() && !s.clause_display());
     }
 
     #[test]
@@ -2547,16 +2367,12 @@ mod parse_tests {
         };
         let reply = response_to_reply(&state);
         let s = parse(&reply);
-        assert!(s.ok && s.english && s.english_pending && s.english_autocomplete);
+        assert!(s.ok && s.english_pending);
         assert_eq!(s.suggestion, "lo");
+        assert_eq!(s.suggestion_kind, SuggestionKind::English);
         assert_eq!(s.text(), "hel");
         assert_eq!(s.cursor_utf16, 3);
         assert_eq!(s.candidate_keys, vec!["1"]);
-        assert!(s.english_wants_key("Enter"), "#235：Enter 只送出單字");
-        assert!(
-            !s.english_wants_key("1"),
-            "英文模式的數字是文字，不是選字鍵"
-        );
 
         let no_suggestion = Response::State {
             preedit: "hel".into(),
@@ -2576,7 +2392,7 @@ mod parse_tests {
         };
         let s = parse(&response_to_reply(&no_suggestion));
         assert!(!s.english_pending, "沒有 suggestion 就沒有英文補全");
-        assert!(!s.english_autocomplete);
+        assert_eq!(s.suggestion_kind, SuggestionKind::None);
     }
 
     #[test]
@@ -3490,32 +3306,67 @@ mod tests {
         assert_eq!(close["session"], 7, "Close 要送引擎給的 id，不是 1");
     }
 
+    /// 英文補全出現後，下一個字母仍要送 core，不能在外殼被吃掉。
     #[test]
-    fn english_autocomplete_preserves_host_boundaries() {
+    fn english_letters_continue_after_suggestion() {
         let (mut s, st) = toy_session();
         st.lock().unwrap().candidates = vec!["hello".into()];
-        let start = s.handle(json!({"type": "mode", "on": true}));
-        assert!(start.ok && start.english);
-        for boundary in [" ", "Left", "Delete", "."] {
-            for k in ["h", "e", "l"] {
-                assert!(s.key(k).handled, "{boundary} {k}");
-            }
-            assert!(s.english_state.english_pending);
-            assert!(
-                !s.english_state.english_wants_key(boundary),
-                "TestKeyDown must decline {boundary}"
-            );
-            let next = s.key(boundary);
-            assert!(next.ok && !next.english_pending);
-            assert_eq!(next.commit, "hel");
-        }
+        st.lock().unwrap().start_english = true;
+        assert!(s.learn_mode(false) && s.english());
         for k in ["h", "e", "l"] {
-            s.key(k);
+            assert!(s.key(k).handled, "{k}");
         }
-        let accepted = s.key("Tab");
-        assert!(accepted.handled);
-        assert_eq!(accepted.commit, "hello");
-        assert!(!s.english_state.english_wants_key("Enter"));
+        assert_eq!(s.english_state.suggestion_kind, SuggestionKind::English);
+        assert!(s.english_state.english_pending);
+
+        let before = st.lock().unwrap().requests.len();
+        let next = s.key("l");
+        assert_eq!(
+            st.lock().unwrap().requests.len(),
+            before + 1,
+            "英文補全時字母仍要送 core"
+        );
+        assert!(next.ok && next.handled, "engine 處理了續打");
+        assert_eq!(next.text(), "hell", "字母接得下去");
+        assert_eq!(next.suggestion, "lo", "補全仍可續用");
+    }
+
+    /// core 回 handled=false 時外殼要放行，而不是先吃掉按鍵。
+    #[test]
+    fn english_key_without_core_handling_is_released() {
+        let (mut s, st) = toy_session();
+        st.lock().unwrap().start_english = true;
+        assert!(s.learn_mode(false) && s.english());
+        let snap = s.key("Left");
+        assert!(
+            snap.ok && !snap.handled,
+            "core 沒處理時按鍵要放行：{snap:?}"
+        );
+    }
+
+    /// 重開 session 不再送引擎不支援的 `mode`／`caps_lock` 還原請求。
+    #[test]
+    fn reopen_sends_no_mode_or_caps_lock_restore() {
+        let (mut s, st) = toy_session();
+        st.lock().unwrap().start_english = true;
+        st.lock().unwrap().info = json!({"caps_lock_english": "true"});
+        assert!(s.learn_mode(false) && s.english());
+        s.caps_lock(true);
+        s.key("t");
+        s.client.disconnect_for_test();
+        s.key("e");
+        let requests = st.lock().unwrap().requests.clone();
+        let hello = requests
+            .iter()
+            .rposition(|request| request["op"] == "hello")
+            .expect("重連要送 hello");
+        let after = &requests[hello + 1..];
+        assert!(
+            after
+                .iter()
+                .all(|request| !matches!(request["type"].as_str(), Some("mode" | "caps_lock"))),
+            "重連只重播按鍵，不送不支援的還原請求：{after:?}"
+        );
     }
 
     #[test]
@@ -3525,25 +3376,38 @@ mod tests {
         assert_eq!(request, json!({"op": "literal", "text": "A"}));
     }
 
+    /// 英文組字中的翻頁鍵由選單處理；沒有選單時不送 core，選單開著時才送。
     #[test]
-    fn english_composition_does_not_open_candidates_on_page_keys() {
+    fn english_composition_page_keys_follow_the_menu() {
         let (mut s, st) = toy_session();
         st.lock().unwrap().candidates = vec!["hello".into()];
-        let start = s.handle(json!({"type": "mode", "on": true}));
-        assert!(start.english);
+        st.lock().unwrap().start_english = true;
+        assert!(s.learn_mode(false) && s.english());
         for key in ["h", "e", "l"] {
             assert!(s.key(key).handled);
         }
         let before = st.lock().unwrap().requests.len();
         for key in ["Down", "Up", "PageDown", "PageUp"] {
-            let snap = s.key(key);
-            assert!(snap.candidates.is_empty(), "{key} 不得開候選");
-            assert!(!snap.navigating, "{key} 不得進入選取");
+            assert!(s.key(key).ok, "{key}");
         }
         assert_eq!(
-            before,
             st.lock().unwrap().requests.len(),
-            "英文組字中的翻頁鍵不送引擎"
+            before,
+            "沒有選單時英文組字不送翻頁鍵"
+        );
+
+        s.english_state.menu = Some(MenuState {
+            kind: "symbols".into(),
+            title: String::new(),
+            tabs: vec![],
+            tab: 0,
+        });
+        let before = st.lock().unwrap().requests.len();
+        assert!(s.key("Down").ok);
+        assert_eq!(
+            st.lock().unwrap().requests.len(),
+            before + 1,
+            "選單開著時翻頁鍵要送 core 換分頁"
         );
     }
 
@@ -3637,8 +3501,8 @@ mod tests {
         s.client.disconnect_for_test();
         let snap = s.key("j");
         assert!(
-            !snap.english && snap.handled && snap.text() == "ㄨ",
-            "重開 session 後仍是這個程式切過的注音"
+            !snap.english && snap.handled,
+            "重開 session 後仍是這個程式切過的注音模式"
         );
         s.key("Escape");
         s.reset();
@@ -3760,7 +3624,7 @@ mod tests {
         for k in ["s", "u", "3"] {
             s.key(k);
         }
-        s.handle(json!({"type": "toggle"}));
+        s.toggle();
         s.key("a");
         s.client.disconnect_for_test();
         let snap = s.key("b");
@@ -3772,9 +3636,8 @@ mod tests {
         assert!(snap.english);
         s.reset();
         assert!(s.log.is_empty());
-        let snap = s.handle(json!({"type": "mode", "on": false}));
-        assert!(snap.text().is_empty());
-        assert!(!snap.english);
+        let snap = s.toggle();
+        assert!(!snap.english, "切回中文只改外殼模式");
     }
 
     /// 打英文單字不該把整個輸入法切成英文模式。

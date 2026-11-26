@@ -165,6 +165,12 @@ fn build_shell_caps(
         toggle_key == "both" || toggle_key == "right",
     );
     caps.insert("has_bigram".to_string(), has_bigram);
+    // 日文能力：資料包一律含日文解碼器。外殼據此送 F6–F10／Convert，
+    // 不必先有 legacy 的 `japanese` 輸入模式。
+    caps.insert("japanese".to_string(), true);
+    caps.insert("convert_keys".to_string(), true);
+    caps.insert("clause_display".to_string(), true);
+    caps.insert("live_conversion".to_string(), true);
     if has_zhconv {
         caps.insert("output_simplified_live".to_string(), true);
     }
@@ -741,6 +747,10 @@ mod tests {
         assert_eq!(with.get("right_shift"), Some(&false));
         assert_eq!(with.get("has_bigram"), Some(&true));
         assert_eq!(with.get("output_simplified_live"), Some(&true));
+        // 日文能力只由 capability 宣告；外殼不再需要 legacy `japanese` 模式。
+        assert_eq!(with.get("japanese"), Some(&true));
+        assert_eq!(with.get("convert_keys"), Some(&true));
+        assert_eq!(with.get("clause_display"), Some(&true));
     }
 
     #[test]

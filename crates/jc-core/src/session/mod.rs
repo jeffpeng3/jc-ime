@@ -2723,6 +2723,57 @@ mod tests {
         assert_eq!(s.snapshot().preedit, before, "切回中文後日文片段仍在");
     }
 
+    /// 日文 lane 收到數字：結束推斷，把數字交回混打，不當成注音聲調。
+    #[test]
+    fn test_digit_in_japanese_run_returns_to_mixed() {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.ja = Some(Arc::new(JaDecoder::new(Arc::new(LiveTestSource(
+            Vec::new(),
+        )))));
+        let mut s = Session::new(config);
+        type_ja(&mut s, "watashi");
+        assert!(s.ja_run, "先建立日文推斷");
+        let snap = s.press(Key::char('1', false));
+        assert!(!s.ja_run, "數字要結束日文推斷");
+        assert!(
+            snap.preedit.ends_with('1'),
+            "數字留在字面：{}",
+            snap.preedit
+        );
+        assert!(
+            !snap.preedit.contains('ˇ'),
+            "日文 lane 的數字不能變成聲調：{}",
+            snap.preedit
+        );
+    }
+
+    /// NonConvert 拆回讀音；Convert 交給核心開候選，不再被外殼擋掉。
+    #[test]
+    fn test_convert_keys_reach_the_japanese_run() {
+        let source = LiveTestSource(vec![
+            ja_entry("東京", "とうきょう", 1_000),
+            ja_entry("に", "に", 500),
+        ]);
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_only = true;
+        let mut s = Session::new(config);
+        type_ja(&mut s, "toukyou");
+        assert_eq!(s.snapshot().preedit, "東京");
+        let converted = s.press(Key::new(KeyCode::Convert, None, false));
+        assert!(
+            converted.composing(),
+            "Convert 要由核心處理並保留組字：{}",
+            converted.preedit
+        );
+        let plain = s.press(Key::new(KeyCode::NonConvert, None, false));
+        assert!(
+            plain.preedit.contains("とうきょう"),
+            "NonConvert 要拆回讀音：{}",
+            plain.preedit
+        );
+    }
+
     /// 引擎一律停在 Mixed，沒有「切換來源」可以回到其他模式。
     #[test]
     fn test_toggle_english_without_previous_mode_uses_mixed() {

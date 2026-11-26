@@ -298,13 +298,9 @@ pub fn hotkey_matches(
 }
 
 /// 組字中（沒有修飾鍵）TestKeyDown 是否要吃，必須和 OnKeyDown 送核心後的結果一致，否則 WPF 會讓按鍵消失。
-/// 轉得成協定按鍵的鍵核心在組字中都處理，只有英文模式的 ↓ 照舊交給宿主（核心回未處理）。
-pub fn composing_wants(english: bool, protocol: Option<&str>) -> bool {
-    match protocol {
-        None => false,
-        Some("Down") => !english,
-        Some(_) => true,
-    }
+/// 轉得成協定按鍵的鍵核心在組字中都處理；個別鍵的 handled 由核心回報。
+pub fn composing_wants(protocol: Option<&str>) -> bool {
+    protocol.is_some()
 }
 
 /// 協定的 Key；不該交給輸入法的按鍵回傳 None。數字鍵盤送 "KP" 加上產生的字元，核心不當注音鍵（#75）。
@@ -1104,14 +1100,12 @@ mod tests {
         // 組字中新鍵名一律交給核心（核心在組字中都回 handled），TestKeyDown 與 OnKeyDown 一致，
         // 而且答案和原本的鍵相同：開關切換不會改變哪些鍵被吃。
         for name in ["ShiftLeft", "ShiftRight", "ShiftDelete", "ShiftBackspace"] {
-            for english in [false, true] {
-                assert!(composing_wants(english, Some(name)), "{name}");
-                assert_eq!(
-                    composing_wants(english, Some(name)),
-                    composing_wants(english, vocab_base(name)),
-                    "{name}"
-                );
-            }
+            assert!(composing_wants(Some(name)), "{name}");
+            assert_eq!(
+                composing_wants(Some(name)),
+                composing_wants(vocab_base(name)),
+                "{name}"
+            );
         }
         // Ctrl＋Shift＋← 這類組合鍵：to_key 回 None，組字中先送出組字再交給宿主（不送新鍵名）。
         assert!(commits_before_host(VK_LEFT.0 as u32, true, None));
@@ -1123,7 +1117,7 @@ mod tests {
         for vk in [0x74u32, 0x2d] {
             // VK_F5、VK_INSERT
             assert!(commits_before_host(vk, false, None), "{vk:#x}");
-            assert!(!composing_wants(false, None));
+            assert!(!composing_wants(None));
         }
         // Ctrl+Enter、Ctrl+V：組合鍵先送出組字。
         assert!(commits_before_host(VK_RETURN.0 as u32, true, None));
@@ -1142,17 +1136,14 @@ mod tests {
         for vk in [0x90u32, 0x91, 0x15, 0x19, 0x1c, 0xe5] {
             assert!(!commits_before_host(vk, false, None), "{vk:#x}");
         }
-        // 轉得成協定按鍵的鍵由核心處理；只有英文模式的 ↓ 照舊交給宿主。
+        // 轉得成協定按鍵的鍵由核心處理，外殼不先送出組字。
         assert!(!commits_before_host(VK_HOME.0 as u32, false, Some("Home")));
         for key in [
             "Home", "End", "Up", "PageUp", "PageDown", "Tab", "BackTab", "a", "KP1",
         ] {
-            assert!(
-                composing_wants(false, Some(key)) && composing_wants(true, Some(key)),
-                "{key}"
-            );
+            assert!(composing_wants(Some(key)), "{key}");
         }
-        assert!(composing_wants(false, Some("Down")) && !composing_wants(true, Some("Down")));
+        assert!(composing_wants(Some("Down")));
     }
 
     #[test]
@@ -1504,8 +1495,8 @@ pub fn layout_dependent(key: &str) -> bool {
 ///   `"ShiftLeft"`／`"ShiftRight"`／`"ShiftDelete"`／`"ShiftBackspace"` →
 ///   對應具名鍵且 `shift=true`。這四個是 #123 的新鍵名，送給舊引擎前用
 ///   [`vocab_base`] 降回原本鍵名。
-/// - `"F6"`…`"F24"` → `KeyCode::F(n)`；`"Convert"`／`"NonConvert"` 在 jc
-///   沒有對應鍵碼，回 `None`（由 adapter 依引擎回報決定替代作法）。
+/// - `"F6"`…`"F24"` → `KeyCode::F(n)`；`"Convert"`／`"NonConvert"` →
+///   `KeyCode::Convert`／`KeyCode::NonConvert`（由核心套用到日文片段）。
 /// - `"Ctrl+,"` 等 → `KeyCode::Char(',')` 且 `ctrl=true`。
 ///
 /// 回 `None` 也代表 0c 不把這個鍵當成字串鍵送出：單按 `"Shift"` 是修飾鍵，
@@ -1538,6 +1529,8 @@ pub fn from_protocol(key: &str) -> Option<Key> {
         "Escape" => KeyCode::Escape,
         "Backspace" => KeyCode::Backspace,
         "Delete" => KeyCode::Delete,
+        "Convert" => KeyCode::Convert,
+        "NonConvert" => KeyCode::NonConvert,
         "Tab" => KeyCode::Tab,
         "Left" => KeyCode::ArrowLeft,
         "Right" => KeyCode::ArrowRight,
@@ -1586,6 +1579,8 @@ pub fn to_protocol(key: &Key) -> Option<String> {
         KeyCode::Backspace => "Backspace",
         KeyCode::Delete if key.shift => "ShiftDelete",
         KeyCode::Delete => "Delete",
+        KeyCode::Convert => "Convert",
+        KeyCode::NonConvert => "NonConvert",
         KeyCode::Tab | KeyCode::ShiftTab => "BackTab",
         KeyCode::ArrowLeft if key.shift => "ShiftLeft",
         KeyCode::ArrowRight if key.shift => "ShiftRight",
@@ -1636,7 +1631,14 @@ mod protocol_key_tests {
             Some(Key::new(KeyCode::F(6), None, false))
         );
         assert_eq!(from_protocol("Shift"), None);
-        assert_eq!(from_protocol("Convert"), None);
+        assert_eq!(
+            from_protocol("Convert").map(|key| key.code),
+            Some(KeyCode::Convert)
+        );
+        assert_eq!(
+            from_protocol("NonConvert").map(|key| key.code),
+            Some(KeyCode::NonConvert)
+        );
     }
 
     #[test]

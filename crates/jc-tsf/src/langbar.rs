@@ -96,16 +96,8 @@ fn lock(status: &Mutex<Option<bool>>) -> MutexGuard<'_, Option<bool>> {
     status.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// 輸入指示器的字：`英`／`简`／`中`，日文照輸入方式顯示。
-pub fn indicator_text(
-    english: bool,
-    simplified: bool,
-    japanese: bool,
-    input_method: &str,
-) -> &'static str {
-    if japanese {
-        return japanese_symbol(input_method);
-    }
+/// 輸入指示器的字：`英`／`简`／`中`。日文片段不改變外殼模式。
+pub fn indicator_text(english: bool, simplified: bool) -> &'static str {
     match (english, simplified) {
         (true, _) => "英",
         (false, true) => "简",
@@ -113,41 +105,14 @@ pub fn indicator_text(
     }
 }
 
-fn japanese_symbol(input_method: &str) -> &'static str {
-    match input_method {
-        "kana" | "katakana" => "カ",
-        "half_width_kana" | "halfwidth_kana" => "ｶ",
-        "full_width_latin" | "fullwidth_latin" => "Ａ",
-        "half_width_latin" | "halfwidth_latin" => "A",
-        _ => "あ",
-    }
-}
-
-fn japanese_method(input_method: &str) -> &'static str {
-    match input_method {
-        "kana" | "katakana" => "かな入力",
-        "half_width_kana" | "halfwidth_kana" => "半角カナ入力",
-        "full_width_latin" | "fullwidth_latin" => "全角英数入力",
-        "half_width_latin" | "halfwidth_latin" => "半角英数入力",
-        _ => "ローマ字入力",
-    }
-}
-
 /// 滑鼠停在輸入指示器上的說明。
-pub fn tooltip_text(english: bool, simplified: bool, japanese: bool, input_method: &str) -> String {
-    let (name, mode) = if japanese {
-        ("jc 注音 Mixed", japanese_method(input_method).to_string())
-    } else {
-        (
-            "jc 注音 Mixed",
-            match (english, simplified) {
-                (true, _) => "英文".to_string(),
-                (false, true) => "中・簡體輸出".to_string(),
-                (false, false) => "中文".to_string(),
-            },
-        )
+pub fn tooltip_text(english: bool, simplified: bool) -> String {
+    let mode = match (english, simplified) {
+        (true, _) => "英文",
+        (false, true) => "中・簡體輸出",
+        (false, false) => "中文",
     };
-    format!("{name}（{mode}）")
+    format!("jc 注音 Mixed（{mode}）")
 }
 
 fn dword(path: PCWSTR, name: PCWSTR) -> Option<u32> {
@@ -306,8 +271,6 @@ fn spawn(path: &std::path::Path) {
 pub struct LangBarButton {
     english: Cell<bool>,
     simplified: Cell<Option<bool>>,
-    japanese: Cell<bool>,
-    input_method: RefCell<String>,
     status: Arc<Mutex<Option<bool>>>,
     sink: RefCell<Option<ITfLangBarItemSink>>,
     /// 最近一次交給系統的選單項目：選取時依它找 id，不被背景狀態更新位移。
@@ -323,8 +286,6 @@ impl LangBarButton {
     pub fn create(
         english: bool,
         simplified: Option<bool>,
-        japanese: bool,
-        input_method: String,
         toggle: Box<dyn Fn()>,
         simplify: Box<dyn Fn(bool) -> bool>,
         recheck: Box<dyn Fn()>,
@@ -333,8 +294,6 @@ impl LangBarButton {
         LangBarButton {
             english: Cell::new(english),
             simplified: Cell::new(simplified),
-            japanese: Cell::new(japanese),
-            input_method: RefCell::new(input_method),
             status: Arc::new(Mutex::new(simplified)),
             sink: RefCell::new(None),
             shown: RefCell::new(Vec::new()),
@@ -353,28 +312,13 @@ impl Drop for LangBarButton {
 }
 
 /// 中英／日文狀態或「輸出簡體字」改變時更新圖示與文字（「中」／「简」／「英」／「あ」／「カ」）。
-pub fn set_state(
-    button: &ITfLangBarItemButton,
-    english: bool,
-    simplified: Option<bool>,
-    japanese: bool,
-    input_method: &str,
-) {
+pub fn set_state(button: &ITfLangBarItemButton, english: bool, simplified: Option<bool>) {
     let this = unsafe { button.as_impl() };
-    let before = (
-        this.english.get(),
-        this.simplified.get(),
-        this.japanese.get(),
-        this.input_method.borrow().clone(),
-    );
+    let before = (this.english.get(), this.simplified.get());
     this.english.set(english);
     this.simplified.set(simplified);
-    this.japanese.set(japanese);
-    if let Ok(mut method) = this.input_method.try_borrow_mut() {
-        *method = input_method.to_string();
-    }
     *lock(&this.status) = simplified;
-    if before != (english, simplified, japanese, input_method.to_string()) {
+    if before != (english, simplified) {
         // 先取出再通知：OnUpdate 期間宿主可能回頭呼叫 AdviseSink／UnadviseSink。
         let sink = this.sink.try_borrow().ok().and_then(|s| s.clone());
         if let Some(sink) = sink {
@@ -514,8 +458,6 @@ impl ITfLangBarItem_Impl for LangBarButton_Impl {
             Ok(BSTR::from(tooltip_text(
                 self.english.get(),
                 self.simplified.get().unwrap_or(false),
-                self.japanese.get(),
-                &self.input_method.borrow(),
             )))
         })
     }
@@ -574,8 +516,6 @@ impl ITfLangBarItemButton_Impl for LangBarButton_Impl {
             text_icon(indicator_text(
                 self.english.get(),
                 self.simplified.get().unwrap_or(false),
-                self.japanese.get(),
-                &self.input_method.borrow(),
             ))
             .ok_or_else(|| windows_core::Error::from(windows::Win32::Foundation::E_FAIL))
         })
@@ -585,8 +525,6 @@ impl ITfLangBarItemButton_Impl for LangBarButton_Impl {
             Ok(BSTR::from(indicator_text(
                 self.english.get(),
                 self.simplified.get().unwrap_or(false),
-                self.japanese.get(),
-                &self.input_method.borrow(),
             )))
         })
     }

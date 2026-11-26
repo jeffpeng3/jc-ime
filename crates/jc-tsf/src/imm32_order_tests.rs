@@ -525,15 +525,8 @@ fn open(_pipe: &str, static_flags: u32) -> Host {
     doc.static_flags.set(static_flags);
     let service = ComObject::new(TextService::new());
     service.state.borrow_mut().session = super::support::session();
-    let english = service
-        .state
-        .borrow_mut()
-        .session
-        .handle(json!({"type": "mode", "on": true}));
-    assert!(
-        english.ok && english.english_can_start,
-        "測試引擎要開著英文自動補字"
-    );
+    let english = service.state.borrow_mut().session.toggle();
+    assert!(english.ok && english.english, "測試引擎要開著英文自動補字");
     new_host(service, doc, ctx, static_flags)
 }
 
