@@ -27,7 +27,11 @@ nextest_log, cargo_log, nextest_status, cargo_status = sys.argv[1:5]
 nextest_status = int(nextest_status)
 cargo_status = int(cargo_status)
 
-nextest_text = open(nextest_log, encoding="utf-8", errors="replace").read()
+# CI 設了 CARGO_TERM_COLOR=always，nextest 的 Summary 與 cargo test 的
+# `test result:` 都帶 ANSI 色碼；不先清掉，下面的 regex 會全部對不到。
+ansi = re.compile(r"\x1b\[[0-9;]*m")
+
+nextest_text = ansi.sub("", open(nextest_log, encoding="utf-8", errors="replace").read())
 summary = re.search(
     r"Summary \[[^\]]*\] (\d+) tests run: (\d+) passed(?: \([^)]*\))?"
     r"(?:, (\d+) failed)?, (\d+) skipped",
@@ -47,7 +51,9 @@ in_doctest = False
 result_re = re.compile(
     r"test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored"
 )
-for line in open(cargo_log, encoding="utf-8", errors="replace"):
+for line in ansi.sub(
+    "", open(cargo_log, encoding="utf-8", errors="replace").read()
+).splitlines():
     stripped = line.strip()
     if stripped.startswith("Doc-tests "):
         in_doctest = True
