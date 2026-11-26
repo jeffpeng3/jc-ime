@@ -84,6 +84,38 @@
 英文補全候選和其他來源走同一條路徑；`jc-tsf` 的英文按鍵政策在候選窗開著時
 不再攔 `Enter`。
 
+## 固定候選順序
+
+注音與日文候選都採同一條規則：
+
+```
+[0] 目前值（組字區顯示的字）
+[1] 原始輸入（注音按鍵、注音符號或原始羅馬字）
+[2..] 其餘依詞典／學習／rerank 排序
+```
+
+- 注音：`Session::zh_choice_candidates` 是共用入口，套用到 ↓ 開的單音節候選、
+  混打游標候選（含長 run 尾巴）與詞長調整的片段窗。多音節片段窗的第二項是
+  整段按鍵。
+- 日文：`open_ja_cursor_candidates` 與 `mixed_candidates_for` 的日文分支。
+  第二項固定是原始羅馬字（`su`、`watashi`）；轉成カナ之後仍留在清單裡，
+  選回它會退回羅馬字。
+- 選了原始輸入（`ji3`、`ㄨㄛˇ`、`su`）後，再開候選仍是完整清單；`Enter`
+  維持先套用、再送出。實作上會由冷凍字面還原讀音／讀音反查按鍵。
+
+### 字面候選的游標與 Backspace
+
+選了字面候選（原始按鍵或注音字面）後，游標停在整段起點，字面維持同一個
+可拆回的單位。因此：
+
+- 選 `ji3`：游標在起點，Backspace 沒有上一個單位可退，內容不變（與舊版
+  原始按鍵候選一致）。
+- 選 `ㄨㄛˇ`：舊版游標在尾端、Backspace 會刪掉聲調變成 `ㄨㄛ`；現在游標
+  在起點，Backspace 一樣不刪字。要修改字面請先把游標移到字面後面，或直接
+  重打。
+
+`test_backspace_after_choosing_reading_literal_is_noop` 鎖住這個預期。
+
 ## 程式位置
 
 | 檔案 | 內容 |
@@ -128,6 +160,11 @@
 - `test_page_down_after_forty`
 - `test_vertical_mode_left_right_is_noop`
 - `test_enter_still_two_stage_when_selecting_variant`（前導變體窗選了不同字時）
+- `test_first_candidate_is_current_display`／`test_second_candidate_is_raw_input`
+- `test_choosing_raw_input_keeps_full_candidate_list`
+- `test_digit_selects_raw_input_candidate`
+- `test_backspace_after_choosing_reading_literal_is_noop`
+- `test_ja_candidates_second_is_raw_romaji`／`test_ja_katakana_can_revert_to_romaji`
 
 `jc-tsf`：
 

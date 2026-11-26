@@ -1564,6 +1564,19 @@ mod tests {
         assert_eq!(s.commit(), candidates[1].surface);
     }
 
+    /// 原始輸入固定在第二項，數字鍵 `2` 要能直接選回原始按鍵。
+    #[test]
+    fn test_digit_selects_raw_input_candidate() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(s.candidates()[1].surface, "ji3", "第二項是原始輸入");
+        let snap = s.press(Key::char('2', false));
+        assert_eq!(snap.preedit, "ji3");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "ji3");
+    }
+
     /// 數字鍵與 `choose_candidate` 在一般路徑要得到完全相同的結果。
     #[test]
     fn test_choose_candidate_matches_digit_selection() {
@@ -1574,10 +1587,14 @@ mod tests {
         type_syllable(&mut chosen, "ㄐㄧㄥˇ");
         chosen.press(Key::new(KeyCode::Down, None, false));
 
-        let from_digit = digit.press(Key::char('3', false));
-        let from_choose = chosen.choose_candidate(2).expect("索引 2 應可選");
+        // 索引 1 是原始輸入候選。`choose_candidate` 回的是重建前的快照，
+        // 兩條路徑要再重建一次才能比較同一份清單。
+        let from_digit = digit.press(Key::char('2', false));
+        let from_choose = chosen.choose_candidate(1).expect("索引 1 應可選");
         assert_eq!(from_choose.preedit, from_digit.preedit);
-        assert_eq!(from_choose.candidates, from_digit.candidates);
+        digit.rebuild();
+        chosen.rebuild();
+        assert_eq!(digit.snapshot().candidates, chosen.snapshot().candidates);
         assert_eq!(chosen.commit(), digit.commit());
     }
 
@@ -1753,9 +1770,7 @@ mod tests {
         assert_eq!(s.candidates()[0].surface, "我");
         // 開候選窗，移到「窩」，用 Enter 送出手選。
         s.press(Key::new(KeyCode::Down, None, false));
-        while s.highlighted_text() != Some("窩") {
-            s.press(Key::new(KeyCode::Down, None, false));
-        }
+        highlight_surface(&mut s, "窩");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "窩");
         // 同一讀音再打一次：手選過的字排第一。
@@ -1774,9 +1789,7 @@ mod tests {
         let mut s = Session::new(config);
         type_syllable(&mut s, "ㄨㄛˇ");
         s.press(Key::new(KeyCode::Down, None, false));
-        while s.highlighted_text() != Some("窩") {
-            s.press(Key::new(KeyCode::Down, None, false));
-        }
+        highlight_surface(&mut s, "窩");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "窩");
         type_syllable(&mut s, "ㄨㄛˇ");
@@ -3705,10 +3718,22 @@ mod tests {
     }
 
     /// 候選窗已開時，按 ↓ 把反白移到指定字面。
-    fn ja_highlight(session: &mut Session, surface: &str) {
-        while session.highlighted_text() != Some(surface) {
+    ///
+    /// 候選順序改變或有候選消失時，固定次數內找不到就直接失敗，不能讓
+    /// 測試無限迴圈到 CI timeout。
+    fn highlight_surface(session: &mut Session, surface: &str) {
+        for _ in 0..30 {
+            if session.highlighted_text() == Some(surface) {
+                return;
+            }
             session.press(Key::new(KeyCode::Down, None, false));
         }
+        let list: Vec<&str> = session
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        panic!("候選 {surface} 找不到：{list:?}");
     }
 
     /// 按 ↓ 開日文候選，並選取指定字面。
@@ -3813,7 +3838,7 @@ mod tests {
             .any(|candidate| candidate.surface == "キョウ"));
 
         // 再按 ↓ 移到「きょう」。
-        ja_highlight(&mut s, "きょう");
+        highlight_surface(&mut s, "きょう");
         let picked = s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(picked.preedit, "きょう", "選字只換游標所在片段");
         let right = s.press(Key::new(KeyCode::ArrowRight, None, false));
@@ -3843,7 +3868,7 @@ mod tests {
         s.ja_live_flush();
         s.press(Key::new(KeyCode::ArrowLeft, None, false));
         s.press(Key::new(KeyCode::Down, None, false));
-        ja_highlight(&mut s, "きょう");
+        highlight_surface(&mut s, "きょう");
 
         let picked = s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(picked.preedit, "きょう", "日文 Enter 只換片段");
@@ -3864,7 +3889,7 @@ mod tests {
         Session::new(config)
     }
 
-    /// 手選第二候選後，同讀音的首選會改變；undo 回到原狀。
+    /// 手選「京」後，同讀音的首選會改變；undo 回到原狀。
     #[test]
     fn test_ja_learning_ranks_manual_choice_first_and_undo_restores() {
         use crate::personal::LanguageId;
@@ -3876,7 +3901,7 @@ mod tests {
         assert_eq!(s.candidates()[0].surface, "今日");
         // 第一次 ↓ 開候選窗，再移到「京」。
         s.press(Key::new(KeyCode::Down, None, false));
-        ja_highlight(&mut s, "京");
+        highlight_surface(&mut s, "京");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "京");
         assert_eq!(
@@ -3897,14 +3922,14 @@ mod tests {
         assert_eq!(s.candidates()[0].surface, "今日");
     }
 
-    /// 學習關閉時，手選第二候選不會改變下一次的首選。
+    /// 學習關閉時，手選「京」不會改變下一次的首選。
     #[test]
     fn test_ja_learning_disabled_keeps_statistical_order() {
         let mut s = ja_learning_session(false);
         type_ja(&mut s, "kyou");
         s.ja_live_idle();
         s.press(Key::new(KeyCode::Down, None, false));
-        ja_highlight(&mut s, "京");
+        highlight_surface(&mut s, "京");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "京");
         type_ja(&mut s, "kyou");

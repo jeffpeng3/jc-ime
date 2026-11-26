@@ -3215,7 +3215,7 @@ fn is_zhuyin_reading(raw: &str) -> bool {
 /// 已經是按鍵或英數字面時原樣保留；注音字面（`ㄨㄛˇ`）或かな則由讀音
 /// 反查按鍵。多音節讀音會串成整段按鍵。
 fn zh_raw_keys(reading: &str, raw: &str) -> String {
-    if raw.is_empty() || raw.chars().all(|ch| ch.is_ascii()) {
+    if raw.is_empty() || raw.is_ascii() {
         return raw.to_string();
     }
     let mut keys = String::new();
@@ -4836,6 +4836,25 @@ mod tests {
         assert_eq!(applied.preedit, "ㄨㄛˇ", "第一次 Enter 只套用");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "ㄨㄛˇ", "第二次 Enter 才送出");
+    }
+
+    /// 選注音字面後游標停在整段起點，Backspace 目前不刪字。
+    ///
+    /// 這是為了讓 `ㄨㄛˇ` 保持同一個可拆回的單位：游標在起點時 Backspace
+    /// 沒有上一個單位可退，維持原字面；要修改請先把游標移到字面後面。
+    #[test]
+    fn test_backspace_after_choosing_reading_literal_is_noop() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3");
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = choose_surface(&mut s, "ㄨㄛˇ");
+        assert_eq!(snap.preedit, "ㄨㄛˇ");
+        assert_eq!(snap.cursor_rune, 0, "字面候選游標留在起點");
+
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "ㄨㄛˇ", "起點的 Backspace 不刪字");
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "ㄨㄛˇ", "再按一次也不刪字");
     }
 
     /// 多音節時，第二項是游標所在音節的按鍵。
