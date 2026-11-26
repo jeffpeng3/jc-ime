@@ -159,7 +159,7 @@ impl Session {
         self.ascii.seed_literal(&text);
         let end = self.ascii.typed().len();
         if start < end {
-            self.literal_spans.push((start, end));
+            self.literal_spans.push(LiteralSpan::new(start, end));
         }
         self.literal_anchor = 0;
         self.literal_offset = 0;
@@ -302,7 +302,7 @@ impl Session {
         if self.zh_lane && self.zh_space_closed {
             self.zh_space_closed = false;
             if let Some(span) = self.flush_zh_lane_for_mixed() {
-                self.literal_spans.push(span);
+                self.literal_spans.push(LiteralSpan::new(span.0, span.1));
                 self.rebuild();
             }
         }
@@ -597,7 +597,8 @@ impl Session {
         if !pending.is_empty() {
             let end = pending_start + pending.len();
             if end <= self.ascii.typed().len() {
-                self.literal_spans.push((pending_start, end));
+                self.literal_spans
+                    .push(LiteralSpan::new(pending_start, end));
             }
         }
         self.mixed_cursor = Self::MIXED_CURSOR_END;

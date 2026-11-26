@@ -252,7 +252,7 @@ impl Session {
         if literal_space {
             let end = self.ascii.typed().len();
             if start < end {
-                self.literal_spans.push((start, end));
+                self.literal_spans.push(LiteralSpan::new(start, end));
             }
         }
     }

@@ -126,7 +126,7 @@ impl CandidateLayout {
     /// 由目前索引往右跳一欄（十項），停在同一個列號。
     ///
     /// 直向單欄時不移動。四欄時在本頁最後一欄再往右，會接到下一頁的第
-    /// 一欄；最後一頁最後一欄則停住。
+    /// 一欄；下一頁不滿時夾到該頁最後一項。最後一頁最後一欄則停住。
     pub fn right(self, index: usize, count: usize) -> usize {
         self.jump_column(index, count, 1)
     }
@@ -301,13 +301,40 @@ mod tests {
         assert_eq!(layout.right(44, 45), 44);
     }
 
+    /// 最後一頁不滿時，跨頁 `→` 夾到該頁最後一項；`←` 回到上一頁最後一欄。
+    #[test]
+    fn test_partial_last_page_clamps_to_last_item() {
+        let layout = CandidateLayout::new(DEFAULT_ROWS, EXPANDED_COLUMNS);
+        // 45 項：第二頁只有 40..44（第 1 欄列 0..4）。
+        // 列 0..4 的目標列存在，保持同一列。
+        assert_eq!(layout.right(30, 45), 40);
+        assert_eq!(layout.right(34, 45), 44);
+        // 列 5..9 在第二頁不存在，全部夾到最後一項 44。
+        for index in [35, 36, 37, 38, 39] {
+            assert_eq!(layout.right(index, 45), 44, "index {index} 夾到最後一項");
+        }
+        // 反向：第 1 欄列 4 回到上一頁第 4 欄列 4。
+        assert_eq!(layout.left(44, 45), 34);
+        assert_eq!(layout.left(40, 45), 30);
+        // 夾到最後一項不是「同一列」，不宣稱左右一定對稱。
+        assert_ne!(layout.left(44, 45), 39);
+    }
+
     #[test]
     fn test_left_right_page_wrap_is_symmetric() {
         let layout = CandidateLayout::new(DEFAULT_ROWS, EXPANDED_COLUMNS);
+        // 完整頁（120 項）每一列都存在，左右必然對稱。
         for index in [0, 3, 9, 33, 39, 43, 49, 70, 79, 89, 119] {
             let right = layout.right(index, 120);
             if right != index {
                 assert_eq!(layout.left(right, 120), index, "index {index} 左右對稱");
+            }
+        }
+        // 部分頁只對「目標列存在」的索引斷言對稱（right = index + rows）。
+        for index in 0..45 {
+            let right = layout.right(index, 45);
+            if right == index + layout.rows() {
+                assert_eq!(layout.left(right, 45), index, "index {index} 同列對稱");
             }
         }
     }

@@ -40,7 +40,8 @@
   停在原地。`PageUp`／`PageDown` 仍可直接跳頁。
 - `←`／`→` 跳一整欄：索引 `-10`／`+10`。直向單欄時是 no-op。四欄時在本頁
   第一欄按 `←` 接到上一頁最後一欄、在本頁最後一欄按 `→` 接到下一頁第一欄，
-  都停在同一個列號；第一頁最左欄與最後一頁最右欄才停住。
+  都停在同一個列號。下一頁不滿一頁時，`→` 夾到該頁最後一項（列號可能因此
+  改變，不保證左右對稱）；第一頁最左欄與最後一頁最右欄才停住。
 - 一頁容量是「列數 × 欄數」：直向十項，橫向四十項。
 - 頁內索引的版面位置是 `(列, 欄) = (index % 10, index / 10)`。
 - 換頁只移動 `highlighted`，頁碼一律由 `highlighted / page_size` 推導。
@@ -114,9 +115,12 @@
   的行為）；再按一次才刪介音／韻母。
 - 游標在字面中間時按 `↓`：候選仍以整個字面重算，不會只取游標右側那一個
   符號。
+- 選かな分解（`じ3`、`す3`）後再開候選：字面 span 會記住原本的注音讀音，
+  清單還原成整個音節（`じ3`、`ji3`、`我`…），不會只剩聲調鍵。
 
 `test_backspace_after_choosing_reading_literal_deletes_tone` 鎖住這個預期；
-`test_down_inside_frozen_zh_literal_lists_whole_syllable` 鎖住整段候選。
+`test_down_inside_frozen_zh_literal_lists_whole_syllable` 鎖住整段候選；
+`test_select_original_keys_then_japanese_reading` 鎖住かな分解的還原。
 
 ## 程式位置
 
@@ -169,6 +173,7 @@
 - `test_digit_selects_raw_input_candidate`
 - `test_backspace_after_choosing_reading_literal_deletes_tone`
 - `test_backspace_after_choosing_raw_input_deletes_last_key`
+- `test_select_original_keys_then_japanese_reading`
 - `test_trailing_decomposition_duplicate_is_removed`
 - `test_right_at_last_column_moves_to_next_page_first_column`
 - `test_left_at_first_column_moves_to_previous_page_last_column`

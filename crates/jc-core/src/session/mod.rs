@@ -275,6 +275,45 @@ pub(super) struct EditWindow {
     pub(super) len: usize,
 }
 
+/// 使用者固定成字面的按鍵範圍（相對 `AsciiInput::typed`）。
+///
+/// `reading` 是這段字面原本的注音讀音。選了かな分解（`じ3`）後，按鍵流只剩
+/// かな，無法再用按鍵反推讀音；記下來，重開候選窗才能還原整個音節。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LiteralSpan {
+    /// 按鍵流起點（位元組）。
+    pub(super) start: usize,
+    /// 按鍵流終點（位元組，不含）。
+    pub(super) end: usize,
+    /// 原本的注音讀音；英文／符號等非注音字面為 `None`。
+    pub(super) reading: Option<String>,
+}
+
+impl LiteralSpan {
+    /// 不含讀音的字面範圍。
+    pub(super) fn new(start: usize, end: usize) -> Self {
+        Self {
+            start,
+            end,
+            reading: None,
+        }
+    }
+
+    /// 附上原本注音讀音的字面範圍。
+    pub(super) fn with_reading(start: usize, end: usize, reading: impl Into<String>) -> Self {
+        Self {
+            start,
+            end,
+            reading: Some(reading.into()),
+        }
+    }
+
+    /// 這個按鍵流範圍是否完整落在字面內。
+    pub(super) fn contains(&self, start: usize, end: usize) -> bool {
+        self.start <= start && end <= self.end
+    }
+}
+
 /// 候選窗目前鎖定的字元目標。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MixedTarget {
@@ -395,7 +434,7 @@ pub struct Session {
     /// 與 [`Session::candidates`] 平行的套用動作；`None` 表示走既有路徑。
     pub(super) mixed_choices: Vec<Option<CandidateAction>>,
     /// 使用者把某些原始按鍵固定成字面的範圍（相對 `AsciiInput::typed`）。
-    pub(super) literal_spans: Vec<(usize, usize)>,
+    pub(super) literal_spans: Vec<LiteralSpan>,
     /// 游標所在片段的編輯視窗；有值時候選清單只算這一段。
     pub(super) edit: Option<EditWindow>,
     /// 換字後是否保留候選窗，直到 Esc 或游標離開目前片段。

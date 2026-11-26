@@ -1215,26 +1215,43 @@ impl Session {
             if start < end && end <= typed.len() && typed.is_char_boundary(start) {
                 // 凍結的注音字面：游標在尾端時 Backspace 只刪最後一個符號，
                 // 回到 0.1.27 可刪聲調的行為；不要把整段字面一次刪掉。
-                let forced = self
+                let forced_span = self
                     .literal_spans
                     .iter()
-                    .any(|&(span_start, span_end)| span_start <= start && end <= span_end);
+                    .find(|literal| literal.contains(start, end))
+                    .cloned();
                 let at_literal_end = target.rune_start + target.rune_len == cursor;
-                if forced && target.reading.is_some() && at_literal_end && target.rune_len > 1 {
-                    let delete = typed[..end]
-                        .char_indices()
-                        .next_back()
-                        .map(|(at, _)| at)
-                        .unwrap_or(start)
-                        .max(start);
-                    let mut next = String::with_capacity(typed.len().saturating_sub(end - delete));
-                    next.push_str(&typed[..delete]);
-                    next.push_str(&typed[end..]);
-                    self.ascii.replay(&next, &self.lexicon);
-                    self.literal_spans.clear();
-                    let len = self.base_with_highlight().chars().count();
-                    self.mixed_cursor = (cursor - 1).min(len);
-                    return true;
+                if let Some(span) = forced_span {
+                    if target.reading.is_some() && at_literal_end && target.rune_len > 1 {
+                        let delete = typed[..end]
+                            .char_indices()
+                            .next_back()
+                            .map(|(at, _)| at)
+                            .unwrap_or(start)
+                            .max(start);
+                        let mut next =
+                            String::with_capacity(typed.len().saturating_sub(end - delete));
+                        next.push_str(&typed[..delete]);
+                        next.push_str(&typed[end..]);
+                        // 剩下的字面要保持「可拆回同一個音節」：讀音優先從剩下的
+                        // 字面重算；かな無法反推時，把原本讀音的聲調去掉。
+                        let remaining = next.get(start..delete).unwrap_or_default();
+                        let reading = zh_reading_from_literal(remaining)
+                            .or_else(|| span.reading.as_deref().map(strip_trailing_tone));
+                        self.ascii.replay(&next, &self.lexicon);
+                        self.literal_spans.clear();
+                        if start < delete {
+                            match reading {
+                                Some(reading) => self
+                                    .literal_spans
+                                    .push(LiteralSpan::with_reading(start, delete, reading)),
+                                None => self.literal_spans.push(LiteralSpan::new(start, delete)),
+                            }
+                        }
+                        let len = self.base_with_highlight().chars().count();
+                        self.mixed_cursor = (cursor - 1).min(len);
+                        return true;
+                    }
                 }
                 let mut next = String::with_capacity(typed.len().saturating_sub(end - start));
                 next.push_str(&typed[..start]);
@@ -1438,24 +1455,49 @@ impl Session {
             let inside = text[segment.start..byte].chars().count();
             // 固定成字面的原始按鍵整段都是一個可拆回的單位；其他片段從游標
             // 所在的那一個 rune 開始切，英文才停得進 `hel|lo`。
-            let forced = self
+            let forced_span = self
                 .literal_spans
                 .iter()
-                .any(|&(start, end)| start <= span.0 && span.1 <= end);
-            let reading = forced.then(|| zh_reading_from_literal(&raw)).flatten();
+                .find(|literal| literal.contains(span.0, span.1));
+            let forced = forced_span.is_some();
+            // 選了かな分解後按鍵只剩かな；直接用當時記下的注音讀音，才不用
+            // 猜かな對應哪一組羅馬字（`じ` 可能是 `ji` 也可能是 `zi`）。
+            let stored_reading = forced_span.and_then(|literal| literal.reading.clone());
+            let reading_for_whole = stored_reading
+                .clone()
+                .or_else(|| forced.then(|| zh_reading_from_literal(&raw)).flatten());
             // 凍結成注音的整段是一個可拆回的單位；游標停在中間時，候選
             // 仍要涵蓋整個字面，不能只取游標右側那一個 rune。英文等其他
             // 字面維持逐字元，`hel|lo` 才停得進單一字母。
-            let whole = forced && (inside == 0 || reading.is_some());
+            let whole = forced && (inside == 0 || reading_for_whole.is_some());
             if whole {
+                // 統一管線可能把 `じ3` 拆成多個片段；候選要用整個字面範圍，
+                // 不是游標所在的那一個片段。
+                let literal = forced_span.expect("whole 只在 forced_span 存在時成立");
+                let typed_start = literal.start;
+                let typed_end = literal.end;
+                let raw = typed
+                    .get(typed_start..typed_end)
+                    .unwrap_or(raw.as_str())
+                    .to_string();
+                let reading = stored_reading.or_else(|| zh_reading_from_literal(&raw));
+                let segment_start_rune = rune_start.saturating_sub(inside);
+                let prefix = typed
+                    .get(typed_start..span.0)
+                    .map(|text| text.chars().count())
+                    .unwrap_or(0);
+                let literal_runes = typed
+                    .get(typed_start..typed_end)
+                    .map(|text| text.chars().count())
+                    .unwrap_or(rune_len);
                 let (toneless, tone) = split_tone_key(&raw);
                 return Some(MixedTarget {
-                    typed: (span.0, span.1),
+                    typed: (typed_start, typed_end),
                     raw,
                     raw_toneless: toneless,
                     tone_key: tone,
-                    rune_start: rune_start.saturating_sub(inside),
-                    rune_len,
+                    rune_start: segment_start_rune.saturating_sub(prefix),
+                    rune_len: literal_runes,
                     syllable: None,
                     reading,
                     ja: false,
@@ -1989,7 +2031,7 @@ impl Session {
             self.mixed_target = None;
             self.mixed_choices.clear();
             self.candidate_expanded = false;
-            return self.materialize_zh_choice(index, action);
+            return self.materialize_zh_choice(index, action, target.reading.as_deref());
         }
         let typed = self.ascii.typed().to_string();
         let (start, end) = action.typed_span.unwrap_or(target.typed);
@@ -2017,11 +2059,16 @@ impl Session {
         self.ascii.replay(&next, &self.lexicon);
         self.literal_spans.clear();
         if insert_start > 0 && prefix_converted {
-            self.literal_spans.push((0, insert_start));
+            self.literal_spans.push(LiteralSpan::new(0, insert_start));
         }
         if action.force_literal {
             let span = (insert_start, next.len().saturating_sub(typed[end..].len()));
-            self.literal_spans.push(span);
+            match target.reading.as_deref() {
+                Some(reading) => self
+                    .literal_spans
+                    .push(LiteralSpan::with_reading(span.0, span.1, reading)),
+                None => self.literal_spans.push(LiteralSpan::new(span.0, span.1)),
+            }
         }
         self.mixed_target = None;
         self.mixed_choices.clear();
@@ -2121,7 +2168,12 @@ impl Session {
     }
 
     /// 把純注音組字的一個音節換成字面並退出注音路徑。
-    fn materialize_zh_choice(&mut self, index: usize, action: &CandidateAction) -> bool {
+    fn materialize_zh_choice(
+        &mut self,
+        index: usize,
+        action: &CandidateAction,
+        reading: Option<&str>,
+    ) -> bool {
         let keyboard = self.zh.keyboard();
         let mut keys = String::new();
         let mut span = (0usize, 0usize);
@@ -2173,7 +2225,12 @@ impl Session {
         self.ascii.replay(&keys, &self.lexicon);
         self.literal_spans.clear();
         if action.force_literal {
-            self.literal_spans.push(span);
+            match reading {
+                Some(reading) => self
+                    .literal_spans
+                    .push(LiteralSpan::with_reading(span.0, span.1, reading)),
+                None => self.literal_spans.push(LiteralSpan::new(span.0, span.1)),
+            }
         }
         self.mixed_cursor = Self::MIXED_CURSOR_END;
         self.rebuild();
@@ -2713,8 +2770,8 @@ impl Session {
         let spans: Vec<(usize, usize)> = self
             .literal_spans
             .iter()
-            .copied()
-            .filter(|(start, end)| start < end)
+            .filter(|literal| literal.start < literal.end)
+            .map(|literal| (literal.start, literal.end))
             .collect();
         if spans.is_empty() {
             return plans;
@@ -3140,7 +3197,10 @@ fn split_choices(
 /// 實機回報候選清單最後一項又出現一次 `[1]` 的拆解（原始輸入／注音字面）。
 /// 只處理最後一項，不動中間或前面的重複：那些由來源與 `split_choices` 的
 /// 規則決定，不能在這裡做全域去重。
-fn trim_duplicate_tail(candidates: &mut Vec<Candidate>, choices: &mut Vec<Option<CandidateAction>>) {
+fn trim_duplicate_tail(
+    candidates: &mut Vec<Candidate>,
+    choices: &mut Vec<Option<CandidateAction>>,
+) {
     let last = candidates.len().saturating_sub(1);
     if candidates.len() > 2 && candidates[last].surface == candidates[1].surface {
         candidates.pop();
@@ -3237,8 +3297,10 @@ fn push_decomposition(
                     CandidateAction {
                         insert: surface,
                         leftover: String::new(),
-                        force_literal: false,
-                        cursor: ChoiceCursor::AfterFirst,
+                        // かな分解也是凍結字面：選了之後按鍵流只剩かな，
+                        // 要靠 `literal_spans` 記下的讀音才拆得回原音節。
+                        force_literal: true,
+                        cursor: ChoiceCursor::AfterInsert,
                         syllable_edit: None,
                         ..CandidateAction::default()
                     },
@@ -3324,6 +3386,22 @@ fn split_tone_key(raw: &str) -> (String, Option<char>) {
     }
     let toneless: String = raw.chars().take(raw.chars().count() - 1).collect();
     (toneless, Some(last))
+}
+
+/// 去掉注音讀音結尾的聲調記號（一聲不標）。
+///
+/// 選了かな分解後又 Backspace 刪聲調時，剩下かな無法反推回注音，只能用
+/// 原本記下的讀音去掉最後一個聲調。
+fn strip_trailing_tone(reading: &str) -> String {
+    let mut chars = reading.chars();
+    let Some(last) = chars.next_back() else {
+        return String::new();
+    };
+    if class_of(last) == Class::Tone {
+        chars.as_str().to_string()
+    } else {
+        reading.to_string()
+    }
 }
 
 /// 一段注音按鍵裡每個音節的位元組範圍。
@@ -4807,7 +4885,18 @@ mod tests {
             .expect("じ3 候選");
         let snap = s.choose_candidate(index).expect("選日文解讀");
         assert_eq!(snap.preedit, "じ3");
-        assert_eq!(snap.cursor_rune, 1);
+        assert_eq!(snap.cursor_rune, 2, "かな分解也是字面，游標在尾端");
+
+        // かな分解選完後再開候選，仍要還原整個注音音節，不能只剩聲調鍵。
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        let surfaces: Vec<&str> = snap
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        for want in ["じ3", "ji3", "我"] {
+            assert!(surfaces.contains(&want), "{want} 不在 {surfaces:?}");
+        }
     }
 
     /// 依字面選候選；找不到時把整份清單印出來，方便修排序。
@@ -4992,7 +5081,13 @@ mod tests {
         assert_eq!(snap.cursor_rune, 3, "原始輸入游標在尾端");
 
         let snap = s.press(Key::new(KeyCode::Backspace, None, false));
-        assert_eq!(snap.preedit, "じ", "刪掉聲調鍵後只剩 ji，交給混打重新解讀");
+        assert_eq!(snap.preedit, "ji", "刪掉聲調鍵後保留剩下的字面");
+
+        // 剩下的 pa 仍是同一個注音字面，重開候選不能只剩自己。
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        let list = surfaces(&snap);
+        assert!(list.len() > 2, "刪聲調後重開只剩：{list:?}");
+        assert!(list.contains(&"ㄨㄛ"), "讀音候選不見了：{list:?}");
     }
 
     /// 尾端重複的拆解候選只移除最後一項，不做全域去重。
