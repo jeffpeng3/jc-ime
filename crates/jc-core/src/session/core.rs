@@ -973,59 +973,6 @@ impl Session {
         }
     }
 
-    pub(super) fn space(&mut self) {
-        // 注音路徑（純注音或 Mixed 的純注音組字）：未完成的注音先補完；
-        // 已完成音節時空白就是字面空格，不再開候選窗或選第一個。
-        if self.in_zh_lane() {
-            if !self.zh.pending().is_empty() {
-                self.complete_pending();
-                return;
-            }
-            self.candidate_window = false;
-            self.candidate_expanded = false;
-            self.navigating = false;
-            self.keep_candidates = false;
-            self.zh_window_last = false;
-            // 空白是字面空格：留在注音組字區，不開候選、不選字。
-            if self.syllables.is_empty() {
-                self.ascii.space(&self.lexicon);
-            } else {
-                self.zh_run_breaks.push(self.syllables.len());
-                self.push_literal(" ");
-                // 空白是字面字元，同時也是注音 lane 的邊界；等真的有下一個
-                // 字元時才把整段交回混打管線（見 `press_char`）。
-                self.zh_space_closed = true;
-            }
-            return;
-        }
-        if self.in_ja_lane() {
-            // 空白只插入字面空格；日文候選改由 ↓ 開啟。
-            self.candidate_window = false;
-            self.candidate_expanded = false;
-            self.navigating = false;
-            self.literal_tail.push(' ');
-            return;
-        }
-        // 其餘混打路徑：空白只插入空格。
-        self.candidate_window = false;
-        self.candidate_expanded = false;
-        self.navigating = false;
-        self.keep_candidates = false;
-        self.mixed_cursor = Self::MIXED_CURSOR_END;
-        // 待定按鍵是空的：這個空白是純字面，記進 `literal_spans`，重建時
-        // 才不會被 `visible_plans` 當成片段停頓吃掉（`ji3 ji3 ji3`）。
-        // 待定按鍵非空時空白可能被當成一聲／音節分隔，照原管線處理。
-        let literal_space = self.ascii.pending().is_empty();
-        let start = self.ascii.typed().len();
-        self.ascii.space(&self.lexicon);
-        if literal_space {
-            let end = self.ascii.typed().len();
-            if start < end {
-                self.literal_spans.push((start, end));
-            }
-        }
-    }
-
     /// Mixed 的純注音組字開候選窗時只列游標所在音節。
     ///
     /// 一般顯示與建議仍用整段解碼（聲調選填、詞組建議要靠前後文）；按下

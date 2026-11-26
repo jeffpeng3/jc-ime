@@ -20,6 +20,7 @@ mod command;
 mod composition;
 mod core;
 mod input_style;
+mod key_policy;
 pub mod misc;
 mod mixed;
 pub mod neural;
@@ -817,7 +818,7 @@ impl Session {
             if let Some(text) = Self::shift_literal_text(&key) {
                 return self.append_shift_literal(&text);
             }
-            if !self.segments_press(&key) {
+            if !self.key_preprocess(&key) {
                 match key.code {
                     KeyCode::Enter => self.finish_composition(),
                     KeyCode::Escape => self.escape(),
