@@ -11,7 +11,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub use frame::{DEFAULT_MAX_FRAME, HEADER_LEN};
+pub use jc_core::candidate;
 pub use jc_core::candidate::CandidateSource;
+pub use jc_core::candidate_layout;
 pub use jc_core::{Key, KeyCode, Lang, Mode, Snapshot};
 pub use message::{read_message, read_payload, write_message};
 
@@ -53,6 +55,16 @@ pub struct CandidateDetail {
     /// 只保存 POS id。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pos: Option<String>,
+    /// 候選的選字鍵標籤；所有來源都由核心填好。
+    ///
+    /// 舊引擎沒有這個欄位時，外殼依候選位置自行編號。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// 候選的顯示附註；所有來源都由核心填好。
+    ///
+    /// 舊引擎沒有這個欄位時，外殼退回 `reading`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// 組字片段，位移一律以 **rune**（Unicode scalar value）計算。
@@ -442,6 +454,16 @@ pub enum Response {
         /// 是否已進入明確的候選選取模式。
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         navigating: bool,
+        /// 候選窗一頁幾列；0 時省略。
+        ///
+        /// 舊引擎沒有這個欄位，外殼預設十列。
+        #[serde(default, skip_serializing_if = "is_zero")]
+        rows: usize,
+        /// 候選窗一列幾項；0 時省略。
+        ///
+        /// 舊引擎沒有這個欄位，外殼預設單欄。
+        #[serde(default, skip_serializing_if = "is_zero")]
+        columns: usize,
         /// 引擎是否真的處理了這次請求；`None` 表示由外殼依內容推斷。
         ///
         /// 目前只有候選 index 越界的 `select` 會明確設成 `false`，讓外殼
@@ -530,17 +552,22 @@ impl Response {
             suggestion,
             label,
             navigating,
+            rows,
+            columns,
             ..
         } = snapshot;
         let cursor = preedit.chars().count();
         let details = candidates
             .iter()
-            .map(|candidate| CandidateDetail {
+            .enumerate()
+            .map(|(index, candidate)| CandidateDetail {
                 reading: candidate.reading.clone(),
                 source: candidate.source,
                 cost: candidate.cost,
                 learned: candidate.source == CandidateSource::Personal,
                 pos: candidate.pos_name().map(str::to_string),
+                key: Some(jc_core::candidate::selection_key(index)),
+                note: Some(candidate.display_note().to_string()),
             })
             .collect();
         let segments = segments
@@ -565,6 +592,8 @@ impl Response {
             suggestion,
             label,
             navigating,
+            rows,
+            columns,
             preedit,
             handled,
         }
@@ -712,6 +741,8 @@ mod tests {
                 suggestion: None,
                 label: None,
                 navigating: false,
+                rows: 0,
+                columns: 0,
                 handled: None,
             }
         );
@@ -771,6 +802,16 @@ mod tests {
                     );
                     assert_eq!(detail.source, candidates[i].source, "details[{i}].source");
                     assert_eq!(detail.cost, candidates[i].cost, "details[{i}].cost");
+                    assert_eq!(
+                        detail.key.as_deref(),
+                        Some(jc_core::candidate::selection_key(i).as_str()),
+                        "details[{i}].key"
+                    );
+                    assert_eq!(
+                        detail.note.as_deref(),
+                        Some(candidates[i].reading.as_str()),
+                        "details[{i}].note"
+                    );
                 }
                 assert!(!details[0].learned, "lexicon 不是學習結果");
                 assert!(details[1].learned, "personal 就是學習結果");

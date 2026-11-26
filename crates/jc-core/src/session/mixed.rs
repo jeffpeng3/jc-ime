@@ -4883,4 +4883,54 @@ mod tests {
         assert_eq!(closed.cursor_rune, cursor);
         assert!(!closed.navigating);
     }
+
+    /// 英文補全候選窗的 Enter 只套用高亮項、關窗，組字要留著。
+    #[test]
+    fn test_enter_in_english_suggestion_keeps_composition() {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(cursor_lexicon()));
+        config.english_autocomplete = true;
+        let mut s = Session::new(config);
+        mixed_type(&mut s, "hellp");
+        let index = s
+            .candidates()
+            .iter()
+            .position(|candidate| candidate.surface == "hello")
+            .expect("hellp 要有 hello 補全");
+        // UI 直接指定高亮時沒有 mixed_choices 快取；Enter 仍要走同一條
+        // 套用路徑，不能把整段送出。
+        s.select(index);
+        assert!(s.candidate_window);
+
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(snap.preedit, "hello", "套用高亮候選");
+        assert!(!s.candidate_window, "Enter 後關窗");
+        assert!(s.pending_commit.is_none(), "第一次 Enter 不能送出整段");
+    }
+
+    /// 候選窗開著時第一次按左右鍵就展開成四欄。
+    #[test]
+    fn test_candidate_columns_four_after_arrow_right() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3");
+        let opened = s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(opened.columns, 1, "預設直向");
+        let expanded = s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(expanded.columns, 4, "→ 立刻改成四欄");
+        assert_eq!(expanded.rows, 10, "列數不變");
+    }
+
+    /// 切換欄數只改版面，高亮仍停在同一個候選。
+    #[test]
+    fn test_layout_switch_keeps_highlight_on_same_candidate() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3");
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.select(2);
+        let before = s.highlighted();
+        let switched = s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(switched.columns, 4);
+        assert_eq!(switched.highlighted, before, "高亮索引不能因重排跳走");
+        assert_eq!(s.highlighted(), before);
+    }
 }

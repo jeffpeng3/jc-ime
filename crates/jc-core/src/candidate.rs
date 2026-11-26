@@ -115,6 +115,27 @@ impl Candidate {
         let id = self.pos?;
         self.pos_table.as_ref()?.name(id)
     }
+
+    /// 候選在清單中的顯示附註。
+    ///
+    /// 所有來源都共用同一個欄位：詞典、個人、預測與字面候選都顯示讀音；
+    /// 沒有讀音時是空字串。外殼不需要再依語言決定要不要畫附註。
+    pub fn display_note(&self) -> &str {
+        &self.reading
+    }
+}
+
+/// 候選清單的選字鍵標籤。
+///
+/// 每頁固定十列，依位置循環 `1`–`9`、`0`；所有來源（中文、英文、日文、
+/// 字面與選單）都用同一條規則。
+pub fn selection_key(index: usize) -> String {
+    let position = index % 10;
+    if position == 9 {
+        "0".to_string()
+    } else {
+        (position + 1).to_string()
+    }
 }
 
 #[cfg(test)]
@@ -165,5 +186,18 @@ mod tests {
             .with_pos(9, PosTable::new(["名詞"]));
         assert_eq!(missing.pos, Some(9));
         assert_eq!(missing.pos_name(), None, "id 越界不 panic");
+    }
+
+    #[test]
+    fn test_english_candidates_have_number_keys() {
+        let hello = Candidate::new("hello", "hello", 1, CandidateSource::Lexicon);
+        let help = Candidate::new("help", "help", 2, CandidateSource::Lexicon);
+        assert_eq!(selection_key(0), "1");
+        assert_eq!(selection_key(1), "2");
+        assert_eq!(selection_key(8), "9");
+        assert_eq!(selection_key(9), "0");
+        assert_eq!(selection_key(10), "1", "第二頁從 1 重新開始");
+        assert_eq!(hello.display_note(), "hello");
+        assert_eq!(help.display_note(), "help");
     }
 }

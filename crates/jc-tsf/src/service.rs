@@ -45,6 +45,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows_core::{implement, ComObject, IUnknownImpl, Interface, Ref, BOOL, GUID};
 
 use crate::candidate;
+use crate::candidate_layout;
 use crate::caret;
 use crate::cuas::{Cuas, Win32Cuas};
 use crate::displayattr::{AttributeEnum, InputAttribute, KINDS};
@@ -830,17 +831,21 @@ impl TextService_Impl {
             )
         };
         let caret = placed.map(|(rect, _)| rect);
-        let message = UiMessage {
-            show: show && caret.is_some(),
-            x: caret.map(|rect| rect.left).unwrap_or(0),
-            y: caret.map(|rect| rect.top).unwrap_or(0),
-            w: caret.map(|rect| rect.right - rect.left).unwrap_or(0),
-            h: caret.map(|rect| rect.bottom - rect.top).unwrap_or(0),
-            candidates: snapshot
-                .candidates
-                .iter()
-                .enumerate()
-                .map(|(index, (id, text))| UiCandidate {
+        // 一頁最多十列；橫向四欄時一頁四十項。反白所在的頁就是顯示頁，
+        // 外殼不再自行猜欄數或列數。
+        let page = candidate_layout::page_bounds(
+            snapshot.candidates.len(),
+            snapshot.columns,
+            snapshot.rows,
+            snapshot.highlight,
+        );
+        let page_start = page.start;
+        let visible: Vec<UiCandidate> = snapshot.candidates[page.clone()]
+            .iter()
+            .enumerate()
+            .map(|(offset, (id, text))| {
+                let index = page_start + offset;
+                UiCandidate {
                     id: *id,
                     text: text.clone(),
                     note: snapshot
@@ -855,11 +860,21 @@ impl TextService_Impl {
                             .cloned()
                             .unwrap_or_default(),
                     ),
-                })
-                .collect(),
-            highlight: snapshot.highlight,
-            page: snapshot.page + 1,
-            pages: snapshot.pages,
+                }
+            })
+            .collect();
+        let page_size = (snapshot.rows * snapshot.columns).max(1);
+        let pages = snapshot.candidates.len().div_ceil(page_size);
+        let message = UiMessage {
+            show: show && caret.is_some(),
+            x: caret.map(|rect| rect.left).unwrap_or(0),
+            y: caret.map(|rect| rect.top).unwrap_or(0),
+            w: caret.map(|rect| rect.right - rect.left).unwrap_or(0),
+            h: caret.map(|rect| rect.bottom - rect.top).unwrap_or(0),
+            candidates: visible,
+            highlight: snapshot.highlight - page_start as i64,
+            page: (page_start / page_size + 1) as i64,
+            pages: pages as i64,
             columns: snapshot.columns,
             kind: snapshot.candidate_kind.clone(),
             title: snapshot.candidate_title(),
@@ -1523,6 +1538,12 @@ impl TextService_Impl {
                 }
             };
             let caps_lower = snap.caps_lock && self.state.borrow_mut().session.style_caps_lower();
+            // 候選窗開著時 Enter 屬於候選介面：交給一般按鍵路徑送引擎，
+            // 由核心套用高亮項、關窗、保留組字。英文補全政策不能先把
+            // Enter 吃掉或直接送出整段。
+            if snap.navigating && !snap.candidates.is_empty() {
+                return None;
+            }
             zlog!(
                 "english_key_policy vk={}({}) snap ok={} english_autocomplete={} full_width={} caps_lower={} english_pending={} composing={}",
                 vk,

@@ -40,6 +40,8 @@ fn frame_round_trip_keeps_empty_and_non_ascii_text() {
             suggestion: None,
             label: None,
             navigating: false,
+            rows: 0,
+            columns: 0,
             handled: None,
         },
         Response::State {
@@ -53,6 +55,8 @@ fn frame_round_trip_keeps_empty_and_non_ascii_text() {
                     cost: 18,
                     learned: false,
                     pos: None,
+                    key: None,
+                    note: None,
                 },
                 CandidateDetail {
                     reading: "ㄇㄚˊㄆㄛˊ".into(),
@@ -60,6 +64,8 @@ fn frame_round_trip_keeps_empty_and_non_ascii_text() {
                     cost: -2,
                     learned: true,
                     pos: None,
+                    key: None,
+                    note: None,
                 },
             ],
             segments: vec![
@@ -81,6 +87,8 @@ fn frame_round_trip_keeps_empty_and_non_ascii_text() {
             suggestion: Some("婆".into()),
             label: Some("common".into()),
             navigating: true,
+            rows: 0,
+            columns: 0,
             handled: None,
         },
     ] {
@@ -168,6 +176,8 @@ fn message_over_custom_limit_is_rejected() {
         suggestion: None,
         label: None,
         navigating: false,
+        rows: 0,
+        columns: 0,
         handled: None,
     };
     let err = write_message(&mut Vec::new(), &message, 32).expect_err("超過 32 bytes 應被拒絕");

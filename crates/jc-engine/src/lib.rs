@@ -1358,7 +1358,11 @@ mod tests {
     }
 
     fn state_of(preedit: &str) -> Response {
-        Response::state(Snapshot::from_preedit(preedit))
+        Response::state(Snapshot {
+            rows: jc_core::candidate_layout::DEFAULT_ROWS,
+            columns: jc_core::candidate_layout::VERTICAL_COLUMNS,
+            ..Snapshot::from_preedit(preedit)
+        })
     }
 
     #[test]

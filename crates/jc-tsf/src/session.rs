@@ -286,11 +286,13 @@ pub struct Snapshot {
     pub candidate_start: usize,
     /// jc 尚無對應的直接欄位；由 `segments` 範圍推導，沒有時 0。
     pub candidate_length: usize,
-    /// jc `details[i].reading` 權充附註；jc 沒有 0c 的模糊音提示。
+    /// 核心給的顯示附註；舊引擎由 `details[i].reading` 補。
     pub candidate_notes: Vec<String>,
-    /// jc 尚無對應；先給 `["1".."9"]`（第 10 項 0，英文模式空字串）。
+    /// 核心給的選字鍵標籤；舊引擎沒有時依位置補 `1`–`0`。
     pub candidate_keys: Vec<String>,
-    /// jc 尚無對應；0。
+    /// 候選窗一頁幾列；舊引擎沒有時預設十列。
+    pub rows: usize,
+    /// 候選窗一列幾項；舊引擎沒有時預設單欄。
     pub columns: usize,
     /// jc 尚無對應；空字串。
     pub candidate_kind: String,
@@ -451,6 +453,8 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
         cursor_rune,
         suggestion,
         navigating,
+        rows,
+        columns,
         handled,
         ..
     } = response
@@ -493,15 +497,14 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
         .iter()
         .enumerate()
         .map(|(i, text)| {
-            let note = details
-                .get(i)
-                .map(|d| d.reading.clone())
+            let detail = details.get(i);
+            let note = detail
+                .and_then(|d| d.note.clone())
+                .or_else(|| detail.map(|d| d.reading.clone()))
                 .unwrap_or_default();
-            let key = if all_english {
-                String::new()
-            } else {
-                ((i + 1) % 10).to_string()
-            };
+            let key = detail
+                .and_then(|d| d.key.clone())
+                .unwrap_or_else(|| jc_proto::candidate::selection_key(i));
             json!({"id": i as i64, "text": text, "note": note, "key": key})
         })
         .collect();
@@ -515,6 +518,8 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
             "start": candidate_start,
             "length": candidate_length,
             "highlight": highlighted,
+            "rows": rows,
+            "columns": columns,
             "items": items,
         },
         "navigating": navigating,
@@ -1021,13 +1026,21 @@ fn parse(reply: &Value) -> Snapshot {
     // `navigating` 是 snapshot 的兄弟欄位，不在 candidates 物件裡。
     s.navigating = j["navigating"].as_bool().unwrap_or(false);
     if let Some(c) = j.get("candidates") {
-        s.columns = c["columns"].as_u64().unwrap_or(0).min(10) as usize;
+        s.rows = match c["rows"].as_u64().unwrap_or(0) {
+            0 => jc_proto::candidate_layout::DEFAULT_ROWS,
+            rows => (rows as usize).min(jc_proto::candidate_layout::DEFAULT_ROWS),
+        };
+        s.columns = match c["columns"].as_u64().unwrap_or(0) {
+            0 => jc_proto::candidate_layout::VERTICAL_COLUMNS,
+            columns => (columns as usize).clamp(
+                jc_proto::candidate_layout::VERTICAL_COLUMNS,
+                jc_proto::candidate_layout::MAX_COLUMNS,
+            ),
+        };
         s.candidate_kind = c["kind"].as_str().unwrap_or("").to_string();
         s.candidate_title = c["title"].as_str().unwrap_or("").to_string();
         s.candidate_start = c["start"].as_u64().unwrap_or(0) as usize;
         s.candidate_length = c["length"].as_u64().unwrap_or(0) as usize;
-        s.page = c["page"].as_i64().unwrap_or(0);
-        s.pages = c["pages"].as_i64().unwrap_or(0);
         s.highlight = c["highlight"].as_i64().unwrap_or(0);
         if let Some(items) = c["items"].as_array() {
             for it in items {
@@ -1040,11 +1053,13 @@ fn parse(reply: &Value) -> Snapshot {
                 let index = s.candidate_keys.len();
                 s.candidate_keys.push(match it["key"].as_str() {
                     Some(key) => key.to_string(),
-                    None if s.english => String::new(),
-                    None => ((index + 1) % 10).to_string(),
+                    None => jc_proto::candidate::selection_key(index),
                 });
             }
         }
+        let per_page = (s.rows * s.columns).max(1);
+        s.page = (s.highlight.max(0) as usize / per_page) as i64;
+        s.pages = s.candidates.len().div_ceil(per_page) as i64;
     }
     s
 }
@@ -2187,6 +2202,53 @@ mod parse_tests {
     }
 
     #[test]
+    fn english_candidates_keep_core_keys_and_notes() {
+        let response = Response::State {
+            preedit: "hel".into(),
+            cursor: 3,
+            candidates: vec!["hello".into(), "help".into()],
+            details: vec![
+                jc_proto::CandidateDetail {
+                    reading: "hello".into(),
+                    source: jc_core_source(),
+                    cost: 0,
+                    learned: false,
+                    pos: None,
+                    key: Some("1".into()),
+                    note: Some("問候".into()),
+                },
+                jc_proto::CandidateDetail {
+                    reading: "help".into(),
+                    source: jc_core_source(),
+                    cost: 1,
+                    learned: false,
+                    pos: None,
+                    key: Some("2".into()),
+                    note: Some("help".into()),
+                },
+            ],
+            segments: vec![jc_proto::SegmentInfo {
+                start: 0,
+                end: 3,
+                mode: "english".into(),
+                script: "latin".into(),
+            }],
+            highlighted: 0,
+            cursor_rune: 3,
+            suggestion: None,
+            label: None,
+            navigating: true,
+            rows: 10,
+            columns: 1,
+            handled: None,
+        };
+        let s = parse(&response_to_reply(&response));
+        assert_eq!(s.candidate_keys, vec!["1", "2"]);
+        assert_eq!(s.candidate_notes, vec!["問候", "help"]);
+        assert!(s.english, "英文模式仍由 segments 推導");
+    }
+
+    #[test]
     fn candidate_keys_follow_the_engine() {
         let s = parse(
             &json!({"snapshot": {"mode": "zhuyin", "candidates": {"items": [
@@ -2202,7 +2264,7 @@ mod parse_tests {
         let english = parse(
             &json!({"snapshot": {"mode": "english", "candidates": {"items": [{"id": 0, "text": "hello"}]}}}),
         );
-        assert_eq!(english.candidate_keys, vec![""]);
+        assert_eq!(english.candidate_keys, vec!["1"], "英文候選也有數字鍵");
     }
 
     #[test]
@@ -2354,6 +2416,8 @@ mod parse_tests {
                 cost: 0,
                 learned: false,
                 pos: None,
+                key: None,
+                note: None,
             }],
             segments: vec![jc_proto::SegmentInfo {
                 start: 0,
@@ -2366,6 +2430,8 @@ mod parse_tests {
             suggestion: Some("lo".into()),
             label: None,
             navigating: false,
+            rows: 0,
+            columns: 0,
             handled: None,
         };
         let reply = response_to_reply(&state);
@@ -2374,7 +2440,7 @@ mod parse_tests {
         assert_eq!(s.suggestion, "lo");
         assert_eq!(s.text(), "hel");
         assert_eq!(s.cursor_utf16, 3);
-        assert_eq!(s.candidate_keys, vec![""]);
+        assert_eq!(s.candidate_keys, vec!["1"]);
         assert!(s.english_wants_key("Enter"), "#235：Enter 只送出單字");
         assert!(
             !s.english_wants_key("1"),
@@ -2392,6 +2458,8 @@ mod parse_tests {
             suggestion: None,
             label: None,
             navigating: false,
+            rows: 0,
+            columns: 0,
             handled: None,
         };
         let s = parse(&response_to_reply(&no_suggestion));
@@ -2666,6 +2734,8 @@ mod tests {
                 suggestion: None,
                 label: None,
                 navigating: true,
+                rows: 0,
+                columns: 0,
                 handled: None,
             })),
             _ => Some(json!({"ok": true})),
@@ -2702,6 +2772,8 @@ mod tests {
                 suggestion: None,
                 label: None,
                 navigating: false,
+                rows: 0,
+                columns: 0,
                 handled: Some(false),
             })),
             _ => Some(json!({"ok": true})),
@@ -2791,6 +2863,8 @@ mod tests {
                 suggestion: None,
                 label: None,
                 navigating: false,
+                rows: 0,
+                columns: 0,
                 handled: Some(true),
             })),
             _ => Some(json!({"ok": true})),
@@ -3132,6 +3206,8 @@ mod tests {
             suggestion,
             label: None,
             navigating: false,
+            rows: 0,
+            columns: 0,
             handled: None,
         }
     }

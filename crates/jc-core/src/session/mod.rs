@@ -1198,6 +1198,7 @@ impl Session {
         let byte = self.cursor_byte();
         let segments = self.segments();
         let owners = self.segment_owners(&preedit, &segments);
+        let layout = self.candidate_layout();
         Snapshot {
             cursor_utf16: utf16_offset(&preedit, byte),
             cursor_rune: rune_offset(&preedit, byte),
@@ -1209,6 +1210,8 @@ impl Session {
             suggestion: self.snapshot_suggestion(),
             label: self.highlighted_label().map(str::to_string),
             navigating: self.navigating,
+            rows: layout.rows(),
+            columns: layout.columns(),
         }
     }
 
@@ -1799,37 +1802,37 @@ mod tests {
         );
     }
 
-    /// 18 個同音候選、頁面 9 項：第二頁按 `1` 選第 10 個，不是第 1 個。
+    /// 18 個同音候選、頁面 10 項：第二頁按 `1` 選第 11 個，不是第 1 個。
     #[test]
     fn test_digit_on_second_page_selects_page_offset() {
-        let mut s = eighteen_candidates_session();
+        let mut s = two_page_candidates_session();
         type_syllable(&mut s, "ㄕˋ");
-        assert_eq!(s.candidates().len(), 18, "要剛好兩頁");
+        assert_eq!(s.candidates().len(), 19, "要剛好兩頁");
         s.press(Key::new(KeyCode::Down, None, false));
         s.press(Key::new(KeyCode::PageDown, None, false));
         assert_eq!(s.current_page(), 1, "PageDown 到第二頁");
-        assert_eq!(s.page_size(), 9);
+        assert_eq!(s.page_size(), 10);
 
-        let want = s.candidates()[9].surface.clone();
+        let want = s.candidates()[10].surface.clone();
         s.press(Key::char('1', false));
-        assert_eq!(s.commit(), want, "第二頁的 1 是第 10 個候選");
+        assert_eq!(s.commit(), want, "第二頁的 1 是第 11 個候選");
     }
 
     /// 頁碼由 `highlighted / page_size` 推導：同頁內移動高亮後，數字鍵仍以
     /// 頁首為基準。
     #[test]
     fn test_digit_selection_uses_page_derived_from_highlight() {
-        let mut s = eighteen_candidates_session();
+        let mut s = two_page_candidates_session();
         type_syllable(&mut s, "ㄕˋ");
         s.press(Key::new(KeyCode::Down, None, false));
         s.press(Key::new(KeyCode::PageDown, None, false));
-        assert_eq!(s.highlighted(), 9);
-        s.press(Key::new(KeyCode::Down, None, false));
         assert_eq!(s.highlighted(), 10);
+        s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(s.highlighted(), 11);
 
-        let want = s.candidates()[10].surface.clone();
+        let want = s.candidates()[11].surface.clone();
         s.press(Key::char('2', false));
-        assert_eq!(s.commit(), want, "頁內第 2 項是索引 10");
+        assert_eq!(s.commit(), want, "頁內第 2 項是索引 11");
     }
 
     /// 候選不足一頁時，超出範圍的數字鍵被吃掉，狀態不變。
@@ -1855,7 +1858,7 @@ mod tests {
     }
 
     /// 同音候選剛好 18 個的注音 session。
-    fn eighteen_candidates_session() -> Session {
+    fn two_page_candidates_session() -> Session {
         let mut lex = InMemoryLexicon::new();
         for (index, surface) in "是事市試式世室士視示適勢誓釋逝飾侍嗜".chars().enumerate()
         {

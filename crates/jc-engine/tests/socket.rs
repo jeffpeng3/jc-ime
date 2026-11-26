@@ -83,7 +83,11 @@ impl Client {
 }
 
 fn state(preedit: &str) -> Response {
-    Response::state(jc_core::Snapshot::from_preedit(preedit))
+    Response::state(jc_core::Snapshot {
+        rows: jc_core::candidate_layout::DEFAULT_ROWS,
+        columns: jc_core::candidate_layout::VERTICAL_COLUMNS,
+        ..jc_core::Snapshot::from_preedit(preedit)
+    })
 }
 
 fn temp_socket(name: &str) -> PathBuf {

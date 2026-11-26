@@ -363,22 +363,37 @@ impl Session {
 
     /// 候選一頁幾項。
     ///
-    /// 固定 [`PAGE_SIZE`]（9），與 Windows 候選窗一致。`InputStyle` 的
-    /// `candidate_page_size` 只保留給舊設定檔讀取，不再參與分頁；頁面大小
-    /// 只有這一個來源。
+    /// 版面由 [`Session::candidate_layout`] 決定：預設十列單欄，按 `←`／`→`
+    /// 展開成四欄後一頁容量變成四十項。`InputStyle` 的
+    /// `candidate_page_size` 只保留給舊設定檔讀取，不再參與分頁。
     pub fn page_size(&self) -> usize {
-        PAGE_SIZE
+        self.candidate_layout().page_size()
+    }
+
+    /// 目前候選窗的版面。
+    ///
+    /// 欄數只有直向單欄與橫向四欄兩種；`candidate_expanded` 是唯一狀態，
+    /// 其他語言不再各自決定欄數。
+    pub fn candidate_layout(&self) -> crate::candidate_layout::CandidateLayout {
+        let columns = if self.candidate_expanded {
+            crate::candidate_layout::EXPANDED_COLUMNS
+        } else {
+            crate::candidate_layout::VERTICAL_COLUMNS
+        };
+        crate::candidate_layout::CandidateLayout::new(
+            crate::candidate_layout::DEFAULT_ROWS,
+            columns,
+        )
     }
 
     /// 目前使用的選字鍵。
     ///
     /// 對照上游 `selectionKeys`：每個鍵是不重複的可見 ASCII（不含大寫），
-    /// 長度要符合頁面大小。舊設定可能是 10 個鍵，第一個字元起取一頁；不合用
-    /// 時退回預設的 `123456789`。
+    /// 長度要符合預設十列。舊設定可能是 10 個鍵，第一個字元起取一頁；不合用
+    /// 時退回預設的 `1234567890`。橫向四欄只影響顯示容量，不改變按鍵表。
     pub fn selection_keys(&self) -> String {
-        let page = self.page_size();
+        let page = crate::output::CANDIDATE_PAGE_SIZE;
         let configured: Vec<char> = self.style.selection_keys.chars().collect();
-        // 舊版 10 鍵設定（`1234567890`）仍可讀，只取前 9 個。
         let usable_len = configured.len() == page || configured.len() == page + 1;
         if !usable_len {
             return default_selection_keys(page);
@@ -1281,16 +1296,16 @@ mod tests {
         assert_eq!(s.commit(), want);
     }
 
-    /// 頁面大小固定 9，與風格設定無關；`page(1)` 跳到第 9 項。
+    /// 頁面大小固定 10，與風格設定無關；`page(1)` 跳到第 10 項。
     #[test]
-    fn test_candidate_page_size_can_be_nine() {
+    fn test_candidate_page_size_can_be_ten() {
         let mut s = many_session("");
-        assert_eq!(s.page_size(), 9, "預設風格也是 9");
+        assert_eq!(s.page_size(), 10, "預設風格也是 10");
         s.style = InputStyle::preset("mcbopomofo").expect("預設存在");
-        assert_eq!(s.page_size(), 9, "風格設定不再改變頁面大小");
+        assert_eq!(s.page_size(), 10, "風格設定不再改變頁面大小");
         type_syllable(&mut s, "ㄕˋ");
         s.page(1);
-        assert_eq!(s.highlighted(), 9);
+        assert_eq!(s.highlighted(), 10);
     }
 
     /// 選字鍵每排欄數。
@@ -1302,16 +1317,16 @@ mod tests {
         assert_eq!(s.selection_key_columns(), 5);
     }
 
-    /// 對照 `TestSelectionKeysDefaultLabelsDigits` 的 `page_size` 邊界：9 項頁面
-    /// 上 `0` 不是選字鍵。
+    /// 十列頁面上 `0` 是第 10 項的選字鍵。
     #[test]
-    fn test_page_size_nine_digit_zero_not_a_selection_key() {
+    fn test_page_size_ten_digit_zero_selects_tenth() {
         let mut s = many_session("");
         s.style = InputStyle::preset("mcbopomofo").expect("預設存在");
         type_syllable(&mut s, "ㄕˋ");
         s.press(Key::new(KeyCode::Down, None, false));
-        let snap = s.press(Key::char('0', false));
-        assert_eq!(snap.preedit, "ㄢ是", "0 回到注音鍵，離開選取模式");
+        let want = s.candidates()[9].surface.clone();
+        s.press(Key::char('0', false));
+        assert_eq!(s.commit(), want, "0 選第 10 項");
     }
 
     /// 閒置按鍵：注音鍵、標點與反引號都在清單內；@ 不在。

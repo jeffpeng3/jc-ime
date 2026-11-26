@@ -7,6 +7,7 @@
 //! 移植 task 補上，後續不需要再改動這裡。
 
 pub mod candidate;
+pub mod candidate_layout;
 pub mod composition;
 pub mod decode;
 pub mod emoji;

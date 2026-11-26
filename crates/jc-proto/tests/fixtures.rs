@@ -167,6 +167,8 @@ fn response_state_minimal_accepts_version_one_shape() {
             suggestion: None,
             label: None,
             navigating: false,
+            rows: 0,
+            columns: 0,
             handled: None,
         }
     );
@@ -189,6 +191,8 @@ fn response_state_v2_round_trips_all_new_fields() {
             suggestion: Some("ˇ".into()),
             label: Some("常用字".into()),
             navigating: true,
+            rows: 0,
+            columns: 0,
             handled: None,
         }
     );

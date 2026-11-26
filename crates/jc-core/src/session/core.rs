@@ -1343,7 +1343,7 @@ impl Session {
                 return;
             }
             self.navigating = true;
-            self.move_highlight(if self.candidate_expanded { 4 } else { 1 });
+            self.move_highlight(self.candidate_layout().row_step());
             return;
         }
         if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
@@ -1352,7 +1352,7 @@ impl Session {
                 return;
             }
             self.navigating = true;
-            self.move_highlight(if self.candidate_expanded { 4 } else { 1 });
+            self.move_highlight(self.candidate_layout().row_step());
             return;
         }
         if self.in_zh_lane() {
@@ -1380,7 +1380,7 @@ impl Session {
             self.navigating = true;
             return;
         }
-        self.move_highlight(if self.candidate_expanded { 4 } else { 1 });
+        self.move_highlight(self.candidate_layout().row_step());
     }
 
     /// 上鍵：候選窗開著時往上換一項並進入選取模式；還沒開窗時先開窗。
@@ -1395,7 +1395,7 @@ impl Session {
             return;
         }
         self.navigating = true;
-        self.move_highlight(if self.candidate_expanded { -4 } else { -1 });
+        self.move_highlight(-self.candidate_layout().row_step());
     }
 
     /// `PageDown`／`PageUp`：換頁，頁碼頭尾相接；還沒開窗時先開窗。
@@ -1648,6 +1648,16 @@ impl Session {
         {
             return;
         }
+        // 其他來源（英文補全、字面候選、選單）只要候選窗開著，Enter 一律
+        // 套用高亮項、關窗、保留組字。前導符號的「高亮項就是現值」例外
+        // 已在上面處理，這裡不重複攔。
+        if self.candidate_window
+            && !self.candidates.is_empty()
+            && !self.highlighted_choice_is_current_literal()
+            && self.choose_candidate(self.highlighted).is_some()
+        {
+            return;
+        }
         if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
             self.ascii.flush();
             self.trim_mixed_candidate_space();
@@ -1894,9 +1904,9 @@ impl Session {
     /// 游標所在片段的候選。
     pub(super) fn navigate(&mut self, delta: isize) {
         // 候選窗開著時四方向鍵都屬於候選介面：游標不能移動。第一次按 →／←
-        // 先展開成四欄，之後才在候選間移動。
+        // 先展開成四欄，之後才在候選間移動；欄數與語言無關。
         if self.candidate_window && self.navigating && !self.candidates.is_empty() {
-            if self.config.mode == Mode::Mixed && !self.candidate_expanded {
+            if !self.candidate_expanded {
                 self.candidate_expanded = true;
                 return;
             }

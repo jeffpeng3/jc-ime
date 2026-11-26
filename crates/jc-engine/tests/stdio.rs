@@ -57,11 +57,22 @@ impl EngineProcess {
 }
 
 fn state(preedit: &str) -> Response {
-    Response::state(jc_core::Snapshot::from_preedit(preedit))
+    Response::state(jc_core::Snapshot {
+        rows: jc_core::candidate_layout::DEFAULT_ROWS,
+        columns: jc_core::candidate_layout::VERTICAL_COLUMNS,
+        ..jc_core::Snapshot::from_preedit(preedit)
+    })
 }
 
 fn state_handled(preedit: &str, handled: bool) -> Response {
-    Response::state_with_handled(jc_core::Snapshot::from_preedit(preedit), Some(handled))
+    Response::state_with_handled(
+        jc_core::Snapshot {
+            rows: jc_core::candidate_layout::DEFAULT_ROWS,
+            columns: jc_core::candidate_layout::VERTICAL_COLUMNS,
+            ..jc_core::Snapshot::from_preedit(preedit)
+        },
+        Some(handled),
+    )
 }
 
 #[test]

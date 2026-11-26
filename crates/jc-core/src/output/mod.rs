@@ -10,10 +10,10 @@ use crate::segment::Segment;
 
 /// 候選視窗一頁幾項。
 ///
-/// 核心與外殼共用的公開常數；Windows 候選窗固定 9 項，數字鍵 `1`–`9` 對應
-/// 頁內位置。這個值不放在協定線上，外殼直接引用常數，避免多一份會漂移的
-/// 狀態。
-pub const CANDIDATE_PAGE_SIZE: usize = 9;
+/// 核心與外殼共用的公開常數；預設直向版面是十列，數字鍵 `1`–`9`、`0` 對應
+/// 頁內位置。橫向四欄時一頁容量改成「列數 × 欄數」，由
+/// [`crate::candidate_layout::CandidateLayout`] 統一計算。
+pub const CANDIDATE_PAGE_SIZE: usize = crate::candidate_layout::DEFAULT_ROWS;
 
 /// 輸出變體。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -463,6 +463,10 @@ pub struct Snapshot {
     ///
     /// 候選窗顯示中但還沒開始選取時是 `false`。
     pub navigating: bool,
+    /// 候選窗一頁幾列；0 表示舊快照沒有這個資訊。
+    pub rows: usize,
+    /// 候選窗一列幾項；0 表示舊快照沒有這個資訊。
+    pub columns: usize,
 }
 
 impl Snapshot {

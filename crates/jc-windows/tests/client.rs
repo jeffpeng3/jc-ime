@@ -153,6 +153,8 @@ fn empty_state() -> Response {
         suggestion: None,
         label: None,
         navigating: false,
+        rows: 0,
+        columns: 0,
         handled: None,
     }
 }

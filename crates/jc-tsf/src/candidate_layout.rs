@@ -33,8 +33,10 @@ pub const KEY_GAP: f32 = 6.0;
 pub const NOTE_GAP: f32 = 8.0;
 /// 圓角半徑（DIP）。
 pub const CORNER_RADIUS: f32 = 5.0;
-/// 欄數上限；核心目前不送欄數（0），一律單欄。
-pub const MAX_COLUMNS: usize = 10;
+/// 候選窗一頁最多幾列。
+pub const DEFAULT_ROWS: usize = 10;
+/// 候選窗最多幾欄；左右鍵展開後固定四欄。
+pub const MAX_COLUMNS: usize = 4;
 
 /// 候選文字的字級（DIP）。
 pub const TEXT_SIZE: f32 = 15.0;
@@ -245,6 +247,40 @@ pub fn hit_test(layout: &Layout, x: f32, y: f32) -> Option<i64> {
         .iter()
         .find(|row| row.rect.contains(x, y))
         .map(|row| row.id)
+}
+
+/// 目前這一頁在清單中的索引範圍。
+///
+/// `count` 是全部候選數，`columns` 是一列幾項，`rows` 是一頁幾列，
+/// `highlight` 是反白索引。反白所在的頁就是顯示頁；沒有候選時回空範圍。
+pub fn page_bounds(
+    count: usize,
+    columns: usize,
+    rows: usize,
+    highlight: i64,
+) -> std::ops::Range<usize> {
+    if count == 0 {
+        return 0..0;
+    }
+    let columns = columns.clamp(1, MAX_COLUMNS);
+    let per_page = rows.max(1) * columns;
+    let page = if highlight < 0 {
+        0
+    } else {
+        (highlight as usize / per_page).min((count - 1) / per_page)
+    };
+    let start = page * per_page;
+    start..(start + per_page).min(count)
+}
+
+/// 目前這一頁每一列要畫的候選索引，依左到右、上到下排列。
+pub fn visible_rows(count: usize, columns: usize, rows: usize, highlight: i64) -> Vec<Vec<usize>> {
+    let columns = columns.clamp(1, MAX_COLUMNS);
+    page_bounds(count, columns, rows, highlight)
+        .collect::<Vec<_>>()
+        .chunks(columns)
+        .map(<[usize]>::to_vec)
+        .collect()
 }
 
 /// 算版面。`measure` 回傳文字在指定樣式下的寬度（DIP），Windows 端由 DirectWrite 提供。
@@ -520,6 +556,23 @@ mod tests {
             hit_test(&layout, fifth.left + 1.0, fifth.top + 1.0),
             Some(5)
         );
+    }
+
+    #[test]
+    fn page_window_follows_columns_and_highlight() {
+        // 十列單欄：一頁十項，反白在第 12 項時顯示第二頁。
+        assert_eq!(page_bounds(25, 1, 10, 12), 10..20);
+        assert_eq!(page_bounds(25, 1, 10, 0), 0..10);
+        assert_eq!(page_bounds(25, 1, 10, 24), 20..25);
+        // 四欄：一頁四十項，反白不換頁。
+        assert_eq!(page_bounds(50, 4, 10, 12), 0..40);
+        assert_eq!(page_bounds(50, 4, 10, 41), 40..50);
+        // 每列索引依左到右排列，最後一列可以不足欄數。
+        let rows = visible_rows(23, 4, 10, 0);
+        assert_eq!(rows.len(), 6, "23 項四欄只排六列");
+        assert_eq!(rows[0], vec![0, 1, 2, 3]);
+        assert_eq!(rows[5], vec![20, 21, 22]);
+        assert!(page_bounds(0, 4, 10, 0).is_empty());
     }
 
     #[test]

@@ -129,6 +129,8 @@ Windows 的 `--socket` 只取最後一段，掛到 `\\.\pipe\`；`--supervise` �
 | `suggestion` | string? | Tab 會接受的補全尾綴 |
 | `label` | string? | 目前高亮候選的顯示原因 |
 | `navigating` | bool | 是否在明確的候選選取模式 |
+| `rows` | usize | 候選窗一頁最多幾列；0 時省略，舊引擎視為十列 |
+| `columns` | usize | 候選窗一列最多幾項；0 時省略，舊引擎視為單欄 |
 
 **游標**：`cursor_rune` 是權威值，單位是 Unicode scalar value（rune）。`cursor`
 沿用版本 1 的定義，值是 `preedit` 的字元數，只為舊 wrapper 相容而保留。需要
@@ -148,6 +150,8 @@ UTF-16 位移的外殼請自己從 `cursor_rune` 換算，不要假設 `cursor` 
 | `cost` | i32 | 路徑成本，**越小越優先** |
 | `learned` | bool | `source == personal` 時為 `true`；`false` 時省略 |
 | `pos` | string? | 詞性名稱；沒有詞性時省略 |
+| `key` | string? | 選字鍵標籤；所有來源都由核心填好，舊引擎省略 |
+| `note` | string? | 顯示附註；所有來源都由核心填好，舊引擎省略 |
 
 `cost` 是 MeCab 語意的整數路徑成本，可以是負數，**不是機率**，也不適合直接
 相加比較不同長度的候選。只供除錯與排序說明；顯示順序已由核心決定。
@@ -156,6 +160,10 @@ UTF-16 位移的外殼請自己從 `cursor_rune` 換算，不要假設 `cursor` 
 核心的候選只保存 POS id，名稱在映射線格式時查共用的名稱表，不會為每個候選
 複製字串。注音詞典沒有詞性，**注音候選一律不帶 `pos`**；wrapper 不得用空的
 `pos` 推測詞性。日文候選的 POS id 取第一個文節的第一個詞段（主要詞）。
+
+`key` 與 `note` 由核心對所有來源填好：`key` 是頁內選字鍵 `1`–`9`、`0`，
+`note` 目前是讀音。舊引擎省略這兩個欄位時，wrapper 才依位置補 `1`–`0`，
+附註退回 `reading`；不要依語言另外決定要不要畫編號。
 
 `source` 的線格式：
 
@@ -284,3 +292,4 @@ UTF-16 位移的外殼請自己從 `cursor_rune` 換算，不要假設 `cursor` 
 | 2 | 2026-11-20 | `State` 新增 `cursor_rune`、`suggestion`、`label`、`navigating`；新增 `Shutdown` 與 `Unknown`；錯誤碼改為列舉 |
 | 3 | 2026-11-20 | `State` 新增 `details`（與 `candidates` 等長同序）、`segments`（rune 位移）、`highlighted`；`CandidateSource` 提供 snake_case 線格式；文件明訂 `cursor_rune` 為權威值。同日補充：`CandidateDetail` 新增選填 `pos`，日文候選帶 pack 的詞性名稱，注音一律省略 |
 | 3 擴充 | 2026-11-25 | 新增 `ping`、`health`、`close`、`reset_personal`、`apply_settings`、`drain`、`vocab`、`context`、`mode`、`caps_lock`、`output_simplified`；`Ready` 新增 `session`，`ErrorCode` 新增 `unsupported`。既有欄位與 op 不變 |
+| 3 擴充 | 2026-11-26 | `State` 新增選填 `rows`／`columns`；`CandidateDetail` 新增選填 `key`／`note`，核心對所有來源填好，舊 wrapper 可忽略 |

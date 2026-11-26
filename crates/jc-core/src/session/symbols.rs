@@ -220,8 +220,8 @@ mod tests {
     #[test]
     fn test_symbol_recent_is_one_page() {
         let mut s = session();
-        // 標點分頁前 9 項各選一次；頁面固定 9 項，`0` 不是選字鍵。
-        for digit in "123456789".chars() {
+        // 標點分頁前 10 項各選一次；頁面固定 10 項，`0` 是第 10 項。
+        for digit in "1234567890".chars() {
             s.open_symbol_tab("標點");
             s.press(Key::char(digit, false));
             assert!(!s.commit().is_empty());
