@@ -86,6 +86,7 @@
 | [`fix-cli-ja.md`](fix-cli-ja.md) | `jc-cli` 與 `ja-eval` 的分數對齊 |
 | [`m2-cli-session.md`](m2-cli-session.md) | CLI、session 與日文資料載入 |
 | [`mixed-e2e.md`](mixed-e2e.md) | Mixed 端到端轉換與片語合併 |
+| [`ja-size.md`](ja-size.md) | 日文 payload 的量測與縮減方案 |
 
 ### 模型與神經轉換
 
@@ -108,6 +109,7 @@
 | [`jinen-default.md`](jinen-default.md) | Jinen small 接進 `Session` 並設為預設 |
 | [`manifest-tokenizer.md`](manifest-tokenizer.md) | Jinen tokenizer 納入資料 manifest |
 | [`ja-models-fetch.md`](ja-models-fetch.md) | 外部日文模型抓取、授權與 smoke test |
+| [`zenz-eval.md`](zenz-eval.md) | Zenz v2.5 medium 的可行性、量化與 top-1／延遲對照 |
 | [`punct-wire.md`](punct-wire.md) | 標點模型接進輸出（2026-11-20 已移除） |
 | [`candle-punct.md`](candle-punct.md) | 日文標點模型的 candle 實作（已移除） |
 | [`drop-punct.md`](drop-punct.md) | 移除標點模型推論路徑 |
