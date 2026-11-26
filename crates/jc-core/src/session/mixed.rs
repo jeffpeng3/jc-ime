@@ -3,6 +3,7 @@
 //! 對照前身 `core/session/mixed.go` 的 `pendingKeys`、`mixedText`、
 //! `finishMixedTone` 與 `mixedBoundary`。
 
+use super::candidate_set::{AssemblyOptions, CandidateSet, SurfaceMatch};
 use super::*;
 use crate::composition::{CompSegment, Lang as CompLang, Owner};
 use crate::lang::Lang;
@@ -2274,43 +2275,41 @@ impl Session {
             split.and_then(|(plans, text)| Self::planned_trailing_zh_reading(plans, text))
         {
             if self.mixed_cursor.min(self.segments.len()) == self.segments.len() {
-                self.fill_zh_candidates(reading);
-                if !self
-                    .candidates
-                    .iter()
-                    .any(|candidate| candidate.surface == raw)
-                {
-                    self.candidates.push(Candidate::new(
+                let mut set = self.zh_candidate_set(&reading);
+                if !set.contains(&raw) {
+                    set.push(Candidate::new(
                         raw.clone(),
                         raw.clone(),
                         i32::MAX,
                         CandidateSource::Literal,
                     ));
                 }
-                self.candidates.truncate(self.max_candidates());
+                self.candidates = set
+                    .assemble(AssemblyOptions {
+                        dedupe: false,
+                        display_first: false,
+                    })
+                    .into_candidates();
                 return;
             }
         }
         let limit = self.max_candidates();
-        let mut seen = vec![raw.to_lowercase()];
+        // 混打的英文字面去重不分大小寫；先用原始按鍵佔住第一個位置。
+        let mut set = CandidateSet::new(String::new(), limit, SurfaceMatch::AsciiLower);
+        set.reserve(&raw);
         // 長小寫 run 是字面英文，學過的英文修正與注音候選都不會改變它。
         let long_literal = long_literal_keys(&raw);
         if !long_literal {
             if let Some(learned) = self.personal.english_correction(&raw) {
-                let learned = learned.to_string();
-                let key = learned.to_lowercase();
-                if !seen.contains(&key) {
-                    seen.push(key);
-                    self.candidates.push(Candidate::new(
-                        learned,
-                        raw.clone(),
-                        0,
-                        CandidateSource::Personal,
-                    ));
-                }
+                set.push_unique(Candidate::new(
+                    learned.to_string(),
+                    raw.clone(),
+                    0,
+                    CandidateSource::Personal,
+                ));
             }
         }
-        self.candidates.push(Candidate::new(
+        set.push(Candidate::new(
             raw.clone(),
             raw.clone(),
             0,
@@ -2319,8 +2318,7 @@ impl Session {
         // 半形英數與數字提供全形變體；舊英文直出模式的等價候選路徑。
         if let Some(full) = crate::symbols::width_variant(&raw) {
             if full != raw {
-                seen.push(full.to_lowercase());
-                self.candidates.push(Candidate::new(
+                set.push(Candidate::new(
                     full,
                     raw.clone(),
                     1,
@@ -2331,15 +2329,12 @@ impl Session {
         // 整串可以組成注音時，原按鍵之外另列注音本身（`co6` 的 ㄏㄟˊ）。
         if !long_literal {
             if let Some(text) = self.ascii.reading_candidate(&raw, &self.lexicon) {
-                if !seen.contains(&text) {
-                    seen.push(text.clone());
-                    self.candidates.push(Candidate::new(
-                        text,
-                        raw.clone(),
-                        1,
-                        CandidateSource::Literal,
-                    ));
-                }
+                set.push_unique(Candidate::new(
+                    text,
+                    raw.clone(),
+                    1,
+                    CandidateSource::Literal,
+                ));
             }
         }
         // pending 顯示成注音代表它還是未完成的注音前綴（例如 su 是 ㄋㄧ）。
@@ -2349,15 +2344,15 @@ impl Session {
         let is_zhuyin_prefix = !long_literal && self.ascii.display_pending(&self.lexicon) != raw;
         if !is_zhuyin_prefix && !long_literal {
             for candidate in english_candidates(&self.personal, self.english(), &raw, limit) {
-                let key = candidate.surface.to_lowercase();
-                if seen.contains(&key) {
-                    continue;
-                }
-                seen.push(key);
-                self.candidates.push(candidate);
+                set.push_unique(candidate);
             }
         }
-        self.candidates.truncate(limit);
+        self.candidates = set
+            .assemble(AssemblyOptions {
+                dedupe: false,
+                display_first: false,
+            })
+            .into_candidates();
     }
 
     /// 游標所在注音音節的候選。
@@ -2407,29 +2402,42 @@ impl Session {
             .map(str::to_string)
     }
 
-    /// 用一個注音讀音重建候選：詞格＋解碼器取最佳解，字面也保留。
-    fn fill_zh_candidates(&mut self, reading: String) {
-        let units = [reading.as_str()];
+    /// 用一個注音讀音建立候選：詞格＋解碼器取最佳解，字面也保留。
+    fn zh_candidate_set(&self, reading: &str) -> CandidateSet {
+        let units = [reading];
         let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) else {
-            return;
+            return CandidateSet::new(reading, self.max_candidates(), SurfaceMatch::Exact);
         };
         let scorer = super::core::zh_scorer(&self.ctx, self.zh_lm.as_deref());
         let decoder = super::core::zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
         let (hypotheses, _) = decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
-        let hypotheses = self.rank_zh_hypotheses(hypotheses, &reading);
-        let literal = reading.clone();
-        self.candidates = hypotheses
-            .into_iter()
-            .map(|hypothesis| {
-                let source = if hypothesis.text == literal {
-                    CandidateSource::Literal
-                } else {
-                    CandidateSource::Lexicon
-                };
-                Candidate::new(hypothesis.text, reading.clone(), hypothesis.cost, source)
+        let hypotheses = self.rank_zh_hypotheses(hypotheses, reading);
+        let literal = reading.to_string();
+        let candidates = hypotheses.into_iter().map(|hypothesis| {
+            let source = if hypothesis.text == literal {
+                CandidateSource::Literal
+            } else {
+                CandidateSource::Lexicon
+            };
+            Candidate::new(hypothesis.text, literal.clone(), hypothesis.cost, source)
+        });
+        CandidateSet::from_hypotheses(
+            reading,
+            self.max_candidates(),
+            SurfaceMatch::Exact,
+            candidates,
+        )
+    }
+
+    /// 用一個注音讀音重建候選：詞格＋解碼器取最佳解，字面也保留。
+    fn fill_zh_candidates(&mut self, reading: String) {
+        self.candidates = self
+            .zh_candidate_set(&reading)
+            .assemble(AssemblyOptions {
+                dedupe: false,
+                display_first: false,
             })
-            .collect();
-        self.candidates.truncate(self.max_candidates());
+            .into_candidates();
     }
 
     /// 已完成的注音音節轉成字面。
@@ -3085,18 +3093,15 @@ pub(super) fn english_candidates(
 fn split_choices(
     out: Vec<(Candidate, CandidateAction)>,
 ) -> (Vec<Candidate>, Vec<Option<CandidateAction>>) {
-    let mut candidates = Vec::with_capacity(out.len());
-    let mut choices = Vec::with_capacity(out.len());
-    let mut seen: Vec<String> = Vec::new();
-    for (candidate, choice) in out {
-        if seen.contains(&candidate.surface) {
-            continue;
-        }
-        seen.push(candidate.surface.clone());
-        candidates.push(candidate);
-        choices.push(Some(choice));
+    let mut set = CandidateSet::new(String::new(), usize::MAX, SurfaceMatch::Exact);
+    for (candidate, action) in out {
+        set.push_with_action(candidate, Some(action));
     }
-    (candidates, choices)
+    let assembled = set.assemble(AssemblyOptions {
+        dedupe: true,
+        display_first: false,
+    });
+    (assembled.candidates, assembled.actions)
 }
 
 /// 把注音讀音、原始按鍵、無聲調按鍵與日文解讀排進候選。

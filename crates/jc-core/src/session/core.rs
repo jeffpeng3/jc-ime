@@ -4,6 +4,7 @@
 
 use std::borrow::Cow;
 
+use super::candidate_set::{AssemblyOptions, CandidateSet, SurfaceMatch};
 use super::*;
 use crate::ja::decode::mean_candidates;
 use crate::score::BigramLm;
@@ -2701,7 +2702,7 @@ impl Session {
         };
         self.last_hypotheses = hypotheses.clone();
         let mixed_lane = self.config.mode == Mode::Mixed && self.zh_lane;
-        let mut candidates: Vec<Candidate> = hypotheses
+        let hypotheses: Vec<Candidate> = hypotheses
             .into_iter()
             .map(|hypothesis| {
                 let source = if hypothesis.text == literal {
@@ -2712,48 +2713,24 @@ impl Session {
                 Candidate::new(hypothesis.text, reading.clone(), hypothesis.cost, source)
             })
             .collect();
+        let mut set = CandidateSet::from_hypotheses(
+            self.base.clone(),
+            self.max_candidates(),
+            SurfaceMatch::Exact,
+            hypotheses,
+        );
+        // 模糊音插在字面讀音前；有插入時整份去重，重複字面保留先出現的一項。
         let near = self.fuzzy_candidates(&readings);
-        if !near.is_empty() {
-            let at = candidates
-                .iter()
-                .position(|candidate| candidate.surface == literal)
-                .unwrap_or(candidates.len());
-            for (offset, candidate) in near.into_iter().enumerate() {
-                let index = (at + offset).min(candidates.len());
-                candidates.insert(index, candidate);
-            }
-            let mut seen = Vec::new();
-            candidates.retain(|candidate| {
-                if seen.contains(&candidate.surface) {
-                    false
-                } else {
-                    seen.push(candidate.surface.clone());
-                    true
-                }
-            });
-        }
+        set.insert_before_unique(&literal, near);
         // 尾端差一個符號的完整詞：一般候選只是顯示，選了才改字。
         let phonetic = self.phonetic_candidates(&display_segments);
-        if !phonetic.is_empty() {
-            let mut seen: Vec<String> = candidates
-                .iter()
-                .map(|candidate| candidate.surface.clone())
-                .collect();
-            for candidate in phonetic {
-                if seen.contains(&candidate.surface) {
-                    continue;
-                }
-                seen.push(candidate.surface.clone());
-                candidates.push(candidate);
-            }
-        }
-        candidates.truncate(self.max_candidates());
+        set.append_unique(phonetic);
         // Mixed 的純注音顯示沿用混打管線：整段沒有詞可解時，若模糊音候選
-        // 有真字就顯示那個字，而不是留一串注音。
+        // 有真字就顯示那個字，而不是留一串注音。截斷不影響第一項。
         if mixed_lane && self.base == literal {
-            if let Some(first) = candidates.first() {
-                if first.surface.chars().next().is_some_and(is_han) {
-                    self.base = first.surface.clone();
+            if let Some(first) = set.first_surface().map(str::to_string) {
+                if first.chars().next().is_some_and(is_han) {
+                    self.base = first;
                     self.segments =
                         vec![Segment::new(0, self.base.len(), Lang::Zh, Script::Bopomofo)];
                 }
@@ -2761,20 +2738,12 @@ impl Session {
         }
         // 顯示字必須就是第一候選；模糊音或字面候選插在前面時把顯示字移回
         // 第一項，兩條路徑才不會再各說各話。
-        if candidates
-            .first()
-            .map(|candidate| candidate.surface.as_str())
-            != Some(self.base.as_str())
-        {
-            if let Some(at) = candidates
-                .iter()
-                .position(|candidate| candidate.surface == self.base)
-            {
-                let display = candidates.remove(at);
-                candidates.insert(0, display);
-            }
-        }
-        self.candidates = candidates;
+        self.candidates = set
+            .assemble(AssemblyOptions {
+                dedupe: false,
+                display_first: true,
+            })
+            .into_candidates();
         // 混打管線把一段連續注音當一個片段（`字字`），純注音模式則照詞切。
         // Mixed 的組字字串沿用前者：相鄰同字面、中間沒有空白打斷的片段合併。
         if mixed_lane && self.segments.len() == display_segments.len() {
@@ -3087,7 +3056,7 @@ impl Session {
             best.conversion().segments
         };
         let pos_table = decoder.pos_table();
-        self.candidates = results
+        let mut hypotheses: Vec<Candidate> = results
             .iter()
             .map(|result| {
                 let conversion = result.conversion();
@@ -3103,12 +3072,20 @@ impl Session {
                 candidate
             })
             .collect();
-        if let (Some(surface), Some(candidate)) = (replaced, self.candidates.first_mut()) {
+        if let (Some(surface), Some(candidate)) = (replaced, hypotheses.first_mut()) {
             // 顯示與提交都走候選清單，第一名必須跟著換；字面已不是原本的
             // 詞條，詞性一併清掉，避免顯示上一筆的詞性。
             candidate.surface = surface;
             candidate.clear_pos();
         }
+        self.candidates = CandidateSet::from_hypotheses(
+            self.base.clone(),
+            self.max_candidates(),
+            SurfaceMatch::Exact,
+            hypotheses,
+        )
+        .assemble(AssemblyOptions::default())
+        .into_candidates();
         self.last_ja_results = results;
         self.sync_composition_ja();
     }
