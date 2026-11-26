@@ -219,8 +219,9 @@ pub fn chord_help(opt: &Opt, defaults: &Settings) -> ChordHelp {
     ChordHelp {
         format: format!("格式：{}", default_label(opt, defaults)),
         modifiers: "可用修飾鍵：ctrl、alt、shift；至少要有一個 ctrl 或 alt",
-        keys: "按鍵：單一字母或數字、f1–f12、enter／escape／space／tab／delete／\
-               home／end／pageup／pagedown／up／down／left／right",
+        keys: "按鍵：單一字元（字母、數字、標點，例如 , . ; /）、f1–f12，或具名鍵\n      \
+               enter／escape／backspace／space／tab／delete／home／end／\n      \
+               pageup／pagedown／up／down／left／right",
     }
 }
 
@@ -305,10 +306,13 @@ mod tests {
             help.modifiers,
             "可用修飾鍵：ctrl、alt、shift；至少要有一個 ctrl 或 alt"
         );
-        assert!(help.keys.starts_with("按鍵：單一字母或數字、f1–f12、"));
         assert!(help
             .keys
-            .contains("home／end／pageup／pagedown／up／down／left／right"));
+            .starts_with("按鍵：單一字元（字母、數字、標點，例如 , . ; /）、f1–f12，或具名鍵"));
+        assert!(help.keys.contains("backspace"));
+        assert!(help
+            .keys
+            .contains("pageup／pagedown／up／down／left／right"));
 
         let emoji = INPUT
             .iter()

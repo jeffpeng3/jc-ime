@@ -65,8 +65,9 @@ key = 單一字元
 ```text
 格式：ctrl+alt+,（表情欄位顯示 ctrl+alt+.）
 可用修飾鍵：ctrl、alt、shift；至少要有一個 ctrl 或 alt
-按鍵：單一字母或數字、f1–f12、enter／escape／space／tab／delete／
-      home／end／pageup／pagedown／up／down／left／right
+按鍵：單一字元（字母、數字、標點，例如 , . ; /）、f1–f12，或具名鍵
+      enter／escape／backspace／space／tab／delete／home／end／
+      pageup／pagedown／up／down／left／right
 ```
 
 設定檔不存在、內容是 `{}`、缺少 `keybinds`，或 `keybinds` 成員是空字串時，
@@ -80,7 +81,7 @@ chord，同樣立刻存檔。
 約 1 秒生效，TSF 端最多 5 秒或下次取得焦點。
 
 截圖位置描述：視窗標題「0c 設定」，左側選「輸入」，右側第一組「鍵位與模式」
-的第三、第四列就是兩個快捷鍵欄位；欄位下方三行灰字是語法說明，錯誤訊息以
+的第二、第三列就是兩個快捷鍵欄位；欄位下方的灰字是語法說明，錯誤訊息以
 紅色顯示在同一欄位下方。
 
 ## 協定

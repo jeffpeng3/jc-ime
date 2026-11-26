@@ -106,9 +106,13 @@ fn assert_help(window: &gpui_kit::Window, key: &str, chord: &str) {
     let keys_id = SharedString::from(format!("keybind-help-keys-{key}"));
     let keys_snapshot = window.find(keys_id);
     let keys = keys_snapshot.value().unwrap_or_default();
-    assert!(keys.starts_with("按鍵：單一字母或數字、f1–f12、"), "{keys}");
     assert!(
-        keys.contains("home／end／pageup／pagedown／up／down／left／right"),
+        keys.starts_with("按鍵：單一字元（字母、數字、標點，例如 , . ; /）、f1–f12，或具名鍵"),
+        "{keys}"
+    );
+    assert!(keys.contains("backspace"), "{keys}");
+    assert!(
+        keys.contains("pageup／pagedown／up／down／left／right"),
         "{keys}"
     );
 }
