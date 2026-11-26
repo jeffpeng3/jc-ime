@@ -39,6 +39,8 @@ pub use neural::{
 };
 pub use segments::tone_mark_keys;
 
+use key_policy::KeyOutcome;
+
 use crate::candidate::{Candidate, CandidateSource};
 use crate::composition::Composition;
 use crate::decode::{Decoder, Hypothesis, Locks};
@@ -818,71 +820,9 @@ impl Session {
             if let Some(text) = Self::shift_literal_text(&key) {
                 return self.append_shift_literal(&text);
             }
-            if !self.key_preprocess(&key) {
-                match key.code {
-                    KeyCode::Enter => self.finish_composition(),
-                    KeyCode::Escape => self.escape(),
-                    KeyCode::Delete if key.shift && self.candidate_window => {
-                        self.forget_candidate();
-                    }
-                    KeyCode::Backspace if key.shift && self.candidate_window => {
-                        self.forget_candidate();
-                    }
-                    KeyCode::Delete => self.delete_forward(),
-                    KeyCode::Backspace => self.backspace(),
-                    KeyCode::F(n) if KeyCode::F(n) == self.config.ja_toggle_key => {
-                        self.ja_toggle_script();
-                    }
-                    KeyCode::F(6) => {
-                        self.ja_transform(live::KanaTransform::Hiragana);
-                    }
-                    KeyCode::F(8) => {
-                        self.ja_transform(live::KanaTransform::HalfwidthKana);
-                    }
-                    KeyCode::F(9) => {
-                        self.ja_transform(live::KanaTransform::FullwidthLatin);
-                    }
-                    KeyCode::F(10) => {
-                        self.ja_transform(live::KanaTransform::HalfwidthLatin);
-                    }
-                    KeyCode::Space => self.space(),
-                    KeyCode::Down => self.down(),
-                    KeyCode::Up => self.up(),
-                    KeyCode::PageDown => self.page_step(1),
-                    KeyCode::PageUp => self.page_step(-1),
-                    KeyCode::Home => self.candidate_edge(false),
-                    KeyCode::End => self.candidate_edge(true),
-                    KeyCode::Tab => {
-                        if !self.literal_tail.is_empty() && self.suggestion.is_none() {
-                            // 英文模式是 raw input，沒有 suggestion：Tab 沒有可
-                            // 補全的東西，整鍵 no-op，連 rebuild 都不做。
-                            return self.snapshot();
-                        } else if self.navigating && !self.candidates.is_empty() {
-                            // 選取模式中的 Tab 換下一個候選；候選選取優先於補全。
-                            self.move_highlight(1);
-                        } else {
-                            let accepted = self.config.mode == Mode::Mixed
-                                && !self.in_zh_lane()
-                                && !self.in_ja_lane()
-                                && self.config.english_autocomplete
-                                && self.ascii.accept_suggestion();
-                            if !accepted && !self.accept_suggestion() {
-                                self.move_highlight(1);
-                                if self.config.mode == Mode::Mixed {
-                                    self.navigating = true;
-                                }
-                            }
-                        }
-                    }
-                    KeyCode::ArrowRight if key.shift => self.resize_segment(1),
-                    KeyCode::ArrowLeft if key.shift => self.resize_segment(-1),
-                    KeyCode::ArrowRight => self.navigate(1),
-                    KeyCode::ArrowLeft => self.navigate(-1),
-                    KeyCode::Char(ch) => self.press_char(ch),
-                    // 具名鍵與 Shift+Tab 沒有對應的組字動作時由組字區吃掉，
-                    // 不讓應用程式在組字中移動焦點。
-                    _ => {}
-                }
+            if !self.key_preprocess(&key) && self.key_policy(key) == KeyOutcome::Unchanged {
+                // Tab 在沒有補全可用的字面尾巴上是 no-op：不要重建畫面。
+                return self.snapshot();
             }
         } else {
             self.pending_tone = None;
@@ -4325,6 +4265,41 @@ mod tests {
         type_ja(&mut s, "kyou");
         assert_eq!(s.snapshot().preedit, "今日");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// 三個 lane 的共同契約：候選窗開著時 Esc 只關窗、組字不動；第二次
+    /// Esc 才清整段。任何一條 lane 都不能因為自己的狀態多清或少清。
+    #[test]
+    fn test_key_policy_candidate_escape_common_contract() {
+        let mut zh = session();
+        type_syllable(&mut zh, "ㄨㄛˇ");
+        zh.press(Key::new(KeyCode::Down, None, false));
+        let zh_before = zh.snapshot().preedit;
+        assert!(!zh_before.is_empty());
+        zh.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(zh.snapshot().preedit, zh_before, "注音 lane 只關窗");
+        zh.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(zh.snapshot().preedit, "", "第二次才清整段");
+
+        let mut mixed = mixed_session();
+        type_keys(&mut mixed, "ji3");
+        mixed.press(Key::new(KeyCode::Down, None, false));
+        let mixed_before = mixed.snapshot().preedit;
+        assert!(!mixed_before.is_empty());
+        mixed.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(mixed.snapshot().preedit, mixed_before, "混打 lane 只關窗");
+        mixed.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(mixed.snapshot().preedit, "", "第二次才清整段");
+
+        let mut ja = ja_romaji_session();
+        type_ja(&mut ja, "su");
+        ja.press(Key::new(KeyCode::Down, None, false));
+        let ja_before = ja.snapshot().preedit;
+        assert!(!ja_before.is_empty());
+        ja.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(ja.snapshot().preedit, ja_before, "日文 lane 只關窗");
+        ja.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(ja.snapshot().preedit, "", "第二次才清整段");
     }
 
     /// 逐字路徑的門檻與一般路徑相同：平均候選數不足就不呼叫。

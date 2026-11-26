@@ -6,6 +6,37 @@
 
 use super::*;
 
+/// 一次按鍵在固定優先序下要執行的動作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum KeyAction {
+    FinishComposition,
+    Escape,
+    ForgetCandidate,
+    DeleteForward,
+    Backspace,
+    ToggleJapaneseScript,
+    JapaneseTransform(crate::ja::live::KanaTransform),
+    Space,
+    Down,
+    Up,
+    Page(isize),
+    CandidateEdge(bool),
+    Tab,
+    ResizeSegment(isize),
+    MoveCursor(isize),
+    Char(char),
+    /// 組字中沒有對應動作，按鍵由組字區吃掉。
+    Ignore,
+}
+
+/// `press()` 是否需要重建畫面。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum KeyOutcome {
+    Changed,
+    /// Tab 在沒有補全可用的字面尾巴上是 no-op；不要重建。
+    Unchanged,
+}
+
 /// 空白要交給哪一條 lane。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpaceLane {
@@ -21,6 +52,137 @@ impl Session {
     /// 才交給候選介面或一般按鍵。回傳 `true` 表示這一鍵已被吃掉。
     pub(super) fn key_preprocess(&mut self, key: &Key) -> bool {
         self.segments_press(key)
+    }
+
+    /// 依固定優先序處理一鍵：候選介面 → lane 專屬 → 全域。
+    ///
+    /// `press()` 只呼叫這一個入口；回傳 `Unchanged` 表示這一鍵沒有改動狀態，
+    /// 呼叫端要直接回目前快照，不要重建。
+    pub(super) fn key_policy(&mut self, key: Key) -> KeyOutcome {
+        match self.key_action(&key) {
+            KeyAction::FinishComposition => self.finish_composition(),
+            KeyAction::Escape => self.escape(),
+            KeyAction::ForgetCandidate => self.forget_candidate(),
+            KeyAction::DeleteForward => self.delete_forward(),
+            KeyAction::Backspace => self.backspace(),
+            KeyAction::ToggleJapaneseScript => {
+                self.ja_toggle_script();
+            }
+            KeyAction::JapaneseTransform(kind) => {
+                self.ja_transform(kind);
+            }
+            KeyAction::Space => self.space(),
+            KeyAction::Down => self.down(),
+            KeyAction::Up => self.up(),
+            KeyAction::Page(delta) => self.page_step(delta),
+            KeyAction::CandidateEdge(end) => self.candidate_edge(end),
+            KeyAction::Tab => return self.tab(),
+            KeyAction::ResizeSegment(delta) => self.resize_segment(delta),
+            KeyAction::MoveCursor(delta) => self.navigate(delta),
+            KeyAction::Char(ch) => self.press_char(ch),
+            KeyAction::Ignore => {}
+        }
+        KeyOutcome::Changed
+    }
+
+    /// 按鍵決策本體；先候選介面，再 lane 專屬，最後全域。
+    fn key_action(&self, key: &Key) -> KeyAction {
+        if let Some(action) = self.candidate_key(key) {
+            return action;
+        }
+        if let Some(action) = self.lane_key(key) {
+            return action;
+        }
+        self.global_key(key)
+    }
+
+    /// 第一層：候選介面。Enter／Esc／Tab、方向鍵、換頁與 Shift＋Delete／
+    /// Backspace 都先由候選狀態決定；候選窗沒開時 handler 自己會退回一般行為。
+    fn candidate_key(&self, key: &Key) -> Option<KeyAction> {
+        match key.code {
+            KeyCode::Enter => Some(KeyAction::FinishComposition),
+            KeyCode::Escape => Some(KeyAction::Escape),
+            KeyCode::Tab => Some(KeyAction::Tab),
+            KeyCode::Down => Some(KeyAction::Down),
+            KeyCode::Up => Some(KeyAction::Up),
+            KeyCode::PageDown => Some(KeyAction::Page(1)),
+            KeyCode::PageUp => Some(KeyAction::Page(-1)),
+            KeyCode::Home => Some(KeyAction::CandidateEdge(false)),
+            KeyCode::End => Some(KeyAction::CandidateEdge(true)),
+            // 沒有候選窗時方向鍵只移游標；有窗時由 `navigate` 依 lane 決定
+            // 換候選或移游標，決策留在同一條路徑。
+            KeyCode::ArrowRight if !key.shift => Some(KeyAction::MoveCursor(1)),
+            KeyCode::ArrowLeft if !key.shift => Some(KeyAction::MoveCursor(-1)),
+            // 候選窗的反悔鍵；沒有候選窗時 Shift＋Delete／Backspace 仍照
+            // 一般刪除處理，所以不在這裡攔。
+            KeyCode::Delete if key.shift && self.candidate_window => {
+                Some(KeyAction::ForgetCandidate)
+            }
+            KeyCode::Backspace if key.shift && self.candidate_window => {
+                Some(KeyAction::ForgetCandidate)
+            }
+            _ => None,
+        }
+    }
+
+    /// 第二層：lane 專屬。注音的聲調已在 `key_preprocess()` 先行處理；這裡
+    /// 只分派空白、刪除、日文轉換鍵與一般字元。
+    fn lane_key(&self, key: &Key) -> Option<KeyAction> {
+        match key.code {
+            KeyCode::Delete => Some(KeyAction::DeleteForward),
+            KeyCode::Backspace => Some(KeyAction::Backspace),
+            KeyCode::F(n) if KeyCode::F(n) == self.config.ja_toggle_key => {
+                Some(KeyAction::ToggleJapaneseScript)
+            }
+            KeyCode::F(6) => Some(KeyAction::JapaneseTransform(
+                crate::ja::live::KanaTransform::Hiragana,
+            )),
+            KeyCode::F(8) => Some(KeyAction::JapaneseTransform(
+                crate::ja::live::KanaTransform::HalfwidthKana,
+            )),
+            KeyCode::F(9) => Some(KeyAction::JapaneseTransform(
+                crate::ja::live::KanaTransform::FullwidthLatin,
+            )),
+            KeyCode::F(10) => Some(KeyAction::JapaneseTransform(
+                crate::ja::live::KanaTransform::HalfwidthLatin,
+            )),
+            KeyCode::Space => Some(KeyAction::Space),
+            KeyCode::ArrowRight if key.shift => Some(KeyAction::ResizeSegment(1)),
+            KeyCode::ArrowLeft if key.shift => Some(KeyAction::ResizeSegment(-1)),
+            KeyCode::Char(ch) => Some(KeyAction::Char(ch)),
+            _ => None,
+        }
+    }
+
+    /// 第三層：全域。候選介面與 lane 都沒有對應時，只留下忽略。
+    fn global_key(&self, _key: &Key) -> KeyAction {
+        KeyAction::Ignore
+    }
+
+    /// `Tab`：先看字面尾巴，再看選取模式，最後才是補全／下一個候選。
+    fn tab(&mut self) -> KeyOutcome {
+        if !self.literal_tail.is_empty() && self.suggestion.is_none() {
+            // 英文模式是 raw input，沒有 suggestion：Tab 沒有可補全的東西，
+            // 整鍵 no-op，連 rebuild 都不做。
+            return KeyOutcome::Unchanged;
+        }
+        if self.navigating && !self.candidates.is_empty() {
+            // 選取模式中的 Tab 換下一個候選；候選選取優先於補全。
+            self.move_highlight(1);
+            return KeyOutcome::Changed;
+        }
+        let accepted = self.config.mode == Mode::Mixed
+            && !self.in_zh_lane()
+            && !self.in_ja_lane()
+            && self.config.english_autocomplete
+            && self.ascii.accept_suggestion();
+        if !accepted && !self.accept_suggestion() {
+            self.move_highlight(1);
+            if self.config.mode == Mode::Mixed {
+                self.navigating = true;
+            }
+        }
+        KeyOutcome::Changed
     }
 
     /// 空白：三個 lane 共用同一個入口，只差在 `SpaceLane`。
@@ -283,4 +445,76 @@ enum DeleteLane {
     Mixed,
     Zh,
     Ja,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session() -> Session {
+        Session::new(SessionConfig::new(Mode::Mixed))
+    }
+
+    fn key(code: KeyCode) -> Key {
+        Key::new(code, None, false)
+    }
+
+    /// 候選介面優先：Enter／Esc／Tab 與方向鍵都在 lane 之前決定。
+    #[test]
+    fn key_action_candidate_interface_comes_first() {
+        let s = session();
+        assert_eq!(
+            s.key_action(&key(KeyCode::Enter)),
+            KeyAction::FinishComposition
+        );
+        assert_eq!(s.key_action(&key(KeyCode::Escape)), KeyAction::Escape);
+        assert_eq!(s.key_action(&key(KeyCode::Tab)), KeyAction::Tab);
+        assert_eq!(
+            s.key_action(&key(KeyCode::ArrowRight)),
+            KeyAction::MoveCursor(1)
+        );
+        assert_eq!(s.key_action(&key(KeyCode::Space)), KeyAction::Space);
+        assert_eq!(s.key_action(&key(KeyCode::Backspace)), KeyAction::Backspace);
+        assert_eq!(
+            s.key_action(&key(KeyCode::Delete)),
+            KeyAction::DeleteForward
+        );
+    }
+
+    /// Shift＋方向鍵仍屬 lane 的片段調整，不落到候選換頁。
+    #[test]
+    fn key_action_shift_arrows_resize_segment() {
+        let s = session();
+        let mut right = key(KeyCode::ArrowRight);
+        right.shift = true;
+        assert_eq!(s.key_action(&right), KeyAction::ResizeSegment(1));
+        let mut left = key(KeyCode::ArrowLeft);
+        left.shift = true;
+        assert_eq!(s.key_action(&left), KeyAction::ResizeSegment(-1));
+    }
+
+    /// Esc 層級：字面尾巴 → 候選窗 → 注音 pending → 整段。
+    #[test]
+    fn escape_layer_follows_fixed_priority() {
+        let mut s = session();
+        assert_eq!(s.escape_layer(), EscapeLayer::Composition);
+        s.candidate_window = true;
+        assert_eq!(s.escape_layer(), EscapeLayer::CandidateWindow);
+        s.literal_tail.push('a');
+        assert_eq!(s.escape_layer(), EscapeLayer::LiteralTail);
+    }
+
+    /// 刪除單位由 lane 決定；日文目前沒有 Delete 動作（既有缺口）。
+    #[test]
+    fn delete_lane_keeps_japanese_gap() {
+        let mut s = session();
+        assert_eq!(s.backspace_lane(), BackspaceLane::Mixed);
+        assert_eq!(s.delete_lane(), DeleteLane::Mixed);
+        s.literal_tail.push('a');
+        assert_eq!(s.backspace_lane(), BackspaceLane::LiteralTail);
+        s.literal_tail.clear();
+        s.config.ja_only = true;
+        assert_eq!(s.backspace_lane(), BackspaceLane::Ja);
+        assert_eq!(s.delete_lane(), DeleteLane::Ja);
+    }
 }
