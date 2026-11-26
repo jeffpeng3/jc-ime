@@ -6,6 +6,9 @@
 //! 多欄時每一欄是一條直排，先填滿一欄的十列，再換下一欄。因此頁內索引
 //! 換算成 `(列, 欄)` 是 `(index % rows, index / rows)`；數字鍵 `1`–`0` 是
 //! 列號，只在目前這一欄內選取。
+//!
+//! 移動規則：`↑`／`↓` 是頁內線性 `-1`／`+1`，跨欄自然接續；`←`／`→` 是
+//! 跳一整欄 `-rows`／`+rows`。直向單欄時左右不移動。
 
 /// 候選窗預設列數。
 pub const DEFAULT_ROWS: usize = 10;
@@ -93,76 +96,80 @@ impl CandidateLayout {
         (self.row(index), self.column(index))
     }
 
-    /// 由目前索引在同一個直排往下移一列，欄內頭尾相接。
+    /// 由目前索引往下移一項，跨欄時自然接到下一欄第一列。
+    ///
+    /// 到頁內最後一項時回到本頁第一項；不跨頁。
     pub fn down(self, index: usize, count: usize) -> usize {
-        self.move_in_column(index, count, 1)
+        if count == 0 {
+            return 0;
+        }
+        let index = index.min(count - 1);
+        let (page_start, page_end) = self.page_span(index, count);
+        if index + 1 < page_end {
+            index + 1
+        } else {
+            page_start
+        }
     }
 
-    /// 由目前索引在同一個直排往上移一列，欄內頭尾相接。
+    /// 由目前索引往上移一項，跨欄時自然接到上一欄最後一列。
+    ///
+    /// 到頁內第一項時回到本頁最後一項；不跨頁。
     pub fn up(self, index: usize, count: usize) -> usize {
-        self.move_in_column(index, count, -1)
+        if count == 0 {
+            return 0;
+        }
+        let index = index.min(count - 1);
+        let (page_start, page_end) = self.page_span(index, count);
+        if index > page_start {
+            index - 1
+        } else {
+            page_end - 1
+        }
     }
 
-    /// 由目前索引往左換一欄，停在同一個列號。
+    /// 由目前索引往左跳一欄（十項），停在同一個列號。
+    ///
+    /// 直向單欄或已在本頁第一欄時不移動。
     pub fn left(self, index: usize, count: usize) -> usize {
-        self.move_column(index, count, -1)
+        self.jump_column(index, count, -1)
     }
 
-    /// 由目前索引往右換一欄，停在同一個列號。
+    /// 由目前索引往右跳一欄（十項），停在同一個列號。
+    ///
+    /// 直向單欄或已在本頁最後一欄時不移動。
     pub fn right(self, index: usize, count: usize) -> usize {
-        self.move_column(index, count, 1)
+        self.jump_column(index, count, 1)
     }
 
-    /// 目前這一欄在頁內的起始索引與實際項數。
-    fn column_bounds(self, index: usize, count: usize) -> (usize, usize, usize) {
+    /// 目前索引所在頁的起點與終點（終點不含）。
+    fn page_span(self, index: usize, count: usize) -> (usize, usize) {
         let page_size = self.page_size().max(1);
         let page_start = index / page_size * page_size;
-        let within = index.saturating_sub(page_start);
-        let column = within / self.rows.max(1);
-        let start = page_start + column * self.rows.max(1);
-        let len = count.saturating_sub(start).min(self.rows.max(1));
-        (start, len, within % self.rows.max(1))
+        (page_start, (page_start + page_size).min(count))
     }
 
-    fn move_in_column(self, index: usize, count: usize, delta: isize) -> usize {
+    fn jump_column(self, index: usize, count: usize, delta: isize) -> usize {
         if count == 0 {
             return 0;
         }
         let index = index.min(count - 1);
-        let (start, len, row) = self.column_bounds(index, count);
-        if len == 0 {
+        if self.columns <= VERTICAL_COLUMNS {
             return index;
         }
-        let len = len as isize;
-        let mut next = (row as isize + delta) % len;
-        if next < 0 {
-            next += len;
-        }
-        start + next as usize
-    }
-
-    fn move_column(self, index: usize, count: usize, delta: isize) -> usize {
-        if count == 0 {
-            return 0;
-        }
-        let index = index.min(count - 1);
-        let page_size = self.page_size().max(1);
-        let page_start = index / page_size * page_size;
-        let page_len = count.saturating_sub(page_start).min(page_size);
-        let used_columns = page_len.div_ceil(self.rows.max(1)).max(1);
-        let within = index.saturating_sub(page_start);
-        let column = within / self.rows.max(1);
-        let row = within % self.rows.max(1);
-        let mut target = (column as isize + delta) % used_columns as isize;
-        if target < 0 {
-            target += used_columns as isize;
-        }
-        let start = page_start + target as usize * self.rows.max(1);
-        let len = count.saturating_sub(start).min(self.rows.max(1));
-        if len == 0 {
+        let target = if delta < 0 {
+            index.checked_sub(self.rows)
+        } else {
+            index.checked_add(self.rows)
+        };
+        let Some(target) = target else {
+            return index;
+        };
+        let (page_start, page_end) = self.page_span(index, count);
+        if target < page_start || target >= page_end {
             return index;
         }
-        start + row.min(len - 1)
+        target
     }
 }
 
@@ -181,17 +188,50 @@ mod tests {
     #[test]
     fn test_two_column_down_moves_one_row() {
         let layout = CandidateLayout::new(DEFAULT_ROWS, 2);
-        assert_eq!(layout.down(1, 25), 2, "兩欄時 ↓ 在同一欄換到下一列");
+        assert_eq!(layout.down(1, 25), 2, "↓ 一次一項");
         assert_eq!(layout.up(2, 25), 1);
-        assert_eq!(layout.down(9, 25), 0, "同一欄底部接回頂端");
+        assert_eq!(layout.down(9, 25), 10, "第一欄底部接到第二欄第一列");
     }
 
     #[test]
     fn test_four_column_down_moves_one_row() {
         let layout = CandidateLayout::new(DEFAULT_ROWS, 4);
-        assert_eq!(layout.down(1, 45), 2, "四欄時 ↓ 只換到同欄下一列");
+        assert_eq!(layout.down(1, 45), 2, "↓ 一次一項");
         assert_eq!(layout.up(2, 45), 1);
-        assert_eq!(layout.down(11, 45), 12, "第二欄也是同一條直排");
+        assert_eq!(layout.down(11, 45), 12, "第二欄也是線性 ±1");
+    }
+
+    #[test]
+    fn test_down_moves_into_next_column() {
+        let layout = CandidateLayout::new(DEFAULT_ROWS, 4);
+        assert_eq!(layout.down(9, 45), 10, "第 1 欄第 10 列 -> 第 2 欄第 1 列");
+    }
+
+    #[test]
+    fn test_up_moves_into_previous_column() {
+        let layout = CandidateLayout::new(DEFAULT_ROWS, 4);
+        assert_eq!(layout.up(10, 45), 9, "第 2 欄第 1 列 -> 第 1 欄第 10 列");
+    }
+
+    #[test]
+    fn test_left_right_jump_ten() {
+        let layout = CandidateLayout::new(DEFAULT_ROWS, 4);
+        assert_eq!(layout.right(3, 45), 13, "→ 跳一整欄");
+        assert_eq!(layout.left(13, 45), 3, "← 跳一整欄");
+    }
+
+    #[test]
+    fn test_down_at_page_end_wraps_to_first() {
+        let layout = CandidateLayout::new(DEFAULT_ROWS, 4);
+        assert_eq!(layout.down(39, 45), 0, "頁內最後一項回到頁首");
+        assert_eq!(layout.down(79, 85), 40, "第二頁也是頁內環繞");
+    }
+
+    #[test]
+    fn test_vertical_mode_left_right_is_noop() {
+        let layout = CandidateLayout::default();
+        assert_eq!(layout.right(3, 25), 3);
+        assert_eq!(layout.left(3, 25), 3);
     }
 
     #[test]
@@ -202,6 +242,7 @@ mod tests {
         assert_eq!(layout.cell(13), (3, 1));
         assert_eq!(layout.right(3, 45), 13, "→ 從欄 0 列 3 到欄 1 列 3");
         assert_eq!(layout.left(13, 45), 3, "← 回到欄 0 列 3");
+        assert_eq!(layout.right(39, 45), 39, "最後一欄不再往右");
     }
 
     #[test]

@@ -28,9 +28,16 @@
 
 | 狀態 | 列數 | 欄數 | `↑`／`↓` | `←`／`→` | 數字鍵 |
 |---|---|---|---|---|---|
-| 預設直向 | 10 | 1 | 同欄一次一列 | 第一次切換成四欄 | 選該頁第 1–10 項 |
-| 橫向 | 10 | 4 | 同欄一次一列 | 換欄，停在同一列 | 選目前欄的第 1–10 列 |
+| 預設直向 | 10 | 1 | 頁內線性 ±1 | 第一次切換成四欄；單欄時不再移動 | 選該頁第 1–10 項 |
+| 橫向 | 10 | 4 | 頁內線性 ±1，跨欄自然接續 | 跳一整欄（±10），停在同一列 | 選目前欄的第 1–10 列 |
 
+- `↑`／`↓` 就是索引 `-1`／`+1`：
+  - 第 1 欄第 10 列按 `↓` 到第 2 欄第 1 列。
+  - 第 2 欄第 1 列按 `↑` 到第 1 欄第 10 列。
+- 頁內最後一項按 `↓` 回到本頁第一項；頁內第一項按 `↑` 到本頁最後一項。
+  不跨頁，換頁只由 `PageUp`／`PageDown` 負責。
+- `←`／`→` 跳一整欄：索引 `-10`／`+10`。直向單欄時是 no-op；四欄時在
+  本頁第一欄按 `←`、最後一欄按 `→` 也不移動。
 - 一頁容量是「列數 × 欄數」：直向十項，橫向四十項。
 - 頁內索引的版面位置是 `(列, 欄) = (index % 10, index / 10)`。
 - 換頁只移動 `highlighted`，頁碼一律由 `highlighted / page_size` 推導。
@@ -82,6 +89,11 @@
 - `test_arrow_left_right_switches_column_same_row`
 - `test_digit_in_vertical_mode_selects_item`
 - `test_page_down_keeps_column_count`
+- `test_down_moves_into_next_column`
+- `test_up_moves_into_previous_column`
+- `test_left_right_jump_ten`
+- `test_down_at_page_end_wraps_to_first`
+- `test_vertical_mode_left_right_is_noop`
 - `test_enter_still_two_stage_when_selecting_variant`（前導變體窗選了不同字時）
 
 `jc-tsf`：

@@ -2269,7 +2269,7 @@ impl Session {
         self.highlighted = index as usize;
     }
 
-    /// `↑`／`↓`：在同一個直排內移動一列。
+    /// `↑`／`↓`：頁內線性移動一項，跨欄時自然接續。
     pub(super) fn move_row(&mut self, delta: isize) {
         let len = self.candidates.len();
         if len == 0 {
@@ -2284,7 +2284,7 @@ impl Session {
         };
     }
 
-    /// `←`／`→`：在直排之間移動，停在同一個列號。
+    /// `←`／`→`：跳一整欄（十項），停在同一個列號；單欄時不移動。
     pub(super) fn move_column(&mut self, delta: isize) {
         let len = self.candidates.len();
         if len == 0 {
