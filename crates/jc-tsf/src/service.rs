@@ -1918,9 +1918,11 @@ impl TextService_Impl {
 
     /// 英文模式組字中的 Enter／Backspace／Escape／Tab：只在 `OnKeyDown` 呼叫。
     ///
-    /// 回傳 true＝吃掉。Enter 送出組字後要放行給宿主，讓一次 Enter 同時送出與
-    /// 換行：相容層程式（IMM32）用 [`Self::complete_and_repost_enter`] 把 Enter
-    /// 重排回去；一般 TSF 程式讓 `OnKeyDown` 回 false 放行原本的按鍵。
+    /// 回傳 true＝吃掉。Enter 送出組字後再重排給宿主，讓一次 Enter 同時送出與
+    /// 換行：相容層程式（IMM32）用 [`Self::complete_and_repost_enter`] 經 CUAS
+    /// 完成組字；一般 TSF 程式送 key 後用 [`Self::repost_enter_key`] 把 Enter
+    /// 排回焦點視窗。兩條路徑都維持「TestKeyDown 吃、KeyDown 也吃」的一致，
+    /// 重排失敗才回 false 放行原本的 Enter。
     fn english_ime_key(
         &self,
         ctx: Option<&ITfContext>,
@@ -1948,8 +1950,11 @@ impl TextService_Impl {
                 return true;
             }
             self.present(ctx, &next);
-            // 組字已送出；回 false 把原本的 Enter 放行給宿主（換行／預設按鈕）。
-            return false;
+            let reposted = self.repost_enter_key(vk, lparam);
+            zlog!("英文組字 Enter：重排給宿主 reposted={}", reposted);
+            // 重排成功：吃掉原本的鍵，重排回來的 Enter 只作用一次。
+            // 重排失敗：放行原本的 Enter，讓宿主仍然收到換行。
+            return reposted;
         }
         let next = self.state.borrow_mut().session.key(key);
         zlog!(
@@ -1966,6 +1971,32 @@ impl TextService_Impl {
         self.present(ctx, &next);
         self.state.borrow_mut().eaten.insert(vk);
         true
+    }
+
+    /// 把 Enter 排回焦點視窗，讓一般 TSF 程式也能在組字送出後收到 Enter。
+    ///
+    /// `OnTestKeyDown` 已經宣告吃掉，`OnKeyDown` 就必須維持吃掉再重排，否則
+    /// WPF 這類會用 TestKeyDown 預測的宿主可能讓按鍵消失。重排失敗時回 false，
+    /// 由呼叫端放行原本的 Enter。
+    fn repost_enter_key(&self, vk: u32, lparam: isize) -> bool {
+        let cuas = self.state.borrow().cuas.clone();
+        let target = cuas.focus();
+        if target.0.is_null() {
+            zdebug!("英文組字 Enter：沒有焦點視窗，不重排");
+            return false;
+        }
+        self.state.borrow_mut().pending_repost = Some(PendingRepost {
+            vk,
+            lparam,
+            key_down_seen: false,
+        });
+        if cuas.repost(target, vk, lparam) {
+            zdebug!("英文組字 Enter 重排到 {:#x}", target.0 as usize);
+            true
+        } else {
+            self.state.borrow_mut().pending_repost = None;
+            false
+        }
     }
 
     fn end_word_with(&self, ctx: Option<&ITfContext>, vk: u32, key: &str, typed: String) -> bool {
@@ -2640,12 +2671,10 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 self.shift_released(side);
                 return Ok(false.into());
             }
-            Ok(self
-                .state
-                .borrow_mut()
-                .eaten
-                .remove(&(wparam.0 as u32))
-                .into())
+            // keyup 會消費掉 keydown 記下的「吃掉」：同一個 vk 之後由宿主
+            // 正常收到 keydown 時，keyup 不能沿用上一次的記錄。
+            let eaten = self.state.borrow_mut().eaten.remove(&(wparam.0 as u32));
+            Ok(eaten.into())
         })
     }
 
@@ -2843,6 +2872,7 @@ fn foreground_pid() -> u32 {
 #[cfg(all(test, windows))]
 mod english_key_policy_tests {
     use super::*;
+    use crate::cuas::{Complete, Cuas};
     use crate::session::Segment;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         GetKeyboardState, SetKeyboardState, VK_CONTROL, VK_LMENU, VK_LWIN, VK_RMENU, VK_RWIN,
@@ -2854,6 +2884,47 @@ mod english_key_policy_tests {
     const BACKSPACE_LPARAM: isize = 1 | (0x0e << 16);
     const VK_RETURN: u32 = 0x0d;
     const RETURN_LPARAM: isize = 1 | (0x1c << 16);
+    const KEYUP_LPARAM: isize = 1 << 30 | 1 << 31;
+
+    /// 只記錄 repost 次數的假焦點視窗。
+    struct FakeRepost {
+        focus: HWND,
+        reposted: Cell<u32>,
+        ok: bool,
+    }
+
+    impl Cuas for FakeRepost {
+        fn focus(&self) -> HWND {
+            self.focus
+        }
+
+        fn complete(&self, _hwnd: HWND) -> Complete {
+            Complete::NoContext
+        }
+
+        fn has_char(&self, _hwnd: HWND) -> bool {
+            false
+        }
+
+        fn repost(&self, _hwnd: HWND, _vk: u32, _lparam: isize) -> bool {
+            self.reposted.set(self.reposted.get() + 1);
+            self.ok
+        }
+
+        fn ime_hotkey(&self, _vk: u32) -> bool {
+            false
+        }
+    }
+
+    fn install_repost(service: &TextService, ok: bool) -> Rc<FakeRepost> {
+        let fake = Rc::new(FakeRepost {
+            focus: HWND(0x1000 as *mut std::ffi::c_void),
+            reposted: Cell::new(0),
+            ok,
+        });
+        service.state.borrow_mut().cuas = fake.clone();
+        fake
+    }
 
     /// 只保留英文模式與組字狀態，清掉 Ctrl／Alt／Win／Shift。
     fn plain_keyboard() {
@@ -2935,14 +3006,38 @@ mod english_key_policy_tests {
             before + 1,
             "一次 Backspace 只能送一次 key op"
         );
+        assert!(
+            service.state.borrow().eaten.contains(&VK_BACKSPACE),
+            "keydown 要吃，keyup 才成對"
+        );
+
+        let (wu, lu) = (
+            WPARAM(VK_BACKSPACE as usize),
+            LPARAM(BACKSPACE_LPARAM | KEYUP_LPARAM),
+        );
+        let tested_up = unsafe { sink.OnTestKeyUp(&ctx, wu, lu) }.unwrap().as_bool();
+        assert!(tested_up, "TestKeyUp 與 KeyDown 一致");
+        let up = unsafe { sink.OnKeyUp(&ctx, wu, lu) }.unwrap().as_bool();
+        assert!(up, "KeyUp 吃掉並消費記錄");
+        assert!(
+            !service.state.borrow().eaten.contains(&VK_BACKSPACE),
+            "keyup 後不能留下 eaten"
+        );
+
+        // 組字結束後宿主自己收到同一個鍵：keyup 不得沿用上一次的記錄。
+        let tested_up = unsafe { sink.OnTestKeyUp(&ctx, wu, lu) }.unwrap().as_bool();
+        assert!(!tested_up, "新的 keyup 不能還說要吃");
+        let up = unsafe { sink.OnKeyUp(&ctx, wu, lu) }.unwrap().as_bool();
+        assert!(!up, "宿主自己的 keyup 要放行");
     }
 
-    /// Enter 只送一次 commit，而且 OnKeyDown 回 false 把 Enter 放行給宿主。
+    /// Enter 送出組字後重排給宿主，TestKeyDown／KeyDown 都回吃掉。
     #[test]
-    fn english_enter_commits_once_and_passes_the_key_to_the_host() {
+    fn english_enter_commits_once_and_reposts_to_the_host() {
         plain_keyboard();
         let service = ComObject::new(TextService::new());
         english_composing(&service);
+        let fake = install_repost(&service, true);
         let (_doc, ctx) = super::support::host(super::support::Sync::Run);
         let sink: ITfKeyEventSink = service.to_interface();
         let (w, l) = (WPARAM(VK_RETURN as usize), LPARAM(RETURN_LPARAM));
@@ -2953,13 +3048,43 @@ mod english_key_policy_tests {
         assert_eq!(key_ops(&service), before, "TestKeyDown 不得送 key op");
 
         let eaten = unsafe { sink.OnKeyDown(&ctx, w, l) }.unwrap().as_bool();
-        assert!(!eaten, "Enter 送出組字後要放行給宿主");
+        assert!(eaten, "TestKeyDown 與 OnKeyDown 都要吃掉");
         assert_eq!(
             key_ops(&service),
             before + 1,
             "一次 Enter 只能送一次 key op"
         );
+        assert_eq!(fake.reposted.get(), 1, "Enter 只重排一次");
+        assert!(
+            service.state.borrow().pending_repost.is_some(),
+            "重排回來前要記住這一鍵"
+        );
         assert!(!service.state.borrow().composing, "組字已送出");
+
+        // 重排回來的 Enter：TestKeyDown 認得是同一個重排鍵，交給宿主。
+        let delivered = unsafe { sink.OnTestKeyDown(&ctx, w, l) }.unwrap().as_bool();
+        assert!(!delivered, "重排的 Enter 由宿主處理，只換行一次");
+        assert!(service.state.borrow().pending_repost.is_none());
+    }
+
+    /// 重排失敗時回 false，讓原本的 Enter 給宿主，不會兩次都生效。
+    #[test]
+    fn english_enter_falls_back_when_repost_fails() {
+        plain_keyboard();
+        let service = ComObject::new(TextService::new());
+        english_composing(&service);
+        let fake = install_repost(&service, false);
+        let (_doc, ctx) = super::support::host(super::support::Sync::Run);
+        let sink: ITfKeyEventSink = service.to_interface();
+        let (w, l) = (WPARAM(VK_RETURN as usize), LPARAM(RETURN_LPARAM));
+
+        let eaten = unsafe { sink.OnKeyDown(&ctx, w, l) }.unwrap().as_bool();
+        assert!(!eaten, "重排失敗時放行原本的 Enter");
+        assert_eq!(fake.reposted.get(), 1, "有嘗試重排一次");
+        assert!(
+            service.state.borrow().pending_repost.is_none(),
+            "失敗不能留下重排等待"
+        );
     }
 }
 

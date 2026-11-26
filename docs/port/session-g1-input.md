@@ -72,9 +72,11 @@ Branch：`session-g1-input`（base：`session-core-split`）
 
 `crates/jc-tsf/src/service.rs` 的 `english_key_policy` 只回「這一鍵由輸入法處理」
 的決策，不送 key、不 `present`；實際的 `session.key` 只在 `OnKeyDown` 執行一次，
-避免 TestKeyDown／KeyDown 重複送同一鍵。Enter 在一般 TSF 程式由 `OnKeyDown`
-回 `false` 放行原本的按鍵；IMM32 程式用 `complete_and_repost_enter` 經相容層完成
-組字後把 Enter 重排回焦點視窗，兩條路徑都只換行一次。
+避免 TestKeyDown／KeyDown 重複送同一鍵。Enter 在兩條路徑都維持「TestKeyDown
+吃、KeyDown 也吃」：一般 TSF 程式送出組字後用 `PostMessage` 把 Enter 重排回
+焦點視窗；IMM32 程式用 `complete_and_repost_enter` 經相容層完成組字後重排。
+重排失敗才放行原本的 Enter，兩條路徑都只換行一次。Backspace／Esc／Tab 的
+`eaten` 記錄會在對應的 `OnKeyUp` 消費掉，不會影響之後宿主自己的 keyup。
 
 Tab 在英文組字期間一律由輸入法吃掉，宿主不能用 Tab 切換焦點。這是刻意與注音
 組字一致：組字中放行 Tab 會讓宿主結束組字，就是原本「Tab 送出＋縮排」的 bug。
