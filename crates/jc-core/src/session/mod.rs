@@ -2029,9 +2029,31 @@ mod tests {
             "預設上限下四欄要排得滿一頁，實際 {} 項",
             s.candidates().len()
         );
-        // 候選排序不因上限提高而改變：前 40 項仍照解碼順序。
-        assert_eq!(s.candidates()[0].surface, "字0");
-        assert_eq!(s.candidates()[39].surface, "字39");
+        // 新排序：[0] 目前值、[1] 原始按鍵，詞典候選從第 3 項開始。
+        assert_eq!(s.candidates()[0].surface, "字");
+        let raw = crate::zh::keyboard::Keyboard::standard()
+            .keys(
+                &crate::zh::syllable::parse_reading("ㄕˋ")
+                    .into_iter()
+                    .next()
+                    .expect("一個音節"),
+            )
+            .expect("音節有按鍵");
+        assert_eq!(s.candidates()[1].surface, raw, "第二項是原始按鍵");
+        let start = s
+            .candidates()
+            .iter()
+            .position(|candidate| candidate.surface == "字0")
+            .expect("字0 應在推薦段");
+        assert!(start >= 2, "字0 要在 [2..] 的推薦段，實際 {start}");
+        // 推薦段仍照解碼順序：字0 之後連續 40 項是字1..字40。
+        let ranked: Vec<String> = s.candidates()[start..]
+            .iter()
+            .take(40)
+            .map(|candidate| candidate.surface.clone())
+            .collect();
+        let want: Vec<String> = (0..40).map(|index| format!("字{index}")).collect();
+        assert_eq!(ranked, want, "前 40 個詞典候選仍照解碼順序");
     }
 
     /// `ㄧˋ` 這種多候選音節在 k=200 時候選數 > 40，四欄第一頁仍能翻到第二頁。
