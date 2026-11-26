@@ -65,10 +65,11 @@ use crate::zh::input::ZhInput;
 use crate::zh::syllable::Syllable;
 use mixed::AsciiInput;
 
-/// 沒有 Shift 的大寫字母：Caps Lock 開啟，或外殼把 `text` 送成 `A` 而
-/// `shift=false`。這種大寫是鍵盤狀態，不是 IME 的 Shift 模式，一律當字面。
+/// 沒有 Shift 的大寫字母：舊外殼把 Caps Lock 的字母直接送成 `A` 而
+/// `shift=false`。這種編碼沒有 caps 旗標，仍當字面；帶 `caps` 旗標的按鍵
+/// 不套這條，交由一般路由處理。
 fn capital_letter_literal(key: &Key) -> Option<char> {
-    if key.shift {
+    if key.shift || key.caps {
         return None;
     }
     let KeyCode::Char(code) = key.code else {
@@ -526,6 +527,8 @@ pub struct Session {
     /// [`crate::zh::keyboard::Keyboard::keys`] 還原按鍵，這一份只記最後一個
     /// 還沒完成的音節。
     pub(super) zh_pending_keys: String,
+    /// 與 `zh_pending_keys` 等長；Caps Lock 位元，退回混打時才套用大小寫。
+    pub(super) zh_pending_caps: String,
     /// Mixed 的純注音候選窗是否只列最後一個音節。
     ///
     /// 按 ↓／空白開窗時成立；候選只顯示游標那一格，但 Enter 仍送出整段。
@@ -671,6 +674,7 @@ impl Session {
             zh_lane: false,
             zh_space_closed: false,
             zh_pending_keys: String::new(),
+            zh_pending_caps: String::new(),
             zh_window_last: false,
             zh_run_breaks: Vec::new(),
             ja_run: false,
@@ -800,6 +804,17 @@ impl Session {
     /// 英文模式是 raw input，沒有東西可以補全。
     pub fn press(&mut self, mut key: Key) -> Snapshot {
         self.expire_segment_view();
+        // Caps Lock 的路由一律用基礎小寫；大小寫只在最後插入字面時套用。
+        // 這樣外殼即使仍把大寫字元放進 text，也不會改變注音鍵的身分。
+        if key.caps {
+            if let KeyCode::Char(ch) = key.code {
+                if ch.is_ascii_alphabetic() {
+                    let base = ch.to_ascii_lowercase();
+                    key.code = KeyCode::Char(base);
+                    key.text = Some(base);
+                }
+            }
+        }
         // 0c 協定把 Shift+A 編成小寫鍵碼加 Shift；風格規則（commit／lower）
         // 用 `text` 判斷大小寫，這裡先補成大寫，兩種外殼編碼才會一致。
         if let Some(text) = Self::shift_literal_text(&key) {
@@ -852,12 +867,12 @@ impl Session {
             } else {
                 // 混打的英數流本來就把大寫留在字面；照一般路徑走，空白與
                 // 後續小寫才會保持原本的相對順序（`ABC DEF`）。
-                self.press_char(text);
+                self.press_char(text, false);
             }
         } else if !self.style_key(&key) && !self.menu_key(&key) {
             // 組字中的 Shift＋字母是字面：保留未完成的注音與既有片段，只把字面
             // 接在最後。風格已處理的 `shift_letter`（commit／lower）先走原路徑。
-            if let Some(text) = Self::shift_literal_text(&key) {
+            if let Some(text) = Self::shift_literal_output(&key) {
                 return self.append_shift_literal(&text);
             }
             if !self.key_preprocess(&key) && self.key_policy(key) == KeyOutcome::Unchanged {
@@ -1592,6 +1607,17 @@ mod tests {
         assert_eq!(s.commit(), candidates[1].surface);
     }
 
+    /// Caps Lock 開著、候選窗選取中，1–0 仍是選列。
+    #[test]
+    fn test_caps_lock_keeps_digit_selection_in_candidate_window() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄐㄧㄥˇ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        let candidates = s.candidates().to_vec();
+        s.press(Key::char('2', false).with_caps());
+        assert_eq!(s.commit(), candidates[1].surface);
+    }
+
     /// 原始輸入固定在第二項，數字鍵 `2` 要能直接選回原始按鍵。
     #[test]
     fn test_digit_selects_raw_input_candidate() {
@@ -2248,6 +2274,18 @@ mod tests {
         }
     }
 
+    /// Caps Lock 開著時打一串鍵；`text` 仍是基礎字元，caps 走旗標。
+    fn type_caps_keys(session: &mut Session, keys: &str) {
+        for ch in keys.chars() {
+            let key = if ch == ' ' {
+                Key::new(KeyCode::Space, None, false).with_caps()
+            } else {
+                Key::char(ch, false).with_caps()
+            };
+            session.press(key);
+        }
+    }
+
     /// 對照 `TestAutomaticMixedChineseEnglishChinese`：英數鍵在注音組字中
     /// 由聲調鍵或空白決定是中文還是英文。
     #[test]
@@ -2718,6 +2756,62 @@ mod tests {
         assert_eq!(snap.preedit, "台ㄨㄢA");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "台ㄨㄢA");
+    }
+
+    /// Caps Lock 旗標只改字面大小寫，不改變路由：w96j0 的 w、j 仍是注音鍵。
+    #[test]
+    fn test_caps_lock_w96j0_stays_zhuyin() {
+        let mut caps = session();
+        type_caps_keys(&mut caps, "w96j0");
+        let caps_snap = caps.snapshot();
+
+        let mut plain = session();
+        type_keys(&mut plain, "w96j0");
+        assert_eq!(
+            caps_snap.preedit,
+            plain.snapshot().preedit,
+            "Caps Lock 不能把注音鍵變成英文字面"
+        );
+        assert_eq!(caps_snap.preedit, "台ㄨㄢ");
+
+        // 補上一聲（空白）後完成同一個詞，Caps Lock 不影響轉換結果。
+        let mut caps = session();
+        type_caps_keys(&mut caps, "w96j0");
+        caps.press(Key::new(KeyCode::Space, None, false).with_caps());
+        assert_eq!(caps.snapshot().preedit, "台灣");
+        caps.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(caps.commit(), "台灣");
+    }
+
+    /// Caps Lock 的英文 run 最後留下字面時才轉大寫。
+    #[test]
+    fn test_caps_lock_english_run_becomes_uppercase() {
+        let mut caps = session();
+        type_caps_keys(&mut caps, "hello");
+        assert_eq!(caps.snapshot().preedit, "HELLO");
+        caps.press(Key::new(KeyCode::Space, None, false));
+        assert_eq!(caps.commit(), "HELLO ");
+
+        let mut plain = session();
+        type_keys(&mut plain, "hello");
+        plain.press(Key::new(KeyCode::Space, None, false));
+        assert_eq!(plain.commit(), "hello ", "Caps Lock 關閉時行為不變");
+    }
+
+    /// Caps Lock＋Shift 照系統反轉成小寫；Shift 字面的既有行為不變。
+    #[test]
+    fn test_caps_lock_shift_letter_is_lowercase() {
+        for text in ['a', 'A'] {
+            let mut s = session();
+            type_keys(&mut s, "w96j0");
+            let snap = s.press(Key::char(text, true).with_caps());
+            assert_eq!(snap.preedit, "台ㄨㄢa", "text={text}");
+        }
+
+        let mut plain = session();
+        type_keys(&mut plain, "w96j0");
+        let snap = plain.press(Key::char('A', true));
+        assert_eq!(snap.preedit, "台ㄨㄢA", "Caps Lock 關閉時 Shift+A 仍是大寫");
     }
 
     /// 混打的英文待定按鍵後面接沒有 Shift 的大寫，兩者直接相連。

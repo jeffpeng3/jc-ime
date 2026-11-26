@@ -649,15 +649,25 @@ pub fn to_jc_request(envelope: &Value) -> Value {
                 // tsf.log 的「call: 寫入失敗，斷線」就是這樣來的。
                 let raw = &envelope["req"]["key"];
                 let private = envelope["req"]["private"].as_bool() == Some(true);
+                let caps = envelope["req"]["caps"].as_bool() == Some(true);
+                let shift = envelope["req"]["shift"].as_bool() == Some(true);
                 if let Some(name) = raw.as_str() {
                     if let Some(mut key) = protocol_key(name) {
                         key.private = private;
+                        key.caps = caps;
+                        key.shift |= shift;
                         return json!({"op": "key", "key": key});
                     }
                 }
                 let mut key = raw.clone();
                 if private && key.is_object() {
                     key["private"] = Value::Bool(true);
+                }
+                if caps && key.is_object() {
+                    key["caps"] = Value::Bool(true);
+                }
+                if shift && key.is_object() {
+                    key["shift"] = Value::Bool(true);
                 }
                 json!({"op": "key", "key": key})
             }
@@ -2007,6 +2017,16 @@ impl Session {
     /// 英文組字中不把翻頁鍵送進引擎；即使引擎有候選，也不能用
     /// `↓`／`↑`／`PageUp`／`PageDown` 開候選窗。
     pub fn key(&mut self, key: &str) -> Snapshot {
+        self.key_with_flags(key, false, false)
+    }
+
+    /// 送一個按鍵並帶上 Caps Lock 旗標；`key` 本身是基礎字元。
+    pub fn key_with_caps(&mut self, key: &str, caps: bool) -> Snapshot {
+        self.key_with_flags(key, caps, false)
+    }
+
+    /// 送一個按鍵與 Caps／Shift 旗標；字串鍵本身保持基礎字元。
+    pub fn key_with_flags(&mut self, key: &str, caps: bool, shift: bool) -> Snapshot {
         if self.english
             && self.english_state.composing()
             && self.english_state.menu.is_none()
@@ -2018,7 +2038,7 @@ impl Session {
             snapshot.navigating = false;
             return snapshot;
         }
-        self.handle(json!({"type": "key", "key": key}))
+        self.handle(json!({"type": "key", "key": key, "caps": caps, "shift": shift}))
     }
 
     /// 送出帶修飾鍵的結構化按鍵；快捷鍵命中時使用。
@@ -2689,6 +2709,27 @@ mod tests {
             jc_proto::Request::Key { key } => {
                 assert_eq!(key.code, jc_proto::KeyCode::Char('l'));
                 assert!(!key.private);
+            }
+            other => panic!("應是 Key 請求：{other:?}"),
+        }
+    }
+
+    /// Caps Lock 只帶旗標，字串鍵本身仍是基礎字元；Shift 另外帶。
+    #[test]
+    fn to_jc_request_carries_caps_and_shift_flags() {
+        let envelope = json!({
+            "op": "handle",
+            "session": 1,
+            "req": {"type": "key", "key": "a", "caps": true, "shift": true},
+        });
+        let request = to_jc_request(&envelope);
+        let parsed: jc_proto::Request = serde_json::from_value(request).unwrap();
+        match parsed {
+            jc_proto::Request::Key { key } => {
+                assert_eq!(key.code, jc_proto::KeyCode::Char('a'));
+                assert_eq!(key.text, Some('a'));
+                assert!(key.caps);
+                assert!(key.shift);
             }
             other => panic!("應是 Key 請求：{other:?}"),
         }

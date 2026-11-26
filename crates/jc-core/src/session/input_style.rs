@@ -770,6 +770,7 @@ impl Session {
             if !self.zh.pending().is_empty() {
                 self.zh.reset();
                 self.zh_pending_keys.clear();
+                self.zh_pending_caps.clear();
                 if !self.composing() {
                     self.commit_style_text(ch.to_string());
                     return true;
@@ -791,12 +792,18 @@ impl Session {
             }
             return true;
         }
-        // Shift＋字母；沒有 Shift 的大寫是 Caps Lock，已在 `Session::press`
-        // 當成字面處理，不套 `shift_letter`。
+        // Shift＋字母；沒有 Shift 的大寫是舊外殼的 Caps Lock 編碼，已在
+        // `Session::press` 當成字面處理，不套 `shift_letter`。帶 `caps` 旗標的
+        // 按鍵仍在這條路徑，但最後大小寫由 `caps XOR shift` 決定。
         if key.shift && ch.is_ascii_uppercase() {
+            let out_ch = if key.caps {
+                ch.to_ascii_lowercase()
+            } else {
+                ch
+            };
             match self.style.rules.shift_letter.as_str() {
                 "commit" => {
-                    let text = format!("{}{}", self.current_text(), ch);
+                    let text = format!("{}{}", self.current_text(), out_ch);
                     self.commit_style_text(text);
                     return true;
                 }

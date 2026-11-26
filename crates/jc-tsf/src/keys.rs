@@ -6,8 +6,10 @@
 //! 排列由核心解讀：只把可見的 ASCII 交給核心；具名鍵用協定名稱；帶 Ctrl／Alt 的組合鍵交還應用程式，
 //! 只有中文模式的 Ctrl＋標點（#168，見 [`ctrl_punct`]）例外。
 //!
-//! Caps Lock 開著時字母一律送大寫字面（中文／混合模式也一樣，#168 反轉），
-//! 不會變成小寫注音鍵；`caps_lock_english=true` 仍由外殼先切英文模式。
+//! Caps Lock 只改最後字面的大小寫，不改變路由：中文／混合模式送給引擎的字母
+//! 用基礎小寫，Caps 由 `Key.caps` 帶過去；數字、標點與注音鍵不受影響。
+//! `caps_lock_english=true` 仍由外殼先切英文模式。
+use crate::log::zlog;
 use jc_proto::{Key, KeyCode};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetKeyState, GetKeyboardState, ToUnicode, VK_BACK, VK_CAPITAL, VK_CONTROL,
@@ -472,13 +474,7 @@ pub fn chord_key_name(vk: u32, lparam: isize) -> Option<String> {
         return Some(format!("f{}", f - VK_F1.0 + 1));
     }
     let key = printable(vk, lparam, false)?;
-    Some(
-        if key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic() {
-            key.to_ascii_lowercase()
-        } else {
-            key
-        },
-    )
+    Some(crate::chord::normalize_key(&key))
 }
 
 /// 這一鍵的正規化 chord；沒有修飾鍵或帶 Win 鍵時回 `None`。
@@ -490,22 +486,23 @@ pub fn chord(vk: u32, lparam: isize) -> Option<String> {
         return None;
     }
     let shift = shift_down();
-    if !(ctrl || alt || shift) {
-        return None;
+    let key = chord_key_name(vk, lparam);
+    let out = key
+        .as_deref()
+        .and_then(|key| crate::chord::chord_string(ctrl, alt, shift, key));
+    // 一般打字沒有修飾鍵，不寫 log；只有快捷鍵候選才留下字串正規化的痕跡。
+    if ctrl || alt || shift {
+        zlog!(
+            "chord vk={} ctrl={} alt={} shift={} key={:?} -> {:?}",
+            vk,
+            ctrl,
+            alt,
+            shift,
+            key,
+            out
+        );
     }
-    let key = chord_key_name(vk, lparam)?;
-    let mut out = String::new();
-    if ctrl {
-        out.push_str("ctrl+");
-    }
-    if alt {
-        out.push_str("alt+");
-    }
-    if shift {
-        out.push_str("shift+");
-    }
-    out.push_str(&key);
-    Some(out)
+    out
 }
 
 /// 命中綁定後送給引擎的結構化按鍵；修飾鍵照當下狀態帶齊。
@@ -551,6 +548,7 @@ pub fn chord_key(vk: u32, lparam: isize) -> Option<Key> {
         ctrl,
         alt,
         private: false,
+        caps: false,
     })
 }
 
@@ -1373,6 +1371,43 @@ mod tests {
                 "沒開 Caps Lock 的 Shift＋/ honor={honor}"
             );
         }
+    }
+
+    #[test]
+    fn caps_lock_does_not_restyle_digits() {
+        // 「Caps Lock 預設小寫」只套英文模式與字母；數字原樣留給 caps 政策。
+        for key in ["1", "9", "0", ",", "."] {
+            for caps_lower in [false, true] {
+                assert_eq!(
+                    style_key(key.into(), false, true, false, caps_lower),
+                    key,
+                    "caps_lower={caps_lower}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn altgr_comma_still_yields_the_base_character() {
+        // AltGr 在 Windows 是 Ctrl＋Alt；printable_with 會先清掉 Ctrl／Alt，
+        // 所以 comma 不會變成別的字元或 0。純函式測試模擬實機的鍵盤狀態。
+        const VK_OEM_COMMA: u32 = 0xbc;
+        let mut state = [0u8; 256];
+        for vk in [
+            VK_CONTROL,
+            VK_LCONTROL,
+            VK_RCONTROL,
+            VK_MENU,
+            VK_LMENU,
+            VK_RMENU,
+        ] {
+            state[vk.0 as usize] = 0x80;
+        }
+        assert_eq!(
+            printable_with(VK_OEM_COMMA, 0x33 << 16, &mut state, false).as_deref(),
+            Some(","),
+            "AltGr＋, 要取得 base 字元，chord 才會是 ctrl+alt+,"
+        );
     }
 
     #[test]

@@ -65,6 +65,12 @@ pub struct Key {
     /// 外殼依欄位判定後隨每個按鍵明確帶值，引擎據此決定要不要學習。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub private: bool,
+    /// Caps Lock 是否開著；`false` 時不寫進 JSON，維持舊協定形狀。
+    ///
+    /// `text` 仍是基礎字元，路由不受 Caps Lock 影響；只有最後插入字面時
+    /// 才用 `caps XOR shift` 決定大小寫。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub caps: bool,
 }
 
 impl Key {
@@ -77,6 +83,7 @@ impl Key {
             ctrl: false,
             alt: false,
             private: false,
+            caps: false,
         }
     }
 
@@ -102,6 +109,12 @@ impl Key {
         self.private = private;
         self
     }
+
+    /// 標記 Caps Lock 開著；字面大小寫由 `caps XOR shift` 決定。
+    pub fn with_caps(mut self) -> Self {
+        self.caps = true;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -122,6 +135,15 @@ mod tests {
         assert_eq!(k.code, KeyCode::Backspace);
         assert_eq!(k.text, None);
         assert!(!k.shift);
+        assert!(!k.caps);
+    }
+
+    #[test]
+    fn caps_flag_is_optional_on_the_wire() {
+        let plain = serde_json::to_string(&Key::char('a', false)).unwrap();
+        assert!(!plain.contains("caps"), "{plain}");
+        let caps = serde_json::to_string(&Key::char('a', false).with_caps()).unwrap();
+        assert!(caps.contains(r#""caps":true"#), "{caps}");
     }
 
     #[test]

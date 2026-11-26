@@ -185,6 +185,26 @@ Alt」的錯誤並繼續等，不會把焦點帶走。只按 Shift、Ctrl、平�
 鍵盤與版面的單元測試在 Linux 可跑；候選窗實際繪製、分頁列的外觀與焦點行為
 仍只能在 Windows 實機確認。
 
+### chord 診斷
+
+0.1.29 盤點時這裡還是「已知缺口：選單沒有渲染」；menu-ui 已補上 `menu`
+狀態、分頁列與 `wants_candidate_window()`。以下 chord 診斷 log 保留，用來分辨
+「快捷鍵沒送到引擎」與「送到但選單狀態沒帶回 TSF」：
+
+```text
+bound_chord vk=... chord=ctrl+alt+, binding=Some("symbol_menu")
+OnKeyDown 結束 vk=... key=... 綁定 chord=ctrl+alt+, eaten=true
+handle_chord 引擎回 ok=true handled=true composing=true ...
+handle_chord snapshot menu=true navigating=false candidates=... title=""
+```
+
+判讀：
+
+- 沒有 `bound_chord`：按鍵沒進 TSF 快捷鍵路徑。
+- `binding=None`：TSF 的 bindings 表沒收到 `symbol_menu`。
+- 有 `handled=true` 且 `menu=true`：引擎與協定都正常，選單交給候選窗畫。
+- `menu=false` 且 `navigating=false`：候選窗不會顯示，要查引擎回傳的 `State.menu`。
+
 ## 熱重載
 
 `crates/jc-engine/src/config_watch.rs`：

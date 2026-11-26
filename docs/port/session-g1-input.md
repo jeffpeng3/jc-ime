@@ -93,18 +93,23 @@ Tab 在英文組字期間一律由輸入法吃掉，宿主不能用 Tab 切換�
   反引號留在組字區（送出時保留），Esc／退格會移除標記。
 - 全形 `Shift+Space` 只在風格版本非 0 時作用；`microsoft` 以外的預設不變。
 
-## 大寫字母一律字面
+## Caps Lock 只改字面大小寫
 
-沒有 Shift 的大寫 ASCII 字母（Caps Lock 開啟，或外殼送來的 `text` 是 `A`
-但 `shift=false`）一律視為字面英文，接在目前組字後面；不進注音／日文狀態機，
-也不會重播既有片段（`w96j0` + `A` 是 `台ㄨㄢA`，`ji3` + `B` 是 `我B`）。
+Caps Lock 是使用者的鍵盤狀態，不是 IME 的 Shift 模式。它只決定字母最後留下
+字面時的大小寫；按鍵要進注音、日文或英文哪條路徑，仍由原本的鍵盤排列與推斷
+決定。候選窗開著時 `1`–`0` 仍是選列。
 
-- `shift_letter` 只管 Shift＋字母。Caps Lock 是使用者的鍵盤狀態，不是 IME 的
-  Shift 模式，所以 Caps Lock 的大寫不套用 `commit`／`lower`，固定保留原字元。
-- TSF 在中文／混合模式也照 Caps Lock 送大寫字面（不再消掉鎖定位元），字母
-  因此不會落進注音狀態機；標點、數字與 Shift 符號不受 Caps Lock 影響。
-  Caps Lock＋Shift 仍照系統反轉成小寫。
-- 混打的英數流本來就把大寫留在字面；這條只在注音／日文狀態機或字面尾巴存在時
-  接手，以免破壞 `ABC DEF` 這種英數流的順序。
+- `shift_letter` 只管 Shift＋字母。
+- Caps Lock 只改字母最後留下字面時的大小寫，**不改變按鍵走哪條路徑**：`w96j0`
+  的 w、j 仍是注音鍵，9、6、0 仍是ㄞ、ˊ、ㄢ，不會變成 `W96J0`。注音、日文
+  推斷與候選都照原本流程。
+- 外殼把 Caps Lock 放在 `Key.caps` 旗標，`text` 維持基礎字元供路由；core 只在
+  真正插入字面時套用 `caps XOR shift`：
+  - Caps on、Shift off：英文字面大寫。
+  - Caps on、Shift on：系統反轉成小寫。
+  - Caps off：行為完全不變。
+- 數字、標點與 Shift 符號不受 Caps Lock 影響；候選窗開著時 `1`–`0` 仍是選列。
+- 舊外殼把 Caps Lock 的字母直接送成沒有 `caps` 旗標的大寫 `A` 時，仍維持舊的
+  字面路徑，不會突然被當成注音鍵。
 - `caps_lock_english=true` 仍優先：TSF 看到 Caps Lock 直接切英文模式，按鍵走
-  英文路徑，核心這條只處理漏進引擎、沒有 Shift 的大寫，兩者不重複。
+  英文路徑，核心這條只處理漏進引擎的 Caps 旗標。

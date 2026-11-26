@@ -351,7 +351,14 @@ impl State {
         let shift_space = key == " " && shift && self.session.style_shift_space();
         // 「Caps Lock 預設小寫」只套英文模式；中文／混合模式的大寫一律是字面（#168 反轉）。
         let caps_lower = english && caps && self.session.style_caps_lower();
-        Some(keys::style_key(key, shift, caps, shift_space, caps_lower))
+        let styled = keys::style_key(key, shift, caps, shift_space, caps_lower);
+        // Caps Lock 只改最後字面的大小寫，不改變路由：送給引擎的鍵仍用基礎
+        // 小寫，caps 由 Key 旗標帶過去。英文模式照原本的 `styled_key`。
+        if !english && caps && styled.len() == 1 && styled.as_bytes()[0].is_ascii_alphabetic() {
+            Some(styled.to_ascii_lowercase())
+        } else {
+            Some(styled)
+        }
     }
 
     fn vocab_keys(&self) -> bool {
@@ -1172,7 +1179,13 @@ impl TextService_Impl {
     /// 修復後 `su` + `3` 應是聲調鍵，補 Down 會讓它又被 suggestion 取代。
     fn handle_key(&self, ctx: Option<&ITfContext>, key: &str) -> bool {
         zlog!("handle_key 送引擎 key={}", key);
-        let snapshot = self.state.borrow_mut().session.key(key);
+        let caps = keys::caps_lock_on() && !self.state.borrow().session.english();
+        let shift = keys::shift_down();
+        let snapshot = self
+            .state
+            .borrow_mut()
+            .session
+            .key_with_flags(key, caps, shift);
         zlog!(
             "handle_key 引擎回 key={} ok={} handled={} composing={} commit_len={} preedit={}",
             key,
@@ -1205,6 +1218,23 @@ impl TextService_Impl {
             snapshot.composing(),
             snapshot.text()
         );
+        // 記下 snapshot 的形狀，實機才能分辨「chord 沒送到」與「送到但沒有
+        // 選單狀態」。menu 有值時候選窗由 menu 顯示，不再依賴 navigating。
+        zlog!(
+            "handle_chord snapshot menu={} navigating={} candidates={} highlight={} title={:?}",
+            snapshot.menu.is_some(),
+            snapshot.navigating,
+            snapshot.candidates.len(),
+            snapshot.highlight,
+            snapshot.candidate_title()
+        );
+        if snapshot.menu.is_none()
+            && !snapshot.navigating
+            && snapshot.composing()
+            && !snapshot.candidates.is_empty()
+        {
+            zlog!("handle_chord：引擎回了候選但 menu=none 且 navigating=false；候選窗不會顯示");
+        }
         let eaten = self.present(ctx, &snapshot);
         self.schedule_ja_live_idle(&snapshot);
         eaten
@@ -1745,11 +1775,20 @@ impl TextService_Impl {
         }
         self.state.borrow_mut().session.maybe_refresh_bindings();
         let chord = keys::chord(vk, lparam)?;
-        self.state
+        let binding = self
+            .state
             .borrow()
             .session
             .binding_for(&chord)
-            .map(|_| chord)
+            .map(str::to_string);
+        zlog!(
+            "bound_chord vk={}({}) chord={} binding={:?}",
+            vk,
+            vk_label(vk),
+            chord,
+            binding
+        );
+        binding.map(|_| chord)
     }
 
     fn wants_key(&self, vk: u32, lparam: isize) -> bool {

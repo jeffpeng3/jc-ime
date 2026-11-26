@@ -10,6 +10,9 @@
 
 pub mod session;
 
+/// 快捷鍵 chord 的正規化（Linux 也編、也測）。
+pub mod chord;
+
 /// 逾時重試政策：單次 I/O 逾時與整體期限分開（Linux 也編、也測）。
 #[cfg(any(windows, test))]
 pub(crate) mod ipc_retry;

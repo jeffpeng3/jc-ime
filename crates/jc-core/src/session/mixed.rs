@@ -464,9 +464,14 @@ fn zh_chain_span(
 #[derive(Debug, Clone, Default)]
 pub struct AsciiInput {
     pending: String,
+    /// 與 `pending` 等長：`1` 表示這一鍵按著 Caps Lock。路由仍用 `pending`
+    /// 的基礎字元，只有最後留下字面時才套用大小寫。
+    pending_caps: String,
     pieces: Vec<AsciiPiece>,
     /// 這次組字實際按過的按鍵流（含空白與聲調）。統一管線用它重算片段。
     typed: String,
+    /// 與 `typed` 等長：Caps Lock 位元，輸出英文字面時套用大小寫。
+    typed_caps: String,
     /// 這個輸入層使用的英文詞表；`None` 時用行程共用的詞表。
     english: Option<std::sync::Arc<English>>,
     /// 待定按鍵已被使用者固定成字面；統一管線不得再改寫成假名。
@@ -474,6 +479,28 @@ pub struct AsciiInput {
 }
 
 impl AsciiInput {
+    /// 依 Caps Lock 位元把字面字母轉成大寫；其他字元原樣。
+    fn cased(text: &str, caps: &str) -> String {
+        text.chars()
+            .zip(caps.chars())
+            .map(|(ch, bit)| {
+                if bit == '1' && ch.is_ascii_alphabetic() {
+                    ch.to_ascii_uppercase()
+                } else {
+                    ch
+                }
+            })
+            .collect()
+    }
+
+    /// 取走待定按鍵，回傳（原始按鍵, 套用 Caps 後的字面）。
+    fn take_pending(&mut self) -> (String, String) {
+        let raw = std::mem::take(&mut self.pending);
+        let caps = std::mem::take(&mut self.pending_caps);
+        let cased = Self::cased(&raw, &caps);
+        (raw, cased)
+    }
+
     /// 建立空狀態。
     pub fn new() -> Self {
         Self::default()
@@ -503,6 +530,23 @@ impl AsciiInput {
         &self.typed
     }
 
+    /// 把 `typed` 中從 `start` 開始的字面套用 Caps Lock 大小寫。
+    ///
+    /// `start` 是位元組位移；`typed_caps` 以字元對齊，所以先換算字元位置。
+    pub(super) fn cased_typed(&self, start: usize, text: &str) -> String {
+        let before = self
+            .typed
+            .get(..start)
+            .map_or(0, |head| head.chars().count());
+        let caps: String = self
+            .typed_caps
+            .chars()
+            .skip(before)
+            .take(text.chars().count())
+            .collect();
+        Self::cased(text, &caps)
+    }
+
     /// 已完成的片段。
     pub fn pieces(&self) -> &[AsciiPiece] {
         &self.pieces
@@ -517,8 +561,10 @@ impl AsciiInput {
     pub fn reset(&mut self) {
         self.literalized = false;
         self.pending.clear();
+        self.pending_caps.clear();
         self.pieces.clear();
         self.typed.clear();
+        self.typed_caps.clear();
     }
 
     /// 已完成的注音音節，依序。
@@ -536,9 +582,16 @@ impl AsciiInput {
     /// 加一個按鍵；空白與聲調鍵交給 [`AsciiInput::space`]／
     /// [`AsciiInput::tone`]。
     pub fn press(&mut self, ch: char) {
+        self.press_caps(ch, false);
+    }
+
+    /// 加一個按鍵，並記下這一鍵是否按著 Caps Lock。
+    pub(super) fn press_caps(&mut self, ch: char, caps: bool) {
         self.literalized = false;
         self.pending.push(ch);
+        self.pending_caps.push(if caps { '1' } else { '0' });
         self.typed.push(ch);
+        self.typed_caps.push(if caps { '1' } else { '0' });
     }
 
     /// 把目前的待定按鍵固定成字面。
@@ -550,7 +603,8 @@ impl AsciiInput {
             return;
         }
         let raw = std::mem::take(&mut self.pending);
-        self.push_literal(&raw);
+        let caps = std::mem::take(&mut self.pending_caps);
+        self.push_literal(&Self::cased(&raw, &caps));
         self.literalized = true;
     }
 
@@ -564,6 +618,8 @@ impl AsciiInput {
         }
         self.push_literal(text);
         self.typed.push_str(text);
+        self.typed_caps
+            .extend(std::iter::repeat_n('0', text.chars().count()));
     }
 
     /// 用新的按鍵流重建待定按鍵與片段。
@@ -572,6 +628,11 @@ impl AsciiInput {
     /// 規則與 [`Session::press_char`] 相同：空白、聲調鍵、其餘按鍵。非 ASCII
     /// 的固定字面直接放回片段，不進待定按鍵。
     pub(super) fn replay(&mut self, keys: &str, lexicon: &dyn Lexicon) {
+        self.replay_caps(keys, false, lexicon);
+    }
+
+    /// 用新的按鍵流重建；`caps` 為真時，這一串字母都記成 Caps Lock 字面。
+    pub(super) fn replay_caps(&mut self, keys: &str, caps: bool, lexicon: &dyn Lexicon) {
         self.reset();
         for ch in keys.chars() {
             if !ch.is_ascii() {
@@ -582,7 +643,11 @@ impl AsciiInput {
             } else if ch == ' ' {
                 self.space(lexicon);
             } else if !self.tone(ch, lexicon) {
-                self.press(ch);
+                if caps {
+                    self.press_caps(ch, true);
+                } else {
+                    self.press(ch);
+                }
             }
         }
     }
@@ -594,6 +659,7 @@ impl AsciiInput {
     /// 空白當一聲吃掉（`c ` → `ㄏ`）。
     pub fn space(&mut self, lexicon: &dyn Lexicon) {
         self.typed.push(' ');
+        self.typed_caps.push('0');
         if self.pending.is_empty() {
             self.push_literal(" ");
             return;
@@ -607,8 +673,8 @@ impl AsciiInput {
                 self.push_zh(syllable);
                 return;
             }
-            let raw = std::mem::take(&mut self.pending);
-            self.push_literal(&format!("{raw} "));
+            let (_raw, cased) = self.take_pending();
+            self.push_literal(&format!("{cased} "));
             return;
         }
         // R2：前一個英數 run 加上這個空白可以被注音完整解析，而且最後一個
@@ -632,8 +698,8 @@ impl AsciiInput {
             &crate::mixed_latin::Options::default(),
             &adapter,
         ) {
-            let raw = std::mem::take(&mut self.pending);
-            self.push_literal(&format!("{raw} "));
+            let (_raw, cased) = self.take_pending();
+            self.push_literal(&format!("{cased} "));
             return;
         }
         if let Some(syllable) = mixed_reading(&self.pending, TONE1, &self.pieces, lexicon) {
@@ -647,7 +713,7 @@ impl AsciiInput {
         }
         let display = self.pending_display(lexicon);
         let composer = compose_keys(&self.pending);
-        let raw = std::mem::take(&mut self.pending);
+        let (_raw, cased) = self.take_pending();
         if let Some(mut composer) = composer {
             if display == composer.string() {
                 if let Some(syllable) = composer.add(TONE1) {
@@ -656,7 +722,7 @@ impl AsciiInput {
                 }
             }
         }
-        self.push_literal(&format!("{raw} "));
+        self.push_literal(&format!("{cased} "));
     }
 
     /// 聲調鍵：完成待定按鍵，或照字面留下。
@@ -673,6 +739,7 @@ impl AsciiInput {
             return false;
         }
         self.typed.push(key);
+        self.typed_caps.push('0');
         if let Some(syllable) = mixed_reading(&self.pending, symbol, &self.pieces, lexicon) {
             self.push_zh(syllable);
             return true;
@@ -691,6 +758,7 @@ impl AsciiInput {
         // 不必再為整串跑一次完整規劃。
         if long_literal_keys(&self.pending) {
             self.pending.push(key);
+            self.pending_caps.push('0');
             return true;
         }
         if let Some((at, syllable)) = self.planned_boundary(&with_tone, lexicon) {
@@ -704,6 +772,7 @@ impl AsciiInput {
             return true;
         }
         self.pending.push(key);
+        self.pending_caps.push('0');
         true
     }
 
@@ -725,8 +794,8 @@ impl AsciiInput {
     /// 送出前把剩下的待定按鍵照字面留下。
     pub fn flush(&mut self) {
         if !self.pending.is_empty() {
-            let raw = std::mem::take(&mut self.pending);
-            self.push_literal(&raw);
+            let (_raw, cased) = self.take_pending();
+            self.push_literal(&cased);
         }
     }
 
@@ -759,9 +828,17 @@ impl AsciiInput {
             return false;
         }
         let keep = self.typed.len().saturating_sub(self.pending.len());
+        let keep_chars = self
+            .typed
+            .get(..keep)
+            .map_or(0, |head| head.chars().count());
         self.typed.truncate(keep);
+        self.typed_caps.truncate(keep_chars);
         self.typed.push_str(text);
+        self.typed_caps
+            .extend(std::iter::repeat_n('0', text.chars().count()));
         self.pending = text.to_string();
+        self.pending_caps = "0".repeat(text.chars().count());
         true
     }
 
@@ -835,14 +912,17 @@ impl AsciiInput {
 
     fn split_literal(&mut self, at: usize) {
         let prefix: String = self.pending.chars().take(at).collect();
+        let prefix_caps: String = self.pending_caps.chars().take(at).collect();
         self.pending = self.pending.chars().skip(at).collect();
+        self.pending_caps = self.pending_caps.chars().skip(at).collect();
         if !prefix.is_empty() {
-            self.push_literal(&prefix);
+            self.push_literal(&Self::cased(&prefix, &prefix_caps));
         }
     }
 
     fn push_zh(&mut self, syllable: Syllable) {
         self.pending.clear();
+        self.pending_caps.clear();
         self.pieces.push(AsciiPiece::Zh(syllable));
     }
 
@@ -921,24 +1001,25 @@ impl AsciiInput {
         if raw.is_empty() {
             return String::new();
         }
+        let shown = Self::cased(raw, &self.pending_caps);
         // 長小寫 run 一律照字面顯示：DP 在同一種 run 上也是字面英文，
         // 不必每次按鍵都重跑 prototype／英文詞表查詢。
         if long_literal_keys(raw) {
-            return raw.clone();
+            return shown;
         }
         if prototype().has(raw) {
-            return raw.clone();
+            return shown;
         }
         if !raw.chars().any(char::is_alphabetic) {
-            return raw.clone();
+            return shown;
         }
         // 數字與字母混在一起、任何聲調都組不成音節（5pm、3d）照字面。
         if raw.chars().any(|ch| ch.is_ascii_digit()) && !mixed_reachable(raw, &self.pieces, lexicon)
         {
-            return raw.clone();
+            return shown;
         }
         if reversed_alnum(raw) {
-            return raw.clone();
+            return shown;
         }
         let composer = compose_keys(raw);
         let english_prior =
@@ -947,11 +1028,11 @@ impl AsciiInput {
             && english_prior
             && mixed_reading(raw, TONE1, &self.pieces, lexicon).is_none()
         {
-            return raw.clone();
+            return shown;
         }
         match composer {
             Some(composer) => composer.string(),
-            None => raw.clone(),
+            None => shown,
         }
     }
 }
@@ -2097,7 +2178,8 @@ impl Session {
             // 未完成的音節退化成原始字母，交給混打管線；下一次 ↓ 再開。
             if !self.zh_pending_keys.is_empty() {
                 let ch = self.zh_pending_keys.chars().next().unwrap_or(' ');
-                self.leave_zh_lane_for_mixed(ch);
+                let caps = self.zh_pending_caps.starts_with('1');
+                self.leave_zh_lane_for_mixed(ch, caps);
             }
             return false;
         }
@@ -2202,6 +2284,7 @@ impl Session {
         self.zh.reset();
         self.zh_lane = false;
         self.zh_pending_keys.clear();
+        self.zh_pending_caps.clear();
         self.syllables.clear();
         self.cursor = 0;
         self.locks.clear();
@@ -2269,7 +2352,7 @@ impl Session {
     /// 整段固定，後面的 `j/` 就只能切成 `ㄨㄥ`；用原按鍵重播則批次會把
     /// `e` 還給 `ej/`，得到 `りしれ`＋`供`。`watashiwaw96j0` 也走同一條路徑，
     /// 前面的 `watashiwa` 仍切成日文，`w96` 接成注音。
-    pub(super) fn leave_ja_run_for_mixed(&mut self, ch: char) -> bool {
+    pub(super) fn leave_ja_run_for_mixed(&mut self, ch: char, caps: bool) -> bool {
         if !self.ja_run {
             return false;
         }
@@ -2280,9 +2363,9 @@ impl Session {
         }
         self.ja_run = false;
         self.ja_cursor = 0;
-        self.ascii.replay(&keys, &self.lexicon);
+        self.ascii.replay_caps(&keys, caps, &self.lexicon);
         if !self.ascii.tone(ch, &self.lexicon) {
-            self.ascii.press(ch);
+            self.ascii.press_caps(ch, caps);
         }
         self.mixed_cursor = Self::MIXED_CURSOR_END;
         true
@@ -2935,6 +3018,7 @@ impl Session {
             .iter()
             .map(|plan| {
                 let literal = &text[plan.start..plan.end];
+                let cased = self.ascii.cased_typed(plan.start, literal);
                 // 符號片段照字面輸出，與路由的 convert_plan 一致。
                 if plan.script == Script::Symbol {
                     return RenderedPiece {
@@ -2948,7 +3032,7 @@ impl Session {
                     Lang::Ja => {
                         if !plan.kana_ok || plan.kana.is_empty() {
                             RenderedPiece {
-                                surface: literal.to_string(),
+                                surface: cased,
                                 mode: Lang::Ja,
                                 reading: String::new(),
                                 units: 0,
@@ -2973,7 +3057,7 @@ impl Session {
                         }
                     }
                     _ => RenderedPiece {
-                        surface: literal.to_string(),
+                        surface: cased,
                         mode: Lang::En,
                         reading: String::new(),
                         units: 0,

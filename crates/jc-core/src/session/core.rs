@@ -98,6 +98,9 @@ impl Session {
     /// `Shift+A` 編成 `a` 加 Shift）；兩種都轉成同一個大寫字面。標點與
     /// 符號不走這裡，Shift＋符號仍由注音／前導表決定。沒有 Shift 的大寫
     /// 輸入仍交給混打規劃，不能一律當字面。
+    ///
+    /// 這個函式只負責「是不是 Shift 字面」與辨識用的鍵碼；最後大小寫由
+    /// [`shift_literal_output`] 依 `caps XOR shift` 決定。
     pub(super) fn shift_literal_text(key: &Key) -> Option<String> {
         if !key.shift || key.ctrl || key.alt {
             return None;
@@ -107,6 +110,16 @@ impl Session {
         };
         code.is_ascii_alphabetic()
             .then(|| code.to_ascii_uppercase().to_string())
+    }
+
+    /// Shift 字面最後要插入的文字；Caps Lock＋Shift 反轉成小寫。
+    pub(super) fn shift_literal_output(key: &Key) -> Option<String> {
+        let text = Self::shift_literal_text(key)?;
+        Some(if key.caps {
+            text.to_ascii_lowercase()
+        } else {
+            text
+        })
     }
 
     /// 把 Shift＋字母附加成字面，並保持 preedit 長度與游標一致。
@@ -241,6 +254,7 @@ impl Session {
         match self.zh.press(Key::new(KeyCode::Space, None, false)) {
             crate::zh::input::ZhInputEvent::SyllableComplete(syllable) => {
                 self.zh_pending_keys.clear();
+                self.zh_pending_caps.clear();
                 self.insert_syllable(self.cursor, syllable);
                 self.zh.reset();
                 true
@@ -279,7 +293,7 @@ impl Session {
         true
     }
 
-    pub(super) fn press_char(&mut self, ch: char) {
+    pub(super) fn press_char(&mut self, ch: char, caps: bool) {
         // 新字元讓先前的片段候選失效；Tab 用自動轉換開的窗不能沿用。
         self.ja_candidates_whole = false;
         self.ja_candidates_span = None;
@@ -380,7 +394,7 @@ impl Session {
         if self.in_ja_lane() {
             let event = self.romaji.press(Key::char(ch, false));
             if event == crate::ja::input::RomajiEvent::Rejected {
-                self.leave_ja_run_for_mixed(ch);
+                self.leave_ja_run_for_mixed(ch, caps);
             } else {
                 // 留下原始按鍵，退回混打時用同一串按鍵重算切分。
                 self.ja_run_keys.push(ch);
@@ -394,16 +408,17 @@ impl Session {
                 // 注音時整段交回混打管線。
                 if self.zh_lane {
                     if self.mixed_zh_lane_continues(ch) {
-                        self.press_zh_char(ch);
+                        self.press_zh_char(ch, caps);
                     } else {
-                        self.leave_zh_lane_for_mixed(ch);
+                        self.leave_zh_lane_for_mixed(ch, caps);
                     }
                     return;
                 }
                 if self.mixed_zh_lane_starts(ch) {
                     self.zh_lane = true;
                     self.zh_pending_keys.clear();
-                    self.press_zh_char(ch);
+                    self.zh_pending_caps.clear();
+                    self.press_zh_char(ch, caps);
                     return;
                 }
                 // 直接送來的漢字照字面留下，不當成英數按鍵推斷。
@@ -412,7 +427,7 @@ impl Session {
                     return;
                 }
                 if !self.ascii.tone(ch, &self.lexicon) {
-                    self.ascii.press(ch);
+                    self.ascii.press_caps(ch, caps);
                 }
                 self.try_japanese_run();
             }
@@ -420,17 +435,22 @@ impl Session {
     }
 
     /// 把一個按鍵交給注音狀態機；純注音與 Mixed 的注音路徑共用。
-    fn press_zh_char(&mut self, ch: char) {
+    fn press_zh_char(&mut self, ch: char, caps: bool) {
         match self.zh.press(Key::char(ch, false)) {
-            crate::zh::input::ZhInputEvent::Consumed => self.zh_pending_keys.push(ch),
+            crate::zh::input::ZhInputEvent::Consumed => {
+                self.zh_pending_keys.push(ch);
+                self.zh_pending_caps.push(if caps { '1' } else { '0' });
+            }
             crate::zh::input::ZhInputEvent::SyllableComplete(syllable) => {
                 // 音節完成後搬進工作階段自己的音節清單，才能在中間插字。
                 self.zh_pending_keys.clear();
+                self.zh_pending_caps.clear();
                 self.insert_syllable(self.cursor, syllable);
                 self.zh.reset();
             }
             crate::zh::input::ZhInputEvent::Commit(reading) => {
                 self.zh_pending_keys.clear();
+                self.zh_pending_caps.clear();
                 // 空白鍵在沒有未完成注音時提交；改用轉換後的結果。
                 if let Some(text) = self.convert_reading(&reading) {
                     self.pending_commit = Some(text);
@@ -439,11 +459,18 @@ impl Session {
             }
             crate::zh::input::ZhInputEvent::Cancel => {
                 self.zh_pending_keys.clear();
+                self.zh_pending_caps.clear();
                 self.zh.reset();
             }
             crate::zh::input::ZhInputEvent::Ignored => {
-                // 注音路徑接不住的標點照字面留下，不再轉全形。
-                self.push_literal(&ch.to_string());
+                // 注音路徑接不住的標點照字面留下，不再轉全形。Caps Lock 只在
+                // 這裡留下字面時套用；注音本身照基礎字元路由。
+                let text = if caps && ch.is_ascii_alphabetic() {
+                    ch.to_ascii_uppercase()
+                } else {
+                    ch
+                };
+                self.push_literal(&text.to_string());
             }
         }
     }
@@ -505,7 +532,7 @@ impl Session {
     }
 
     /// 結束這次的注音路徑，把整段按鍵重播進混打管線。
-    pub(super) fn leave_zh_lane_for_mixed(&mut self, ch: char) {
+    pub(super) fn leave_zh_lane_for_mixed(&mut self, ch: char, caps: bool) {
         // 已完成的音節還原成原本的按鍵，才能讓混打管線重新判斷前後片段；
         // 直接塞入漢字會讓前面的注音片段失去讀音與候選。
         let keyboard = self.zh.keyboard();
@@ -523,6 +550,7 @@ impl Session {
         self.zh_lane = false;
         self.zh_space_closed = false;
         self.zh_pending_keys.clear();
+        self.zh_pending_caps.clear();
         self.syllables.clear();
         self.cursor = 0;
         self.locks.clear();
@@ -542,7 +570,7 @@ impl Session {
         self.literal_offset = 0;
         self.literal_tail.clear();
         self.pending_tone = None;
-        self.ascii.replay(&keys, &self.lexicon);
+        self.ascii.replay_caps(&keys, caps, &self.lexicon);
         self.mixed_cursor = Self::MIXED_CURSOR_END;
         self.rebuild();
     }
@@ -567,6 +595,7 @@ impl Session {
             .sum();
         let pending_start = keys.len();
         let pending = std::mem::take(&mut self.zh_pending_keys);
+        let _pending_caps = std::mem::take(&mut self.zh_pending_caps);
         keys.push_str(&pending);
         keys.push_str(&self.literal);
         keys.push_str(&self.literal_tail);
@@ -627,6 +656,7 @@ impl Session {
         self.zh_lane = false;
         self.zh_space_closed = false;
         self.zh_pending_keys.clear();
+        self.zh_pending_caps.clear();
         self.syllables.clear();
         self.cursor = 0;
         self.locks.clear();
@@ -2384,6 +2414,7 @@ impl Session {
         self.zh_lane = false;
         self.zh_space_closed = false;
         self.zh_pending_keys.clear();
+        self.zh_pending_caps.clear();
         self.zh_window_last = false;
         self.zh_run_breaks.clear();
         self.syllables.clear();

@@ -79,7 +79,7 @@ impl Session {
             KeyAction::Tab => return self.tab(),
             KeyAction::ResizeSegment(delta) => self.resize_segment(delta),
             KeyAction::MoveCursor(delta) => self.navigate(delta),
-            KeyAction::Char(ch) => self.press_char(ch),
+            KeyAction::Char(ch) => self.press_char(ch, key.caps),
             KeyAction::Ignore => {}
         }
         KeyOutcome::Changed
@@ -301,6 +301,7 @@ impl Session {
             // 還沒完成的注音先退一格；退完才動已完成的音節。
             self.zh.press(Key::new(KeyCode::Backspace, None, false));
             self.zh_pending_keys.pop();
+            self.zh_pending_caps.pop();
         } else if self.cursor > 0 {
             self.remove_syllable(self.cursor - 1);
             self.cursor = self.cursor.saturating_sub(1);
@@ -416,6 +417,7 @@ impl Session {
         }
         self.pending_tone = None;
         self.zh_pending_keys.clear();
+        self.zh_pending_caps.clear();
         self.candidate_window = false;
         self.navigating = false;
     }
