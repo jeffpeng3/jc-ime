@@ -79,10 +79,11 @@ cargo build --release --features test-export -p jc-tsf
 
 release DLL 沒有這個符號是正常出貨狀態，診斷程式只會印一行 `[INFO]`。
 
-## 安裝後自動執行
+## 安裝後執行（選項，預設不跑）
 
-安裝器會在 `[Run]` 以原使用者身分執行
-`%ProgramFiles%\jc-ime\post-install-doctor.ps1`。腳本呼叫
+安裝器在 `[Tasks]` 提供 `smoke`（「安裝後執行診斷」，Flags: unchecked）。勾選時
+`[Run]` 會以原使用者身分執行 `%ProgramFiles%\jc-ime\post-install-doctor.ps1`；
+預設與靜默安裝都不會執行。腳本呼叫
 `jc-tsf-smoke.exe --json`，把結果寫到 `%LOCALAPPDATA%\jc-ime\doctor\`：
 
 - `<yyyyMMdd-HHmmss>.json`：doctor 的 stdout。
@@ -91,9 +92,9 @@ release DLL 沒有這個符號是正常出貨狀態，診斷程式只會印一�
 
 同一秒重跑會加 `-1`、`-2` 序號。手動執行且有 FAIL 時，腳本把 `last.txt` 複製
 到剪貼簿並跳出訊息框顯示摘要前 15 行；Session 0、非互動或加 `-NoUi` 時只寫檔。
-安裝器的 `[Run]` 固定帶 `-NoUi`，所以安裝期不會被訊息框卡住；CI 的
-「安裝後 doctor」用 `-NoUi -ExitWithSmokeCode` 取得 `jc-tsf-smoke` 的結果。
-install-smoke 也執行同一支腳本。
+安裝器的 `[Run]` 只有在勾選 `smoke` 時才執行，且固定帶 `-NoUi`，所以安裝期不會被
+訊息框卡住；CI 的「安裝後 doctor」自己以 `-NoUi -ExitWithSmokeCode` 呼叫同一支腳本，
+取得 `jc-tsf-smoke` 的結果，不依賴安裝期 `[Run]`。
 
 `jc-tsf-smoke` 最多跑 120 秒。逾時時腳本 `Kill()` 該行程，並把執行錯誤記成
 `jc-tsf-smoke 超過 120 秒未結束`（doctor 判 FAIL），安裝器與 CI 都不會無限

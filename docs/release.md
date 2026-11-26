@@ -277,10 +277,12 @@ Windows 的程式有 66 處 `#[cfg(windows)]`，Linux 的 `cargo test` 完全看
 
 1. `setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\install.log`，
    自己等 10 分鐘，超過就中止並印 log 最後 60 行；結束碼只接受 `0`。
-2. 斷言 `C:\Program Files\jc-ime\` 有 `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe`。
-3. 以原使用者身分執行 `C:\Program Files\jc-ime\post-install-doctor.ps1`，參數
-   `-NoUi -ExitWithSmokeCode`，也就是安裝器用的同一支腳本（安裝器的 `[Run]`
-   固定帶 `-NoUi`，不會跳訊息框）。它會把 `<時間>.json`、`<時間>.log` 與
+2. 斷言 `C:\Program Files\jc-ime\` 有 `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe`，
+   並斷言 `%LOCALAPPDATA%\jc-ime\doctor\last.txt` 不存在：安裝後診斷是 `[Tasks]`
+   的 `smoke`，預設不勾，`/VERYSILENT` 不會執行，所以安裝期不該留下紀錄。
+3. 自己以原使用者身分執行 `C:\Program Files\jc-ime\post-install-doctor.ps1`，參數
+   `-NoUi -ExitWithSmokeCode`，也就是安裝器用的同一支腳本；這一步不依賴安裝期
+   `[Run]`。它會把 `<時間>.json`、`<時間>.log` 與
    `last.txt` 寫到 `%LOCALAPPDATA%\jc-ime\doctor\`；CI 從 `last.txt` 最後一行
    取得 log 路徑，複製成 `%TEMP%\smoke.err.log` 與 `%TEMP%\smoke.json`，並保留
    `%TEMP%\doctor-last.txt`。`jc-tsf-smoke` 超過 120 秒會被腳本中止並記成 FAIL。
@@ -310,8 +312,8 @@ Windows 的程式有 66 處 `#[cfg(windows)]`，Linux 的 `cargo test` 完全看
 - `if: failure()` 會先從 `%LOCALAPPDATA%\jc-ime\doctor\` 收集當次 `last.txt`
   與 json，再上傳 artifact `install-smoke-logs-<version>`，內含
   `install.log`、`uninstall.log`、`doctor.json`、`smoke.json`、
-  `smoke.err.log`、`doctor-last.txt` 與 `tsf.log`。即使安裝期 doctor 卡住、
-  「安裝後 doctor」還沒跑，也拿得到當次診斷結果。
+  `smoke.err.log`、`doctor-last.txt` 與 `tsf.log`。即使「安裝後 doctor」失敗或
+  還沒跑，也拿得到當次診斷結果。
 - `doctor.json`／`smoke.json` 的 `checks` 陣列會指出哪一項 status 是 `fail`，
   `fix` 欄位給修復指令；對照 `docs/port/tsf-smoke.md` 的 13 項檢查與可能原因。
   `doctor-last.txt` 是 `%LOCALAPPDATA%\jc-ime\doctor\last.txt` 的副本，最後一行

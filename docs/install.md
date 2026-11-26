@@ -47,13 +47,29 @@ jc-ime-0.1.0-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\
    `--personal-dir` 與 `--personal-prefix personal`；**不帶** `--socket`，pipe
    名稱由引擎與 TIP 共用的 `jc_windows::resolve_pipe_name()` 從目前使用者 SID
    推出。
-5. 以 `runasoriginaluser` 執行 `user-install`，把單一「jc 注音」加進你的語言清單；
-   再執行 `user-cleanup-legacy` 清掉舊語言清單項目。不改你的預設輸入法。
+5. 勾選 `enableime`（預設）時，以 `runasoriginaluser` 執行 `user-install`，把
+   單一「jc 注音」加進你的語言清單；再執行 `user-cleanup-legacy` 清掉舊語言
+   清單項目。不改你的預設輸入法。
 6. 建立開始功能表的「jc 注音設定」與「jc 注音授權」兩個捷徑。
-7. 以原使用者身分先啟動一次 `jc-engine.exe --supervise`，再執行
+7. 勾選 `enableime`（預設）時，以原使用者身分先啟動一次
+   `jc-engine.exe --supervise`。若另外勾了 `smoke`，再執行
    `post-install-doctor.ps1 -NoUi`，跑一次安裝診斷並把紀錄寫到
    `%LOCALAPPDATA%\jc-ime\doctor\`。安裝期固定不跳訊息框，避免中斷靜默安裝；
    `jc-tsf-smoke` 超過 120 秒會被中止並記成 FAIL。見〈安裝診斷（doctor）〉。
+
+### 安裝選項
+
+安裝精靈的「選擇附加工作」頁有兩項，預設值如下：
+
+| 選項（Task） | 預設 | 作用 |
+|---|---|---|
+| 安裝後把 jc 注音加入輸入法清單（`enableime`） | 勾選 | 以 `runasoriginaluser` 執行 `user-install`，把「jc 注音」加進目前使用者的語言清單，並在安裝結束時先啟動引擎。取消勾選時仍會註冊機器層級的 TIP，但要自己到語言設定裡加入。 |
+| 安裝後執行診斷（`smoke`） | **不勾選** | 以 `runasoriginaluser` 執行 `post-install-doctor.ps1 -NoUi`，把 `<時間>.json`、`<時間>.log` 與 `last.txt` 寫到 `%LOCALAPPDATA%\jc-ime\doctor\`。不影響安裝成敗，只是留下疑難排解紀錄。 |
+
+靜默安裝（`/VERYSILENT`）不會顯示這一頁，只採用預設值：`enableime` 會執行，
+`smoke` 不會。要靜默安裝也跑診斷，明確指定工作，例如
+`/TASKS="enableime,smoke"`；一旦帶了 `/TASKS`，預設勾選就不再套用，兩個都要
+就兩個都寫。
 
 從舊 MSI 升級時，安裝器會在複製檔案前先找舊的「jc 注音」MSI，停掉引擎與載入
 `jc-tsf.dll` 的行程，再執行 `msiexec /x` 移除舊版；找不到或移除失敗都不會中斷
@@ -91,9 +107,9 @@ jc-ime-0.1.0-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\
 涵蓋 DLL、COM、TSF 啟動、引擎 pipe、註冊機碼、使用者語言清單、引擎健康狀態
 與候選窗 UI 探針。
 
-安裝完成後，安裝器會以 `runasoriginaluser` 自動執行
-`%ProgramFiles%\jc-ime\post-install-doctor.ps1 -NoUi`。這支腳本用 Windows
-PowerShell 5.1 呼叫 `jc-tsf-smoke.exe --json`，並把結果保存到
+安裝完成後，若在安裝精靈勾選「安裝後執行診斷」（`smoke`；預設不勾），安裝器
+會以 `runasoriginaluser` 執行 `%ProgramFiles%\jc-ime\post-install-doctor.ps1 -NoUi`。
+這支腳本用 Windows PowerShell 5.1 呼叫 `jc-tsf-smoke.exe --json`，並把結果保存到
 `%LOCALAPPDATA%\jc-ime\doctor\`：
 
 | 檔案 | 內容 |
@@ -172,7 +188,7 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%ProgramFiles%\jc-ime\jc-cli.exe` | 資料驗證與評測工具 |
 | `%ProgramFiles%\jc-ime\jc-settings-ui.exe` | 設定程式 |
 | `%ProgramFiles%\jc-ime\jc-tsf-smoke.exe` | 免管理員冒煙測試 |
-| `%ProgramFiles%\jc-ime\post-install-doctor.ps1` | 安裝後自動執行 doctor 並保存診斷紀錄 |
+| `%ProgramFiles%\jc-ime\post-install-doctor.ps1` | 安裝後診斷腳本；勾選 `smoke` 時由安裝器執行，也可手動跑 |
 | `%ProgramFiles%\jc-ime\jc-tip-register.exe` | 安裝器自訂動作用；手動修復註冊；開始功能表捷徑的啟動器 |
 | `%ProgramFiles%\jc-ime\LICENSE` | 本專案 AGPL-3.0-only 全文 |
 | `%ProgramFiles%\jc-ime\NOTICE` | 專案 NOTICE（本專案與隨附第三方元件的關係） |
@@ -191,7 +207,7 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%LOCALAPPDATA%\jc-ime\personal.json` | 個人化資料；引擎啟動時載入，學習後原子寫回 |
 | `%LOCALAPPDATA%\jc-ime\supervisor.log` | `--supervise` 的環狀 log；預設位置，可用 `--supervisor-log` 改 |
 | `%LOCALAPPDATA%\jc-ime\tsf.log` | TSF 診斷 log；只有 `JC_TSF_LOG=1` 時才寫 |
-| `%LOCALAPPDATA%\jc-ime\doctor\` | 安裝後與手動 doctor 的 `<時間>.json`、`<時間>.log`、`last.txt`；反安裝會刪除這個子目錄 |
+| `%LOCALAPPDATA%\jc-ime\doctor\` | 安裝後（勾選 `smoke`）與手動 doctor 的 `<時間>.json`、`<時間>.log`、`last.txt`；反安裝會刪除這個子目錄 |
 
 注音產品只帶 bigram 語言模型：`build-zh-bigram\lm.bin` 是必要資料。舊的
 unigram-only `build-zh\lm.bin` 已退役，安裝包不提供，引擎也不再退回該檔；

@@ -124,7 +124,10 @@ REG_EXPAND_SZ 在每位使用者登入時展開。
 
 ### `[Tasks]` 與 `[Run]`
 
-`enableime` 預設勾選，控制是否把 jc 注音加進目前使用者的語言清單。順序：
+`enableime` 預設勾選，控制是否把 jc 注音加進目前使用者的語言清單。`smoke`
+（安裝後執行診斷）是 `Flags: unchecked`，預設不勾；勾了才會執行
+`post-install-doctor.ps1 -NoUi`，log 寫到原使用者的
+`%LOCALAPPDATA%\jc-ime\doctor\`。順序：
 
 1. `jc-tip-register.exe machine-register`：提升權限，寫 HKLM 的 profile 與分類。
 2. `jc-tip-register.exe user-install`：`runasoriginaluser`，寫實際使用者的語言清單。

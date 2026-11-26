@@ -88,6 +88,8 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 [CustomMessages]
 zh.EnableIme=安裝後把 jc 注音加入輸入法清單
 en.EnableIme=Add jc Bopomofo to the input method list
+zh.RunSmoke=安裝後執行診斷（會花幾秒；結果寫到 %LOCALAPPDATA%\jc-ime\doctor）
+en.RunSmoke=Run diagnostics after installation (takes a few seconds; results go to %LOCALAPPDATA%\jc-ime\doctor)
 zh.MsgRegistering=正在向系統註冊輸入法…
 en.MsgRegistering=Registering the input method...
 zh.MsgEnabling=正在把 jc 注音加入輸入法清單…
@@ -101,6 +103,9 @@ en.ErrLocked=Cannot update jc Bopomofo: an old program file is in use and could 
 
 [Tasks]
 Name: "enableime"; Description: "{cm:EnableIme}"
+; 安裝後診斷預設不跑：它只是疑難排解紀錄，不影響能否打字。使用者要的話
+; 自己勾；靜默安裝（/VERYSILENT）也維持不跑。
+Name: "smoke"; Description: "{cm:RunSmoke}"; Flags: unchecked
 
 [Files]
 ; 程式。32 位元 DLL 與 x64 DLL 放在同一層，檔名分架構；CLSID 的機碼檢視由
@@ -113,8 +118,8 @@ Source: "{#PayloadDir}\jc-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\jc-settings-ui.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\jc-tsf-smoke.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\jc-tip-register.exe"; DestDir: "{app}"; Flags: ignoreversion
-; 安裝後診斷；由下面的 [Run] 以原使用者身分執行，log 寫到該使用者的
-; %LOCALAPPDATA%\jc-ime\doctor。
+; 安裝後診斷；只有勾選 smoke 工作時，下面的 [Run] 才以原使用者身分執行，
+; log 寫到該使用者的 %LOCALAPPDATA%\jc-ime\doctor。
 Source: "{#PayloadDir}\post-install-doctor.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 ; 授權文件：payload 內的路徑與 repo 相同，check-payload.py 直接比對雜湊。
@@ -207,7 +212,8 @@ Filename: "{app}\jc-tip-register.exe"; Parameters: "user-cleanup-legacy"; Status
 ; 已經在跑的監督者會回 AlreadyRunning 並直接結束，不是錯誤。
 Filename: "{app}\jc-engine.exe"; Parameters: "--supervise --data ""{commonappdata}\jc-ime\data"" --settings ""{%LOCALAPPDATA}\jc-ime\settings.json"" --personal-dir ""{%LOCALAPPDATA}\jc-ime"" --personal-prefix personal"; Tasks: enableime; Flags: runhidden nowait runasoriginaluser
 
-; 安裝完成後跑一次 doctor。runasoriginaluser 不能省：診斷要讀原使用者的
+; 安裝完成後跑一次 doctor；預設不跑，要使用者在 [Tasks] 勾選 smoke 才會執行。
+; runasoriginaluser 不能省：診斷要讀原使用者的
 ; 語言清單與 TSF 啟用狀態，log 與剪貼簿也必須落在原使用者的
 ; %LOCALAPPDATA%。
 ;
@@ -215,7 +221,7 @@ Filename: "{app}\jc-engine.exe"; Parameters: "--supervise --data ""{commonappdat
 ; MessageBox；[Run] 的 waituntilterminated 會永遠等不到關閉，安裝就卡住
 ; （run 45624582847）。安裝期只負責留下紀錄，結果由 install-smoke 的
 ; 「安裝後 doctor」以 -NoUi -ExitWithSmokeCode 斷言。
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\post-install-doctor.ps1"" -NoUi"; Flags: runhidden waituntilterminated runasoriginaluser
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\post-install-doctor.ps1"" -NoUi"; Tasks: smoke; Flags: runhidden waituntilterminated runasoriginaluser
 
 Filename: "{app}\jc-settings-ui.exe"; Description: "{cm:OpenSettings}"; Flags: postinstall nowait skipifsilent unchecked
 
