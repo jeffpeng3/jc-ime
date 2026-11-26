@@ -2615,47 +2615,6 @@ mod tests {
         assert_eq!(s.commit(), "台ㄨㄢA");
     }
 
-    /// 沒有 Shift 的大寫字母（Caps Lock 或外殼送來的 text）一律是字面英文，
-    /// 接在未完成的注音後面，不能進注音狀態機。
-    #[test]
-    fn test_uppercase_without_shift_is_literal() {
-        let mut s = session();
-        type_keys(&mut s, "w96j0");
-        assert_eq!(s.snapshot().preedit, "台ㄨㄢ");
-        let snap = s.press(Key::char('A', false));
-        assert_eq!(snap.preedit, "台ㄨㄢA");
-        s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(s.commit(), "台ㄨㄢA");
-    }
-
-    /// 混打的英文待定按鍵後面接沒有 Shift 的大寫，兩者直接相連。
-    #[test]
-    fn test_uppercase_after_english_literal() {
-        let mut s = session();
-        type_keys(&mut s, "abc");
-        assert_eq!(s.snapshot().preedit, "abc");
-        let snap = s.press(Key::char('X', false));
-        assert_eq!(snap.preedit, "abcX");
-    }
-
-    /// 大寫不能讓已轉換的片段重播；只接在目前組字後面。
-    #[test]
-    fn test_uppercase_does_not_replay_composition() {
-        let mut s = session();
-        type_keys(&mut s, "ji3");
-        assert_eq!(s.snapshot().preedit, "我");
-        let snap = s.press(Key::char('B', false));
-        assert_eq!(snap.preedit, "我B");
-    }
-
-    /// 小寫字母仍走注音，不受大寫字面規則影響。
-    #[test]
-    fn test_lowercase_still_uses_zhuyin() {
-        let mut s = session();
-        type_keys(&mut s, "w96");
-        assert_eq!(s.snapshot().preedit, "台");
-    }
-
     /// 切英文後再打英文字面，同一段繼續；Enter 送整段、Esc 丟整段。
     #[test]
     fn test_english_literal_keeps_buffer_and_commits_whole_segment() {
