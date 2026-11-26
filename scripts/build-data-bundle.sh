@@ -90,8 +90,6 @@ mkdir -p "${stage}"
 cli=()
 if [[ -n ${JC_CLI_BIN:-} ]]; then
     cli=("${JC_CLI_BIN}")
-elif command -v mise >/dev/null 2>&1; then
-    cli=(mise exec -- cargo run -q -p jc-cli --)
 else
     cli=(cargo run -q -p jc-cli --)
 fi

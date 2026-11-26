@@ -805,7 +805,8 @@ impl Session {
                         text = self.full_width_text(&text);
                     }
                     if self.composing() {
-                        self.insert_style_literal(&text);
+                        // 與 inline 一樣接在整段最後，不能插到未完成的注音前面。
+                        self.append_shift_literal(&text);
                     } else {
                         self.commit_style_text(text);
                     }
@@ -846,6 +847,7 @@ mod tests {
         let mut lex = InMemoryLexicon::new();
         for (surface, reading, cost) in [
             ("我", "ㄨㄛˇ", 0),
+            ("台", "ㄊㄞˊ", 0),
             ("想", "ㄒㄧㄤˇ", 0),
             ("吃", "ㄔ", 0),
             ("景", "ㄐㄧㄥˇ", 0),
@@ -1055,6 +1057,49 @@ mod tests {
                 } else {
                     s.press(Key::new(KeyCode::Enter, None, false));
                     assert_eq!(s.commit(), committed, "shift_letter={mode} text={text:?}");
+                }
+            }
+        }
+    }
+
+    /// `w96j0` 留下未完成的 `ㄨㄢ`，Shift+A 在三種 `shift_letter` 模式與兩種
+    /// 外殼編碼下都要一致：inline／lower 接在組字後面，commit 立即送出。
+    #[test]
+    fn test_shift_letter_matrix_on_w96j0_shift_a() {
+        // 兩種外殼編碼：text 已是大寫，或 0c 的小寫鍵碼加 Shift。
+        let encodings = [
+            ("text=A", Key::new(KeyCode::Char('A'), Some('A'), true)),
+            (
+                "text=a+shift",
+                Key::new(KeyCode::Char('a'), Some('a'), true),
+            ),
+        ];
+        for (mode, preedit, committed) in [
+            ("inline", "台ㄨㄢA", "台ㄨㄢA"),
+            ("lower", "台ㄨㄢa", "台ㄨㄢa"),
+            ("commit", "", "台ㄨㄢA"),
+        ] {
+            for (encoding, key) in encodings {
+                let mut config = SessionConfig::new(Mode::Mixed);
+                config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
+                let mut style = InputStyle::preset("0c").expect("預設存在");
+                style.rules.shift_letter = mode.to_string();
+                config.style = style;
+                let mut s = Session::new(config);
+                type_keys(&mut s, "w96j0");
+
+                let snap = s.press(key);
+                assert_eq!(snap.preedit, preedit, "shift_letter={mode} {encoding}");
+                assert_eq!(
+                    snap.cursor_rune,
+                    snap.preedit.chars().count(),
+                    "shift_letter={mode} {encoding}：游標要跟 preedit 一致"
+                );
+                if preedit.is_empty() {
+                    assert_eq!(s.commit(), committed, "shift_letter={mode} {encoding}");
+                } else {
+                    s.press(Key::new(KeyCode::Enter, None, false));
+                    assert_eq!(s.commit(), committed, "shift_letter={mode} {encoding}");
                 }
             }
         }

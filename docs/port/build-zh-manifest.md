@@ -68,9 +68,9 @@ manifest 從 10 筆變成 11 筆（9 個 `shipped: true`、2 個 `zh_select` 下
 
 | 指令 | 結果 |
 |---|---|
-| `mise exec -- cargo check --workspace --all-targets` | 通過 |
-| `JC_TESTDATA=/mnt/work/jc/jc-ime-data mise exec -- cargo test -p jc-data` | 61 passed、0 failed；`real_data_root_verifies` 對真實資料根目錄通過 |
-| `mise exec -- cargo fmt --all -- --check` | 通過 |
+| `cargo check --workspace --all-targets` | 通過 |
+| `JC_TESTDATA=/mnt/work/jc/jc-ime-data cargo test -p jc-data` | 61 passed、0 failed；`real_data_root_verifies` 對真實資料根目錄通過 |
+| `cargo fmt --all -- --check` | 通過 |
 | `uv run --no-project python` 呼叫 `check-payload.py` 的 `wxs_files()` | 回傳 `('FileZhManifest', 'data/build-zh/manifest.json', ...)` |
 
 `check-payload.py` 的完整檢查需要建置好的 payload 目錄，本機只依任務書要求用

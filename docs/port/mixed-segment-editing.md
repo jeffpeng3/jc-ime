@@ -201,10 +201,10 @@ Mixed 的游標是**顯示字串上的 rune 位移** `mixed_cursor`：
 
 本輪在 Linux（GB10）執行：
 
-- `mise exec -- cargo test -p jc-core`：全部通過。
-- `mise exec -- cargo test --workspace`：全部通過。
-- `mise exec -- cargo clippy --workspace --all-targets -- -D warnings`：通過。
-- `mise exec -- cargo fmt --all -- --check`：通過。
+- `cargo test -p jc-core`：全部通過。
+- `cargo test --workspace`：全部通過。
+- `cargo clippy --workspace --all-targets -- -D warnings`：通過。
+- `cargo fmt --all -- --check`：通過。
 
 實機（Windows 安裝版 0.1.13，預設 `Mode::Mixed`）**尚未驗證**：本工作環境是
 Linux，沒有 Windows TSF 可測。需要手動確認：

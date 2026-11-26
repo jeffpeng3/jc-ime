@@ -63,8 +63,8 @@
 每個階段都要：
 
 ```sh
-mise exec -- cargo test --workspace
-mise exec -- cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 外加一組「實機腳本」人工驗：注音選字、混打英數、羅馬字日文、左右鍵移游標、

@@ -28,7 +28,6 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tarfile
@@ -57,10 +56,8 @@ LICENSE_PREFIXES = ("LICENSE", "LICENCE", "COPYING", "UNLICENSE", "NOTICE")
 
 
 def cargo(*args: str) -> str:
-    """跑 cargo；沒有 cargo 在 PATH 就改用 `mise exec -- cargo`（見 AGENTS.md）。"""
+    """跑 cargo（cargo 直接在 PATH 上）。"""
     command = ["cargo", *args]
-    if shutil.which("cargo") is None:
-        command = ["mise", "exec", "--", *command]
     result = subprocess.run(
         command,
         cwd=REPO,

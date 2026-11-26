@@ -13,7 +13,7 @@ cd "$root"
 engine=${JC_ENGINE:-$root/target/debug/jc-engine}
 if [[ ! -x $engine ]]; then
     echo "建置 jc-engine..."
-    mise exec -- cargo build -p jc-engine
+    cargo build -p jc-engine
 fi
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/jc-keybinds.XXXXXX")

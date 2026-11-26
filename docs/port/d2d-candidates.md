@@ -145,11 +145,11 @@ UI 執行緒只送訊息，不改組字狀態。`target` 是 `CandidateWindow::h
 本機是 aarch64 Linux，只能做型別檢查與純函式測試：
 
 ```sh
-mise exec -- cargo check -p jc-tsf --target x86_64-pc-windows-msvc --all-targets
-mise exec -- cargo check -p jc-tsf --target i686-pc-windows-msvc --all-targets
-mise exec -- cargo clippy --workspace --all-targets -- -D warnings
-mise exec -- cargo fmt --all -- --check
-mise exec -- cargo test --workspace
+cargo check -p jc-tsf --target x86_64-pc-windows-msvc --all-targets
+cargo check -p jc-tsf --target i686-pc-windows-msvc --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+cargo test --workspace
 ```
 
 `candidate_layout` 的單元測試在 Linux 跑得到：

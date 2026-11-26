@@ -54,9 +54,9 @@ scripts/test.sh
 scripts/test.sh -p jc-core -E 'test(/session::mixed/)'
 ```
 
-`cargo`、`cargo nextest`、`mbx` 都直接在 PATH 上，指令不需要再包
-`mise exec --`。`~/.local/bin/cargo` 目前是 mbx 的 shim；test 子命令會直接
-通過，要確定走真正的 cargo 時用 `/home/jeff/.cargo/bin/cargo`。clippy／check
+`cargo`、`cargo nextest`、`mbx` 都直接在 PATH 上，指令不需要再包一層。
+`~/.local/bin/cargo` 目前是 mbx 的 shim；test 子命令會直接通過，要確定走
+真正的 cargo 時用 `/home/jeff/.cargo/bin/cargo`（或 `$CARGO`）。clippy／check
 走 `scripts/check.sh` 才用得到 mbx 快取。
 
 輸出範例：

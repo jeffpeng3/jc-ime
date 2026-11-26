@@ -20,4 +20,4 @@ if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT")" ]; then
     exit 1
 fi
 
-exec mise exec -- cargo run -q -p jc-englishpack --release -- build --source "$SOURCE" --out "$OUT"
+exec cargo run -q -p jc-englishpack --release -- build --source "$SOURCE" --out "$OUT"

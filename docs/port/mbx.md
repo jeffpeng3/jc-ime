@@ -29,8 +29,8 @@ worktree、反覆跑同一組建置」；單一 checkout 只跑一次的情境�
 
 ## 全域啟用
 
-`mbx setup --global` 會把 `[wrappers.cargo]` 寫進 mise 設定，但那條路在
-`mise exec -- cargo` 不會生效。實際用法是把 mbx 的 shim 目錄加進 PATH：
+`mbx setup --global` 會把 `[wrappers.cargo]` 寫進 mise 設定，但那條路只覆蓋
+部分進入方式。實際用法是把 mbx 的 shim 目錄加進 PATH：
 
 ```toml
 # ~/.config/mise/config.toml
@@ -38,33 +38,32 @@ worktree、反覆跑同一組建置」；單一 checkout 只跑一次的情境�
 _.path = ["~/.local/share/mbx/bin"]
 ```
 
-原因：`_.path` 由 mise 在每個 `mise exec` 環境開頭注入，會排在
-`command-wrappers/bin` 前面，因此 `mise exec -- cargo ...` 直接命中
-`~/.local/share/mbx/bin/cargo`。`[wrappers.cargo]` 只覆蓋部分進入方式，
-在 `mise exec` 下會被略過，所以不能只靠它。
+原因：`_.path` 由 mise 在環境開頭注入，會排在 `command-wrappers/bin` 前面，
+因此 `cargo ...` 直接命中 `~/.local/share/mbx/bin/cargo`；`[wrappers.cargo]`
+會被略過，所以不能只靠它。
 
 驗證 shim 有生效：
 
 ```sh
-mise exec -- cargo build -p jc-proto
+cargo build -p jc-proto
 # 結尾應該出現 mbx[cache]: ... 或 mbx[savings]: ...
 ```
 
-`MBX_DISABLE=1` 是 shim 層級的逃生口，對任何 `cargo` 指令都有效：
+目前的全域 shim 下 `MBX_DISABLE=1` 實測無效，輸出仍是 mbx 格式。要繞過
+shim，直接呼叫 rustup 的 cargo 絕對路徑：
 
 ```sh
-MBX_DISABLE=1 cargo nextest run -p jc-core
-MBX_DISABLE=1 cargo build -p jc-engine
+/home/jeff/.cargo/bin/cargo nextest run -p jc-core
+/home/jeff/.cargo/bin/cargo build -p jc-engine
 ```
 
-### `JC_NO_MBX=1` 與 `MBX_DISABLE=1` 的關係
+### `JC_NO_MBX=1` 與真 cargo 絕對路徑
 
-- `MBX_DISABLE=1`：真正的繞過。shim 看到它就把指令原樣交給系統 cargo。
-- `JC_NO_MBX=1`：只給 `scripts/check.sh` 用。腳本會加上
-  `MBX_DISABLE=1` 再 `exec cargo clippy`，所以即使 `cargo` 本身是 shim，也
-  會走真正的 cargo。沒有 mbx（或沒有 shim）時，`check.sh` 直接退回 cargo。
+- `JC_NO_MBX=1`：只給 `scripts/check.sh` 用。腳本會 `exec` `$CARGO`，沒設定
+  時用 `$HOME/.cargo/bin/cargo`，所以即使 `cargo` 本身是 shim，也會走真正的
+  cargo。找不到絕對路徑時退回 `command -v cargo`，並提示可能仍走 shim。
 - `scripts/test.sh`、`scripts/test-plan.sh`、`scripts/verify-keybinds.sh`
-  沒有專屬開關；要繞過就在指令前自己加 `MBX_DISABLE=1`。
+  沒有專屬開關；要繞過就直接用 cargo 的絕對路徑。
 
 ## 用法
 
@@ -75,8 +74,8 @@ scripts/check.sh --workspace --all-targets -- -D warnings
 ```
 
 - 找得到 `mbx` 就用 `mbx clippy`，找不到就退回 `cargo clippy`。
-- `JC_NO_MBX=1` 會用 `MBX_DISABLE=1 cargo clippy` 強制走真正的 cargo，CI、
-  除錯或懷疑快取污染時用。
+- `JC_NO_MBX=1` 會直接執行真正 cargo 的絕對路徑，CI、除錯或懷疑快取污染時
+  用。
 - 執行前會印一行「使用 mbx（共用快取）」或「使用 cargo（...）」，回報時可以
   確認到底走了哪條路。
 
@@ -84,7 +83,7 @@ test 的入口是 `scripts/test.sh`（nextest 加 doctest）與
 `scripts/test-plan.sh --run`。它們不需要特別呼叫 mbx；全域 shim 生效時，
 底層的 `cargo nextest run` 與 `cargo test --doc` 會自動經過 mbx。輸出多出的
 `mbx[cache]`、`mbx[savings]`、`mbx[progress]` 行不影響測試結果解析；真的不想
-看到就加 `MBX_DISABLE=1`，但內圈預設不關。
+看到就改用真 cargo 的絕對路徑，但內圈預設不關。
 
 ## 不啟用的部分
 
@@ -127,7 +126,7 @@ mbx 把 store 的物件 hard link 進各 worktree 的 `target/`。如果在 `tar
 請先：
 
 ```sh
-MBX_DISABLE=1 cargo build ...
+/home/jeff/.cargo/bin/cargo build ...
 ```
 
 或先複製到別的位置再改。`JC_NO_MBX=1` 只涵蓋 `scripts/check.sh`，不是通用的
