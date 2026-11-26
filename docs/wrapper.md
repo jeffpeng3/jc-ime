@@ -551,8 +551,9 @@ wrapper 必須在焦點離開時主動收尾，否則使用者在另一個應用
 ### 6.1 顯示順序與數量
 
 - `candidates[0]` 是引擎的第一順位，依序往後畫，不要重排、不要過濾。
-- 一般轉換最多 5 項，由 `SessionConfig::max_candidates` 決定。
-- 符號選單與表情／顏文字選單可能超過一頁，每頁 9 項（核心 `CANDIDATE_PAGE_SIZE`）。
+- 一般轉換最多 80 項（四欄兩頁），由 `SessionConfig::max_candidates`／
+  `DEFAULT_MAX_CANDIDATES` 決定；`candidates` 的順序就是解碼順序，不要重排。
+- 符號選單與表情／顏文字選單可能超過一頁，每頁 10 項（核心 `CANDIDATE_PAGE_SIZE`）。
 - 沒有候選時 `candidates` 是空陣列，關掉候選窗。
 - 協定沒有「候選窗是否開啟」的旗標。實務上就用 `candidates` 非空當作
   顯示條件。

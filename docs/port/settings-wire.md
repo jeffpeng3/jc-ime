@@ -131,7 +131,8 @@ TSF 在 `Ready` 拿到 bindings；`OnSetFocus`／`OnSetThreadFocus` 各刷新一
 ### `Settings` 裡沒有對應的欄位
 
 - `max_candidates`：`Settings` 沒有這個欄位（未知鍵只會原文保留）。本版固定用
-  `jc_core::session::DEFAULT_MAX_CANDIDATES`（5），並在 `--print-settings` 印出。
+  `jc_core::session::DEFAULT_MAX_CANDIDATES`（四欄兩頁，預設 80），並在
+  `--print-settings` 印出。
 - `esc_clear`、`advance_after_select`、`mode_memory`、`caps_lock_english`：
   Go 版把這些放在 `eng`，Rust 核心的 `SessionConfig`／`InputStyle` 沒有同名欄位，
   屬於外殼（TSF／CLI 前端）的按鍵分派與游標行為，本版只輸出、不套用。

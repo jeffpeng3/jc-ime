@@ -28,16 +28,18 @@
 
 | 狀態 | 列數 | 欄數 | `↑`／`↓` | `←`／`→` | 數字鍵 |
 |---|---|---|---|---|---|
-| 預設直向 | 10 | 1 | 頁內線性 ±1 | 第一次切換成四欄；單欄時不再移動 | 選該頁第 1–10 項 |
-| 橫向 | 10 | 4 | 頁內線性 ±1，跨欄自然接續 | 跳一整欄（±10），停在同一列 | 選目前欄的第 1–10 列 |
+| 預設直向 | 10 | 1 | 整份清單線性 ±1 | 第一次切換成四欄；單欄時不再移動 | 選該頁第 1–10 項 |
+| 橫向 | 10 | 4 | 整份清單線性 ±1，跨欄、跨頁自然接續 | 跳一整欄（±10），停在同一列 | 選目前欄的第 1–10 列 |
 
 - `↑`／`↓` 就是索引 `-1`／`+1`：
   - 第 1 欄第 10 列按 `↓` 到第 2 欄第 1 列。
   - 第 2 欄第 1 列按 `↑` 到第 1 欄第 10 列。
-- 頁內最後一項按 `↓` 回到本頁第一項；頁內第一項按 `↑` 到本頁最後一項。
-  不跨頁，換頁只由 `PageUp`／`PageDown` 負責。
+  - 直向時第 10 項按 `↓` 到下一頁第 1 項（索引 11）；下一頁第 1 項按 `↑`
+    回到上一頁第 10 項。
+- 頭尾停住、不回捲：整份清單最後一項按 `↓` 停在原地，第一項按 `↑` 也
+  停在原地。`PageUp`／`PageDown` 仍可直接跳頁。
 - `←`／`→` 跳一整欄：索引 `-10`／`+10`。直向單欄時是 no-op；四欄時在
-  本頁第一欄按 `←`、最後一欄按 `→` 也不移動。
+  本頁第一欄按 `←`、最後一欄按 `→` 也不移動（換欄不跨頁）。
 - 一頁容量是「列數 × 欄數」：直向十項，橫向四十項。
 - 頁內索引的版面位置是 `(列, 欄) = (index % 10, index / 10)`。
 - 換頁只移動 `highlighted`，頁碼一律由 `highlighted / page_size` 推導。
@@ -45,8 +47,30 @@
 - 切換欄數不改變高亮索引，同一個候選仍然反白。
 - 換頁維持同一個欄數；`Esc`、關窗與重新開窗會回到直向單欄。
 - 四欄時每一欄都會畫自己的列號；這是列號，不是全頁唯一的流水號。
-- 預設候選上限是 20（`DEFAULT_MAX_CANDIDATES`），所以四欄窗通常只排滿前
-  兩欄各十列；要提高上限才會看到 40 項。容量上限不影響上述索引規則。
+
+頁尾不再頁內環繞：`↓` 會自然走到下一頁，`↑` 會回到上一頁。這樣 `↑`／`↓`
+在整份候選清單上是單一線性序列；`PageUp`／`PageDown` 只是跳頁的快捷鍵。
+
+## 候選上限與版面
+
+候選上限 `DEFAULT_MAX_CANDIDATES` 由版面推導，不是固定 20：
+
+```
+DEFAULT_MAX_CANDIDATES
+  = 列數 × 四欄欄數 × 2
+  = 10 × 4 × 2
+  = 80
+```
+
+- 為什麼是兩頁：四欄一頁 40 項，留兩頁讓 `PageDown` 後還有內容，也讓第二頁
+  的數字選字有實際用途。
+- 直向時一頁仍是 10 項，80 項相當於八頁；上限不影響 `page_size()`。
+- 上限只決定「最多保留幾項」，候選排序不變：解碼器照原本分數輸出，截斷發生
+  在尾端。提高上限不會讓後面的候選插到前面。
+- 舊版 `PAGE_SIZE * 2` 是以直向頁面（10）計算，四欄展開後只能排滿兩欄；現在
+  改用版面常數相乘，之後改列數或欄數時上限會跟著動。
+- 候選數少於上限時照實際數量顯示；四欄只排得滿一欄時，`↓` 在該頁內環繞是
+  正常行為（沒有第二欄可走）。
 
 ## 選取與 Enter
 
@@ -91,8 +115,15 @@
 - `test_page_down_keeps_column_count`
 - `test_down_moves_into_next_column`
 - `test_up_moves_into_previous_column`
+- `test_down_crosses_column_boundary`
+- `test_up_crosses_column_boundary_backwards`
+- `test_down_at_page_end_behavior`
+- `test_vertical_down_at_page_end_crosses_page`
 - `test_left_right_jump_ten`
-- `test_down_at_page_end_wraps_to_first`
+- `test_candidate_cap_allows_four_columns`
+- `test_vertical_page_size_is_ten`
+- `test_four_column_page_size_is_forty`
+- `test_page_down_after_forty`
 - `test_vertical_mode_left_right_is_noop`
 - `test_enter_still_two_stage_when_selecting_variant`（前導變體窗選了不同字時）
 

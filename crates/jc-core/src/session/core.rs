@@ -2269,7 +2269,7 @@ impl Session {
         self.highlighted = index as usize;
     }
 
-    /// `↑`／`↓`：頁內線性移動一項，跨欄時自然接續。
+    /// `↑`／`↓`：整份候選線性移動一項，跨欄、跨頁時自然接續。
     pub(super) fn move_row(&mut self, delta: isize) {
         let len = self.candidates.len();
         if len == 0 {

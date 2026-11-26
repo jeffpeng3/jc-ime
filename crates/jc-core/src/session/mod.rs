@@ -77,13 +77,20 @@ fn capital_letter_literal(key: &Key) -> Option<char> {
 /// 這個 crate 的語意版本，供協定握手與診斷使用。
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// 預設候選數：兩頁，讓第二頁的數字選字有實際用途。
-pub const DEFAULT_MAX_CANDIDATES: usize = PAGE_SIZE * 2;
+/// 預設候選數：四欄版面的兩頁，讓展開後的前 40 項填得滿，翻頁也還有內容。
+///
+/// 由版面常數推導（`列數 × 四欄欄數 × 2`），不寫死數字；直向時相當於八頁。
+/// 上限只決定「最多保留幾項」，不改變候選排序：解碼器照原本分數輸出，截斷
+/// 發生在尾端。
+pub const DEFAULT_MAX_CANDIDATES: usize =
+    crate::candidate_layout::DEFAULT_ROWS * crate::candidate_layout::EXPANDED_COLUMNS * 2;
 
-/// 候選視窗一頁幾項；核心唯一的頁面大小，固定 9。
+/// 直向版面的頁面大小（十列一頁）。
 ///
 /// 由 [`crate::output::CANDIDATE_PAGE_SIZE`] 轉出，避免 `session` 內外各留
-/// 一份常數。
+/// 一份常數。四欄展開後一頁是 `列數 × 欄數`，要用
+/// [`Session::page_size`]／[`crate::candidate_layout::CandidateLayout`] 取得，
+/// 不是這個常數。
 pub use crate::output::CANDIDATE_PAGE_SIZE as PAGE_SIZE;
 
 /// 聲調選填最多展開幾種組合；超過就維持原讀音。
@@ -927,7 +934,7 @@ impl Session {
         self.menu_tab_names(menu.kind).get(menu.tab).copied()
     }
 
-    /// 翻到候選的第 `page` 頁；頁面大小固定 [`PAGE_SIZE`]。
+    /// 翻到候選的第 `page` 頁；頁面大小由目前版面決定（直向十項、四欄四十項）。
     ///
     /// 目前候選清單保留全部候選，翻頁只是把高亮移到該頁第一項；頁碼超出
     /// 範圍時不改變狀態。外殼不需要呼叫這個方法，`PageUp`／`PageDown` 會走
@@ -1881,6 +1888,50 @@ mod tests {
         assert_eq!(s.commit(), want, "直向第 5 項");
     }
 
+    /// 四欄時 ↓ 走過欄邊界：第 1 欄第 10 列 -> 第 2 欄第 1 列。
+    #[test]
+    fn test_down_crosses_column_boundary() {
+        let mut s = many_candidates_session(50);
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.select(9);
+        assert_eq!(s.candidate_layout().cell(9), (9, 0));
+        let next = s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(next.highlighted, 10, "跨到第 2 欄第一列");
+        assert_eq!(s.candidate_layout().cell(next.highlighted), (0, 1));
+    }
+
+    /// 四欄時 ↑ 反向走過欄邊界：第 2 欄第 1 列 -> 第 1 欄第 10 列。
+    #[test]
+    fn test_up_crosses_column_boundary_backwards() {
+        let mut s = many_candidates_session(50);
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        s.select(10);
+        let prev = s.press(Key::new(KeyCode::Up, None, false));
+        assert_eq!(prev.highlighted, 9, "回到第 1 欄最後一列");
+        assert_eq!(s.candidate_layout().cell(prev.highlighted), (9, 0));
+    }
+
+    /// 直向時 ↓ 到頁尾不是循環，而是下一頁第一項；最後一頁停住。
+    #[test]
+    fn test_vertical_down_at_page_end_crosses_page() {
+        let mut s = default_cap_candidates_session(90);
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.select(9);
+        let next = s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(next.highlighted, 10, "第 10 項接到第 11 項");
+        assert_eq!(s.current_page(), 1, "順便換到第 2 頁");
+
+        let last = s.candidates().len() - 1;
+        s.select(last);
+        let end = s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(end.highlighted, last, "最後一項停住，不回捲");
+    }
+
     /// 換頁不改變目前欄數。
     #[test]
     fn test_page_down_keeps_column_count() {
@@ -1894,6 +1945,80 @@ mod tests {
         assert_eq!(page.columns, 4, "PageDown 維持四欄");
         assert_eq!(page.rows, 10);
         assert_eq!(page.highlighted, 40, "換到下一頁頁首");
+    }
+
+    /// 預設上限要能填滿四欄一頁（40 項），不能停在舊的 10×2。
+    #[test]
+    fn test_candidate_cap_allows_four_columns() {
+        let page =
+            crate::candidate_layout::DEFAULT_ROWS * crate::candidate_layout::EXPANDED_COLUMNS;
+        assert!(
+            DEFAULT_MAX_CANDIDATES >= page,
+            "預設上限 {DEFAULT_MAX_CANDIDATES} 不足四欄一頁 {page}"
+        );
+
+        let mut s = default_cap_candidates_session(90);
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        let expanded = s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(expanded.columns, 4);
+        assert!(
+            s.candidates().len() >= page,
+            "預設上限下四欄要排得滿一頁，實際 {} 項",
+            s.candidates().len()
+        );
+        // 候選排序不因上限提高而改變：前 40 項仍照解碼順序。
+        assert_eq!(s.candidates()[0].surface, "字0");
+        assert_eq!(s.candidates()[39].surface, "字39");
+    }
+
+    /// 直向仍是一頁十項。
+    #[test]
+    fn test_vertical_page_size_is_ten() {
+        let mut s = default_cap_candidates_session(90);
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(s.snapshot().columns, 1);
+        assert_eq!(s.page_size(), 10);
+        assert_eq!(
+            s.press(Key::new(KeyCode::PageDown, None, false))
+                .highlighted,
+            10
+        );
+    }
+
+    /// 四欄時一頁四十項。
+    #[test]
+    fn test_four_column_page_size_is_forty() {
+        let mut s = default_cap_candidates_session(90);
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(s.page_size(), 40);
+        assert_eq!(s.snapshot().columns, 4);
+        assert_eq!(s.snapshot().rows, 10);
+    }
+
+    /// 四欄時 PageDown 直接到第 41 項；↓ 仍可在頁內跨欄。
+    #[test]
+    fn test_page_down_after_forty() {
+        let mut s = default_cap_candidates_session(90);
+        type_syllable(&mut s, "ㄕˋ");
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+
+        s.select(9);
+        assert_eq!(
+            s.press(Key::new(KeyCode::Down, None, false)).highlighted,
+            10
+        );
+        s.select(39);
+        let page = s.press(Key::new(KeyCode::PageDown, None, false));
+        assert_eq!(page.highlighted, 40, "PageDown 到第 41 項");
+        assert_eq!(page.columns, 4);
+        s.select(39);
+        let cross = s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(cross.highlighted, 40, "↓ 從第 40 項接到第 41 項");
     }
 
     /// 候選不足一頁時，超出範圍的數字鍵被吃掉，狀態不變。
@@ -1945,6 +2070,17 @@ mod tests {
         let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
         config.max_candidates = count.max(1);
+        Session::new(config)
+    }
+
+    /// 同上，但保留預設候選上限；測上限本身用。
+    fn default_cap_candidates_session(count: usize) -> Session {
+        let mut lex = InMemoryLexicon::new();
+        for index in 0..count {
+            lex.push(LexEntry::new(format!("字{index}"), "ㄕˋ", index as i32, 0));
+        }
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lex));
         Session::new(config)
     }
 

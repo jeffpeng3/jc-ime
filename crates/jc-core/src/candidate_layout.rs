@@ -7,8 +7,9 @@
 //! 換算成 `(列, 欄)` 是 `(index % rows, index / rows)`；數字鍵 `1`–`0` 是
 //! 列號，只在目前這一欄內選取。
 //!
-//! 移動規則：`↑`／`↓` 是頁內線性 `-1`／`+1`，跨欄自然接續；`←`／`→` 是
-//! 跳一整欄 `-rows`／`+rows`。直向單欄時左右不移動。
+//! 移動規則：`↑`／`↓` 是整份清單的線性 `-1`／`+1`，跨欄、跨頁自然接續，
+//! 到頭尾停住；`←`／`→` 是跳一整欄 `-rows`／`+rows`，不跨頁。直向單欄時
+//! 左右不移動。
 
 /// 候選窗預設列數。
 pub const DEFAULT_ROWS: usize = 10;
@@ -96,36 +97,22 @@ impl CandidateLayout {
         (self.row(index), self.column(index))
     }
 
-    /// 由目前索引往下移一項，跨欄時自然接到下一欄第一列。
-    ///
-    /// 到頁內最後一項時回到本頁第一項；不跨頁。
+    /// 由目前索引往下移一項，跨欄時自然接到下一欄第一列；本頁最後一項
+    /// 接到下一頁第一項。整個清單的最後一項停住，不回捲。
     pub fn down(self, index: usize, count: usize) -> usize {
         if count == 0 {
             return 0;
         }
-        let index = index.min(count - 1);
-        let (page_start, page_end) = self.page_span(index, count);
-        if index + 1 < page_end {
-            index + 1
-        } else {
-            page_start
-        }
+        index.min(count - 1).saturating_add(1).min(count - 1)
     }
 
-    /// 由目前索引往上移一項，跨欄時自然接到上一欄最後一列。
-    ///
-    /// 到頁內第一項時回到本頁最後一項；不跨頁。
+    /// 由目前索引往上移一項，跨欄時自然接到上一欄最後一列；本頁第一項
+    /// 接到上一頁最後一項。整個清單的第一項停住，不回捲。
     pub fn up(self, index: usize, count: usize) -> usize {
         if count == 0 {
             return 0;
         }
-        let index = index.min(count - 1);
-        let (page_start, page_end) = self.page_span(index, count);
-        if index > page_start {
-            index - 1
-        } else {
-            page_end - 1
-        }
+        index.min(count - 1).saturating_sub(1)
     }
 
     /// 由目前索引往左跳一欄（十項），停在同一個列號。
@@ -221,10 +208,35 @@ mod tests {
     }
 
     #[test]
-    fn test_down_at_page_end_wraps_to_first() {
-        let layout = CandidateLayout::new(DEFAULT_ROWS, 4);
-        assert_eq!(layout.down(39, 45), 0, "頁內最後一項回到頁首");
-        assert_eq!(layout.down(79, 85), 40, "第二頁也是頁內環繞");
+    fn test_down_crosses_column_boundary() {
+        let layout = CandidateLayout::new(DEFAULT_ROWS, EXPANDED_COLUMNS);
+        assert_eq!(layout.down(9, 80), 10, "第 1 欄第 10 列 -> 第 2 欄第 1 列");
+        assert_eq!(layout.down(19, 80), 20, "第 2 欄 -> 第 3 欄");
+        assert_eq!(layout.down(29, 80), 30, "第 3 欄 -> 第 4 欄");
+    }
+
+    #[test]
+    fn test_up_crosses_column_boundary_backwards() {
+        let layout = CandidateLayout::new(DEFAULT_ROWS, EXPANDED_COLUMNS);
+        assert_eq!(layout.up(10, 80), 9, "第 2 欄第 1 列 -> 第 1 欄第 10 列");
+        assert_eq!(layout.up(20, 80), 19);
+        assert_eq!(layout.up(30, 80), 29);
+    }
+
+    #[test]
+    fn test_down_at_page_end_behavior() {
+        // 線性 ±1 跨頁，頭尾停住；不再頁內環繞。
+        let vertical = CandidateLayout::default();
+        assert_eq!(vertical.down(9, 25), 10, "直向頁尾接到下一頁第一項");
+        assert_eq!(vertical.up(10, 25), 9, "下一頁第一項接回上一頁頁尾");
+        assert_eq!(vertical.down(24, 25), 24, "清單最後一項停住");
+        assert_eq!(vertical.up(0, 25), 0, "清單第一項停住");
+
+        let layout = CandidateLayout::new(DEFAULT_ROWS, EXPANDED_COLUMNS);
+        assert_eq!(layout.down(39, 80), 40, "四欄第 40 項接到下一頁");
+        assert_eq!(layout.up(40, 80), 39, "下一頁第 1 項接回第 40 項");
+        assert_eq!(layout.down(79, 80), 79, "清單最後一項停住");
+        assert_eq!(layout.up(0, 80), 0, "清單第一項停住");
     }
 
     #[test]

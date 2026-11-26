@@ -11,7 +11,7 @@
 | 頁面大小 | 直向 `10`、橫向四欄 `10 × 4 = 40`，由 `candidate_layout::CandidateLayout` 統一計算 |
 | 頁碼持有者 | 核心；由 `highlighted / page_size` 推導，`Session` 不另存 `page` |
 | 外殼取得頁面大小 | 核心送 `State.rows`／`columns`；舊引擎由外殼用 10 與 1 補預設 |
-| 預設候選數 | `DEFAULT_MAX_CANDIDATES = PAGE_SIZE * 2 = 20` |
+| 預設候選數 | `DEFAULT_MAX_CANDIDATES = 列數 × 四欄欄數 × 2 = 80`（兩頁四欄版面） |
 
 `Session::current_page()` 是唯一算頁碼的地方。翻頁、方向鍵、Tab、Home／End
 與 `Session::select` 都只改 `highlighted`，頁碼自然跟著變，不會出現「高亮在
@@ -24,6 +24,10 @@
 
 | 操作 | 行為 |
 |---|---|
+| `↓` 在頁尾 | 到下一頁第 1 項（線性 +1，跨頁） |
+| `↑` 在頁首 | 到上一頁最後一項（線性 -1，跨頁） |
+| `↓` 在整份清單最後一項 | 停在原地，不回捲 |
+| `↑` 在整份清單第一項 | 停在原地，不回捲 |
 | `PageDown` 在最後一頁 | 回到第 0 頁（頭尾相接） |
 | `PageUp` 在第 0 頁 | 到最後一頁（頭尾相接） |
 | 候選窗還沒開時按 `PageUp`／`PageDown` | 先開窗並進入選取模式，高亮不動 |
