@@ -65,15 +65,21 @@ Branch：`session-g1-input`（base：`session-core-split`）
 
 | 按鍵 | 行為 |
 |---|---|
-| Enter | 送出整段組字（含之前保留的中文緩衝），組字清空 |
+| Enter | 送出整段組字（含之前保留的中文緩衝），再把 Enter 放行給宿主：一次 Enter = 送出 + 換行／觸發預設按鈕 |
 | Backspace | 只刪一個 rune，不送出；刪到空也只清組字 |
 | Esc | 只清掉整段組字，不送出 |
-| Tab | 沒有 suggestion 時 no-op：不動組字、不送出、不進選取模式 |
+| Tab | 沒有 suggestion 時 no-op：不動組字、不送出、不進選取模式，也不做宿主焦點切換 |
 
-`crates/jc-tsf/src/service.rs` 的 `english_key_policy` 在英文模式組字中直接送
-`Enter`／`Backspace`／`Escape`／`Tab` 給引擎並吃掉按鍵；`crates/jc-core` 的
-`Session::press` 對字面尾巴的 Tab 維持 no-op。英文補全（Tab 接受 suggestion）
-不在這一輪範圍。
+`crates/jc-tsf/src/service.rs` 的 `english_key_policy` 只回「這一鍵由輸入法處理」
+的決策，不送 key、不 `present`；實際的 `session.key` 只在 `OnKeyDown` 執行一次，
+避免 TestKeyDown／KeyDown 重複送同一鍵。Enter 在一般 TSF 程式由 `OnKeyDown`
+回 `false` 放行原本的按鍵；IMM32 程式用 `complete_and_repost_enter` 經相容層完成
+組字後把 Enter 重排回焦點視窗，兩條路徑都只換行一次。
+
+Tab 在英文組字期間一律由輸入法吃掉，宿主不能用 Tab 切換焦點。這是刻意與注音
+組字一致：組字中放行 Tab 會讓宿主結束組字，就是原本「Tab 送出＋縮排」的 bug。
+要切換焦點請先按 Enter／Esc 結束組字；英文補全（Tab 接受 suggestion）不在這一輪
+範圍，未來若要開啟必須另外設計，不能直接放行。
 
 ## 與上游的差異
 

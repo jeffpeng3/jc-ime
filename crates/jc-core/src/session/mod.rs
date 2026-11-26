@@ -764,7 +764,8 @@ impl Session {
                     KeyCode::Tab => {
                         if !self.literal_tail.is_empty() && self.suggestion.is_none() {
                             // 英文模式是 raw input，沒有 suggestion：Tab 沒有可
-                            // 補全的東西，直接吃掉，不送出、不動文件。
+                            // 補全的東西，整鍵 no-op，連 rebuild 都不做。
+                            return self.snapshot();
                         } else if self.navigating && !self.candidates.is_empty() {
                             // 選取模式中的 Tab 換下一個候選；候選選取優先於補全。
                             self.move_highlight(1);
@@ -2387,6 +2388,7 @@ mod tests {
         assert_eq!(snap.preedit, "abc");
         assert!(s.pending_commit.is_none(), "Tab 不得送出");
         assert!(snap.suggestion.is_none());
+        assert!(snap.candidates.is_empty(), "Tab 不得讓候選冒出來");
         assert!(!snap.navigating, "英文模式組字中 Tab 不該進選取模式");
         assert_eq!(s.snapshot().preedit, "abc");
     }
