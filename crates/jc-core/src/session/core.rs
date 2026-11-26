@@ -1392,6 +1392,14 @@ impl Session {
 
     /// 下鍵：第一次開候選窗並進入選取模式，之後往下換一項。
     pub(super) fn down(&mut self) {
+        // 選單開著時上下鍵只在目前分頁內移動，不重建候選或動組字游標。
+        if self.menu.is_some() {
+            self.navigating = true;
+            if !self.candidates.is_empty() {
+                self.move_row(1);
+            }
+            return;
+        }
         // 外殼送來 Down 只是為了避開數字選字，後面的聲調鍵仍要完成原本的音節；
         // 這裡不補完未完成的注音。
         if self.in_ja_lane() {
@@ -1442,6 +1450,13 @@ impl Session {
 
     /// 上鍵：候選窗開著時往上換一項並進入選取模式；還沒開窗時先開窗。
     pub(super) fn up(&mut self) {
+        if self.menu.is_some() {
+            self.navigating = true;
+            if !self.candidates.is_empty() {
+                self.move_row(-1);
+            }
+            return;
+        }
         if self.candidates.is_empty() {
             return;
         }
@@ -1870,12 +1885,16 @@ impl Session {
             return false;
         };
         match key.code {
-            KeyCode::Tab => {
+            KeyCode::Tab | KeyCode::ShiftTab => {
                 let names = self.menu_tab_names(menu.kind);
                 if names.is_empty() {
                     return false;
                 }
-                let step = if key.shift { -1 } else { 1 };
+                let step = if key.shift || key.code == KeyCode::ShiftTab {
+                    -1
+                } else {
+                    1
+                };
                 let len = names.len() as isize;
                 let tab = (menu.tab as isize + step).rem_euclid(len) as usize;
                 self.menu = Some(Menu {

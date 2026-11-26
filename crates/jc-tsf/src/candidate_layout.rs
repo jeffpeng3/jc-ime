@@ -19,6 +19,12 @@ pub const ROW_HEIGHT: f32 = 26.0;
 pub const ROW_GAP: f32 = 2.0;
 /// 讀音提示列的高度（DIP）。
 pub const HEADER_HEIGHT: f32 = 20.0;
+/// 選單分頁列的高度（DIP）。
+pub const TAB_HEIGHT: f32 = 22.0;
+/// 分頁文字左右留白（DIP）。
+pub const TAB_PAD: f32 = 7.0;
+/// 分頁之間的間隙（DIP）。
+pub const TAB_GAP: f32 = 2.0;
 /// 頁碼列的高度（DIP）。
 pub const FOOTER_HEIGHT: f32 = 16.0;
 /// 視窗最小寬度（DIP）：只有一個窄候選時不要縮成一條。
@@ -150,6 +156,12 @@ pub struct Content {
     pub reading: String,
     /// 要求的欄數；0 與 1 都當單欄。
     pub columns: usize,
+    /// 選單標題，畫在分頁列上方；沒有選單時空字串。
+    pub title: String,
+    /// 選單分頁名稱；沒有選單時空陣列。
+    pub tabs: Vec<String>,
+    /// 目前分頁索引，從 0 起算。
+    pub tab: usize,
 }
 
 /// 編號鍵的文字與位置。
@@ -179,11 +191,24 @@ pub struct Line {
     pub rect: DipRect,
 }
 
+/// 選單分頁列的一格。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tab {
+    pub text: String,
+    pub rect: DipRect,
+    /// 是否是目前分頁。
+    pub selected: bool,
+}
+
 /// 算好的版面；`width`／`height` 是視窗的 DIP 尺寸。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layout {
     pub width: f32,
     pub height: f32,
+    /// 選單標題；沒有選單時 `None`。
+    pub title: Option<Line>,
+    /// 選單分頁列；沒有選單時空陣列。
+    pub tabs: Vec<Tab>,
     pub header: Vec<Line>,
     pub rows: Vec<Row>,
     pub pager: Option<Line>,
@@ -334,13 +359,34 @@ pub fn layout(content: &Content, measure: impl Fn(&str, TextStyle) -> f32) -> La
     } else {
         measure(&content.reading, TextStyle::Small)
     };
+    let title_width = if content.title.is_empty() {
+        0.0
+    } else {
+        measure(&content.title, TextStyle::Small)
+    };
+    let tab_widths: Vec<(String, f32)> = content
+        .tabs
+        .iter()
+        .map(|tab| (tab.clone(), measure(tab, TextStyle::Small) + TAB_PAD * 2.0))
+        .collect();
+    let tabs_width = if tab_widths.is_empty() {
+        0.0
+    } else {
+        tab_widths.iter().map(|(_, width)| *width).sum::<f32>()
+            + TAB_GAP * (tab_widths.len() as f32 - 1.0)
+    };
     let pager = pager_text(content.page, content.pages);
     let pager_width = pager
         .as_deref()
         .map(|text| measure(text, TextStyle::Small))
         .unwrap_or(0.0);
-    let width =
-        (content_width.max(reading_width).max(pager_width) + PAD * 2.0).clamp(MIN_WIDTH, MAX_WIDTH);
+    let width = (content_width
+        .max(reading_width)
+        .max(pager_width)
+        .max(title_width)
+        .max(tabs_width)
+        + PAD * 2.0)
+        .clamp(MIN_WIDTH, MAX_WIDTH);
     let inner = width - PAD * 2.0;
     let cell_width = if columns == 1 {
         inner
@@ -348,12 +394,38 @@ pub fn layout(content: &Content, measure: impl Fn(&str, TextStyle) -> f32) -> La
         ((inner - COLUMN_GAP * (columns as f32 - 1.0)) / columns as f32).max(1.0)
     };
 
+    let title_height = if content.title.is_empty() {
+        0.0
+    } else {
+        HEADER_HEIGHT
+    };
+    let tabs_height = if tab_widths.is_empty() {
+        0.0
+    } else {
+        TAB_HEIGHT
+    };
+    let title = (!content.title.is_empty()).then(|| Line {
+        text: content.title.clone(),
+        rect: DipRect::new(PAD, PAD, inner, HEADER_HEIGHT),
+    });
+    let mut tabs = Vec::with_capacity(tab_widths.len());
+    let mut tab_left = PAD;
+    for (index, (text, tab_width)) in tab_widths.into_iter().enumerate() {
+        let rect = DipRect::new(tab_left, PAD + title_height, tab_width, TAB_HEIGHT);
+        tab_left += tab_width + TAB_GAP;
+        tabs.push(Tab {
+            text,
+            rect,
+            selected: index == content.tab,
+        });
+    }
+    let header_top = PAD + title_height + tabs_height;
     let header = if content.reading.is_empty() {
         Vec::new()
     } else {
         vec![Line {
             text: content.reading.clone(),
-            rect: DipRect::new(PAD, PAD, inner, HEADER_HEIGHT),
+            rect: DipRect::new(PAD, header_top, inner, HEADER_HEIGHT),
         }]
     };
     let header_height = if header.is_empty() {
@@ -368,7 +440,8 @@ pub fn layout(content: &Content, measure: impl Fn(&str, TextStyle) -> f32) -> La
         row_count as f32 * ROW_HEIGHT + (row_count as f32 - 1.0) * ROW_GAP
     };
     let footer_height = if pager.is_some() { FOOTER_HEIGHT } else { 0.0 };
-    let height = PAD * 2.0 + header_height + rows_height + footer_height;
+    let height =
+        PAD * 2.0 + title_height + tabs_height + header_height + rows_height + footer_height;
 
     for (index, (candidate, (text_width, key, note, _))) in
         content.candidates.iter().zip(cells).enumerate()
@@ -377,7 +450,7 @@ pub fn layout(content: &Content, measure: impl Fn(&str, TextStyle) -> f32) -> La
         let column = index / max_rows;
         let line = index % max_rows;
         let cell_left = PAD + column as f32 * (cell_width + COLUMN_GAP);
-        let cell_top = PAD + header_height + line as f32 * (ROW_HEIGHT + ROW_GAP);
+        let cell_top = header_top + header_height + line as f32 * (ROW_HEIGHT + ROW_GAP);
         let cell = DipRect::new(cell_left, cell_top, cell_width, ROW_HEIGHT);
         let mut text_left = cell_left + INNER_PAD;
         let key = key.map(|(text, key_width)| {
@@ -416,6 +489,8 @@ pub fn layout(content: &Content, measure: impl Fn(&str, TextStyle) -> f32) -> La
     Layout {
         width,
         height,
+        title,
+        tabs,
         header,
         rows,
         pager,
@@ -449,6 +524,9 @@ mod tests {
             pages: 1,
             reading: String::new(),
             columns: 0,
+            title: String::new(),
+            tabs: Vec::new(),
+            tab: 0,
         }
     }
 
@@ -694,5 +772,66 @@ mod tests {
         assert_eq!(fit_size((100, 100), work), (1, 1));
         let (x, y) = place(Rect::new(50, 50, 51, 60), (100, 100), work, 4);
         assert_eq!((x, y), (0, 0));
+    }
+
+    #[test]
+    fn ui_window_menu_title_and_tab_row_sit_above_the_candidates() {
+        let mut content = content(vec![candidate(1, "，", Some("1"), "")]);
+        content.title = "標點 · Tab → 括號引號".into();
+        content.tabs = vec!["標點".into(), "括號引號".into(), "數學".into()];
+        content.tab = 1;
+        let layout = layout(&content, measure);
+
+        let title = layout.title.as_ref().expect("選單要畫標題");
+        assert_eq!(title.text, "標點 · Tab → 括號引號");
+        assert_eq!(title.rect.top, PAD);
+        assert_eq!(layout.tabs.len(), 3);
+        assert_eq!(
+            layout
+                .tabs
+                .iter()
+                .map(|tab| tab.text.as_str())
+                .collect::<Vec<_>>(),
+            ["標點", "括號引號", "數學"]
+        );
+        assert!(!layout.tabs[0].selected);
+        assert!(layout.tabs[1].selected, "目前分頁要標示");
+        assert!(!layout.tabs[2].selected);
+        assert_eq!(layout.tabs[0].rect.top, PAD + HEADER_HEIGHT);
+        assert!(layout.tabs[0].rect.right() <= layout.tabs[1].rect.left);
+        assert_eq!(
+            layout.rows[0].rect.top,
+            PAD + HEADER_HEIGHT + TAB_HEIGHT,
+            "候選列要排在分頁列下方"
+        );
+        assert_eq!(
+            layout.height,
+            PAD * 2.0 + HEADER_HEIGHT + TAB_HEIGHT + ROW_HEIGHT
+        );
+        // 分頁列不是候選，點了不會選字。
+        assert_eq!(
+            hit_test(
+                &layout,
+                layout.tabs[0].rect.left + 1.0,
+                layout.tabs[0].rect.top + 1.0
+            ),
+            None
+        );
+        assert_eq!(
+            hit_test(
+                &layout,
+                layout.rows[0].rect.left + 1.0,
+                layout.rows[0].rect.top + 1.0
+            ),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn ui_window_without_menu_leaves_title_and_tabs_empty() {
+        let layout = layout(&content(vec![candidate(1, "價", None, "")]), measure);
+        assert_eq!(layout.title, None);
+        assert!(layout.tabs.is_empty());
+        assert_eq!(layout.rows[0].rect.top, PAD, "沒有選單時外觀不變");
     }
 }

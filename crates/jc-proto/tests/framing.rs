@@ -43,6 +43,7 @@ fn frame_round_trip_keeps_empty_and_non_ascii_text() {
             rows: 0,
             columns: 0,
             handled: None,
+            menu: None,
         },
         Response::State {
             preedit: "ㄇㄚˊ ㄆㄛˊ".into(),
@@ -90,6 +91,7 @@ fn frame_round_trip_keeps_empty_and_non_ascii_text() {
             rows: 0,
             columns: 0,
             handled: None,
+            menu: None,
         },
     ] {
         write_message(&mut buf, &message, DEFAULT_MAX_FRAME).unwrap();
@@ -179,6 +181,7 @@ fn message_over_custom_limit_is_rejected() {
         rows: 0,
         columns: 0,
         handled: None,
+        menu: None,
     };
     let err = write_message(&mut Vec::new(), &message, 32).expect_err("超過 32 bytes 應被拒絕");
     assert!(matches!(err, ProtoError::FrameTooLarge { max: 32, .. }));

@@ -312,6 +312,8 @@ struct State {
     /// 攔下重排的快捷鍵，等它從訊息佇列回來（#66）。
     pending_repost: Option<PendingRepost>,
     composing: bool,
+    /// 目前顯示的快照是否開著符號／表情選單；按鍵路由用。
+    menu_open: bool,
     attr_atoms: [u32; KINDS.len()],
     eaten: HashSet<u32>,
     right_shift: keys::ShiftTap,
@@ -433,6 +435,7 @@ impl TextService {
                 completing: None,
                 pending_repost: None,
                 composing: false,
+                menu_open: false,
                 attr_atoms: [0; KINDS.len()],
                 eaten: HashSet::new(),
                 right_shift: keys::ShiftTap::default(),
@@ -534,6 +537,7 @@ impl TextService_Impl {
         };
         st.composition = None;
         st.composing = false;
+        st.menu_open = false;
         st.left_from = None;
         st.selection = None;
         st.eaten.clear();
@@ -753,10 +757,9 @@ impl TextService_Impl {
         } else {
             snapshot.reading_hint.clone()
         };
-        // 候選窗只在使用者開始挑選時出現：打字時看組字（preedit），按方向鍵／
-        // 翻頁鍵進入 `navigating` 才開清單。每次按鍵都彈一個框會蓋住上下文。
-        let show = snapshot.composing()
-            && snapshot.navigating
+        // 選單開著時一律顯示，不受 `navigating` 影響；其他情形沿用「組字中且
+        // 使用者已進入選取」的規則。每次按鍵都彈一個框會蓋住上下文。
+        let show = snapshot.wants_candidate_window()
             && (!snapshot.candidates.is_empty()
                 || !snapshot.suggestion.is_empty()
                 || !reading.is_empty())
@@ -866,6 +869,7 @@ impl TextService_Impl {
             .collect();
         let page_size = (snapshot.rows * snapshot.columns).max(1);
         let pages = snapshot.candidates.len().div_ceil(page_size);
+        let menu = snapshot.menu.as_ref();
         let message = UiMessage {
             show: show && caret.is_some(),
             x: caret.map(|rect| rect.left).unwrap_or(0),
@@ -879,6 +883,10 @@ impl TextService_Impl {
             columns: snapshot.columns,
             kind: snapshot.candidate_kind.clone(),
             title: snapshot.candidate_title(),
+            menu_kind: menu.map(|menu| menu.kind.clone()).unwrap_or_default(),
+            menu_title: menu.map(|menu| menu.title.clone()).unwrap_or_default(),
+            menu_tabs: menu.map(|menu| menu.tabs.clone()).unwrap_or_default(),
+            menu_tab: menu.map(|menu| menu.tab).unwrap_or(0),
             suggestion: snapshot.suggestion.clone(),
             notice,
             marking: snapshot.marking(),
@@ -892,6 +900,7 @@ impl TextService_Impl {
             let mut st = self.state.borrow_mut();
             // 核心已經是快照的狀態；文件端沒套用成功時保留原組字物件，下一鍵再同步。
             st.composing = snapshot.composing();
+            st.menu_open = snapshot.menu.is_some();
             st.composition = applied.composition;
             st.ui.present(&message, owner, document.clone());
             if !st.composing {
@@ -1227,7 +1236,12 @@ impl TextService_Impl {
         let Some(window) = st.callback.as_ref() else {
             return;
         };
-        if snapshot.ok && snapshot.composing() && !snapshot.navigating && st.shown.is_none() {
+        if snapshot.ok
+            && snapshot.composing()
+            && !snapshot.navigating
+            && snapshot.menu.is_none()
+            && st.shown.is_none()
+        {
             window.ja_live_idle_later();
         } else {
             window.cancel_ja_live_idle();
@@ -1493,6 +1507,7 @@ impl TextService_Impl {
         st.selection = None;
         st.eaten.clear();
         st.composing = false;
+        st.menu_open = false;
         st.composition = None;
         st.left_from = None;
         false
@@ -1539,6 +1554,11 @@ impl TextService_Impl {
                 }
             };
             let caps_lower = snap.caps_lock && self.state.borrow_mut().session.style_caps_lower();
+            // 選單開著時所有鍵都交給一般按鍵路徑，由核心的選單規則處理；
+            // 英文補全政策不能在這裡把 Tab、數字或 Enter 吃掉。
+            if snap.menu.is_some() {
+                return None;
+            }
             // 候選窗開著時 Enter 屬於候選介面：交給一般按鍵路徑送引擎，
             // 由核心套用高亮項、關窗、保留組字。英文補全政策不能先把
             // Enter 吃掉或直接送出整段。
@@ -1781,6 +1801,11 @@ impl TextService_Impl {
                 .is_some_and(|k| st.session.english_state.full_width_extra_key(k))
             {
                 return true;
+            }
+            // 選單開著時由選單吃鍵，英文模式也一樣：Tab／Shift+Tab 換分頁、
+            // 方向鍵移動、數字選字、Enter 插入、Esc 關閉。
+            if st.menu_open {
+                return keys::composing_wants(false, style_key.as_deref());
             }
             // 英文由外殼直接放行：引擎只處理注音與日文，不再收到英文鍵。
             // 樣式鍵（Shift＋空白、全形）已在上面的分支處理。

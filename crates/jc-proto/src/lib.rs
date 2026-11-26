@@ -67,6 +67,26 @@ pub struct CandidateDetail {
     pub note: Option<String>,
 }
 
+/// 開啟中的符號／表情選單狀態。
+///
+/// `candidates`、`highlighted`、`rows`、`columns` 照一般候選攜帶選單項目；
+/// 這一組欄位只描述選單種類與分頁列。沒有開選單時 [`Response::State::menu`]
+/// 省略，舊 wrapper 看到的形狀不變。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MenuState {
+    /// 選單種類：`symbols` 或 `emoji`。
+    pub kind: String,
+    /// 顯示在分頁列上方的標題；沒有標題時為空字串。
+    #[serde(default)]
+    pub title: String,
+    /// 分頁名稱，順序即顯示順序。
+    #[serde(default)]
+    pub tabs: Vec<String>,
+    /// 目前分頁索引，從 0 起算。
+    #[serde(default)]
+    pub tab: usize,
+}
+
 /// 組字片段，位移一律以 **rune**（Unicode scalar value）計算。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SegmentInfo {
@@ -470,6 +490,9 @@ pub enum Response {
         /// 忽略這次點選而不要清掉組字。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         handled: Option<bool>,
+        /// 開啟中的符號／表情選單；沒有開選單時省略。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        menu: Option<MenuState>,
     },
     /// 一次提交的結果。
     Committed { text: String },
@@ -554,6 +577,7 @@ impl Response {
             navigating,
             rows,
             columns,
+            menu,
             ..
         } = snapshot;
         let cursor = preedit.chars().count();
@@ -596,6 +620,12 @@ impl Response {
             columns,
             preedit,
             handled,
+            menu: menu.map(|menu| MenuState {
+                kind: menu.kind.as_str().to_string(),
+                title: menu.title,
+                tabs: menu.tabs,
+                tab: menu.tab,
+            }),
         }
     }
 }
@@ -744,8 +774,45 @@ mod tests {
                 rows: 0,
                 columns: 0,
                 handled: None,
+                menu: None,
             }
         );
+    }
+
+    #[test]
+    fn menu_state_round_trips_and_is_optional() {
+        let snapshot = jc_core::Snapshot {
+            menu: Some(jc_core::output::MenuState {
+                kind: jc_core::output::MenuKind::Symbols,
+                title: "標點 · Tab → 括號引號".into(),
+                tabs: vec!["標點".into(), "括號引號".into()],
+                tab: 1,
+            }),
+            candidates: vec![jc_core::Candidate::new(
+                "，",
+                "",
+                0,
+                jc_core::CandidateSource::Literal,
+            )],
+            ..jc_core::Snapshot::empty()
+        };
+        let response = Response::state(snapshot);
+        let text = serde_json::to_string(&response).unwrap();
+        assert!(text.contains(r#""menu":{"kind":"symbols""#), "{text}");
+        assert!(text.contains(r#""tab":1"#), "{text}");
+        let parsed: Response = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed, response);
+        let Response::State { menu, .. } = parsed else {
+            panic!("應回 State");
+        };
+        let menu = menu.expect("menu 要保留");
+        assert_eq!(menu.kind, "symbols");
+        assert_eq!(menu.tabs, ["標點", "括號引號"]);
+        assert_eq!(menu.tab, 1);
+
+        // 沒有選單時不寫入 `menu`，舊 wrapper 的形狀不變。
+        let plain = serde_json::to_string(&Response::state(jc_core::Snapshot::empty())).unwrap();
+        assert!(!plain.contains("menu"), "{plain}");
     }
 
     #[test]
@@ -756,7 +823,7 @@ mod tests {
             r#"{"op":"state","preedit":"","cursor":0,"candidates":[]}"#
         );
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        for key in ["details", "segments", "highlighted"] {
+        for key in ["details", "segments", "highlighted", "menu"] {
             assert!(value.get(key).is_none(), "{key} 不應出現在空快照");
         }
     }

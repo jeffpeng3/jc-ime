@@ -426,6 +426,42 @@ pub fn utf16_offset(s: &str, byte_index: usize) -> usize {
     utf16_len(&s[..at])
 }
 
+/// 候選選單的種類。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MenuKind {
+    /// 反引號開的符號選單。
+    #[default]
+    Symbols,
+    /// 等號開的表情選單。
+    Emoji,
+}
+
+impl MenuKind {
+    /// 線格式與外殼使用的名稱。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MenuKind::Symbols => "symbols",
+            MenuKind::Emoji => "emoji",
+        }
+    }
+}
+
+/// 開啟中的候選選單狀態。
+///
+/// `candidates`、`highlighted`、`rows`、`columns` 仍照一般候選攜帶選單項目；
+/// 這一組欄位只描述分頁列。沒有開選單時 [`Snapshot::menu`] 是 `None`。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MenuState {
+    /// 選單種類。
+    pub kind: MenuKind,
+    /// 顯示在分頁列上方的標題；沒有標題時為空字串。
+    pub title: String,
+    /// 分頁名稱，順序即顯示順序。
+    pub tabs: Vec<String>,
+    /// 目前分頁索引，從 0 起算。
+    pub tab: usize,
+}
+
 /// 一次輸入手勢後的完整狀態。
 ///
 /// 外殼不需要保存狀態，每次都以這份快照重畫。
@@ -467,6 +503,8 @@ pub struct Snapshot {
     pub rows: usize,
     /// 候選窗一列幾項；0 表示舊快照沒有這個資訊。
     pub columns: usize,
+    /// 開啟中的符號／表情選單；沒有開選單時為 `None`。
+    pub menu: Option<MenuState>,
 }
 
 impl Snapshot {
@@ -496,7 +534,7 @@ impl Snapshot {
     /// 與外殼的 `composing()` 判定一致；候選窗開著時 preedit 可能為空，
     /// 只看 [`Snapshot::preedit`] 會漏掉選取中的狀態。
     pub fn composing(&self) -> bool {
-        !self.preedit.is_empty() || !self.candidates.is_empty()
+        !self.preedit.is_empty() || !self.candidates.is_empty() || self.menu.is_some()
     }
 }
 
@@ -573,6 +611,7 @@ mod tests {
         assert_eq!(s.suggestion, None);
         assert_eq!(s.label, None);
         assert!(!s.navigating);
+        assert_eq!(s.menu, None);
         let filled = Snapshot {
             suggestion: Some("ㄚ".to_string()),
             label: Some("common".to_string()),
@@ -582,6 +621,24 @@ mod tests {
         assert_eq!(filled.suggestion.as_deref(), Some("ㄚ"));
         assert_eq!(filled.label.as_deref(), Some("common"));
         assert!(filled.navigating);
+    }
+
+    #[test]
+    fn menu_state_counts_as_composing_without_preedit_or_candidates() {
+        let menu = MenuState {
+            kind: MenuKind::Symbols,
+            title: "標點".to_string(),
+            tabs: vec!["標點".to_string(), "數學".to_string()],
+            tab: 1,
+        };
+        let s = Snapshot {
+            menu: Some(menu.clone()),
+            ..Snapshot::empty()
+        };
+        assert!(s.composing(), "選單開著就算組字");
+        assert_eq!(s.menu, Some(menu));
+        assert_eq!(MenuKind::Symbols.as_str(), "symbols");
+        assert_eq!(MenuKind::Emoji.as_str(), "emoji");
     }
 
     #[test]

@@ -156,6 +156,7 @@ fn empty_state() -> Response {
         rows: 0,
         columns: 0,
         handled: None,
+        menu: None,
     }
 }
 

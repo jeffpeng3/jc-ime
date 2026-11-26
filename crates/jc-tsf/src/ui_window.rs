@@ -536,6 +536,31 @@ impl Graphics {
                 self.dc
                     .FillRoundedRectangle(&rounded, &self.brush_highlight);
             }
+            if let Some(title) = &layout.title {
+                self.draw_text(
+                    &title.text,
+                    text.format(TextStyle::Small),
+                    title.rect,
+                    &self.brush_dim,
+                    ox,
+                    oy,
+                );
+            }
+            for tab in &layout.tabs {
+                let (format, brush) = if tab.selected {
+                    let rounded = D2D1_ROUNDED_RECT {
+                        rect: d2d_rect(tab.rect, ox, oy),
+                        radiusX: CORNER_RADIUS,
+                        radiusY: CORNER_RADIUS,
+                    };
+                    self.dc
+                        .FillRoundedRectangle(&rounded, &self.brush_highlight);
+                    (text.format(TextStyle::Small), &self.brush_highlight_text)
+                } else {
+                    (text.format(TextStyle::Small), &self.brush_dim)
+                };
+                self.draw_text(&tab.text, format, tab.rect, brush, ox, oy);
+            }
             for line in &layout.header {
                 self.draw_text(
                     &line.text,
@@ -691,6 +716,9 @@ fn content(message: &UiMessage) -> Content {
         pages: message.pages,
         reading: message.reading.clone(),
         columns: message.columns,
+        title: message.menu_title.clone(),
+        tabs: message.menu_tabs.clone(),
+        tab: message.menu_tab,
     }
 }
 

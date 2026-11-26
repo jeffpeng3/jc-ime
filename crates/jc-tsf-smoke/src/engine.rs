@@ -332,6 +332,7 @@ mod tests {
             rows: 0,
             columns: 0,
             handled: None,
+            menu: None,
         };
         assert_eq!(describe(&state), "State（組字 \"ㄨ\"、候選 2 個）");
         assert_eq!(

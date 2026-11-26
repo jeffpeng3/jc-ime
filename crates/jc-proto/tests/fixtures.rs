@@ -170,6 +170,7 @@ fn response_state_minimal_accepts_version_one_shape() {
             rows: 0,
             columns: 0,
             handled: None,
+            menu: None,
         }
     );
 }
@@ -194,6 +195,7 @@ fn response_state_v2_round_trips_all_new_fields() {
             rows: 0,
             columns: 0,
             handled: None,
+            menu: None,
         }
     );
     match response {

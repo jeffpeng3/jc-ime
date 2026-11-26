@@ -54,7 +54,7 @@ use crate::key::{Key, KeyCode};
 use crate::lang::{Lang, Mode};
 use crate::lattice::{InMemoryLexicon, Lattice};
 use crate::mixed::{default_english, space_text, English, Spacing};
-use crate::output::{rune_offset, utf16_offset, Snapshot};
+use crate::output::{rune_offset, utf16_offset, MenuKind, MenuState, Snapshot};
 use crate::personal::PersonalStore;
 use crate::punct::{self, Edit};
 use crate::reading::Unit;
@@ -253,15 +253,6 @@ impl SessionConfig {
             ..Self::default()
         }
     }
-}
-
-/// 候選選單的種類。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum MenuKind {
-    /// 反引號開的符號選單。
-    Symbols,
-    /// 等號開的表情選單。
-    Emoji,
 }
 
 /// 開啟中的候選選單。
@@ -1210,6 +1201,16 @@ impl Session {
             navigating: self.navigating,
             rows: layout.rows(),
             columns: layout.columns(),
+            menu: self.menu.map(|menu| MenuState {
+                kind: menu.kind,
+                title: self.menu_title().unwrap_or_default(),
+                tabs: self
+                    .menu_tab_names(menu.kind)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                tab: menu.tab,
+            }),
         }
     }
 
@@ -2461,6 +2462,11 @@ mod tests {
         assert_eq!(s.menu_tab(), Some("標點"));
         assert_eq!(snap.candidates[0].surface, "，");
         assert!(snap.candidates.len() > PAGE_SIZE);
+        let menu = snap.menu.as_ref().expect("開選單要帶 menu 狀態");
+        assert_eq!(menu.kind, MenuKind::Symbols);
+        assert_eq!(menu.title, "標點 · Tab → 括號引號");
+        assert_eq!(menu.tabs.first().map(String::as_str), Some("標點"));
+        assert_eq!(menu.tab, 0);
 
         let mut seen = Vec::new();
         for _ in 0..symbols::TABS.len() {
@@ -2473,8 +2479,9 @@ mod tests {
         );
         assert_eq!(s.menu_tab(), Some("標點"), "Tab 頭尾相接");
 
-        s.press(Key::new(KeyCode::Tab, None, true));
+        let snap = s.press(Key::new(KeyCode::ShiftTab, None, true));
         assert_eq!(s.menu_tab(), Some("注音"), "Shift＋Tab 往前");
+        assert_eq!(snap.menu.as_ref().map(|menu| menu.tab), Some(6));
 
         type_syllable(&mut s, "ㄨㄛˇ");
         s.open_symbol_menu();
@@ -2482,6 +2489,26 @@ mod tests {
         s.press(Key::char('7', false)); // 標點分頁第 7 項是「；」
         assert_eq!(s.commit(), "我；");
         assert_eq!(s.symbol_recent(), ["；"]);
+    }
+
+    /// 選單開著時上下鍵只在目前分頁內移動，Enter 插入一次並關閉。
+    #[test]
+    fn test_symbol_menu_arrows_and_enter() {
+        let mut s = session();
+        let snap = s.open_symbol_menu();
+        assert_eq!(snap.highlighted, 0);
+        assert_eq!(snap.menu.as_ref().map(|menu| menu.tab), Some(0));
+
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        assert_eq!(snap.highlighted, 1, "↓ 在目前分頁內往下");
+        assert_eq!(snap.menu.as_ref().map(|menu| menu.tab), Some(0), "不換分頁");
+        let snap = s.press(Key::new(KeyCode::Up, None, false));
+        assert_eq!(snap.highlighted, 0, "↑ 回到上一項");
+
+        let snap = s.press(Key::new(KeyCode::Enter, None, false));
+        assert!(snap.menu.is_none(), "Enter 後關閉選單");
+        assert!(snap.candidates.is_empty());
+        assert_eq!(s.commit(), "，", "只插入高亮的一項");
     }
 
     /// 對照 `TestSymbolMenuRecentTab`：有紀錄時從「最近」開，只放一頁。

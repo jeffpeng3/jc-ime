@@ -141,6 +141,18 @@ pub struct UiMessage {
     pub kind: String,
     #[serde(default)]
     pub title: String,
+    /// 選單種類：`symbols` 或 `emoji`；沒有選單時空字串。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub menu_kind: String,
+    /// 選單分頁列上方的標題；沒有選單時空字串。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub menu_title: String,
+    /// 選單分頁名稱，順序即顯示順序；沒有選單時空陣列。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub menu_tabs: Vec<String>,
+    /// 目前選單分頁索引，從 0 起算。
+    #[serde(default)]
+    pub menu_tab: usize,
     /// Tab 補全提示（一般為後半；同音替換時為「原文 → 完整詞」）。
     pub suggestion: String,
     /// 核心的一次性提示，畫在最上面；幾秒後或下一鍵後消失。
@@ -274,5 +286,45 @@ impl CandidateCell {
     /// 座標是否落在格子內。
     pub fn contains(&self, x: i32, y: i32) -> bool {
         x >= self.left && x < self.left + self.width && y >= self.top && y < self.top + self.height
+    }
+}
+
+impl UiMessage {
+    /// 這一則訊息有沒有選單分頁列。
+    pub fn has_menu(&self) -> bool {
+        !self.menu_tabs.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_menu_tab_fields_round_trip_and_stay_optional() {
+        let message = UiMessage {
+            show: true,
+            menu_kind: "symbols".into(),
+            menu_title: "標點 · Tab → 括號引號".into(),
+            menu_tabs: vec!["標點".into(), "括號引號".into()],
+            menu_tab: 1,
+            ..UiMessage::default()
+        };
+        let text = serde_json::to_string(&message).unwrap();
+        assert!(
+            text.contains(r#""menu_tabs":["標點","括號引號"]"#),
+            "{text}"
+        );
+        assert!(text.contains(r#""menu_tab":1"#), "{text}");
+        let parsed: UiMessage = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed, message);
+        assert!(parsed.has_menu());
+
+        let plain = UiMessage::default();
+        let text = serde_json::to_string(&plain).unwrap();
+        for key in ["menu_kind", "menu_title", "menu_tabs"] {
+            assert!(!text.contains(key), "沒有選單時省略 {key}：{text}");
+        }
+        assert!(!plain.has_menu());
     }
 }

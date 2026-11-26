@@ -262,6 +262,19 @@ pub struct Segment {
     pub style: String,
 }
 
+/// 開啟中的符號／表情選單：種類、標題與分頁列。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MenuState {
+    /// `symbols` 或 `emoji`。
+    pub kind: String,
+    /// 分頁列上方的標題；可空。
+    pub title: String,
+    /// 分頁名稱，順序即顯示順序。
+    pub tabs: Vec<String>,
+    /// 目前分頁索引，從 0 起算。
+    pub tab: usize,
+}
+
 /// 0c 快照。註解標出每一欄的 jc 來源；「jc 尚無對應」表示 jc wire 格式沒有
 /// 這一項，只能給預設值或由別的欄位推導。
 #[derive(Clone, Debug, Default)]
@@ -346,6 +359,8 @@ pub struct Snapshot {
     pub clause_index: i64,
     /// jc 尚無對應；0。
     pub clause_count: i64,
+    /// jc `State::menu`：開啟中的符號／表情選單；沒有開選單時為 `None`。
+    pub menu: Option<MenuState>,
 }
 
 impl Snapshot {
@@ -398,7 +413,20 @@ impl Snapshot {
 
     /// 是否正在組字。
     pub fn composing(&self) -> bool {
-        !self.preedit.is_empty() || !self.candidates.is_empty()
+        !self.preedit.is_empty() || !self.candidates.is_empty() || self.menu.is_some()
+    }
+
+    /// 是否要顯示候選窗。
+    ///
+    /// 選單開著時一律顯示，不受 `navigating` 影響；其他情況沿用「組字中且
+    /// 使用者已進入選取」的規則。內容是否足夠交給呼叫端再判斷。
+    pub fn wants_candidate_window(&self) -> bool {
+        self.menu.is_some() || self.composing() && self.navigating
+    }
+
+    /// 符號／表情選單是否開著。
+    pub fn menu_open(&self) -> bool {
+        self.menu.is_some()
     }
 
     /// 組字區是否仍在標示要加入詞庫的範圍。
@@ -456,6 +484,7 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
         rows,
         columns,
         handled,
+        menu,
         ..
     } = response
     else {
@@ -557,6 +586,12 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
             "items": items,
         },
         "navigating": navigating,
+        "menu": menu.as_ref().map(|menu| json!({
+            "kind": menu.kind,
+            "title": menu.title,
+            "tabs": menu.tabs,
+            "tab": menu.tab,
+        })),
         "mode": if japanese { "japanese" } else if all_english { "english" } else { "zhuyin" },
         "english_autocomplete": pending,
         "english_pending": pending,
@@ -1059,6 +1094,22 @@ fn parse(reply: &Value) -> Snapshot {
     s.cursor_utf16 = j["cursor"]["utf16"].as_u64().unwrap_or(0) as usize;
     // `navigating` 是 snapshot 的兄弟欄位，不在 candidates 物件裡。
     s.navigating = j["navigating"].as_bool().unwrap_or(false);
+    if let Some(menu) = j.get("menu").filter(|menu| !menu.is_null()) {
+        s.menu = Some(MenuState {
+            kind: menu["kind"].as_str().unwrap_or("").to_string(),
+            title: menu["title"].as_str().unwrap_or("").to_string(),
+            tabs: menu["tabs"]
+                .as_array()
+                .map(|tabs| {
+                    tabs.iter()
+                        .filter_map(|tab| tab.as_str())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            tab: menu["tab"].as_u64().unwrap_or(0) as usize,
+        });
+    }
     if let Some(c) = j.get("candidates") {
         s.rows = match c["rows"].as_u64().unwrap_or(0) {
             0 => jc_proto::candidate_layout::DEFAULT_ROWS,
@@ -1956,7 +2007,11 @@ impl Session {
     /// 英文組字中不把翻頁鍵送進引擎；即使引擎有候選，也不能用
     /// `↓`／`↑`／`PageUp`／`PageDown` 開候選窗。
     pub fn key(&mut self, key: &str) -> Snapshot {
-        if self.english && self.english_state.composing() && is_page_navigation(key) {
+        if self.english
+            && self.english_state.composing()
+            && self.english_state.menu.is_none()
+            && is_page_navigation(key)
+        {
             let mut snapshot = self.english_state.clone();
             snapshot.candidates.clear();
             snapshot.candidate_keys.clear();
@@ -2275,6 +2330,7 @@ mod parse_tests {
             rows: 10,
             columns: 1,
             handled: None,
+            menu: None,
         };
         let s = parse(&response_to_reply(&response));
         assert_eq!(s.candidate_keys, vec!["1", "2"]);
@@ -2467,6 +2523,7 @@ mod parse_tests {
             rows: 0,
             columns: 0,
             handled: None,
+            menu: None,
         };
         let reply = response_to_reply(&state);
         let s = parse(&reply);
@@ -2495,6 +2552,7 @@ mod parse_tests {
             rows: 0,
             columns: 0,
             handled: None,
+            menu: None,
         };
         let s = parse(&response_to_reply(&no_suggestion));
         assert!(!s.english_pending, "沒有 suggestion 就沒有英文補全");
@@ -2705,6 +2763,69 @@ mod tests {
         assert_eq!(snapshot.candidates[0].1, "台");
     }
 
+    /// 選單狀態要一路帶到 TSF 的 `Snapshot`，而且不靠 `navigating` 就能顯示。
+    #[test]
+    fn service_display_maps_menu_state_without_navigating() {
+        let wire = json!({
+            "op": "state",
+            "preedit": "",
+            "cursor": 0,
+            "candidates": ["，", "、"],
+            "details": [
+                {"reading": "", "source": "literal", "cost": 0},
+                {"reading": "", "source": "literal", "cost": 0}
+            ],
+            "cursor_rune": 0,
+            "navigating": false,
+            "menu": {
+                "kind": "symbols",
+                "title": "標點 · Tab → 括號引號",
+                "tabs": ["標點", "括號引號", "數學"],
+                "tab": 1
+            }
+        });
+        let response: jc_proto::Response = serde_json::from_value(wire).expect("state 要能解析");
+        let snapshot = parse(&response_to_reply(&response));
+        let menu = snapshot.menu.as_ref().expect("menu 要帶到 Snapshot");
+        assert_eq!(menu.kind, "symbols");
+        assert_eq!(menu.title, "標點 · Tab → 括號引號");
+        assert_eq!(menu.tabs, ["標點", "括號引號", "數學"]);
+        assert_eq!(menu.tab, 1);
+        assert!(snapshot.composing(), "選單開著就算組字");
+        assert!(
+            snapshot.wants_candidate_window(),
+            "選單不需要 navigating 也顯示"
+        );
+        assert!(!snapshot.navigating);
+
+        // 沒有 menu 時維持原本的顯示規則。
+        let plain = Snapshot {
+            candidates: vec![(0, "台".into())],
+            ..Snapshot::default()
+        };
+        assert!(!plain.wants_candidate_window(), "沒 navigating 不開候選窗");
+        let empty = Snapshot::default();
+        assert!(!empty.wants_candidate_window());
+    }
+
+    /// Tab／Shift+Tab 送給引擎的鍵：Shift+Tab 走 `BackTab`，引擎端是
+    /// `KeyCode::ShiftTab`，核心的選單分頁切換才看得到方向。
+    #[test]
+    fn tab_and_backtab_reach_the_engine_as_distinct_keys() {
+        for (protocol, expected) in [
+            ("Tab", jc_proto::KeyCode::Tab),
+            ("BackTab", jc_proto::KeyCode::ShiftTab),
+        ] {
+            let request =
+                to_jc_request(&json!({"op": "handle", "req": {"type": "key", "key": protocol}}));
+            let jc_proto::Request::Key { key } = serde_json::from_value(request).expect("Key 請求")
+            else {
+                panic!("{protocol} 應轉成 Key 請求");
+            };
+            assert_eq!(key.code, expected, "{protocol}");
+        }
+    }
+
     #[test]
     fn to_jc_request_maps_cancel_to_escape() {
         let envelope = json!({"op": "handle", "session": 1, "req": {"type": "cancel"}});
@@ -2802,6 +2923,7 @@ mod tests {
                 rows: 0,
                 columns: 0,
                 handled: None,
+                menu: None,
             })),
             _ => Some(json!({"ok": true})),
         });
@@ -2840,6 +2962,7 @@ mod tests {
                 rows: 0,
                 columns: 0,
                 handled: Some(false),
+                menu: None,
             })),
             _ => Some(json!({"ok": true})),
         });
@@ -2931,6 +3054,7 @@ mod tests {
                 rows: 0,
                 columns: 0,
                 handled: Some(true),
+                menu: None,
             })),
             _ => Some(json!({"ok": true})),
         });
@@ -3274,6 +3398,7 @@ mod tests {
             rows: 0,
             columns: 0,
             handled: None,
+            menu: None,
         }
     }
 

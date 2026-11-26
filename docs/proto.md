@@ -131,6 +131,7 @@ Windows 的 `--socket` 只取最後一段，掛到 `\\.\pipe\`；`--supervise` �
 | `navigating` | bool | 是否在明確的候選選取模式 |
 | `rows` | usize | 候選窗一頁最多幾列；0 時省略，舊引擎視為十列 |
 | `columns` | usize | 候選窗一列最多幾項；0 時省略，舊引擎視為單欄 |
+| `menu` | MenuState? | 開啟中的符號／表情選單；沒有開選單時省略 |
 
 **游標**：`cursor_rune` 是權威值，單位是 Unicode scalar value（rune）。`cursor`
 沿用版本 1 的定義，值是 `preedit` 的字元數，只為舊 wrapper 相容而保留。需要
@@ -141,8 +142,24 @@ UTF-16 位移的外殼請自己從 `cursor_rune` 換算，不要假設 `cursor` 
 一致；`details[i]` 描述的就是 `candidates[i]`。這是 wrapper 唯一的假設，wrapper
 不應自行重排候選。
 
-### CandidateDetail
+### MenuState
 
+符號選單（`` ` ``／快捷鍵）或表情選單（`=`／快捷鍵）開著時才出現。`candidates`、
+`highlighted`、`rows`、`columns` 照一般候選攜帶目前分頁的項目；這一組欄位只描述
+選單種類與分頁列。
+
+| 欄位 | 型別 | 語意 |
+|---|---|---|
+| `kind` | string | `symbols` 或 `emoji` |
+| `title` | string | 分頁列上方的標題；可空 |
+| `tabs` | string[] | 分頁名稱，順序即顯示順序 |
+| `tab` | usize | 目前分頁索引，從 0 起算 |
+
+沒有選單時整個 `menu` 欄位省略，舊 wrapper 看到的 `State` 形狀不變。選單開著時
+`candidates` 可能非空但 `navigating` 仍為 `false`；外殼要以 `menu` 是否存在決定
+是否顯示，不能只看 `navigating`。
+
+### CandidateDetail
 | 欄位 | 型別 | 語意 |
 |---|---|---|
 | `reading` | string | 讀音。注音為ㄅㄆㄇ，日文為平假名 |
@@ -293,3 +310,4 @@ UTF-16 位移的外殼請自己從 `cursor_rune` 換算，不要假設 `cursor` 
 | 3 | 2026-11-20 | `State` 新增 `details`（與 `candidates` 等長同序）、`segments`（rune 位移）、`highlighted`；`CandidateSource` 提供 snake_case 線格式；文件明訂 `cursor_rune` 為權威值。同日補充：`CandidateDetail` 新增選填 `pos`，日文候選帶 pack 的詞性名稱，注音一律省略 |
 | 3 擴充 | 2026-11-25 | 新增 `ping`、`health`、`close`、`reset_personal`、`apply_settings`、`drain`、`vocab`、`context`、`mode`、`caps_lock`、`output_simplified`；`Ready` 新增 `session`，`ErrorCode` 新增 `unsupported`。既有欄位與 op 不變 |
 | 3 擴充 | 2026-11-26 | `State` 新增選填 `rows`／`columns`；`CandidateDetail` 新增選填 `key`／`note`，核心對所有來源填好，舊 wrapper 可忽略 |
+| 3 擴充 | 2026-11-27 | `State` 新增選填 `menu`（`kind`、`title`、`tabs`、`tab`），選單開著時帶分頁列；沒有選單時省略 |
