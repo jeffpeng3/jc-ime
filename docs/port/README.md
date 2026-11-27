@@ -114,6 +114,12 @@
 | [`candle-punct.md`](candle-punct.md) | 日文標點模型的 candle 實作（已移除） |
 | [`drop-punct.md`](drop-punct.md) | 移除標點模型推論路徑 |
 
+### 前導字元
+
+| 文件 | 一句話 |
+|---|---|
+| [`big5-table.md`](big5-table.md) | 前導 `b` 的 Big5 → Unicode 查表資料與產生腳本 |
+
 ### Session 與其他收尾
 
 | 文件 | 一句話 |

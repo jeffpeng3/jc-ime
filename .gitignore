@@ -2,12 +2,15 @@
 scripts/quant/dump-inputs/target/
 **/*.rs.bk
 build/
-# 資料與模型不進 git；只有 jc-core 內建的 tw2s 字典（約 175KB，Apache-2.0）例外。
+# 資料與模型不進 git；只有 jc-core 內建的 tw2s 字典（約 175KB，Apache-2.0）
+# 與 Big5 查表（約 27KB，見 docs/port/big5-table.md）例外。
 data/
 !/crates/jc-core/data/
 /crates/jc-core/data/*
 !/crates/jc-core/data/opencc/
 !/crates/jc-core/data/opencc/**
+!/crates/jc-core/data/big5/
+!/crates/jc-core/data/big5/**
 models/
 *.tmp
 .tmp*/

@@ -6,6 +6,7 @@
 //! 本檔只負責宣告 module 與轉出公開型別；各 module 的實作由各自的
 //! 移植 task 補上，後續不需要再改動這裡。
 
+pub mod big5;
 pub mod candidate;
 pub mod candidate_layout;
 pub mod composition;
@@ -33,6 +34,7 @@ pub mod vocab;
 pub mod zh;
 pub mod zhconv;
 
+pub use big5::big5_to_unicode;
 pub use candidate::{Candidate, CandidateSource};
 pub use composition::{
     AutoRun, CompSegment, Composition, ConvertBackend, ConvertContext, ConvertError, Converted,
