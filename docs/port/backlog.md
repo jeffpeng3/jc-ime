@@ -10,13 +10,17 @@
 ```
 
 - 來源：微軟注音輸入法的前導字元表。
-- 目前狀態：**這一版不做**。`u`／`b` 列在
-  `crates/jc-core/src/session/input_style.rs` 的 `PREFIX_RESERVED` 表，附
-  `TODO(prefix-u)`／`TODO(prefix-b)`。實際行為和一般非表內鍵相同：反引號以
-  字面送出，`u`／`b` 照常輸入，不會卡住。
+- 目前狀態：**已排入語言引擎化的 P1.5**（第一個非語言引擎）。`u`／`b`
+  列在 `crates/jc-core/src/session/input_style.rs` 的 `PREFIX_RESERVED` 表，
+  附 `TODO(prefix-u)`／`TODO(prefix-b)`；設計與狀態機見
+  [`language-engines.md`](language-engines.md) §7。P1.5 會把前導解析收斂成
+  `PrefixEngine`：反引號才 `Claim`，`u`／`b` 收集碼位，空白解析後插入
+  一個字；錯誤與取消保留 raw 或整段取消，Big5 用純 Rust 表跨平台解碼。
 - 鎖住目前行為的測試：
   - `prefix_u_is_reserved_and_falls_through_for_now`
   - `prefix_b_is_reserved_and_falls_through_for_now`
-- 未來實作要動的地方：只有 `jc-core` 的前導解析
-  （`input_style.rs` 的 `prefix_key` 與保留鍵表）。`proto` 與外殼不用動。
-  實作後請刻意改寫上面兩個測試，不必當成回歸。
+- 未來實作要動的地方：新增 `jc-core` 的 `engine/prefix.rs`，把
+  `input_style.rs` 的 `prefix_key()` 與保留鍵表接進 `PrefixEngine`；`proto`
+  與外殼不用動。實作後請刻意改寫上面兩個測試成
+  `test_prefix_u_inserts_unicode_scalar` 與
+  `test_prefix_b_inserts_big5_char`，不必當成回歸。

@@ -146,6 +146,7 @@
 | [`candidate-cap.md`](candidate-cap.md) | 候選上限 200 的單鍵延遲、JSON 大小與記憶體量測 |
 | [`composition-cursor.md`](composition-cursor.md) | 組字游標、任意位置編輯與片段換字 |
 | [`language-branches.md`](language-branches.md) | 依語言／模式分岔的行為盤點、統一建議與前三件事 |
+| [`language-engines.md`](language-engines.md) | 語言引擎 trait、快速／平行分派、span 合併與前導 `u`／`b` 引擎 |
 | [`event-flows.md`](event-flows.md) | 以現行程式為準的 TSF／engine／core 事件流程圖與決策歸屬 |
 
 ### TSF、設定與安裝
