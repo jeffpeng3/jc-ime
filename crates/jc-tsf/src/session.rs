@@ -335,8 +335,6 @@ pub struct Snapshot {
     pub caps_english: bool,
     /// 由 session 的 generation 變化計算，不來自 jc。
     pub reconnected: bool,
-    /// jc 尚無對應；0。
-    pub context_id: u64,
     /// jc 尚無對應；空陣列。
     pub notices: Vec<String>,
     /// jc 尚無對應；空字串。
@@ -1031,7 +1029,6 @@ fn parse(reply: &Value) -> Snapshot {
     s.ok = true;
     s.handled = j["handled"].as_bool().unwrap_or(false);
     s.commit = j["commit"].as_str().unwrap_or("").to_string();
-    s.context_id = j["context_id"].as_u64().unwrap_or(0);
     s.suggestion = j["suggestion"].as_str().unwrap_or("").to_string();
     s.suggestion_kind = SuggestionKind::from_wire(&j["suggestion_kind"]);
     s.english_pending = s.suggestion_kind == SuggestionKind::English;
@@ -1135,8 +1132,6 @@ pub struct Session {
     log: Vec<Value>,
     /// 傳輸失敗後，下一次連上先送 display 對齊引擎目前的組字，不重播按鍵。
     align_pending: bool,
-    context_enabled: bool,
-    pending_context: Option<(u64, String)>,
     private: bool,
     vocab_keys: bool,
     mode_known: bool,
@@ -1189,8 +1184,6 @@ impl Session {
             down: false,
             log: Vec::new(),
             align_pending: false,
-            context_enabled: std::env::var("ZUIN_DOCUMENT_CONTEXT").as_deref() != Ok("0"),
-            pending_context: None,
             private: false,
             vocab_keys: false,
             mode_known: false,
@@ -1443,27 +1436,6 @@ impl Session {
     /// 每次按鍵前由外殼依欄位政策設定。
     pub fn set_private(&mut self, private: bool) {
         self.private = private;
-        if private {
-            self.pending_context = None;
-        }
-    }
-
-    /// 開始新組字前由外殼呼叫：回傳剛提交、等待確認的文字。
-    pub fn take_pending_context(&mut self) -> Option<(u64, String)> {
-        if self.private {
-            self.pending_context = None;
-        }
-        self.pending_context.take()
-    }
-
-    /// 外殼核對游標前的文字後回報。
-    pub fn confirm_context(&mut self, id: u64, confirmed: bool) {
-        if !confirmed || id == 0 || self.id == 0 || self.generation != self.client.generation() {
-            return;
-        }
-        let _ = self.client.call(
-            &json!({"op": "handle", "session": self.id, "req": {"type": "context", "on": true, "context_id": id}}),
-        );
     }
 
     /// 目前是否英文模式。
@@ -1657,12 +1629,6 @@ impl Session {
             self.english = true;
             self.base_english = true;
         }
-        self.pending_context = None;
-        if self.context_enabled {
-            let _ = self.client.call(
-                &json!({"op": "handle", "session": self.id, "req": {"type": "context", "context_enabled": true}}),
-            );
-        }
         if let Some(info) = reply["info"].as_object() {
             zlog!(
                 "open: session={} server={} data={}",
@@ -1709,7 +1675,6 @@ impl Session {
                 }
             }
             self.align_pending = false;
-            self.pending_context = None;
         }
         true
     }
@@ -1726,7 +1691,6 @@ impl Session {
             );
         }
         self.log.clear();
-        self.pending_context = None;
         self.align_pending = true;
         true
     }
@@ -1822,15 +1786,13 @@ impl Session {
             s.caps_english = want_caps;
             s.caps_lock = want_caps;
             s.output_simplified = self.simplified;
-            if matches!(kind.as_str(), "caps_lock" | "output_simplified") {
+            if kind == "output_simplified" {
                 s.handled = true;
             }
-            if !s.commit.is_empty() {
-                self.pending_context =
-                    (self.context_enabled && !self.private && s.context_id != 0 && !s.reconnected)
-                        .then(|| (s.context_id, s.commit.clone()));
-            } else if s.reconnected {
-                self.pending_context = None;
+            if !s.commit.is_empty() || kind == "cancel" || !s.composing() {
+                self.log.clear();
+            } else if kind != "output_simplified" {
+                self.log.push(request);
             }
             self.english = s.english;
             self.base_english = base;
@@ -1842,11 +1804,6 @@ impl Session {
             self.mode_known = true;
             self.english_state = s.clone();
             self.down = false;
-            if !s.commit.is_empty() || kind == "cancel" || !s.composing() {
-                self.log.clear();
-            } else if kind != "caps_lock" && kind != "output_simplified" {
-                self.log.push(request);
-            }
             zlog!(
                 "handle 引擎回 op={} ok={} handled={} composing={} preedit={} commit={}",
                 kind,
@@ -1869,7 +1826,6 @@ impl Session {
         self.log.clear();
         self.align_pending = false;
         self.english_state = Snapshot::default();
-        self.pending_context = None;
         if self.shared {
             self.mode_known = false;
         }
@@ -3403,21 +3359,26 @@ mod tests {
     }
 
     #[test]
-    fn commit_offers_document_context_once() {
-        let (mut s, _) = toy_session();
+    fn commit_does_not_send_document_context() {
+        let (mut s, st) = toy_session();
         for k in ["s", "u", "3", "c", "l", "3"] {
             s.key(k);
         }
         let committed = s.key("Enter");
         assert_eq!(committed.commit, "你好");
-        // jc 尚無對應 context_id：0 代號不提供前文。
-        assert!(s.take_pending_context().is_none());
+        assert!(
+            st.lock()
+                .unwrap()
+                .requests
+                .iter()
+                .all(|r| r["type"].as_str() != Some("context")),
+            "TSF 不再送 context 請求"
+        );
         s.reset();
-        assert!(s.take_pending_context().is_none());
     }
 
     #[test]
-    fn private_field_composes_without_offering_context() {
+    fn private_field_composes_without_learning_or_context() {
         let (mut s, _) = toy_session();
         s.set_private(true);
         for k in ["s", "u", "3", "c", "l", "3"] {
@@ -3428,7 +3389,6 @@ mod tests {
             "重播紀錄也要是私人組字"
         );
         assert_eq!(s.key("Enter").commit, "你好");
-        assert!(s.take_pending_context().is_none(), "私人欄位不讀前文");
         s.set_private(false);
         for k in ["s", "u", "3"] {
             s.key(k);

@@ -9,15 +9,14 @@ Go 檔案｜Rust 檔案｜狀態
 ---|---|---
 `bridge/ipc/ipc.go`（Envelope 的 op/Reply 欄位）｜`crates/jc-proto/src/lib.rs`（Request／Response 新 variant、HealthInfo、VocabInfo）｜rewritten：改成 jc 的 internally tagged enum，保留 op 字串與 session/info/vocab 語意
 `bridge/ipc/server.go`（health() 與 do() 的 op 分派）｜`crates/jc-proto/src/lib.rs`（ErrorCode::Unsupported）｜rewritten：T3 只定義「不支援」錯誤碼，實際分派留給 T4/T6
-`core/proto/proto.go`（Request.Type 的 context/mode/caps_lock/output_simplified）｜`crates/jc-proto/src/lib.rs`（Request::Context／Mode／CapsLock／OutputSimplified）｜rewritten：改成獨立 op variant，欄位全部 serde default
+`core/proto/proto.go`（Request.Type 的 context/mode/caps_lock/output_simplified）｜`crates/jc-proto/src/lib.rs`（只剩 Request::OutputSimplified）｜rewritten：context／mode／caps_lock 已從協定刪除；output_simplified 保留為獨立 op variant
 `core/engine/vocab.go`（VocabRequest／VocabResponse）｜`crates/jc-proto/src/lib.rs`（Request::Vocab、Response::Vocab、VocabInfo）｜rewritten：T3 只固定 ok/changed/error，其餘用 raw JSON 攜帶，T6 再展開
 `bridge/ipc/client.go`（ping/health/apply_settings/drain 的送出）｜T1a 的 `crates/jc-tsf/src/session.rs::to_jc_request()`｜n/a：T1a 已經保留原始 envelope，本輪不需要再改送出端
 
 ## 新增的 Request op
 
 Ping、Health、ApplySettings{settings}、Drain、Vocab{directive,vocab}、ResetPersonal、
-Close{session}、Context{on,context_id,context_enabled}、Mode{on}、CapsLock{on}、
-OutputSimplified{on}。共 11 個（10 個任務書清單加 plan 要求的 ping）。
+Close{session}、OutputSimplified{on}。Context、Mode、CapsLock 已刪除。
 
 ## 新增的 Response 型別
 
@@ -30,7 +29,7 @@ sessions、composing、pid、output_simplified、personal_reset、capabilities �
 
 既有 Hello/Key/Toggle/Snapshot/Commit/Shutdown 的 JSON 逐字不變。新 op 都是獨立
 variant，每個欄位都有 #[serde(default)] 與適當的 skip_serializing_if；T1a 只帶
-on/context_id 的精簡 JSON 也能解。舊引擎遇到新 op 由 Request::Unknown 收下並回
+on 的精簡 JSON 也能解。舊引擎遇到新 op 由 Request::Unknown 收下並回
 UnknownOp。版本號維持 3。
 
 ## 驗證

@@ -658,11 +658,6 @@ impl Transport for Scripted {
                 "ctrl_punctuation": "true",
                 "ctrl_punctuation_keys": ",.';?!/",
             }})),
-            "mode" => {
-                self.english = request["on"].as_bool().unwrap_or(false);
-                self.keys.clear();
-                Some(self.snapshot(String::new()))
-            }
             "output_simplified" => {
                 self.simplified = request["on"].as_bool().unwrap_or(false);
                 Some(self.snapshot(String::new()))

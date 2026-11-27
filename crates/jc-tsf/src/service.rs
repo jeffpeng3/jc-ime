@@ -1133,27 +1133,6 @@ impl TextService_Impl {
         self.present_in_edit(Some(&ctx), &snapshot, Some(ec));
     }
 
-    /// 新組字的第一鍵之前：游標仍緊接著剛提交的文字，才讓引擎以它作為前文。
-    fn confirm_document_context(&self, ctx: Option<&ITfContext>) {
-        let (composing, client) = {
-            let st = self.state.borrow();
-            (st.composing, st.client_id)
-        };
-        if composing {
-            return;
-        }
-        let Some((id, commit)) = self.state.borrow_mut().session.take_pending_context() else {
-            return;
-        };
-        let expected: Vec<u16> = commit.encode_utf16().collect();
-        let confirmed = ctx.is_some_and(|c| crate::context::preceded_by(c, client, &expected));
-        zdebug!("document context confirmed={}", confirmed);
-        self.state
-            .borrow_mut()
-            .session
-            .confirm_context(id, confirmed);
-    }
-
     /// 硬要求一：直接把按鍵送給核心，絕對不補 Down。
     ///
     /// 0c `service.rs:942-965` 的 `handle_key()` 只做 `session.key(key)` 再 `present`。
@@ -2557,7 +2536,6 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                         key,
                         typed
                     );
-                    self.confirm_document_context(pic.as_ref());
                     return Ok(self.end_word_with(pic.as_ref(), vk, &key, typed).into());
                 }
                 Some(EnglishKey::Eat(true)) => true,
@@ -2615,7 +2593,6 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 );
                 return Ok(false.into());
             };
-            self.confirm_document_context(pic.as_ref());
             zlog!("OnKeyDown vk={}({}) 送引擎 key={}", vk, vk_label(vk), key);
             let mut eaten = self.handle_key(pic.as_ref(), &key);
             if !eaten && literal_fallback && !self.state.borrow().composing {

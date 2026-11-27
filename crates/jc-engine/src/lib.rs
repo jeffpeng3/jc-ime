@@ -790,8 +790,8 @@ impl Engine {
                 self.snapshot()
             }
             Request::Unknown => Response::error(ErrorCode::UnknownOp, "未知的操作"),
-            // 0c 的 context／mode／caps_lock／vocab 等 op 在 T6 接手前回明確的
-            // 「不支援」，讓 adapter 能區分協定不認識與引擎尚未實作。
+            // 0c 的 vocab 等 op 在 T6 接手前回明確的「不支援」，讓 adapter
+            // 能區分協定不認識與引擎尚未實作。
             other => Response::error(ErrorCode::Unsupported, format!("jc 尚未支援 {other:?}")),
         }
     }
@@ -1241,8 +1241,6 @@ fn request_op(request: &Request) -> &'static str {
         Request::Vocab { .. } => "vocab",
         Request::ResetPersonal => "reset_personal",
         Request::Close { .. } => "close",
-        Request::Context { .. } => "context",
-        Request::Mode { .. } => "mode",
         Request::OutputSimplified { .. } => "output_simplified",
         Request::Unknown => "unknown",
     }

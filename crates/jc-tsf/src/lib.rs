@@ -37,8 +37,6 @@ pub mod candidate;
 #[cfg(windows)]
 pub mod caret;
 #[cfg(windows)]
-pub mod context;
-#[cfg(windows)]
 pub mod displayattr;
 #[cfg(windows)]
 pub mod dll;

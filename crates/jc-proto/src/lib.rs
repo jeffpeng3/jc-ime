@@ -276,8 +276,8 @@ pub enum ErrorCode {
     UnknownOp,
     /// 引擎認得這個 op，但目前的版本還沒實作。
     ///
-    /// 0c adapter 的 `context`／`mode`／`caps_lock`／`output_simplified` 在
-    /// T6 接手前回這個，讓外殼能區分「協定不認識」與「尚未支援」。
+    /// 0c adapter 的 `vocab` 在 T6 接手前回這個，讓外殼能區分「協定不認識」
+    /// 與「尚未支援」。
     #[serde(rename = "unsupported")]
     Unsupported,
     /// 引擎內部狀態不允許這個請求。
@@ -318,7 +318,7 @@ pub enum Request {
 
     // ---- 以下是 0c adapter 需要的擴充 op，全部沿用協定版本 3。 ----
     // 每個欄位都有 #[serde(default)]，舊 DLL 省略欄位或引擎還沒支援時都能
-    // 序列化／反序列化；T1a 送出的精簡 JSON（只帶 on／context_id 等）也收得下。
+    // 序列化／反序列化；T1a 送出的精簡 JSON（只帶 on 等）也收得下。
     /// 0c `ping`：最簡易的存活檢查。引擎回 [`Response::Acknowledged`]。
     Ping,
     /// 閒置觸發：外殼計時器確認使用者停頓後送出，讓ライブ変換立刻完成這次轉換。
@@ -368,29 +368,6 @@ pub enum Request {
         /// 要關閉的 session id；省略代表 0。
         #[serde(default, skip_serializing_if = "is_zero_u64")]
         session: u64,
-    },
-    /// 0c `handle` 的 `context` 請求：確認最近提交的文件位置或清除前文。
-    ///
-    /// T6 才會真的接上下文；jc 沒有對應狀態，引擎回「不支援」而不是
-    /// [`ErrorCode::UnknownOp`]。
-    Context {
-        /// `true` 表示確認，`false` 表示清除。
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        on: bool,
-        /// 提交時拿到的文件位置的代號，不是文件文字。
-        #[serde(default, skip_serializing_if = "is_zero_u64")]
-        context_id: u64,
-        /// 外殼是否具備文件位置確認能力。
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        context_enabled: bool,
-    },
-    /// 0c `handle` 的 `mode` 請求：設定中英模式。
-    ///
-    /// T6 才會真的切換；此處讓引擎回明確的「不支援」。
-    Mode {
-        /// `true` 為英文，`false` 為注音。
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        on: bool,
     },
     /// 0c `handle` 的 `output_simplified` 請求：開關輸出簡體字。
     ///
@@ -1023,15 +1000,6 @@ mod tests {
                 r#"{"op":"close","session":7}"#,
             ),
             (
-                Request::Context {
-                    on: true,
-                    context_id: 42,
-                    context_enabled: true,
-                },
-                r#"{"op":"context","on":true,"context_id":42,"context_enabled":true}"#,
-            ),
-            (Request::Mode { on: true }, r#"{"op":"mode","on":true}"#),
-            (
                 Request::OutputSimplified { on: true },
                 r#"{"op":"output_simplified","on":true}"#,
             ),
@@ -1049,20 +1017,6 @@ mod tests {
     fn extension_ops_default_missing_fields() {
         let request: Request = serde_json::from_str(r#"{"op":"close"}"#).unwrap();
         assert_eq!(request, Request::Close { session: 0 });
-
-        let request: Request = serde_json::from_str(r#"{"op":"mode"}"#).unwrap();
-        assert_eq!(request, Request::Mode { on: false });
-
-        let request: Request =
-            serde_json::from_str(r#"{"op":"context","on":true,"context_id":9}"#).unwrap();
-        assert_eq!(
-            request,
-            Request::Context {
-                on: true,
-                context_id: 9,
-                context_enabled: false,
-            }
-        );
 
         let request: Request = serde_json::from_str(r#"{"op":"select"}"#).unwrap();
         assert_eq!(request, Request::Select { index: 0 });
@@ -1098,14 +1052,13 @@ mod tests {
     fn t1a_handle_request_shape_round_trips() {
         // T1a 的 to_jc_request() 會保留 req 的 type 欄位，只換 op；serde 預設
         // 忽略未知欄位，所以這些請求仍能解到新 variant。
-        let raw = r#"{"type":"context","context_enabled":true,"op":"context"}"#;
+        let raw = r#"{"type":"literal","text":"A","op":"literal"}"#;
         let request: Request = serde_json::from_str(raw).unwrap();
         assert_eq!(
             request,
-            Request::Context {
-                on: false,
-                context_id: 0,
-                context_enabled: true,
+            Request::Literal {
+                text: "A".into(),
+                session: 0,
             }
         );
     }
@@ -1349,11 +1302,11 @@ mod tests {
 
     #[test]
     fn unsupported_is_distinct_from_unknown_op() {
-        let unsupported = Response::error(ErrorCode::Unsupported, "jc 尚未支援 context");
+        let unsupported = Response::error(ErrorCode::Unsupported, "jc 尚未支援 vocab");
         let text = serde_json::to_string(&unsupported).unwrap();
         assert_eq!(
             text,
-            r#"{"op":"error","code":"unsupported","message":"jc 尚未支援 context"}"#
+            r#"{"op":"error","code":"unsupported","message":"jc 尚未支援 vocab"}"#
         );
         let unknown = Response::error(ErrorCode::UnknownOp, "未知的操作");
         assert_ne!(unsupported, unknown);

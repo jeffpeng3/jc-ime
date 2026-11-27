@@ -283,9 +283,7 @@ priorities:
 
 ## 待實測或待確認
 
-1. `Request::Mode` 在 `jc-engine` 落到 `Unsupported`（`lib.rs:802`），但 TSF 的
-   `restore_requests` 仍會送 `mode`（`session.rs:893`）。重連時英文模式與 start_mode 不同時，
-   `ensure_open` 是否會因此失敗，需要實機或 mock 驗證。
+1. `Request::Mode` 已從 `jc-proto` 與 `jc-engine` 刪除；TSF 也不再送 `mode`。重連只重播按鍵與外殼模式。
 2. `english_key_policy` 的 `Eat(true)`（`service.rs:1599`）在 suggestion 存在時是否真的吃掉字母。
    程式路徑看起來會，但現有測試只驗 `english_wants_key` 的預測，沒有驗實際送鍵。
 3. `segments_press` 在日文 lane 收到數字時的行為。注音 gate 先跑，可能讓數字停在字面，

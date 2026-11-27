@@ -10,7 +10,7 @@
 2. **engine 決定「這個請求要落到哪個 session / 哪個 op」**。快捷鍵在 engine 先查 `settings_keymap`，一般按鍵才交給 `Session::press`。位置在 `crates/jc-engine/src/lib.rs` 的 `handle`。
 3. **core 決定「按鍵語意、候選、游標、刪除、學習」**。入口是 `Session::press`，候選套用是 `CandidateAction`，顯示與提交共用 `display_text`／`commit_text`。
 
-TSF 目前沒有把中英模式送給 engine。`english` 是外殼狀態，core 只看到按鍵與片段；`Request::Mode` 在 engine 會回 `Unsupported`，TSF 也沒有送它。
+TSF 目前沒有把中英模式送給 engine。`english` 是外殼狀態，core 只看到按鍵與片段；`Request::Mode` 已從協定刪除，TSF 也不再送它。
 
 ## 1. 元件圖
 
@@ -83,9 +83,6 @@ flowchart LR
 | `Health` | TSF `refresh_bindings`、`learn_mode`、`sync_caps`、`simplified_hotkey` | engine `handle` | 查 bindings、能力旗標、簡體開關、慢請求診斷 |
 | `Close { session }` | TSF `Session::reset`、`Drop` | engine `close_session` | 關閉這條連線的 session，會 flush 個人學習 |
 | `OutputSimplified { on }` | TSF `set_output_simplified`、`output_simplified` | engine `handle` | 狀態列切換簡體輸出。只改提交，不改組字預覽 |
-| `CapsLock { on }` | TSF `sync_caps` 在 `caps_lock_english` 能力開啟時 | engine `handle` | 回報 Caps Lock 狀態。目前 engine 沒實作，落到 `Unsupported`（待確認） |
-| `Context { on, context_id, context_enabled }` | TSF `ensure_open`、`confirm_context` | engine `handle` | 文件前文確認。engine 目前回 `Unsupported`，TSF 忽略結果 |
-| `Mode { on }` | 目前沒有 TSF 生產者；外部 client 可送 | engine `handle` | 設定中英模式。engine 目前回 `Unsupported` |
 | `Ping` | 測試、smoke 或外部 client | engine `handle` | 存活檢查，回 `Acknowledged` |
 | `ApplySettings { settings }` | 目前沒有 TSF 生產者；外部工具可送 | engine `handle` | 要求 engine 立刻從設定檔重讀，回 `Health` |
 | `Drain` | 升級交接的外部 client | engine `handle` | 等組字結束、flush、斷線，讓外殼重連新版 |
@@ -770,7 +767,7 @@ sequenceDiagram
 ```
 
 - `Session::toggle` 不送 IPC，也不提交組字。英文待選字在切回中文時丟掉，中文組字保留。
-- `Request::Mode` 在 engine 落到 `Unsupported`；目前 TSF 不送。`caps_lock_english` 若真的開啟，外殼會把 Caps Lock 當英文模式，但目前 engine 沒有廣告這個能力（待確認）。
+- `Request::Mode` 已從協定與 engine 刪除；TSF 不送。`caps_lock_english` 開啟時，外殼會把 Caps Lock 當暫時英文模式，engine 在 health／Ready 廣告這個能力。
 - 日文不是外殼模式。core 依片段推斷日文，F6–F10／Convert 只看 capability，不看 `english`。
 
 ## 4. 決策歸屬表
@@ -785,11 +782,11 @@ sequenceDiagram
 | 候選排序 | 不改順序 | 不改順序 | lane 的 nbest、個人學習、rerank 先排；`CandidateSet` 負責插 extras、去重、截斷、顯示字排第一 | `session/candidate_set.rs:96` `from_hypotheses`、`mixed.rs:1821` `zh_choice_candidates`、`core.rs:3043` `rebuild_ja` |
 | 補全來源 | `state_to_snapshot_value` 由 `suggestion` 是否存在與片段是否全英文推導 `suggestion_kind`；`parse` 只讓 `english` 設 `english_pending` | 只帶 `suggestion` 字串，沒有來源欄位 | `snapshot_suggestion` 決定 suggestion 內容，注音與英文共用同一個 `suggestion` | `session.rs:474` `state_to_snapshot_value`、`session.rs:1026` `parse`、`core.rs:1681` `snapshot_suggestion`、`service.rs:1445` `commit_english_pending` |
 | Enter 語意 | 只送 `Key` 或 `Commit`，不自行判斷 | `Key Enter` 先 `press`；還在組字回 `State`，否則 `commit` 回 `Committed` | `finish_composition` 先 `enter_action`；注音片段與日文文節保留組字，選單與直接插入候選清掉組字 | `engine/lib.rs:655` `enters` 分支、`core.rs:1750` `finish_composition`、`core.rs:902` `apply_menu_action`、`core.rs:1005` `apply_insert_action` |
-| 模式 | `english`／`base_english` 只在外殼；`toggle` 不送 IPC | 沒有 toggle；`Request::Mode` 回 `Unsupported` | 只依字元與片段選 lane，沒有中英模式旗標 | `session.rs:1932` `toggle`、`service.rs:574` `toggle_mode`、`engine/lib.rs:793` `other` 分支 |
+| 模式 | `english`／`base_english` 與 Caps Lock 暫時英文只在外殼；`toggle` 不送 IPC | 沒有 toggle 或 mode op；只回報 `caps_lock_english` 能力 | 只依字元與片段選 lane，沒有中英模式旗標 | `session.rs` `toggle`、`session.rs` `caps_lock`、`service.rs` `toggle_mode` |
 | 刪除單位 | 只送 Backspace／Delete | 只回 `handled` | `delete_visible` 一次刪一個可見 rune；字元涵蓋多個讀音單位時整個範圍一起刪 | `key_policy.rs:279` `delete_visible`、`key_policy.rs:331` `delete_zh_visible`、`key_policy.rs:427` `delete_ja_visible` |
 | 候選窗何時顯示 | `wants_candidate_window` 與 `show` 條件 | 只帶 `navigating`、`menu`、`candidates` | `down`／`up` 設定 `navigating`；`open_menu` 設定 `menu` | `session.rs:423` `wants_candidate_window`、`service.rs:752` `show`、`core.rs:1891` `open_menu` |
 | 候選編號 | 不產生 | `Response::state` 把 `selection_key` 放進 `CandidateDetail.key` | `selection_key` 只回傳頁內位置 `1` 到 `0` | `jc-proto/lib.rs:589`、`jc-core/src/candidate.rs:133` `selection_key` |
-| 學習 | 只帶 `private` | 重播時重跑 log，沒有額外抑制旗標 | `learn_candidate` 檢查 `private`、`learning`、`menu` | `core.rs:2165` `learn_candidate`、`core.rs:2152` `learn_composition` |
+| 學習 | 只帶 `private` | `replay_into` 重跑 log 時暫停學習，不寫 personal、不改統計 | `learn_candidate`／`learn_ja_choice` 檢查 `private`、`learning`、`menu`、`suppress_learn` | `core.rs` `learn_candidate`、`core.rs` `learn_composition`、`engine/lib.rs` `replay_into` |
 | 選單分頁 | 只轉發 Tab／Enter／方向鍵 | 查 `settings_keymap` 執行 `symbol_menu`／`emoji_palette` | `menu_key` 切分頁，`apply_menu_action` 插入 | `core.rs:1971` `menu_key`、`core.rs:902` `apply_menu_action`、`engine/config_watch.rs:116` |
 
 ## 5. 常見誤解
