@@ -100,7 +100,7 @@ flowchart LR
 
 `handled` 是 TSF 要不要吃鍵的權威值。`Some(false)` 用在候選 index 越界與混合英文沒有補全時的 Tab；引擎對組字中的 Backspace／Delete 即使把 preedit 刪空也會明確回 `Some(true)`。
 
-`jc-proto::Response::State` 只有 `suggestion: Option<String>`，沒有補全來源。英文補全在 core 已進候選清單：混合模式打 `hellp` 按 Tab 會開候選窗 `[0] hellp`、`[1] hello`，由一般 `CandidateAction` 套用。英文模式（外殼 `english=true`）是純 raw，不送任何 `Request`，也不產生組字、補全或候選窗。
+`jc-proto::Response::State` 只有 `suggestion: Option<String>`，沒有補全來源。英文補全在 core 已進候選清單：混合模式打 `hellp` 按 Tab 會開候選窗 `[0] hellp`、`[1] hello`，由一般 `CandidateAction` 套用。英文模式（外殼 `english=true`）的文字輸入零 IPC：printable、Tab、方向鍵、Enter、Backspace 都交還宿主，也不產生組字、補全或候選窗；已註冊的全域 chord 是唯一例外，仍送一個 `Request::Key` 讓 engine 執行 keymap command。
 
 ## 3. 逐事件 sequence diagram
 
@@ -308,7 +308,7 @@ sequenceDiagram
     participant Host
     participant TSF
 
-    Note over TSF: english 是外殼狀態，不送 engine
+    Note over TSF: english 是外殼狀態，文字鍵不送 engine；chord 例外
     Host->>TSF: OnTestKeyDown a
     TSF->>TSF: english_key_policy / wants_key
     Note over TSF: 英文模式 printable、Tab、方向鍵、Backspace 一律不處理
@@ -326,9 +326,11 @@ sequenceDiagram
     end
 ```
 
-英文模式是純 raw：外殼 `english=true` 時不產生任何 `Request::Key` 或
-`Request::Literal`，也不建組字、不顯示候選窗。`english_key_policy` 只保留
-Shift＋空白與 IMM32 raw passthrough；Caps Lock 與其他按鍵交給系統與應用程式。
+英文模式文字輸入是純 raw：外殼 `english=true` 時 printable、Tab、方向鍵、
+Enter、Backspace 都不產生 `Request`，也不建組字、不顯示候選窗。
+`english_key_policy` 只保留 Shift＋空白與 IMM32 raw passthrough；Caps Lock
+與其他按鍵交給系統與應用程式。已註冊的全域 chord（例如 Ctrl+Alt+,）例外，
+仍會送一個 `Request::Key`，由 engine 的 keymap 執行 command。
 混合模式的英文補全改走 Tab 開候選窗，不屬於英文模式。
 
 ### 3.5 Caps Lock
@@ -803,4 +805,4 @@ sequenceDiagram
 
 ## 6. 待確認
 
-1. 英文模式組字中的 `Up`／`Down`／`PageUp`／`PageDown` 在 `key_with_flags` 會直接回本機快照，不送 engine。這是刻意的外殼特例，是否要改成交給 core 的 `down`／`page_step` 尚未定案。
+1. 英文模式已無組字，舊 `key_with_flags` 的 `Up`／`Down`／`PageUp`／`PageDown` 本機快照特例已刪除；候選窗只存在於混合模式。

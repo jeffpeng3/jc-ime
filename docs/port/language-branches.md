@@ -60,7 +60,7 @@
 | 學習 | `crates/jc-core/src/session/core.rs:2021`、`session/mod.rs:968` | 注音、日文、mixed | 三套學習鍵；`commit` 只在 mixed 非注音／日文時 flush ascii | 必要：資料鍵不同 | 部分：`Lane::learn()`、`Lane::flush_pending()` | 中：重複學習或漏學 |
 | 顯示 | `crates/jc-core/src/session/input_style.rs:360` `composing` | 只算注音 lane 的 pending／syllables | 風格鍵、全形、IMM32 word-end 用這個值判斷「是否在組字」 | 部分：其他 lane 也需要同一個問題的答案 | 部分：`composing()` 改問 lane | 中：全形標點與 word-end |
 | TSF | `crates/jc-tsf/src/service.rs:1734` `wants_key` | English、Japanese、composing、Chinese idle | 英文直接 false；日文 idle 只收 printable；composing 用 `composing_wants`，英文的 `Down` 例外；中文 idle 只收 `idle_key` | 部分 | 部分：改成 capability 或「先送 core，依 handled 決定」 | 高：吃鍵或重複輸入 |
-| TSF | `crates/jc-tsf/src/service.rs:1500` `english_key_policy` | 外殼 `english` | 純 raw：printable／Tab／方向鍵／Backspace 全交還宿主，只留 Shift＋空白與 IMM32 raw passthrough | 已與 core 的混合英文分開 | 已刪 Enter／WordEnd／補全政策 | 低 |
+| TSF | `crates/jc-tsf/src/service.rs:1500` `english_key_policy` | 外殼 `english` | 文字輸入零 IPC：printable／Tab／方向鍵／Enter／Backspace 全交還宿主；已註冊 chord 例外送 Key | 已與 core 的混合英文分開 | 已刪 Enter／WordEnd／補全政策 | 低 |
 | TSF | `crates/jc-tsf/src/service.rs:1599` | 舊 `english_pending` 字母 | 直接吃鍵、送 core 再依 `handled` 決定 | 狀態已刪除 | 已刪；混合英文改由 core Tab 開候選窗 | 低 |
 | TSF | `crates/jc-tsf/src/service.rs:354,375,381,389` | `session.english()`／`japanese()` | `vocab_keys`、`japanese_key`、Ctrl 標點、簡體熱鍵都依語言互斥 | 部分：Ctrl 標點必要，簡體與 vocab 與語言無關 | 部分：只保留真正語言相關的 gate | 低中 |
 | TSF | `crates/jc-tsf/src/service.rs` | `present_in_edit` | `show` 只看 composing＋navigating；`kind` 改由選單種類生產 | 已語言無關 | 已刪 `candidate_kind` | 低 |

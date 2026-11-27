@@ -1120,6 +1120,16 @@ impl Session {
         self.client = client;
     }
 
+    /// 測試：直接設定 chord 綁定，不經 health。
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn set_bindings_for_test(
+        &mut self,
+        bindings: impl IntoIterator<Item = (String, String)>,
+    ) {
+        self.bindings = bindings.into_iter().collect();
+    }
+
     /// 用指定的 client 建立 session。
     pub fn with_client(client: Client) -> Session {
         Session {

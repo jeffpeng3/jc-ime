@@ -8,8 +8,10 @@
 //! 1. **不補 Down**：[`TextService::handle_key`] 照 0c 的做法把數字直接送給核心。
 //!    舊 `jc-tsf` 的 `needs_selection_prefix()` 會在單一數字前插入 `KeyCode::Down`，
 //!    讓 `su` + `3` 被當成選字鍵；核心 su 修復已 cherry-pick，補 Down 就會舊病復發。
-//! 2. **英文模式是純 raw**：外殼 `english` 為 true 時不送任何引擎請求、不建組字、
-//!    不顯示候選窗；Caps Lock、Tab、方向鍵與 printable 全部交還宿主。
+//! 2. **英文模式文字輸入零 IPC**：外殼 `english` 為 true 時，printable、Tab、
+//!    方向鍵、Enter、Backspace 與修飾鍵都不送引擎請求、不建組字、不顯示候選窗；
+//!    唯一例外是已註冊的全域 chord（選單快捷鍵），它會送一個 `Request::Key`
+//!    讓 engine 依 keymap 執行 command。
 //!
 //! 與 jc 現行外殼的另一個關鍵差異：Activate 保留 idempotent guard；Deactivate 只清
 //! UI／composition／callback，保留 `session` 與它持有的 IPC client，避免第二次
@@ -1507,9 +1509,10 @@ impl TextService_Impl {
 
     /// 英文模式這一鍵只做外殼能做的兩件事：全形空白與 IMM32 raw passthrough。
     ///
-    /// 英文模式是純 raw：不送 engine、不建組字、沒有補全或候選窗。一般
-    /// printable、Tab、方向鍵與 Backspace 都回 `None`，由 [`Self::wants_key`]
-    /// 直接交還宿主；Caps Lock 交給系統與應用程式。
+    /// 已註冊的 chord 在呼叫端先處理，會送一個 `Request::Key`；其餘文字輸入
+    /// 不送 engine、不建組字、沒有補全或候選窗。一般 printable、Tab、方向鍵與
+    /// Backspace 都回 `None`，由 [`Self::wants_key`] 直接交還宿主；Caps Lock
+    /// 交給系統與應用程式。
     fn english_key_policy(
         &self,
         ctx: Option<&ITfContext>,
@@ -1653,17 +1656,17 @@ impl TextService_Impl {
     fn wants_key(&self, vk: u32, lparam: isize) -> bool {
         let available_seen: Cell<Option<bool>> = Cell::new(None);
         let wants = (|| -> bool {
-            // 英文模式是純 raw：一般按鍵一律交還宿主，只有 Shift＋空白
-            // （風格有開）由外殼處理。這裡不能呼叫 available／idle_key 等
-            // 會產生 IPC 的方法，也不攔快捷鍵 chord。
+            // 全域 chord 不是文字輸入：先判斷已註冊的快捷鍵，英文模式也一樣。
+            if self.bound_chord(vk, lparam).is_some() {
+                return true;
+            }
+            // 英文模式文字輸入是純 raw：一般按鍵一律交還宿主，只有 Shift＋空白
+            // （風格有開）由外殼處理。chord 已在上面先判斷；這裡不能呼叫
+            // available／idle_key 等會產生 IPC 的方法。
             if self.state.borrow().session.english() {
                 return keys::is_space_key(vk)
                     && keys::shift_down()
                     && self.state.borrow().session.shift_space_cached();
-            }
-            // 先查快捷鍵（最多 5 秒更新一次 bindings）；未命中才走其他按鍵政策。
-            if self.bound_chord(vk, lparam).is_some() {
-                return true;
             }
             if keys::modifier_down() && self.state.borrow_mut().ctrl_punct_key(vk, lparam).is_some()
             {
@@ -2200,10 +2203,9 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 );
                 return Ok(true.into());
             }
-            // 快捷鍵必須早於 commit_before_host_key 與 english_key_policy：
-            // 組字中不能先提交，英文模式也不能被補全政策吃掉。英文模式是
-            // 純 raw，不在這裡攔 chord，按鍵直接交還宿主。
-            if !self.state.borrow().session.english() && self.bound_chord(vk, lparam.0).is_some() {
+            // 全域 chord 不是文字輸入：英文模式也要先判斷，命中就送 engine
+            // 由 keymap 執行 command。其他按鍵才走英文 raw passthrough。
+            if self.bound_chord(vk, lparam.0).is_some() {
                 self.state.borrow_mut().key_tested.record(vk, true);
                 zlog!(
                     "OnTestKeyDown vk={}({}) 結束：綁定快捷鍵 -> 吃",
@@ -2347,22 +2349,20 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 );
                 return Ok(self.handle_literal(pic.as_ref(), &text).into());
             }
-            if !self.state.borrow().session.english() {
-                if let Some(chord) = self.bound_chord(vk, lparam.0) {
-                    if let Some(key) = keys::chord_key(vk, lparam.0) {
-                        let eaten = self.handle_chord(pic.as_ref(), &key);
-                        if eaten {
-                            self.state.borrow_mut().eaten.insert(vk);
-                        }
-                        zlog!(
-                            "OnKeyDown vk={}({}) 結束：綁定 chord={} eaten={}",
-                            vk,
-                            vk_label(vk),
-                            chord,
-                            eaten
-                        );
-                        return Ok(eaten.into());
+            if let Some(chord) = self.bound_chord(vk, lparam.0) {
+                if let Some(key) = keys::chord_key(vk, lparam.0) {
+                    let eaten = self.handle_chord(pic.as_ref(), &key);
+                    if eaten {
+                        self.state.borrow_mut().eaten.insert(vk);
                     }
+                    zlog!(
+                        "OnKeyDown vk={}({}) 結束：綁定 chord={} eaten={}",
+                        vk,
+                        vk_label(vk),
+                        chord,
+                        eaten
+                    );
+                    return Ok(eaten.into());
                 }
             }
             self.commit_before_host_key(pic.as_ref(), vk, lparam.0, false);
@@ -2670,13 +2670,14 @@ fn foreground_pid() -> u32 {
     pid
 }
 
-/// 英文模式是純 raw：按鍵不進引擎、不建組字，測試替身必須看到 0 個請求。
+/// 英文模式文字輸入是純 raw：按鍵不進引擎、不建組字，測試替身必須看到 0 個
+/// 一般請求；只有已註冊的全域 chord 例外。
 #[cfg(all(test, windows))]
 mod english_key_policy_tests {
     use super::*;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetKeyboardState, SetKeyboardState, VK_CONTROL, VK_LMENU, VK_LWIN, VK_RMENU, VK_RWIN,
-        VK_SHIFT,
+        GetKeyboardState, SetKeyboardState, VK_CONTROL, VK_LMENU, VK_LWIN, VK_MENU, VK_RMENU,
+        VK_RWIN, VK_SHIFT,
     };
     use windows::Win32::UI::TextServices::ITfKeyEventSink;
 
@@ -2693,6 +2694,18 @@ mod english_key_policy_tests {
             for vk in [VK_CONTROL, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN, VK_SHIFT] {
                 state[vk.0 as usize] = 0;
             }
+            SetKeyboardState(&state).unwrap();
+        }
+    }
+
+    /// 按著 Ctrl＋Alt（AltGr 也是這兩個），模擬選單 chord。
+    fn hold_ctrl_alt(on: bool) {
+        let mut state = [0u8; 256];
+        unsafe {
+            GetKeyboardState(&mut state).unwrap();
+            let value = if on { 0x80 } else { 0 };
+            state[VK_CONTROL.0 as usize] = value;
+            state[VK_MENU.0 as usize] = value;
             SetKeyboardState(&state).unwrap();
         }
     }
@@ -2724,6 +2737,8 @@ mod english_key_policy_tests {
             (0x25, 0x14b, "Left"),
             (0x28, 0x150, "Down"),
             (VK_RETURN, RETURN_LPARAM, "Enter"),
+            (VK_SHIFT.0 as u32, 0x2a, "Shift"),
+            (VK_CONTROL.0 as u32, 0x1d, "Ctrl"),
         ] {
             let (w, l) = (WPARAM(vk as usize), LPARAM(lparam));
             let tested = unsafe { sink.OnTestKeyDown(&ctx, w, l) }.unwrap().as_bool();
@@ -2733,6 +2748,36 @@ mod english_key_policy_tests {
             assert_eq!(request_count(&service), 0, "{label} 不得送引擎");
         }
         assert!(!service.state.borrow().composing, "英文模式不建組字");
+    }
+
+    /// 已註冊的全域 chord 例外：英文模式仍送一個 Key 給 engine 執行 command。
+    #[test]
+    fn english_mode_bound_chord_sends_exactly_one_key() {
+        plain_keyboard();
+        hold_ctrl_alt(true);
+        let service = english_service();
+        service
+            .state
+            .borrow_mut()
+            .session
+            .set_bindings_for_test([("symbol_menu".to_string(), "ctrl+alt+,".to_string())]);
+        let (_doc, ctx) = super::support::host(super::support::Sync::Run);
+        let sink: ITfKeyEventSink = service.to_interface();
+        let before = request_count(&service);
+        let (w, l) = (WPARAM(0xBC), LPARAM(0x33));
+        assert!(
+            unsafe { sink.OnTestKeyDown(&ctx, w, l) }.unwrap().as_bool(),
+            "chord 要在 TestKeyDown 被認出來"
+        );
+        let _ = unsafe { sink.OnKeyDown(&ctx, w, l) }.unwrap();
+        let sent = service.state.borrow().session.sent.clone();
+        assert_eq!(
+            sent,
+            vec!["key".to_string()],
+            "英文模式只允許 chord 這一個 Key"
+        );
+        assert_eq!(request_count(&service), before + 1);
+        hold_ctrl_alt(false);
     }
 
     /// Ctrl／Alt／Win 組合鍵直接放行，不送引擎。
