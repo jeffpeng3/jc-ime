@@ -1051,6 +1051,10 @@ impl Session {
 
     /// 片段候選成功套用後的學習；與「套用」分開，呼叫端只在成功後執行一次。
     pub(super) fn learn_window_candidate(&mut self, edit: EditWindow, candidate: &Candidate) {
+        if self.suppress_learn {
+            log::debug!("重播：跳過片段候選學習");
+            return;
+        }
         let readings = self.zh_readings(&self.syllables[edit.start..edit.start + edit.len]);
         let reading = readings.join(" ");
         if self.config.learning
@@ -2016,6 +2020,9 @@ impl Session {
 
     /// 記下指定字面的選取；數字鍵直接選取時要高亮以外的項目。
     pub(super) fn remember_text(&mut self, text: &str) {
+        if self.suppress_learn {
+            return;
+        }
         let Some(menu) = self.menu else {
             return;
         };
@@ -2163,6 +2170,10 @@ impl Session {
     /// 動手前先留一份快照：下一次輸入若是 Backspace／Esc／Ctrl+Z，就把這次
     /// 學習補償掉；否則在 [`Session::press`] 開頭丟掉快照。
     pub(super) fn learn_candidate(&mut self, index: usize) {
+        if self.suppress_learn {
+            log::debug!("重播：跳過候選學習");
+            return;
+        }
         if self.private {
             log::debug!("私密欄位：跳過候選學習");
             return;
@@ -2264,6 +2275,10 @@ impl Session {
 
     /// 記錄一次英文選取：修正或跳過。
     fn learn_english_choice(&mut self, wrong: &str, chosen: &str) {
+        if self.suppress_learn {
+            log::debug!("重播：跳過英文修正學習");
+            return;
+        }
         if !self.config.learning
             || self.private
             || crate::learn_guard::is_sensitive(wrong)
@@ -2306,6 +2321,10 @@ impl Session {
 
     /// 日文候選套用成功後的學習；候選由套用前先留下，重建後仍記得到這一項。
     fn learn_ja_choice(&mut self, index: usize, candidate: &Candidate, manual: bool) {
+        if self.suppress_learn {
+            log::debug!("重播：跳過日文候選學習");
+            return;
+        }
         if self.private {
             log::debug!("私密欄位：跳過候選學習");
             return;

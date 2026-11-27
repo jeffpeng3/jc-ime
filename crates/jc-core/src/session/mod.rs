@@ -563,6 +563,8 @@ pub struct Session {
     pub(super) live_plan: Option<LivePlan>,
     /// 上次清理個人資料後累積的學習事件數。
     pub(super) learn_events: usize,
+    /// 重播請求時暫停學習：不寫個人資料、不改統計。
+    pub(super) suppress_learn: bool,
     /// 目前按鍵是否來自私密欄位；每個按鍵明確覆寫，commit／cancel 後歸零。
     pub(super) private: bool,
     /// 輸入風格與鍵位；由設定複製進來。
@@ -684,6 +686,7 @@ impl Session {
             live,
             live_plan: None,
             learn_events: 0,
+            suppress_learn: false,
             private: false,
             style,
             full_width: false,
@@ -755,6 +758,19 @@ impl Session {
     /// 這份工作階段內；要持久化時由宿主在適當時間取出並寫檔。
     pub fn personal(&self) -> &PersonalStore {
         &self.personal
+    }
+
+    /// 重播期間暫停學習：不寫 personal、不改統計。回傳先前的值。
+    ///
+    /// 引擎把來源 session 的請求 log 重播到新 session 時使用；log 裡的 Enter
+    /// 或選字不該再算一次學習。
+    pub fn set_suppress_learn(&mut self, suppress: bool) -> bool {
+        std::mem::replace(&mut self.suppress_learn, suppress)
+    }
+
+    /// 這個 session 累積的學習事件數；診斷與重播測試用。
+    pub fn learn_events(&self) -> usize {
+        self.learn_events
     }
 
     /// 換掉這個工作階段的個人化資料，並重建個人詞典。
@@ -1699,6 +1715,94 @@ mod tests {
         assert_eq!(from_choose.preedit, from_digit.preedit);
         assert_eq!(from_choose.candidates, from_digit.candidates);
         assert_eq!(chosen.commit(), digit.commit());
+    }
+
+    /// 重播期間的 suppress_learn 要擋住片段候選的學習。
+    #[test]
+    fn suppress_learn_blocks_window_candidate_learning() {
+        let mut blocked = session();
+        type_syllable(&mut blocked, "ㄐㄧㄥˇ");
+        blocked.press(Key::new(KeyCode::Down, None, false));
+        let before = blocked.personal().clone();
+        blocked.set_suppress_learn(true);
+        blocked.choose_candidate(0).expect("應可套用片段候選");
+        assert_eq!(
+            blocked.personal(),
+            &before,
+            "suppress_learn 開啟時不得寫片段候選學習"
+        );
+
+        let mut learned = session();
+        type_syllable(&mut learned, "ㄐㄧㄥˇ");
+        learned.press(Key::new(KeyCode::Down, None, false));
+        let before = learned.personal().clone();
+        learned.choose_candidate(0).expect("應可套用片段候選");
+        assert_ne!(
+            learned.personal(),
+            &before,
+            "suppress_learn 關閉時仍要學習片段候選"
+        );
+    }
+
+    /// 重播期間的 suppress_learn 要擋住 Down 後數字鍵的片段學習。
+    #[test]
+    fn suppress_learn_blocks_digit_window_learning() {
+        let mut blocked = session();
+        type_syllable(&mut blocked, "ㄐㄧㄥˇ");
+        blocked.press(Key::new(KeyCode::Down, None, false));
+        let before = blocked.personal().clone();
+        blocked.set_suppress_learn(true);
+        blocked.press(Key::char('1', false));
+        assert_eq!(
+            blocked.personal(),
+            &before,
+            "suppress_learn 開啟時數字鍵不得寫片段學習"
+        );
+
+        let mut learned = session();
+        type_syllable(&mut learned, "ㄐㄧㄥˇ");
+        learned.press(Key::new(KeyCode::Down, None, false));
+        let before = learned.personal().clone();
+        learned.press(Key::char('1', false));
+        assert_ne!(
+            learned.personal(),
+            &before,
+            "suppress_learn 關閉時數字鍵仍要學習"
+        );
+    }
+
+    /// 重播期間的 suppress_learn 要擋住英文修正學習。
+    #[test]
+    fn suppress_learn_blocks_english_correction_learning() {
+        let mut blocked = english_session();
+        type_keys(&mut blocked, "recieve");
+        let index = candidate_index(&blocked, "receive").expect("receive 候選");
+        blocked.select(index);
+        let before = blocked.personal().clone();
+        blocked.set_suppress_learn(true);
+        blocked.choose_candidate(index).expect("應可套用英文修正");
+        assert_eq!(
+            blocked.personal(),
+            &before,
+            "suppress_learn 開啟時不得寫英文修正"
+        );
+        assert_eq!(blocked.personal().english_correction("recieve"), None);
+
+        let mut learned = english_session();
+        type_keys(&mut learned, "recieve");
+        let index = candidate_index(&learned, "receive").expect("receive 候選");
+        learned.select(index);
+        let before = learned.personal().clone();
+        learned.choose_candidate(index).expect("應可套用英文修正");
+        assert_ne!(
+            learned.personal(),
+            &before,
+            "suppress_learn 關閉時仍要學英文修正"
+        );
+        assert_eq!(
+            learned.personal().english_correction("recieve"),
+            Some("receive")
+        );
     }
 
     /// 越界時 `choose_candidate` 不動狀態，對應引擎的 handled=false。

@@ -499,7 +499,15 @@ impl Engine {
                 .unwrap_or_default()
         };
         let keymap = lock(&self.shared).settings_keymap.clone();
-        log.into_iter()
+        // 重播是重建畫面，不是新的使用者輸入：log 裡的 Enter／選字不能再寫
+        // personal 或改統計。先暫停學習，結束後恢復原值。
+        let previous = self
+            .local
+            .sessions
+            .get_mut(&to)
+            .map(|session| session.set_suppress_learn(true));
+        let replies = log
+            .into_iter()
             .map(|request| {
                 let logged = request.clone();
                 self.apply_to_session(to, Some(request), |session| match logged {
@@ -533,7 +541,11 @@ impl Engine {
                     }
                 })
             })
-            .collect()
+            .collect();
+        if let (Some(previous), Some(session)) = (previous, self.local.sessions.get_mut(&to)) {
+            session.set_suppress_learn(previous);
+        }
+        replies
     }
 
     /// 這一條連線是否該收掉（版本不符、`Shutdown`、drain 完成）。
@@ -2142,6 +2154,132 @@ mod tests {
         assert_eq!(replies.len(), 2);
         // 第一條連線的 log 對第二條不可見（歸屬檢查）。
         assert!(conn.session_log(from).is_empty());
+    }
+
+    /// 建一個 replay 測試用的引擎；所有連線共用同一份注音詞典。
+    fn engine_for_replay() -> Engine {
+        use jc_core::lattice::{InMemoryLexicon, LexEntry};
+
+        let mut lexicon = InMemoryLexicon::new();
+        lexicon.push(LexEntry::new("我", "ㄨㄛˇ", 0, 0));
+        let lexicon = Arc::new(lexicon);
+        Engine::with_factory(
+            Arc::new(move || {
+                let config = SessionConfig {
+                    zh_lexicon: Some(Arc::clone(&lexicon)),
+                    ..Default::default()
+                };
+                Session::new(config)
+            }),
+            None,
+        )
+    }
+
+    /// 把來源 log 重播一次與兩次，兩邊都不該寫 personal，且結果相同。
+    fn assert_replay_learns_nothing(engine: &Engine, from: u64, case: &str) {
+        let (once, once_id, baseline) = {
+            let mut conn = engine.accept().into_engine();
+            hello(&mut conn);
+            let id = conn.session_ids()[0];
+            let baseline = conn.local.sessions[&id].personal().clone();
+            conn.replay_into(from, id);
+            (conn, id, baseline)
+        };
+        let (twice, twice_id) = {
+            let mut conn = engine.accept().into_engine();
+            hello(&mut conn);
+            let id = conn.session_ids()[0];
+            conn.replay_into(from, id);
+            conn.replay_into(from, id);
+            (conn, id)
+        };
+
+        for (label, session) in [
+            ("once", &once.local.sessions[&once_id]),
+            ("twice", &twice.local.sessions[&twice_id]),
+        ] {
+            assert_eq!(
+                session.personal(),
+                &baseline,
+                "{case} {label} replay 不得寫 personal"
+            );
+            assert_eq!(session.learn_events(), 0, "{case} {label} 不得累加學習統計");
+        }
+        assert_eq!(
+            once.local.sessions[&once_id].personal(),
+            twice.local.sessions[&twice_id].personal(),
+            "{case} 重播一次與兩次的統計要相同"
+        );
+    }
+
+    #[test]
+    fn replaying_a_select_request_does_not_learn_again() {
+        let source = engine_for_replay();
+        let mut conn = source.accept().into_engine();
+        hello(&mut conn);
+        type_syllable(&mut conn, "ㄨㄛˇ");
+        conn.handle(Request::Key {
+            key: Key::new(KeyCode::Down, None, false),
+        });
+        let from = conn.session_ids()[0];
+        let before = conn.local.sessions[&from].personal().clone();
+        conn.handle(Request::Select { index: 0 });
+        assert_ne!(
+            conn.local.sessions[&from].personal(),
+            &before,
+            "來源的 Select 要先真的學習"
+        );
+        assert_replay_learns_nothing(&source, from, "select");
+    }
+
+    #[test]
+    fn replaying_a_digit_window_choice_does_not_learn_again() {
+        let source = engine_for_replay();
+        let mut conn = source.accept().into_engine();
+        hello(&mut conn);
+        type_syllable(&mut conn, "ㄨㄛˇ");
+        conn.handle(Request::Key {
+            key: Key::new(KeyCode::Down, None, false),
+        });
+        let from = conn.session_ids()[0];
+        let before = conn.local.sessions[&from].personal().clone();
+        conn.handle(Request::Key {
+            key: Key::char('1', false),
+        });
+        assert_ne!(
+            conn.local.sessions[&from].personal(),
+            &before,
+            "來源的數字鍵要先真的學習"
+        );
+        assert_replay_learns_nothing(&source, from, "digit");
+    }
+
+    #[test]
+    fn replaying_an_english_correction_does_not_learn_again() {
+        let source = engine_for_replay();
+        let mut conn = source.accept().into_engine();
+        hello(&mut conn);
+        for ch in "recieve".chars() {
+            conn.handle(Request::Key {
+                key: Key::char(ch, false),
+            });
+        }
+        let Response::State { candidates, .. } = conn.handle(Request::Snapshot) else {
+            panic!("快照應是 State");
+        };
+        let index = candidates
+            .iter()
+            .position(|candidate| candidate == "receive")
+            .expect("receive 候選");
+        let from = conn.session_ids()[0];
+        let before = conn.local.sessions[&from].personal().clone();
+        conn.handle(Request::Select { index });
+        assert_ne!(
+            conn.local.sessions[&from].personal(),
+            &before,
+            "來源的英文修正要先真的學習"
+        );
+        assert_replay_learns_nothing(&source, from, "english");
     }
 
     #[test]
