@@ -1199,8 +1199,8 @@ impl Session {
             return;
         }
         self.shift_config = keys::ShiftConfig::from_info(Some(info));
-        // 同一份 health／open 也帶輸入風格；先快取起來，英文模式與
-        // Shift＋空白才不必為了一個設定再送 IPC。
+        // 同一份 health／open 也帶輸入風格；先快取起來，後續 idle_key
+        // 不必為了一個設定再送 IPC。
         self.idle_info = Some(info.clone());
         self.idle_generation = self.client.generation();
     }
@@ -1505,18 +1505,6 @@ impl Session {
     /// 沒在組字時這個鍵要不要交給引擎。
     pub fn style_shift_space(&mut self) -> bool {
         let _ = self.idle_key("");
-        matches!(
-            self.idle_info
-                .as_ref()
-                .and_then(|v| v["input_style_shift_space"].as_str()),
-            Some("fullwidth" | "space" | "single")
-        )
-    }
-
-    /// 已學到的 Shift＋空白設定；只讀快取，不產生 IPC。
-    ///
-    /// 英文模式必須零 IPC，外殼在學 health／open 時就把 `idle_info` 補好。
-    pub fn shift_space_cached(&self) -> bool {
         matches!(
             self.idle_info
                 .as_ref()

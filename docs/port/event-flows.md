@@ -317,21 +317,17 @@ sequenceDiagram
     Host->>TSF: OnKeyDown a
     TSF-->>Host: 放行這一鍵
 
-    alt Shift＋空白且風格有開
-        TSF->>TSF: type_text("　")
-    end
-
     alt IMM32 沒有插入點
         TSF->>TSF: english_key_policy 回 Literal 或放行
     end
 ```
 
 英文模式文字輸入是純 raw：外殼 `english=true` 時 printable、Tab、方向鍵、
-Enter、Backspace 都不產生 `Request`，也不建組字、不顯示候選窗。
-`english_key_policy` 只保留 Shift＋空白與 IMM32 raw passthrough；Caps Lock
-與其他按鍵交給系統與應用程式。已註冊的全域 chord（例如 Ctrl+Alt+,）例外，
-仍會送一個 `Request::Key`，由 engine 的 keymap 執行 command。
-混合模式的英文補全改走 Tab 開候選窗，不屬於英文模式。
+Enter、Backspace 都不產生 `Request`，也不建組字、不顯示候選窗；Shift＋空白
+同樣直接交給應用程式，不由外殼插入全形空白。`english_key_policy` 只保留
+IMM32 raw passthrough；Caps Lock 與其他按鍵交給系統與應用程式。已註冊的
+全域 chord（例如 Ctrl+Alt+,）例外，仍會送一個 `Request::Key`，由 engine 的
+keymap 執行 command。混合模式的英文補全改走 Tab 開候選窗，不屬於英文模式。
 
 ### 3.5 Caps Lock
 

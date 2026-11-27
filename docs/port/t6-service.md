@@ -19,8 +19,10 @@
 
 1. 不補 Down：`handle_key()` 直接 `session.key(key)` 再 `present()`，全 crate 沒有
    `needs_selection_prefix()` 或數字前插入 `Down` 的程式碼。
-2. english_pending 自動 commit：`commit_english_pending()` 同時要求
-   `snapshot.english && snapshot.english_pending`；0c 的兩處 `finish("commit")` 都改走它。
+2. 英文模式文字輸入零 IPC：`english_key_policy` 不再有英文補全、Enter 或單字
+   邊界處理；printable、Tab、方向鍵、Enter、Backspace 與修飾鍵都直接交還宿主，
+   也不插入全形空白。唯一例外是已註冊的全域 chord，仍送一個 `Request::Key`
+   給 engine 執行 keymap command。
 
 ## 接合
 

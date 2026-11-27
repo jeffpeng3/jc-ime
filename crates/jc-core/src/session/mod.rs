@@ -2556,6 +2556,22 @@ mod tests {
         assert!(!s.last_key_consumed(), "沒有補全時 Tab 不得吃掉");
     }
 
+    /// 混合英文沒有補全時，Tab 不改畫面也不吃掉按鍵。
+    #[test]
+    fn test_mixed_tab_without_completion_is_not_consumed() {
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
+        config.english_autocomplete = true;
+        let mut s = Session::new(config);
+        type_keys(&mut s, "zzzz");
+        assert!(s.snapshot().suggestion.is_none(), "測試字串不能有補全");
+        let before = s.snapshot();
+        let tab = s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(tab.preedit, before.preedit, "Tab 不得改組字");
+        assert!(!tab.navigating, "沒有補全不得開選取模式");
+        assert!(!s.last_key_consumed(), "沒有補全時 Tab 要交還應用程式");
+    }
+
     /// `sug` 已不是合法注音前綴，Down + 數字照舊選英文候選。
     #[test]
     fn test_sug_digit_selects_english_candidate() {
@@ -3454,6 +3470,10 @@ mod tests {
 
         type_keys(&mut s, "recieve");
         assert_eq!(s.candidates()[0].surface, "recieve", "字面永遠第一");
+        assert!(
+            s.personal().skip_count("recieve") >= crate::personal::SKIP_LIMIT,
+            "學過的修正已被跳過而降權"
+        );
         assert!(
             candidate_index(&s, "receive").is_some(),
             "降權不是刪除，修正仍要留在候選裡"

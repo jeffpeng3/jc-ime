@@ -210,6 +210,9 @@ fn parse_store(raw: &Value) -> Option<ProfileStore> {
         if !only_keys(
             rules,
             &[
+                // 已退休欄位：舊 store 一定含它，讀取時忽略，不能因此把使用者的
+                // 風格判成無效並鎖成唯讀。
+                "caps_letter",
                 "candidate_navigation",
                 "shift_delete",
                 "up",
@@ -589,4 +592,31 @@ pub(crate) fn fresh_settings(goos: &str) -> Settings {
     }
     settings.put_profile_store(store);
     settings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 舊版 store 的 rules 一定有 `caps_letter`；欄位已退休，但不能讓整個
+    /// 風格變成 invalid／唯讀。
+    #[test]
+    fn old_store_with_caps_letter_stays_readable() {
+        let mut settings = fresh_settings("linux");
+        let mut raw = serde_json::to_value(settings.profile_store()).expect("序列化風格");
+        let items = raw["items"].as_array_mut().expect("items 陣列");
+        assert!(!items.is_empty(), "預設 store 要有風格");
+        for item in items {
+            item["rules"]["caps_letter"] = serde_json::json!("platform");
+        }
+        settings.load_profiles(raw);
+        assert!(
+            !settings.read_only(),
+            "舊 store 的 caps_letter 只能被忽略，不能鎖成唯讀"
+        );
+        assert!(
+            !settings.profile_invalid,
+            "讀得懂舊 store 時不能標成 invalid"
+        );
+    }
 }

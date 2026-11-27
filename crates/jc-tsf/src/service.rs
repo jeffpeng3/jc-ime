@@ -1507,12 +1507,12 @@ impl TextService_Impl {
         false
     }
 
-    /// 英文模式這一鍵只做外殼能做的兩件事：全形空白與 IMM32 raw passthrough。
+    /// 英文模式這一鍵只做 IMM32 raw passthrough。
     ///
     /// 已註冊的 chord 在呼叫端先處理，會送一個 `Request::Key`；其餘文字輸入
-    /// 不送 engine、不建組字、沒有補全或候選窗。一般 printable、Tab、方向鍵與
-    /// Backspace 都回 `None`，由 [`Self::wants_key`] 直接交還宿主；Caps Lock
-    /// 交給系統與應用程式。
+    /// 不送 engine、不建組字、沒有補全或候選窗，也不處理全形空白。一般
+    /// printable、Tab、方向鍵與 Backspace 都回 `None`，由 [`Self::wants_key`]
+    /// 直接交還宿主；Caps Lock 交給系統與應用程式。
     fn english_key_policy(
         &self,
         ctx: Option<&ITfContext>,
@@ -1534,13 +1534,6 @@ impl TextService_Impl {
             // Ctrl／Alt／Win 組合鍵直接放行給宿主。
             if keys::modifier_down() {
                 return Some(EnglishKey::Pass);
-            }
-            // Shift＋空白：風格開啟時由外殼直接打全形空白，不經 engine。
-            if keys::is_space_key(vk)
-                && keys::shift_down()
-                && self.state.borrow().session.shift_space_cached()
-            {
-                return Some(EnglishKey::Literal("　".into()));
             }
             // 沒有插入點的 IMM32 程式無法組字：字面直接交給程式。
             let flags = self.state.borrow().activate_flags;
@@ -1660,13 +1653,10 @@ impl TextService_Impl {
             if self.bound_chord(vk, lparam).is_some() {
                 return true;
             }
-            // 英文模式文字輸入是純 raw：一般按鍵一律交還宿主，只有 Shift＋空白
-            // （風格有開）由外殼處理。chord 已在上面先判斷；這裡不能呼叫
-            // available／idle_key 等會產生 IPC 的方法。
+            // 英文模式文字輸入是純 raw：一般按鍵一律交還宿主。chord 已在
+            // 上面先判斷；這裡不能呼叫 available／idle_key 等會產生 IPC 的方法。
             if self.state.borrow().session.english() {
-                return keys::is_space_key(vk)
-                    && keys::shift_down()
-                    && self.state.borrow().session.shift_space_cached();
+                return false;
             }
             if keys::modifier_down() && self.state.borrow_mut().ctrl_punct_key(vk, lparam).is_some()
             {
@@ -2710,6 +2700,15 @@ mod english_key_policy_tests {
         }
     }
 
+    fn hold_shift(on: bool) {
+        let mut state = [0u8; 256];
+        unsafe {
+            GetKeyboardState(&mut state).unwrap();
+            state[VK_SHIFT.0 as usize] = if on { 0x80 } else { 0 };
+            SetKeyboardState(&state).unwrap();
+        }
+    }
+
     fn english_service() -> ComObject<TextService> {
         let service = ComObject::new(TextService::new());
         let mut st = service.state.borrow_mut();
@@ -2748,6 +2747,59 @@ mod english_key_policy_tests {
             assert_eq!(request_count(&service), 0, "{label} 不得送引擎");
         }
         assert!(!service.state.borrow().composing, "英文模式不建組字");
+    }
+
+    /// 組字中切到英文：leftover 組字留著，但英文鍵不碰它、也不送引擎。
+    #[test]
+    fn english_mode_leaves_leftover_composition_untouched() {
+        plain_keyboard();
+        let service = english_service();
+        {
+            let mut st = service.state.borrow_mut();
+            st.composing = true;
+            st.session.english_state = Snapshot {
+                ok: true,
+                handled: true,
+                english: true,
+                preedit: vec![crate::session::Segment {
+                    text: "ㄨ".into(),
+                    style: "normal".into(),
+                }],
+                cursor_rune: 1,
+                cursor_utf16: 1,
+                ..Default::default()
+            };
+        }
+        let (_doc, ctx) = super::support::host(super::support::Sync::Run);
+        let sink: ITfKeyEventSink = service.to_interface();
+        let (w, l) = (WPARAM(0x41), LPARAM(0x1e));
+        assert!(!unsafe { sink.OnTestKeyDown(&ctx, w, l) }.unwrap().as_bool());
+        assert!(!unsafe { sink.OnKeyDown(&ctx, w, l) }.unwrap().as_bool());
+        assert_eq!(request_count(&service), 0, "leftover 組字不得被送出或清除");
+        let st = service.state.borrow();
+        assert!(st.composing, "組字仍留在文件中");
+        assert_eq!(st.session.english_state.text(), "ㄨ", "組字內容不變");
+    }
+
+    /// Shift＋空白在英文模式也不由外殼插全形空白，直接交還宿主。
+    #[test]
+    fn english_mode_shift_space_is_raw() {
+        plain_keyboard();
+        hold_shift(true);
+        let service = english_service();
+        let (_doc, ctx) = super::support::host(super::support::Sync::Run);
+        let sink: ITfKeyEventSink = service.to_interface();
+        let (w, l) = (WPARAM(0x20), LPARAM(0x39));
+        assert!(
+            !unsafe { sink.OnTestKeyDown(&ctx, w, l) }.unwrap().as_bool(),
+            "Shift＋空白不得被外殼吃掉"
+        );
+        assert!(
+            !unsafe { sink.OnKeyDown(&ctx, w, l) }.unwrap().as_bool(),
+            "OnKeyDown 也要放行"
+        );
+        assert_eq!(request_count(&service), 0, "不得送引擎");
+        hold_shift(false);
     }
 
     /// 已註冊的全域 chord 例外：英文模式仍送一個 Key 給 engine 執行 command。
