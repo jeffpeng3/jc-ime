@@ -108,6 +108,8 @@ flowchart LR
 
 `handled` 是 TSF 要不要吃鍵的權威值。`Some(false)` 目前用在候選 index 越界；引擎對組字中的 Backspace／Delete 即使把 preedit 刪空也會明確回 `Some(true)`。
 
+`jc-proto::Response::State` 只有 `suggestion: Option<String>`，沒有補全來源。TSF 的 `state_to_snapshot_value` 會另外產生 0c reply 的 `suggestion_kind`：`suggestion` 有值且所有片段都是 `english` 時是 `english`，否則有值時是 `zhuyin`，沒有值時是空字串。`parse` 讀回這個欄位後，只把 `SuggestionKind::English` 設成 `english_pending`。消費者 `english_key_policy` 與 `commit_english_pending` 只看 `english_pending`，所以注音補全 `su` 的 `suggestion_kind` 是 `zhuyin`，不能拿來當英文補全。
+
 ## 3. 逐事件 sequence diagram
 
 participant 對照：`Host` 宿主程式，`TSF` jc-tsf 的 `TextService`，`TSession` TSF 的 `Session`，`Pipe` named pipe，`Engine` jc-engine，`Core` jc-core 的 `Session`，`Edit` TSF EditSession，`UI` 候選窗。
@@ -304,6 +306,8 @@ sequenceDiagram
 3. 數字鍵只有 `candidate_window` 開著才走選字；`select_by_digit` 先找高亮所在頁與欄，再換算絕對 index。
 4. Enter 第一次只套用高亮候選，第二次才 `finalize_lane`。選單是例外，套用即送出。
 
+注音補全也會出現在 `suggestion`，但 TSF 的 `state_to_snapshot_value` 會把有 suggestion 且不是全英文的結果標成 `suggestion_kind=zhuyin`；`parse` 只讓 `english` 設 `english_pending`。所以 `su` 的注音補全不會被英文 policy 自動 commit。
+
 ### 3.4 英文模式
 
 ```mermaid
@@ -332,6 +336,8 @@ sequenceDiagram
     Core->>Core: rebuild 與 rebuild_mixed
     Core-->>Engine: Snapshot
     Engine-->>TSession: Response::State
+    TSession->>TSession: state_to_snapshot_value 依 segments.mode 產生 suggestion_kind
+    TSession->>TSession: parse 只讓 suggestion_kind=english 設 english_pending
     TSession-->>TSF: Snapshot english 由外殼補回
     TSF->>Edit: edit::apply 英文 preedit
     TSF-->>Host: true
@@ -777,9 +783,10 @@ sequenceDiagram
 | 游標單位 | `present_in_edit` 只用 `cursor_utf16` 定位 | 不決定單位 | 注音是音節格，日文是 byte 再換算 rune，混打是 rune；權威值 `cursor_rune` | `core.rs:2055` `navigate`、`core.rs:1591` `move_cursor_to`、`core.rs:1656` `candidate_edge` |
 | 字面大小寫 | `keys::printable` 依鍵盤狀態轉字元；`handle_key` 帶 `caps` 與 `shift` | 不決定大小寫 | `press` 把 Caps Lock 字母改回基礎小寫，路由不變；`press_caps` 只改 Latin 字面 | `service.rs:1163` `handle_key`、`session/mod.rs:801` `press`、`core.rs:344` `press_char` |
 | 候選排序 | 不改順序 | 不改順序 | lane 的 nbest、個人學習、rerank 先排；`CandidateSet` 負責插 extras、去重、截斷、顯示字排第一 | `session/candidate_set.rs:96` `from_hypotheses`、`mixed.rs:1821` `zh_choice_candidates`、`core.rs:3043` `rebuild_ja` |
+| 補全來源 | `state_to_snapshot_value` 由 `suggestion` 是否存在與片段是否全英文推導 `suggestion_kind`；`parse` 只讓 `english` 設 `english_pending` | 只帶 `suggestion` 字串，沒有來源欄位 | `snapshot_suggestion` 決定 suggestion 內容，注音與英文共用同一個 `suggestion` | `session.rs:474` `state_to_snapshot_value`、`session.rs:1026` `parse`、`core.rs:1681` `snapshot_suggestion`、`service.rs:1445` `commit_english_pending` |
 | Enter 語意 | 只送 `Key` 或 `Commit`，不自行判斷 | `Key Enter` 先 `press`；還在組字回 `State`，否則 `commit` 回 `Committed` | `finish_composition` 先 `enter_action`；注音片段與日文文節保留組字，選單與直接插入候選清掉組字 | `engine/lib.rs:655` `enters` 分支、`core.rs:1750` `finish_composition`、`core.rs:902` `apply_menu_action`、`core.rs:1005` `apply_insert_action` |
 | 模式 | `english`／`base_english` 只在外殼；`toggle` 不送 IPC | 沒有 toggle；`Request::Mode` 回 `Unsupported` | 只依字元與片段選 lane，沒有中英模式旗標 | `session.rs:1932` `toggle`、`service.rs:574` `toggle_mode`、`engine/lib.rs:793` `other` 分支 |
-| 刪除單位 | 只送 Backspace／Delete | 只回 `handled` | `delete_visible` 一次刪一個可見 rune；字元涵蓋多個讀音單位時整個範圍一起刪 | `key_policy.rs:279` `delete_visible`、`core.rs:331` `delete_zh_visible`、`core.rs:427` `delete_ja_visible` |
+| 刪除單位 | 只送 Backspace／Delete | 只回 `handled` | `delete_visible` 一次刪一個可見 rune；字元涵蓋多個讀音單位時整個範圍一起刪 | `key_policy.rs:279` `delete_visible`、`key_policy.rs:331` `delete_zh_visible`、`key_policy.rs:427` `delete_ja_visible` |
 | 候選窗何時顯示 | `wants_candidate_window` 與 `show` 條件 | 只帶 `navigating`、`menu`、`candidates` | `down`／`up` 設定 `navigating`；`open_menu` 設定 `menu` | `session.rs:423` `wants_candidate_window`、`service.rs:752` `show`、`core.rs:1891` `open_menu` |
 | 候選編號 | 不產生 | `Response::state` 把 `selection_key` 放進 `CandidateDetail.key` | `selection_key` 只回傳頁內位置 `1` 到 `0` | `jc-proto/lib.rs:589`、`jc-core/src/candidate.rs:133` `selection_key` |
 | 學習 | 只帶 `private` | 重播時重跑 log，沒有額外抑制旗標 | `learn_candidate` 檢查 `private`、`learning`、`menu` | `core.rs:2165` `learn_candidate`、`core.rs:2152` `learn_composition` |
