@@ -783,7 +783,7 @@ impl Session {
 
     /// 目前組字字串。
     pub fn preedit(&self) -> String {
-        self.base_with_highlight()
+        self.composed_text()
     }
 
     /// 處理一個按鍵並回傳完整快照。
@@ -1009,6 +1009,13 @@ impl Session {
             self.remember_committed(&text);
             return text;
         }
+        // 選單候選是一次插入；沒有 Enter 的 commit 仍要送出高亮項目。
+        if let Some(text) = self.commit_menu_choice() {
+            let text = self.output_text(text);
+            self.clear_composition();
+            self.remember_committed(&text);
+            return text;
+        }
         if self.config.mode == Mode::Mixed && self.in_zh_lane() && self.zh_window_last {
             self.zh_window_last = false;
             self.rebuild();
@@ -1019,7 +1026,7 @@ impl Session {
         if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
             self.ascii.flush();
         }
-        let text = self.output_text(self.finalize(self.current_text()));
+        let text = self.output_text(self.finalize(self.commit_text()));
         self.clear_composition();
         self.remember_committed(&text);
         text
@@ -1228,7 +1235,7 @@ impl Session {
 
     /// 目前的完整快照。
     pub fn snapshot(&self) -> Snapshot {
-        let preedit = self.base_with_highlight();
+        let preedit = self.composed_text();
         let byte = self.cursor_byte();
         let segments = self.segments();
         let owners = self.segment_owners(&preedit, &segments);
@@ -1261,7 +1268,7 @@ impl Session {
 
     /// 游標位置，以 UTF-16 code unit 計算。
     pub fn cursor_utf16(&self) -> usize {
-        utf16_offset(&self.base_with_highlight(), self.cursor_byte())
+        utf16_offset(&self.composed_text(), self.cursor_byte())
     }
 
     /// 反悔最近一次分語言學習；回傳是否有可反悔的紀錄。

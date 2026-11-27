@@ -536,7 +536,7 @@ impl Session {
     /// 就會重新打開同一組候選。
     fn open_prefix_variants(&mut self, default: &str, variants: &'static [&'static str]) {
         self.append_prefix_text(default);
-        let text = self.base_with_highlight();
+        let text = self.composed_text();
         let runes = text.chars().count();
         if runes == 0 {
             return;
@@ -803,7 +803,7 @@ impl Session {
             };
             match self.style.rules.shift_letter.as_str() {
                 "commit" => {
-                    let text = format!("{}{}", self.current_text(), out_ch);
+                    let text = format!("{}{}", self.composed_text(), out_ch);
                     self.commit_style_text(text);
                     return true;
                 }

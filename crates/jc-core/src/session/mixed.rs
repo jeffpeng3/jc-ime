@@ -1277,7 +1277,7 @@ impl Session {
     /// 游標以 rune 為單位；中文一個字背後的整个音節按鍵一起刪，英文只刪一個
     /// 字母。沒有可刪的目標時才退回舊的整片段路徑。
     pub(super) fn backspace_mixed(&mut self) -> bool {
-        let text = self.base_with_highlight();
+        let text = self.composed_text();
         let runes = text.chars().count();
         if runes == 0 {
             return false;
@@ -1329,7 +1329,7 @@ impl Session {
                                 None => self.literal_spans.push(LiteralSpan::new(start, delete)),
                             }
                         }
-                        let len = self.base_with_highlight().chars().count();
+                        let len = self.composed_text().chars().count();
                         self.set_mixed_rune((cursor - 1).min(len));
                         return true;
                     }
@@ -1339,7 +1339,7 @@ impl Session {
                 next.push_str(&typed[end..]);
                 self.ascii.replay(&next, &self.lexicon);
                 self.literal_spans.clear();
-                let len = self.base_with_highlight().chars().count();
+                let len = self.composed_text().chars().count();
                 self.set_mixed_rune((cursor - 1).min(len));
                 return true;
             }
@@ -1492,7 +1492,7 @@ impl Session {
 
     /// 游標右側 rune 所屬的片段索引。
     pub(super) fn mixed_segment_index_at_rune(&self, rune: usize) -> Option<usize> {
-        let text = self.base_with_highlight();
+        let text = self.composed_text();
         let byte = Self::rune_byte(&text, rune);
         self.segments()
             .iter()
@@ -1511,7 +1511,7 @@ impl Session {
     ///
     /// 游標在整段結尾時由呼叫端先左移一格；這裡只處理 `0..rune 數`。
     pub(super) fn mixed_target_at_cursor(&self) -> Option<MixedTarget> {
-        let text = self.base_with_highlight();
+        let text = self.composed_text();
         let runes = text.chars().count();
         let rune_start = self.mixed_rune().min(runes);
         if rune_start >= runes {
@@ -1660,7 +1660,7 @@ impl Session {
     ///
     /// 只有按 ↓ 會走到這裡。回傳是否有可開的候選。
     pub(super) fn open_mixed_cursor_candidates(&mut self) -> bool {
-        let text = self.base_with_highlight();
+        let text = self.composed_text();
         let runes = text.chars().count();
         if runes == 0 {
             return false;
@@ -1733,7 +1733,7 @@ impl Session {
         &self,
         target: &MixedTarget,
     ) -> (Vec<Candidate>, Vec<Option<CandidateAction>>) {
-        let text = self.base_with_highlight();
+        let text = self.composed_text();
         let start = Self::rune_byte(&text, target.rune_start);
         let end = text[start..]
             .chars()
@@ -2159,16 +2159,14 @@ impl Session {
         self.keep_candidates = false;
         self.highlighted = 0;
         self.rebuild();
-        let rune_start = target
-            .rune_start
-            .min(self.base_with_highlight().chars().count());
+        let rune_start = target.rune_start.min(self.composed_text().chars().count());
         let cursor = match action.cursor {
             ChoiceCursor::Start => rune_start,
             ChoiceCursor::AfterFirst => rune_start + 1,
             ChoiceCursor::AfterInsert => rune_start + action.insert.chars().count(),
-            ChoiceCursor::TokenEnd => self.base_with_highlight().chars().count(),
+            ChoiceCursor::TokenEnd => self.composed_text().chars().count(),
         };
-        self.set_mixed_rune(cursor.min(self.base_with_highlight().chars().count()));
+        self.set_mixed_rune(cursor.min(self.composed_text().chars().count()));
         true
     }
 
@@ -2316,12 +2314,12 @@ impl Session {
         }
         self.cursor_rune = Self::MIXED_CURSOR_END;
         self.rebuild();
-        let len = self.base_with_highlight().chars().count();
+        let len = self.composed_text().chars().count();
         let cursor = match action.cursor {
             ChoiceCursor::Start => rune_start,
             ChoiceCursor::AfterFirst => rune_start + 1,
             ChoiceCursor::AfterInsert => rune_start + action.insert.chars().count(),
-            ChoiceCursor::TokenEnd => self.base_with_highlight().chars().count(),
+            ChoiceCursor::TokenEnd => self.composed_text().chars().count(),
         };
         self.set_mixed_rune(cursor.min(len));
         true
@@ -2614,14 +2612,6 @@ impl Session {
         self.decode_reading(syllable.as_str())
     }
 
-    /// 混合模式的完整字面：注音片段解碼，英數照字面，待定按鍵照顯示。
-    pub(super) fn mixed_surface(&self) -> String {
-        if let Some(text) = self.latin_surface() {
-            return text;
-        }
-        self.mixed_surface_legacy()
-    }
-
     /// 沒有啟用拉丁切分時的字面組合。
     fn mixed_surface_legacy(&self) -> String {
         let mut out = String::new();
@@ -2681,20 +2671,6 @@ impl Session {
         let text = self.latin_run_text()?.to_string();
         let plans = self.plan_latin_text(&text);
         (!plans.is_empty()).then_some((plans, text))
-    }
-
-    /// 沒有增量結果時重算一次；提交路徑會用到。
-    fn latin_surface(&self) -> Option<String> {
-        let text = self.latin_run_text()?;
-        let plans = self.plan_latin_text(text);
-        if plans.is_empty() {
-            return None;
-        }
-        let mut out = String::new();
-        for piece in self.render_latin_plans(text, &plans) {
-            out.push_str(&piece.surface);
-        }
-        Some(out)
     }
 
     /// 統一管線的規劃；長字面 run 只規劃尾巴。

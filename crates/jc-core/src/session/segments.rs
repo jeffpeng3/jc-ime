@@ -102,7 +102,7 @@ impl Session {
             .clone()
             .unwrap_or_else(|| self.segments.clone());
         if !self.literal_tail.is_empty() {
-            let end = self.base_with_highlight().len();
+            let end = self.composed_text().len();
             let start = end.saturating_sub(self.literal_tail.len());
             segments.push(Segment::new(start, end, Lang::En, Script::Latin));
         }
@@ -117,7 +117,7 @@ impl Session {
         match self.to_lane_cursor() {
             LaneCursor::Cell(_) => self.cursor_runes(),
             LaneCursor::Byte(byte) => {
-                let text = self.base_with_highlight();
+                let text = self.composed_text();
                 rune_offset(&text, byte.min(text.len()))
             }
             LaneCursor::Rune(rune) => rune,
@@ -146,7 +146,7 @@ impl Session {
         match cursor {
             LaneCursor::Cell(cell) => self.cursor_rune = self.zh_rune_at_cell(cell),
             LaneCursor::Byte(byte) => {
-                let text = self.base_with_highlight();
+                let text = self.composed_text();
                 self.cursor_rune = rune_offset(&text, byte.min(text.len()));
             }
             LaneCursor::Rune(rune) => {
@@ -161,7 +161,7 @@ impl Session {
 
     /// 不含未完成注音與字面尾巴的顯示字串 rune 數。
     ///
-    /// 直接由來源字串計算，不呼叫 [`Session::base_with_highlight`]；後者在注音
+    /// 直接由來源字串計算，不呼叫 [`Session::composed_text`]；後者在注音
     /// lane 會依游標插入未完成注音，反過來需要游標位置。
     pub(super) fn base_rune_count(&self) -> usize {
         self.insert_literal(&self.displayed_base()).chars().count()
@@ -249,7 +249,7 @@ impl Session {
 
     /// 日文 lane 的游標 byte 位移。
     pub(super) fn ja_byte(&self) -> usize {
-        byte_at_rune(&self.base_with_highlight(), self.cursor_runes())
+        byte_at_rune(&self.composed_text(), self.cursor_runes())
     }
 
     /// 把日文 lane 的游標設到 byte 位移 `byte`。
@@ -269,7 +269,7 @@ impl Session {
 
     /// 組字游標在顯示字串中的 UTF-8 位元組位置。
     pub(super) fn cursor_byte(&self) -> usize {
-        byte_at_rune(&self.base_with_highlight(), self.cursor_runes())
+        byte_at_rune(&self.composed_text(), self.cursor_runes())
     }
 
     /// 把音節格換成 `base` 內的位元組位置。
@@ -313,7 +313,7 @@ impl Session {
     /// 一個片段，因為那裡是使用者正在編輯的位置。
     pub fn active_segment(&self) -> Option<usize> {
         let segments = self.segments();
-        let text = self.base_with_highlight();
+        let text = self.composed_text();
         let byte = byte_at_rune(&text, self.cursor());
         for (index, segment) in segments.iter().enumerate() {
             if segment.start <= byte && byte < segment.end {
@@ -328,7 +328,7 @@ impl Session {
     ///
     /// 位置超出組字字串時回傳 `None`；片段結尾屬於下一個片段。
     pub fn segment_at(&self, pos: usize) -> Option<usize> {
-        let text = self.base_with_highlight();
+        let text = self.composed_text();
         let byte = byte_at_rune(&text, pos);
         self.segments()
             .iter()
@@ -915,11 +915,11 @@ mod tests {
                 "注音音節格 {cell} 換算後要回到同一格"
             );
             assert!(
-                zh.cursor_byte() <= zh.base_with_highlight().len(),
+                zh.cursor_byte() <= zh.composed_text().len(),
                 "游標 byte 不能超過顯示字串"
             );
             assert!(
-                zh.base_with_highlight().is_char_boundary(zh.cursor_byte()),
+                zh.composed_text().is_char_boundary(zh.cursor_byte()),
                 "游標要落在 UTF-8 邊界"
             );
         }

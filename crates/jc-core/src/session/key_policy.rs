@@ -348,7 +348,7 @@ impl Session {
     }
 
     fn delete_mixed_forward(&mut self) {
-        let text = self.base_with_highlight();
+        let text = self.composed_text();
         let runes = text.chars().count();
         let at = self.mixed_rune().min(runes);
         if at >= runes {
@@ -367,7 +367,7 @@ impl Session {
                 next.push_str(&typed[end..]);
                 self.ascii.replay(&next, &self.lexicon);
                 self.literal_spans.clear();
-                let len = self.base_with_highlight().chars().count();
+                let len = self.composed_text().chars().count();
                 self.set_mixed_rune(at.min(len));
                 return;
             }

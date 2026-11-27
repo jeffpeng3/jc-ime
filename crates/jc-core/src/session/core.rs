@@ -23,6 +23,26 @@ pub(super) fn now_seconds() -> i64 {
         .unwrap_or(0)
 }
 
+/// 把 `text` 的 rune 範圍換成 `insert`；超出長度時夾在結尾。
+pub(super) fn replace_runes(text: &str, start: usize, len: usize, insert: &str) -> String {
+    let start_byte = text
+        .char_indices()
+        .nth(start)
+        .map(|(byte, _)| byte)
+        .unwrap_or(text.len());
+    let end_byte = text
+        .char_indices()
+        .nth(start.saturating_add(len))
+        .map(|(byte, _)| byte)
+        .unwrap_or(text.len());
+    let (start_byte, end_byte) = (start_byte.min(end_byte), end_byte.max(start_byte));
+    let mut out = String::with_capacity(text.len() + insert.len());
+    out.push_str(&text[..start_byte]);
+    out.push_str(insert);
+    out.push_str(&text[end_byte..]);
+    out
+}
+
 /// 目前 Unix 毫秒數；時鐘早於 epoch 時回傳 0。
 ///
 /// rollback 窗口以毫秒計，秒數的精度不夠。
@@ -154,7 +174,7 @@ impl Session {
         let _ = self.literal(text);
         // 字面固定接在整段最後，游標跟著到最後。
         if self.in_ja_lane() {
-            self.set_ja_byte(self.base_with_highlight().len());
+            self.set_ja_byte(self.composed_text().len());
         } else if self.in_zh_lane() {
             self.set_zh_cell(self.syllables.len());
         } else {
@@ -796,10 +816,11 @@ impl Session {
                     },
                     index,
                     insert,
-                    rune_span: self
-                        .mixed_target
-                        .as_ref()
-                        .map(|target| (target.rune_start, target.rune_len)),
+                    rune_span: self.ja_action_span().or_else(|| {
+                        self.mixed_target
+                            .as_ref()
+                            .map(|target| (target.rune_start, target.rune_len))
+                    }),
                     learn: true,
                     ..CandidateAction::default()
                 });
@@ -885,6 +906,19 @@ impl Session {
         self.pending_commit = Some(self.finalize(text));
         self.clear_composition();
         true
+    }
+
+    /// `commit()` 沒有待提交文字時，選單仍是一次插入：套用高亮項目並回傳結果。
+    ///
+    /// 選單不進組字區，所以 [`Session::display_text`] 維持原本的組字；真正
+    /// 確認送出時才走同一個 [`CandidateAction`] 套用路徑。
+    pub(super) fn commit_menu_choice(&mut self) -> Option<String> {
+        self.menu?;
+        let action = self.candidate_action(self.highlighted)?;
+        if !self.apply_candidate_action(&action) {
+            return None;
+        }
+        self.pending_commit.take()
     }
 
     /// 注音片段或 `zh_window_last`：只換那幾個音節，整段組字留著。
@@ -1620,15 +1654,11 @@ impl Session {
     pub(super) fn candidate_edge(&mut self, end: bool) {
         if !self.navigating {
             if self.in_ja_lane() {
-                self.set_ja_byte(if end {
-                    self.base_with_highlight().len()
-                } else {
-                    0
-                });
+                self.set_ja_byte(if end { self.composed_text().len() } else { 0 });
                 return;
             }
             if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
-                let runes = self.base_with_highlight().chars().count();
+                let runes = self.composed_text().chars().count();
                 self.move_mixed_cursor_to(if end { runes } else { 0 });
                 return;
             }
@@ -1744,7 +1774,7 @@ impl Session {
         }
         self.remember_selection();
         self.learn_composition();
-        let text = self.current_text();
+        let text = self.commit_text();
         let text = self.finalize(text);
         if !text.is_empty() {
             self.pending_commit = Some(text);
@@ -1811,7 +1841,7 @@ impl Session {
         if target.reading.is_some() || target.ja {
             return false;
         }
-        let text = self.base_with_highlight();
+        let text = self.composed_text();
         let surface: String = text
             .chars()
             .skip(target.rune_start)
@@ -2057,7 +2087,7 @@ impl Session {
             // 注音還沒打完就移動游標：待定音節凍結成原始按鍵字面，不能被
             // 混打管線重新讀成日文或英文。游標停在凍結尾巴的左緣。
             let completed = self.freeze_pending_zhuyin_for_mixed();
-            let len = self.base_with_highlight().chars().count();
+            let len = self.composed_text().chars().count();
             self.move_mixed_cursor_to(if delta < 0 { completed } else { len });
             return;
         }
@@ -2477,118 +2507,31 @@ impl Session {
         self.live_plan = None;
     }
 
-    /// 目前要提交的文字：接受的補全優先，其次高亮候選，最後轉換結果。
-    pub(super) fn current_text(&self) -> String {
-        let mut text = self.current_text_without_literal_tail();
-        text.push_str(&self.literal_tail);
-        text
+    /// 目前畫面上的完整組字文字。
+    ///
+    /// 顯示與送出共用這一份：`Snapshot.preedit`、游標換算與
+    /// [`Session::commit_text`] 都讀同一條路徑。接受的補全優先；日文候選
+    /// 只預覽 [`Session::candidate_action`] 指到的文節，不會用候選字面蓋掉
+    /// 整段組字。未完成的注音仍插在游標位置，字面尾巴接在最後。
+    ///
+    /// 已經放進待提交區的結果優先：那是這次按鍵決定要送出的字，畫面上即將
+    /// 消失的組字不該再算另一份。
+    pub fn display_text(&self) -> String {
+        self.pending_commit
+            .clone()
+            .unwrap_or_else(|| self.composed_text())
     }
 
-    fn current_text_without_literal_tail(&self) -> String {
-        // 選單開著時送出高亮候選，字面按鍵插在原本的位置。
-        if self.menu.is_some() {
-            if let Some(candidate) = self.candidates.get(self.highlighted) {
-                return self.compose_literal(&candidate.surface);
-            }
-        }
-        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
-            // 混打的字面標點、選單插入與前導符號記在 `literal`，要一起送出。
-            return self.insert_literal(&self.mixed_surface());
-        }
-        if let Some(text) = &self.accepted_completion {
-            return format!("{}{}", self.insert_literal(text), self.pending);
-        }
-        // 片段編輯中的候選只換那一段；送出時用已套用鎖定的整段結果。
-        if self.edit.is_some() {
-            return self.preedit_string();
-        }
-        // 注音路徑的組字區就是 `base`（轉換後的中文），候選窗沒開時 Enter
-        // 要送出看到的字，不能拿候選清單第一項的字面讀音。詞典成本高於未知
-        // 詞時，第一候選可能還是 `ㄨㄢ`，送出的字就會和畫面上不一致。
-        if self.in_zh_lane() && !self.candidate_window {
-            return self.preedit_string();
-        }
-        if let Some(candidate) = self.candidates.get(self.highlighted) {
-            return format!(
-                "{}{}",
-                self.insert_literal(&candidate.surface),
-                self.pending
-            );
-        }
-        self.preedit_string()
+    /// 這次 commit 會送出的文字：待提交結果優先，否則就是畫面上的組字。
+    ///
+    /// 標點、中英空格與簡體轉換在 [`Session::commit`] 才套用；這裡回傳的是
+    /// 套用前、與畫面完全一致的字串。顯示與送出因此不再各算一份。
+    pub fn commit_text(&self) -> String {
+        self.display_text()
     }
 
-    /// 高亮候選或轉換結果加上尚未轉換的尾巴。
-    pub(super) fn preedit_string(&self) -> String {
-        format!("{}{}", self.insert_literal(&self.base), self.pending)
-    }
-
-    /// 顯示用的轉換結果：接受的補全或高亮候選，混合模式維持中文片段。
-    pub(super) fn displayed_base(&self) -> Cow<'_, str> {
-        if self.menu.is_some() {
-            // 選單開啟時組字區維持原樣，候選只是待選清單。
-            return Cow::Borrowed(&self.base);
-        }
-        // 片段編輯時候選只涵蓋游標那一段，不能拿來取代整個組字字串。
-        if self.edit.is_some() {
-            return Cow::Borrowed(&self.base);
-        }
-        // 純注音組字的 Mixed 顯示整段最佳路徑；候選只供選字，不取代組字區。
-        if self.config.mode == Mode::Mixed && self.zh_lane {
-            return Cow::Borrowed(&self.base);
-        }
-        // 日文片段候選只替換游標那一段，前後文要留在畫面上。
-        if self.candidate_window {
-            if let Some(range) = self.ja_candidates_span {
-                if let Some(candidate) = self.candidates.get(self.highlighted) {
-                    if let Some(display) = self.ja_segment_display(range, &candidate.surface) {
-                        return Cow::Owned(display);
-                    }
-                }
-            }
-        }
-        match (
-            &self.accepted_completion,
-            self.candidates.get(self.highlighted),
-        ) {
-            (Some(text), _) => Cow::Borrowed(text),
-            // 混合模式的候選只取代待定英數按鍵，`base` 已含前面的中文片段；
-            // 直接拿候選當整個組字字串會把中文吃掉。純注音路徑照注音處理。
-            (None, _)
-                if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() =>
-            {
-                Cow::Borrowed(&self.base)
-            }
-            (None, Some(candidate)) => Cow::Borrowed(candidate.surface.as_str()),
-            (None, None) => Cow::Borrowed(&self.base),
-        }
-    }
-
-    /// 片段候選的顯示字串：只把指定讀音範圍換成候選詞面。
-    fn ja_segment_display(&self, range: (usize, usize), surface: &str) -> Option<String> {
-        let live = self.live.as_ref()?;
-        let spans = live.clause_spans();
-        let index = spans
-            .iter()
-            .position(|span| (span.start, span.end) == range)?;
-        let segment = self.segments.get(index)?;
-        let (start, end) = (
-            segment.start.min(self.base.len()),
-            segment.end.min(self.base.len()),
-        );
-        if start > end || !self.base.is_char_boundary(start) || !self.base.is_char_boundary(end) {
-            return None;
-        }
-        Some(format!(
-            "{}{}{}",
-            &self.base[..start],
-            surface,
-            &self.base[end..]
-        ))
-    }
-
-    /// 顯示用字串：高亮候選反映在組字區，未完成的注音插在游標位置。
-    pub(super) fn base_with_highlight(&self) -> String {
+    /// 尚未取走待提交結果時的畫面組字。
+    pub(super) fn composed_text(&self) -> String {
         let base = self.insert_literal(&self.displayed_base());
         let mut out = if self.pending.is_empty() {
             base
@@ -2607,6 +2550,54 @@ impl Session {
         };
         out.push_str(&self.literal_tail);
         out
+    }
+
+    /// 顯示用的轉換結果：接受的補全優先，日文候選只替換候選動作的 target。
+    ///
+    /// 選單是待選清單、片段編輯與注音候選要等套用後才進畫面，這幾種狀態
+    /// 維持目前的組字；其他 lane 的候選一律只換 [`CandidateAction::rune_span`]
+    /// 指到的範圍，前後文留在畫面上。
+    pub(super) fn displayed_base(&self) -> Cow<'_, str> {
+        if let Some(text) = &self.accepted_completion {
+            return Cow::Borrowed(text);
+        }
+        if self.menu.is_some()
+            || self.edit.is_some()
+            || !self.candidate_window
+            || !self.in_ja_lane()
+        {
+            return Cow::Borrowed(&self.base);
+        }
+        let Some(action) = self.candidate_action(self.highlighted) else {
+            return Cow::Borrowed(&self.base);
+        };
+        let Some(candidate) = self.candidates.get(self.highlighted) else {
+            return Cow::Borrowed(&self.base);
+        };
+        let (start, len) = action.rune_span.unwrap_or((0, self.base.chars().count()));
+        Cow::Owned(replace_runes(&self.base, start, len, &candidate.surface))
+    }
+
+    /// 日文候選實際取代的顯示範圍（`base` 的 rune 位移）。
+    ///
+    /// 整段候選換掉整段組字；文節候選只換 `ja_candidates_span` 對到的
+    /// 那一個片段。範圍與 [`Session::apply_ja_action`] 真正替換的片段一致，
+    /// 預覽與送出才不會一個換整段、一個換文節。
+    fn ja_action_span(&self) -> Option<(usize, usize)> {
+        if self.ja_candidates_whole {
+            return Some((0, self.base.chars().count()));
+        }
+        let range = self.ja_candidates_span?;
+        let index = self
+            .live
+            .as_ref()?
+            .clause_spans()
+            .iter()
+            .position(|span| (span.start, span.end) == range)?;
+        let segment = self.segments.get(index)?;
+        let start = self.base.get(..segment.start)?.chars().count();
+        let len = self.base.get(segment.start..segment.end)?.chars().count();
+        Some((start, len))
     }
 
     /// 把字面按鍵插回轉換結果的對應位置。
