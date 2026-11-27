@@ -159,6 +159,8 @@ pub struct EffectiveSettings {
     pub advance_after_select: bool,
     /// 中英切換鍵；本版由外殼處理。
     pub toggle_key: String,
+    /// Caps Lock 開著時直接打英文；由外殼處理，引擎在 health 回報能力。
+    pub caps_lock_english: bool,
     /// 舊欄位：左 Shift 是否切換（由 `toggle_key` 推出）。
     pub left_shift: bool,
     /// 開始時的中英模式。
@@ -236,6 +238,7 @@ pub fn effective(settings: &Settings, overrides: &Overrides, goos: &str) -> Effe
         space_selects: settings.space_selects,
         advance_after_select: settings.advance_after_select,
         toggle_key: settings.toggle_key.clone(),
+        caps_lock_english: settings.caps_lock_english,
         left_shift: settings.left_shift,
         start_mode: settings.effective_start_mode(goos).to_string(),
         document_context: settings.document_context,
@@ -373,6 +376,7 @@ mod tests {
                 "mixed_input": true,
                 "english_autocomplete": true,
                 "toggle_key": "left",
+                "caps_lock_english": true,
                 "start_mode": "english",
                 "esc_clear": false,
                 "space_selects": false,
@@ -399,6 +403,7 @@ mod tests {
         assert!(!effective.space_selects);
         assert!(effective.advance_after_select);
         assert_eq!(effective.toggle_key, "left");
+        assert!(effective.caps_lock_english);
         assert!(effective.left_shift);
         assert_eq!(effective.fuzzy_pairs, vec![('ㄗ', 'ㄓ'), ('ㄙ', 'ㄕ')]);
         assert_eq!(effective.selection_keys, "asdfghjkl;");

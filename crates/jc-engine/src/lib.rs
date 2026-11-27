@@ -1243,7 +1243,6 @@ fn request_op(request: &Request) -> &'static str {
         Request::Close { .. } => "close",
         Request::Context { .. } => "context",
         Request::Mode { .. } => "mode",
-        Request::CapsLock { .. } => "caps_lock",
         Request::OutputSimplified { .. } => "output_simplified",
         Request::Unknown => "unknown",
     }

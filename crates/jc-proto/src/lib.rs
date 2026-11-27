@@ -392,14 +392,6 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         on: bool,
     },
-    /// 0c `handle` 的 `caps_lock` 請求：按鍵事件帶的 Caps Lock 狀態。
-    ///
-    /// T6 才會真的判斷；此處讓引擎回明確的「不支援」。
-    CapsLock {
-        /// Caps Lock 是否亮著。
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        on: bool,
-    },
     /// 0c `handle` 的 `output_simplified` 請求：開關輸出簡體字。
     ///
     /// 引擎把它設成目前 session 的執行期旗標；轉換發生在 commit，組字中的
@@ -1040,10 +1032,6 @@ mod tests {
             ),
             (Request::Mode { on: true }, r#"{"op":"mode","on":true}"#),
             (
-                Request::CapsLock { on: true },
-                r#"{"op":"caps_lock","on":true}"#,
-            ),
-            (
                 Request::OutputSimplified { on: true },
                 r#"{"op":"output_simplified","on":true}"#,
             ),
@@ -1110,10 +1098,6 @@ mod tests {
     fn t1a_handle_request_shape_round_trips() {
         // T1a 的 to_jc_request() 會保留 req 的 type 欄位，只換 op；serde 預設
         // 忽略未知欄位，所以這些請求仍能解到新 variant。
-        let raw = r#"{"type":"caps_lock","on":true,"op":"caps_lock"}"#;
-        let request: Request = serde_json::from_str(raw).unwrap();
-        assert_eq!(request, Request::CapsLock { on: true });
-
         let raw = r#"{"type":"context","context_enabled":true,"op":"context"}"#;
         let request: Request = serde_json::from_str(raw).unwrap();
         assert_eq!(

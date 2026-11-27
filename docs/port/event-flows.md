@@ -388,8 +388,8 @@ sequenceDiagram
     TSF->>TSF: sync_caps
     TSF->>TSession: refresh_caps_lock_english
     TSession->>Engine: Request::Health
-    Engine-->>TSession: 能力旗標
-    Note over TSF,TSession: engine 目前不廣告 caps_lock_english
+    Engine-->>TSession: caps_lock_english 能力旗標
+    TSF->>TSession: caps_lock(on) 只切換外殼的暫時英文
 
     Host->>TSF: OnKeyDown A 且 Caps Lock 開
     TSF->>TSF: keys::printable 依鍵盤狀態轉出 A
@@ -405,7 +405,7 @@ sequenceDiagram
     TSession-->>TSF: Snapshot
 ```
 
-Caps Lock 不改變按鍵路由。注音模式仍把字母當注音鍵，`Key.caps` 只影響最後的字面大小寫；英文與混打的 Latin 字面由 `press_caps` 決定輸出。`sync_caps` 只有在 `caps_lock_english` 能力為真時才會送 `Request::CapsLock`，而目前 engine 的 `build_shell_caps` 沒有這個旗標，所以現行路徑只會走 `Key.caps`。（待確認：設定檔已有 `caps_lock_english`，engine 是否要在 health 廣告它。）
+Caps Lock 不改變按鍵路由。注音模式仍把字母當注音鍵，`Key.caps` 只影響最後的字面大小寫；英文與混打的 Latin 字面由 `press_caps` 決定輸出。engine 在 health／Ready 回報 `caps_lock_english`；能力為真時，TSF 的 `sync_caps` 只在本機切換暫時英文模式，不送 `Request`。Caps Lock 關閉時回到程式的 `base_english`，按鍵仍只帶 `Key.caps`。
 
 ### 3.6 日文
 

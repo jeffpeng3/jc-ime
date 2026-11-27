@@ -120,7 +120,7 @@ TSF 在 `Ready` 拿到 bindings；`OnSetFocus`／`OnSetThreadFocus` 各刷新一
 | `simplified_hotkey` | 簡體輸出的外殼快捷鍵 | 本版忽略（外殼） |
 | `keybinds` | `symbol_menu`／`emoji_palette` 的 chord；引擎解析後呼叫 `Session::command`，TSF 只轉發 | 生效（熱重載） |
 | `all_symbols_halfwidth` | 不直接寫 `SessionConfig`；只經由 `effective_ctrl_punctuation`／`effective_toneless` 影響 | 間接生效 |
-| `caps_lock_english` | Caps Lock 直接打英文；關閉時 Caps Lock 只改字母最後字面的大小寫（caps on 大寫、加 Shift 小寫），不改變注音／日文／標點的路由；數字仍是注音鍵，候選選取中 `1`–`0` 仍是選列；外殼決定按鍵怎麼送 | 本版忽略（外殼） |
+| `caps_lock_english` | Caps Lock 直接打英文；關閉時 Caps Lock 只改字母最後字面的大小寫（caps on 大寫、加 Shift 小寫），不改變注音／日文／標點的路由；數字仍是注音鍵，候選選取中 `1`–`0` 仍是選列；模式切換由外殼處理 | 引擎在 health／Ready 回報能力，實際切換由外殼處理 |
 | `ja_input_method` | 日文只有羅馬字（`RomajiInput`），沒有直接かな | 本版忽略 |
 | `ja_ambiguous` | 解碼器在建構時固定 `both`，`SessionConfig` 沒有欄位 | 本版忽略 |
 | `ja_symbols` | 候選是否列記号／顔文字；解碼器開關未接線 | 本版忽略 |
@@ -133,9 +133,10 @@ TSF 在 `Ready` 拿到 bindings；`OnSetFocus`／`OnSetThreadFocus` 各刷新一
 - `max_candidates`：`Settings` 沒有這個欄位（未知鍵只會原文保留）。本版固定用
   `jc_core::session::DEFAULT_MAX_CANDIDATES`（量測後的 200，見
   `candidate-cap.md`），並在 `--print-settings` 印出。
-- `esc_clear`、`advance_after_select`、`mode_memory`、`caps_lock_english`：
-  Go 版把這些放在 `eng`，Rust 核心的 `SessionConfig`／`InputStyle` 沒有同名欄位，
-  屬於外殼（TSF／CLI 前端）的按鍵分派與游標行為，本版只輸出、不套用。
+- `esc_clear`、`advance_after_select`、`mode_memory`：Go 版把這些放在 `eng`，
+  Rust 核心的 `SessionConfig`／`InputStyle` 沒有同名欄位，屬於外殼（TSF／CLI 前端）
+  的按鍵分派與游標行為，本版只輸出、不套用。`caps_lock_english` 也由外殼套用，
+  但引擎會在 health 回報這個能力。
 - `mixed_input` 已從 `Settings` struct、序列化與 `keys()` 移除；讀到舊檔時直接
   丟棄，不進 `extra`、不產生警示、不寫回。`input_profile.values` 裡的同名鍵也
   一併忽略。引擎一律對中文使用者用混打模式。
