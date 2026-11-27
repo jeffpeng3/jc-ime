@@ -504,13 +504,13 @@ impl Session {
         if self.in_zh_lane() {
             let _ = self.flush_zh_lane_for_mixed();
             self.ascii.seed_literal("`");
-            self.mixed_cursor = Self::MIXED_CURSOR_END;
+            self.cursor_rune = Self::MIXED_CURSOR_END;
             self.rebuild();
         } else if self.in_ja_lane() {
             self.literal_tail.push('`');
         } else {
             self.ascii.seed_literal("`");
-            self.mixed_cursor = Self::MIXED_CURSOR_END;
+            self.cursor_rune = Self::MIXED_CURSOR_END;
             self.rebuild();
         }
         self.symbol_prefix = true;
@@ -523,7 +523,7 @@ impl Session {
         }
         if self.literal_tail.is_empty() {
             self.ascii.seed_literal(text);
-            self.mixed_cursor = Self::MIXED_CURSOR_END;
+            self.cursor_rune = Self::MIXED_CURSOR_END;
             self.rebuild();
         } else {
             self.literal_tail.push_str(text);
@@ -541,9 +541,9 @@ impl Session {
         if runes == 0 {
             return;
         }
-        self.mixed_cursor = runes - 1;
+        self.set_mixed_rune(runes - 1);
         let Some(target) = self.mixed_target_at_cursor() else {
-            self.mixed_cursor = runes;
+            self.set_mixed_rune(runes);
             return;
         };
         let mut candidates = Vec::new();
@@ -572,7 +572,7 @@ impl Session {
         self.candidate_expanded = false;
         self.navigating = false;
         // 游標在符號右側。
-        self.mixed_cursor = runes;
+        self.set_mixed_rune(runes);
     }
 
     /// 前導狀態下的下一個按鍵；回傳是否已處理。

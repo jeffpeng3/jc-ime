@@ -10,8 +10,8 @@
 //!   按鍵後失效，與上游的 `segmentManual`／`segmentRev` 相同。
 //! - 片段鎖定直接寫進解碼器的 [`crate::decode::Locks`]，因此會影響後續轉換。
 //!
-//! 游標以音節格表示：`ZhInput` 的暫存與已完成音節各算一格，顯示時沿目前
-//! 解碼路徑換成 rune 位移。任意位置插入與刪除仍未接。
+//! 游標唯一存成顯示字串的 rune 位移：`ZhInput` 的暫存與已完成音節、日文
+//! byte 與混打 rune 都只是換算出來的視圖。任意位置插入與刪除仍未接。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -19,6 +19,19 @@ use std::sync::{Arc, Mutex, OnceLock};
 use super::*;
 use crate::lattice::Lexicon;
 use crate::zh::syllable::{class_of, Class, Syllable, TONE1};
+
+/// 游標的 lane 視圖。
+///
+/// 實際儲存只有 [`Session::cursor_rune`]；這裡是各 lane 對外的語意單位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LaneCursor {
+    /// 注音音節格（`0..=syllables.len()`）。
+    Cell(usize),
+    /// 日文顯示字串的 UTF-8 位元組位移。
+    Byte(usize),
+    /// 顯示字串的 rune 位移。
+    Rune(usize),
+}
 
 /// 剛按下、還沒決定要當數字或聲調符號的聲調鍵。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,50 +111,165 @@ impl Session {
 
     /// 游標在目前組字字串中的 rune 位置。
     ///
-    /// 組字游標以音節格計算；顯示字串是轉換後的詞，因此這裡沿著目前路徑
-    /// 把格換成 rune 位移。沒有路徑或不是注音模式時游標在結尾。
+    /// 內部只保存 [`Session::cursor_rune`]；音節格與 byte 都是推導值。游標
+    /// 永遠落在 rune 邊界，超出目前字串時夾在結尾。
     pub fn cursor(&self) -> usize {
-        let text = self.base_with_highlight();
-        rune_offset(&text, self.cursor_byte())
+        match self.to_lane_cursor() {
+            LaneCursor::Cell(_) => self.cursor_runes(),
+            LaneCursor::Byte(byte) => {
+                let text = self.base_with_highlight();
+                rune_offset(&text, byte.min(text.len()))
+            }
+            LaneCursor::Rune(rune) => rune,
+        }
+    }
+
+    /// 目前 lane 的游標視圖。
+    ///
+    /// 注音換成音節格、日文換成 byte、混打維持 rune；這三種表示都只是
+    /// [`Session::cursor_rune`] 的推導值，不再各自保存。
+    pub(super) fn to_lane_cursor(&self) -> LaneCursor {
+        if self.in_zh_lane() {
+            LaneCursor::Cell(self.zh_cell())
+        } else if self.in_ja_lane() {
+            LaneCursor::Byte(self.ja_byte())
+        } else {
+            LaneCursor::Rune(self.mixed_rune())
+        }
+    }
+
+    /// 把 lane 的游標寫回唯一的 `cursor_rune`。
+    ///
+    /// 介面名稱沿用文件裡的 `from_lane_cursor`；它是就地更新，不建立新值。
+    #[allow(clippy::wrong_self_convention)]
+    pub(super) fn from_lane_cursor(&mut self, cursor: LaneCursor) {
+        match cursor {
+            LaneCursor::Cell(cell) => self.cursor_rune = self.zh_rune_at_cell(cell),
+            LaneCursor::Byte(byte) => {
+                let text = self.base_with_highlight();
+                self.cursor_rune = rune_offset(&text, byte.min(text.len()));
+            }
+            LaneCursor::Rune(rune) => {
+                self.cursor_rune = if rune == Self::MIXED_CURSOR_END {
+                    Self::MIXED_CURSOR_END
+                } else {
+                    rune.min(self.rune_count())
+                };
+            }
+        }
+    }
+
+    /// 不含未完成注音與字面尾巴的顯示字串 rune 數。
+    ///
+    /// 直接由來源字串計算，不呼叫 [`Session::base_with_highlight`]；後者在注音
+    /// lane 會依游標插入未完成注音，反過來需要游標位置。
+    pub(super) fn base_rune_count(&self) -> usize {
+        self.insert_literal(&self.displayed_base()).chars().count()
+    }
+
+    /// 目前顯示字串的 rune 數。
+    pub(super) fn rune_count(&self) -> usize {
+        self.base_rune_count() + self.pending.chars().count() + self.literal_tail.chars().count()
+    }
+
+    /// 正規化後的游標 rune；結尾哨兵夾到目前長度。
+    ///
+    /// 注音 lane 的未完成注音插在游標位置，對外游標算在它後面；內部
+    /// [`Session::cursor_rune`] 只記穩定字串的邊界，暫存注音增減不會讓游標漂移。
+    pub(super) fn cursor_runes(&self) -> usize {
+        if self.cursor_rune == Self::MIXED_CURSOR_END {
+            return self.rune_count();
+        }
+        if self.in_zh_lane() {
+            let base = self.base_rune_count();
+            let raw = self.cursor_rune.min(base);
+            if raw >= base {
+                // 舊路徑在音節結尾把字面也算進游標，維持同一個落點。
+                self.rune_count()
+            } else {
+                (raw + self.pending.chars().count()).min(self.rune_count())
+            }
+        } else {
+            self.cursor_rune.min(self.rune_count())
+        }
+    }
+
+    /// 注音 lane 的游標音節格。
+    pub(super) fn zh_cell(&self) -> usize {
+        if self.in_zh_lane() {
+            let cells = self.syllables.len();
+            if self.cursor_rune == Self::MIXED_CURSOR_END
+                || self.cursor_runes() >= self.rune_count()
+            {
+                return cells;
+            }
+            let target = self.cursor_rune.min(self.base_rune_count());
+            let mut best = 0;
+            for cell in 0..=cells {
+                if self.zh_cell_rune(cell) <= target {
+                    best = cell;
+                } else {
+                    break;
+                }
+            }
+            best.min(cells)
+        } else {
+            self.cursor_runes()
+        }
+    }
+
+    /// 把注音 lane 的游標設到音節格 `cell`。
+    pub(super) fn set_zh_cell(&mut self, cell: usize) {
+        self.from_lane_cursor(LaneCursor::Cell(cell));
+    }
+
+    pub(super) fn zh_cell_rune(&self, cell: usize) -> usize {
+        let display = self.displayed_base();
+        let byte = self
+            .cell_byte(&display, cell)
+            .unwrap_or(display.len())
+            .min(display.len());
+        let mut rune = rune_offset(&display, byte);
+        if !self.literal.is_empty() {
+            let mut at_literal = self.literal_offset.min(display.len());
+            while at_literal > 0 && !display.is_char_boundary(at_literal) {
+                at_literal -= 1;
+            }
+            if at_literal <= byte {
+                rune += self.literal.chars().count();
+            }
+        }
+        rune
+    }
+
+    /// 音節格在穩定顯示字串中的 rune 位置；未完成注音另外由游標推導。
+    pub(super) fn zh_rune_at_cell(&self, cell: usize) -> usize {
+        self.zh_cell_rune(cell.min(self.syllables.len()))
+    }
+
+    /// 日文 lane 的游標 byte 位移。
+    pub(super) fn ja_byte(&self) -> usize {
+        byte_at_rune(&self.base_with_highlight(), self.cursor_runes())
+    }
+
+    /// 把日文 lane 的游標設到 byte 位移 `byte`。
+    pub(super) fn set_ja_byte(&mut self, byte: usize) {
+        self.from_lane_cursor(LaneCursor::Byte(byte));
+    }
+
+    /// 混打 lane 的游標 rune 位移。
+    pub(super) fn mixed_rune(&self) -> usize {
+        self.cursor_runes()
+    }
+
+    /// 把混打 lane 的游標設到 rune 位移 `rune`。
+    pub(super) fn set_mixed_rune(&mut self, rune: usize) {
+        self.from_lane_cursor(LaneCursor::Rune(rune));
     }
 
     /// 組字游標在顯示字串中的 UTF-8 位元組位置。
     pub(super) fn cursor_byte(&self) -> usize {
-        let text = self.base_with_highlight();
-        if self.in_ja_lane() {
-            return self.ja_cursor.min(text.len());
-        }
-        if self.in_zh_lane() {
-            let cells = self.syllables.len();
-            let at = self.cursor.min(cells);
-            if at >= cells {
-                return text.len();
-            }
-            let base = self.displayed_base();
-            let Some(mut byte) = self.cell_byte(&base, at) else {
-                return text.len();
-            };
-            // 未完成的注音插在游標位置；游標在它後面。
-            if !self.pending.is_empty() {
-                byte += self.pending.len();
-            }
-            // 字面按鍵插在 `base` 中間；游標在插入點之後就加上字面長度。
-            if !self.literal.is_empty() {
-                let mut at_literal = self.literal_offset.min(base.len());
-                while at_literal > 0 && !base.is_char_boundary(at_literal) {
-                    at_literal -= 1;
-                }
-                if at_literal <= byte {
-                    byte += self.literal.len();
-                }
-            }
-            return byte.min(text.len());
-        }
-        if self.config.mode == Mode::Mixed {
-            let at = self.mixed_cursor.min(text.chars().count());
-            return byte_at_rune(&text, at);
-        }
-        text.len()
+        byte_at_rune(&self.base_with_highlight(), self.cursor_runes())
     }
 
     /// 把音節格換成 `base` 內的位元組位置。
@@ -769,6 +897,103 @@ mod tests {
             };
             session.press(key);
         }
+    }
+
+    /// 換算介面的不變量：每個合法位置都回到同一個 lane 游標。
+    #[test]
+    fn test_lane_cursor_round_trip_for_every_position() {
+        // 注音：音節格 ↔ rune。
+        let mut zh = session();
+        type_syllable(&mut zh, "ㄨㄛˇ");
+        type_syllable(&mut zh, "ㄒㄧㄤˇ");
+        type_syllable(&mut zh, "ㄔ");
+        for cell in 0..=zh.syllables.len() {
+            zh.from_lane_cursor(LaneCursor::Cell(cell));
+            assert_eq!(
+                zh.to_lane_cursor(),
+                LaneCursor::Cell(cell),
+                "注音音節格 {cell} 換算後要回到同一格"
+            );
+            assert!(
+                zh.cursor_byte() <= zh.base_with_highlight().len(),
+                "游標 byte 不能超過顯示字串"
+            );
+            assert!(
+                zh.base_with_highlight().is_char_boundary(zh.cursor_byte()),
+                "游標要落在 UTF-8 邊界"
+            );
+        }
+
+        // 字面插在音節前面（`，我想`）時，每個音節格仍要換算回同一格。
+        let mut front = session();
+        type_syllable(&mut front, "ㄨㄛˇ");
+        type_syllable(&mut front, "ㄒㄧㄤˇ");
+        front.literal_anchor = 0;
+        front.literal = "，".to_string();
+        front.rebuild();
+        assert_eq!(front.snapshot().preedit, "，我想");
+        for cell in 0..=front.syllables.len() {
+            front.from_lane_cursor(LaneCursor::Cell(cell));
+            assert_eq!(
+                front.to_lane_cursor(),
+                LaneCursor::Cell(cell),
+                "前導字面下音節格 {cell} 換算後要回到同一格"
+            );
+        }
+
+        // 日文：byte ↔ rune。
+        let mut ja = session();
+        ja.config.ja_only = true;
+        ja.base = "わたし".to_string();
+        ja.cursor_rune = 0;
+        let bytes: Vec<usize> = ja
+            .base
+            .char_indices()
+            .map(|(byte, _)| byte)
+            .chain([ja.base.len()])
+            .collect();
+        for byte in bytes {
+            ja.from_lane_cursor(LaneCursor::Byte(byte));
+            assert_eq!(
+                ja.to_lane_cursor(),
+                LaneCursor::Byte(byte),
+                "日文 byte {byte} 換算後要回到同一個位移"
+            );
+            assert!(ja.base.is_char_boundary(ja.cursor_byte()));
+        }
+
+        // 混打：rune ↔ rune。
+        let mut mixed = session();
+        mixed.zh_lane = false;
+        mixed.base = "a我b".to_string();
+        for rune in 0..=mixed.base.chars().count() {
+            mixed.from_lane_cursor(LaneCursor::Rune(rune));
+            assert_eq!(mixed.to_lane_cursor(), LaneCursor::Rune(rune));
+            assert!(mixed.base.is_char_boundary(mixed.cursor_byte()));
+        }
+    }
+
+    /// 重建不能把中間的游標推到整段結尾。
+    #[test]
+    fn test_cursor_stays_on_rune_boundary_after_rebuild() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        type_syllable(&mut s, "ㄒㄧㄤˇ");
+        type_syllable(&mut s, "ㄔ");
+        assert!(s.move_cursor_to(1), "游標移到第二個音節");
+        assert_eq!(s.snapshot().cursor_rune, 1);
+        assert_eq!(s.active_segment(), Some(1));
+        s.rebuild();
+        let snap = s.snapshot();
+        assert_eq!(snap.cursor_rune, 1, "重建後游標留在原本的 rune 邊界");
+        assert_eq!(s.active_segment(), Some(1), "片段切換後仍在同一段");
+        assert!(snap.preedit.is_char_boundary(
+            snap.preedit
+                .char_indices()
+                .nth(snap.cursor_rune)
+                .map(|(byte, _)| byte)
+                .unwrap_or(snap.preedit.len())
+        ));
     }
 
     /// 對照 `TestSessionSegmentsFollowZhuyinPathAndCursor`。

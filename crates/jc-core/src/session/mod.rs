@@ -414,20 +414,13 @@ pub struct Session {
     /// `ZhInput` 只負責尚未完成的注音；音節打完就搬進這裡，才能在中間插入
     /// 與刪除。對照上游 `s.syls`。
     pub(super) syllables: Vec<Syllable>,
-    /// 組字游標位置（音節格，`0..=syllables.len()`）。
+    /// 組字游標的唯一來源：顯示字串的 rune 位移。
     ///
-    /// 對外一律換算成 rune 位移；內部用音節格才能對應讀音與鎖定。
-    pub(super) cursor: usize,
-    /// 日文逐字変換的組字游標（顯示字串的位元組位置）。
-    ///
-    /// 注音路徑用音節格 [`Session::cursor`]；日文沒有音節格，另外記在
-    /// 顯示字串上，左右鍵與片段候選共用同一個位置。
-    pub(super) ja_cursor: usize,
-    /// 混合模式的組字游標：顯示字串的 rune 位移，`0..=rune 數`。
-    ///
+    /// 注音音節格、日文 byte 位移與混打 rune 位移都是推導值，由
+    /// [`Session::to_lane_cursor`]／[`Session::from_lane_cursor`] 換算。
     /// [`Self::MIXED_CURSOR_END`] 代表結尾；打字時一律回到結尾，方向鍵與刪除
     /// 才會把游標停在字元之間。候選固定作用在游標右側的那一個字元。
-    pub(super) mixed_cursor: usize,
+    pub(super) cursor_rune: usize,
     /// 候選窗是否已展開成四欄；第一次按 → 展開，Esc 或重新開窗時重設。
     pub(super) candidate_expanded: bool,
     /// 這一次開啟的候選窗要作用在哪裡；`None` 時沿用舊的片段／音節路徑。
@@ -631,9 +624,7 @@ impl Session {
             config,
             zh: ZhInput::standard(),
             syllables: Vec::new(),
-            cursor: 0,
-            ja_cursor: 0,
-            mixed_cursor: Self::MIXED_CURSOR_END,
+            cursor_rune: Self::MIXED_CURSOR_END,
             candidate_expanded: false,
             mixed_target: None,
             mixed_choices: Vec::new(),
@@ -1125,7 +1116,7 @@ impl Session {
                     .get(index)
                     .map(|segment| segment.end)
                     .unwrap_or_else(|| self.base.len());
-                self.ja_cursor = end.min(self.base.len());
+                self.set_ja_byte(end.min(self.base.len()));
             }
         }
         self.snapshot()
@@ -1153,7 +1144,7 @@ impl Session {
             .get(index)
             .map(|segment| segment.end)
             .unwrap_or_else(|| self.base.len());
-        self.ja_cursor = end.min(self.base.len());
+        self.set_ja_byte(end.min(self.base.len()));
     }
 
     pub fn ja_live_enabled(&self) -> bool {

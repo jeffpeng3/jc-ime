@@ -250,7 +250,7 @@ impl Session {
         self.candidate_expanded = false;
         self.navigating = false;
         self.keep_candidates = false;
-        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
         // 待定按鍵是空的：這個空白是純字面，記進 `literal_spans`，重建時
         // 才不會被 `visible_plans` 當成片段停頓吃掉（`ji3 ji3 ji3`）。
         // 待定按鍵非空時空白可能被當成一聲／音節分隔，照原管線處理。
@@ -310,9 +310,8 @@ impl Session {
             self.zh.press(Key::new(KeyCode::Backspace, None, false));
             self.zh_pending_keys.pop();
             self.zh_pending_caps.pop();
-        } else if self.cursor > 0 {
-            self.remove_syllable(self.cursor - 1);
-            self.cursor = self.cursor.saturating_sub(1);
+        } else if self.zh_cell() > 0 {
+            self.remove_syllable(self.zh_cell() - 1);
         } else if !self.literal.is_empty() {
             self.literal.pop();
         }
@@ -330,7 +329,7 @@ impl Session {
             DeleteLane::Mixed => self.delete_mixed_forward(),
             DeleteLane::Zh => {
                 if self.zh.pending().is_empty() {
-                    self.remove_syllable(self.cursor);
+                    self.remove_syllable(self.zh_cell());
                 }
             }
             // 既有缺口：日文 lane 的 Delete 沒有刪除動作，只關候選窗。
@@ -351,14 +350,14 @@ impl Session {
     fn delete_mixed_forward(&mut self) {
         let text = self.base_with_highlight();
         let runes = text.chars().count();
-        let at = self.mixed_cursor.min(runes);
+        let at = self.mixed_rune().min(runes);
         if at >= runes {
             return;
         }
-        let saved = self.mixed_cursor;
-        self.mixed_cursor = at;
+        let saved = self.mixed_rune();
+        self.set_mixed_rune(at);
         let target = self.mixed_target_at_cursor();
-        self.mixed_cursor = saved;
+        self.set_mixed_rune(saved);
         if let Some(target) = target {
             let typed = self.ascii.typed().to_string();
             let (start, end) = target.typed;
@@ -369,7 +368,7 @@ impl Session {
                 self.ascii.replay(&next, &self.lexicon);
                 self.literal_spans.clear();
                 let len = self.base_with_highlight().chars().count();
-                self.mixed_cursor = at.min(len);
+                self.set_mixed_rune(at.min(len));
                 return;
             }
         }

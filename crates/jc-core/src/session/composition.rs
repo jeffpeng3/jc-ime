@@ -246,7 +246,7 @@ impl Session {
             ));
         }
         segments.sort_by_key(|segment| segment.span.start);
-        let cursor = crate::output::rune_offset(&text, self.ja_cursor.min(text.len()))
+        let cursor = crate::output::rune_offset(&text, self.ja_byte().min(text.len()))
             .min(crate::output::rune_len(&text));
         self.composition.replace_segments(text, cursor, segments);
         self.sync_ja_users();

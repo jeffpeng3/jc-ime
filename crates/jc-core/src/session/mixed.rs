@@ -1282,14 +1282,14 @@ impl Session {
         if runes == 0 {
             return false;
         }
-        let cursor = self.mixed_cursor.min(runes);
+        let cursor = self.mixed_rune().min(runes);
         if cursor == 0 {
             return false;
         }
-        let saved = self.mixed_cursor;
-        self.mixed_cursor = cursor - 1;
+        let saved = self.mixed_rune();
+        self.set_mixed_rune(cursor - 1);
         let target = self.mixed_target_at_cursor();
-        self.mixed_cursor = saved;
+        self.set_mixed_rune(saved);
         if let Some(target) = target {
             let typed = self.ascii.typed().to_string();
             let (start, end) = target.typed;
@@ -1330,7 +1330,7 @@ impl Session {
                             }
                         }
                         let len = self.base_with_highlight().chars().count();
-                        self.mixed_cursor = (cursor - 1).min(len);
+                        self.set_mixed_rune((cursor - 1).min(len));
                         return true;
                     }
                 }
@@ -1340,12 +1340,12 @@ impl Session {
                 self.ascii.replay(&next, &self.lexicon);
                 self.literal_spans.clear();
                 let len = self.base_with_highlight().chars().count();
-                self.mixed_cursor = (cursor - 1).min(len);
+                self.set_mixed_rune((cursor - 1).min(len));
                 return true;
             }
         }
         let len = self.segments.len();
-        let at = self.mixed_cursor.min(len);
+        let at = self.mixed_rune().min(len);
         if at == 0 {
             return false;
         }
@@ -1359,7 +1359,7 @@ impl Session {
         }
         self.ascii.replay(&typed, &self.lexicon);
         self.literal_spans.clear();
-        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
         true
     }
 
@@ -1377,7 +1377,7 @@ impl Session {
         next.push_str(&typed[end..]);
         self.ascii.replay(&next, &self.lexicon);
         // 游標停在被刪片段的位置：後面若還有片段就停在它前面，否則回到結尾。
-        self.mixed_cursor = index.min(self.segments.len());
+        self.set_mixed_rune(index.min(self.segments.len()));
         true
     }
 
@@ -1409,7 +1409,7 @@ impl Session {
     /// 位移。
     fn mixed_zh_syllable(&self) -> Option<(usize, usize, Syllable)> {
         let text = self.latin_run_text()?;
-        let at = self.mixed_cursor.min(self.segments.len());
+        let at = self.mixed_rune().min(self.segments.len());
         let end = if at < self.segments.len() {
             // 游標在片段邊界：游標左側那個片段的最後一個音節。
             if at == 0 {
@@ -1486,7 +1486,7 @@ impl Session {
             next.push_str(&typed[end..]);
         }
         self.ascii.replay(&next, &self.lexicon);
-        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
         true
     }
 
@@ -1513,7 +1513,7 @@ impl Session {
     pub(super) fn mixed_target_at_cursor(&self) -> Option<MixedTarget> {
         let text = self.base_with_highlight();
         let runes = text.chars().count();
-        let rune_start = self.mixed_cursor.min(runes);
+        let rune_start = self.mixed_rune().min(runes);
         if rune_start >= runes {
             return None;
         }
@@ -1707,8 +1707,8 @@ impl Session {
             self.keep_candidates = true;
             return true;
         }
-        if self.mixed_cursor.min(runes) >= runes {
-            self.mixed_cursor = runes - 1;
+        if self.mixed_rune().min(runes) >= runes {
+            self.set_mixed_rune(runes - 1);
         }
         let Some(target) = self.mixed_target_at_cursor() else {
             return false;
@@ -2099,7 +2099,7 @@ impl Session {
             self.edit = None;
             if applied {
                 // 選字後游標往右一格；比一個 rune 長的替換放到第一個字元之後。
-                self.cursor = (edit.start + 1).min(self.syllables.len());
+                self.set_zh_cell((edit.start + 1).min(self.syllables.len()));
                 if action.learn {
                     if let Some(candidate) = candidate {
                         self.learn_window_candidate(edit, &candidate);
@@ -2168,7 +2168,7 @@ impl Session {
             ChoiceCursor::AfterInsert => rune_start + action.insert.chars().count(),
             ChoiceCursor::TokenEnd => self.base_with_highlight().chars().count(),
         };
-        self.mixed_cursor = cursor.min(self.base_with_highlight().chars().count());
+        self.set_mixed_rune(cursor.min(self.base_with_highlight().chars().count()));
         true
     }
 
@@ -2186,10 +2186,10 @@ impl Session {
         if self.syllables.is_empty() {
             return false;
         }
-        if self.cursor >= self.syllables.len() {
-            self.cursor = self.syllables.len() - 1;
+        if self.zh_cell() >= self.syllables.len() {
+            self.set_zh_cell(self.syllables.len() - 1);
         }
-        let index = self.cursor.min(self.syllables.len().saturating_sub(1));
+        let index = self.zh_cell().min(self.syllables.len().saturating_sub(1));
         let syllable = self.syllables[index].clone();
         let reading = syllable.as_str().to_string();
         let raw = self
@@ -2286,7 +2286,6 @@ impl Session {
         self.zh_pending_keys.clear();
         self.zh_pending_caps.clear();
         self.syllables.clear();
-        self.cursor = 0;
         self.locks.clear();
         self.composition.clear();
         self.edit = None;
@@ -2315,7 +2314,7 @@ impl Session {
                 None => self.literal_spans.push(LiteralSpan::new(span.0, span.1)),
             }
         }
-        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
         self.rebuild();
         let len = self.base_with_highlight().chars().count();
         let cursor = match action.cursor {
@@ -2324,7 +2323,7 @@ impl Session {
             ChoiceCursor::AfterInsert => rune_start + action.insert.chars().count(),
             ChoiceCursor::TokenEnd => self.base_with_highlight().chars().count(),
         };
-        self.mixed_cursor = cursor.min(len);
+        self.set_mixed_rune(cursor.min(len));
         true
     }
 
@@ -2362,12 +2361,11 @@ impl Session {
             live.reset();
         }
         self.ja_run = false;
-        self.ja_cursor = 0;
         self.ascii.replay_caps(&keys, caps, &self.lexicon);
         if !self.ascii.tone(ch, &self.lexicon) {
             self.ascii.press_caps(ch, caps);
         }
-        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
         true
     }
 
@@ -2441,7 +2439,7 @@ impl Session {
         if let Some(reading) =
             split.and_then(|(plans, text)| Self::planned_trailing_zh_reading(plans, text))
         {
-            if self.mixed_cursor.min(self.segments.len()) == self.segments.len() {
+            if self.mixed_rune().min(self.segments.len()) == self.segments.len() {
                 let mut set = self.zh_candidate_set(&reading);
                 if !set.contains(&raw) {
                     set.push(Candidate::new(
@@ -2530,7 +2528,7 @@ impl Session {
         // 游標在結尾時直接問統一管線：已完成注音的尾巴就是最後一個注音
         // 片段。這條路不依賴 `AsciiInput` 的 pending 狀態，`ej/ ` 這種
         // 空白當一聲、或前段是 ja 的混合 run 才不會只剩字面候選。
-        if self.mixed_cursor.min(self.segments.len()) == self.segments.len() {
+        if self.mixed_rune().min(self.segments.len()) == self.segments.len() {
             if let Some(reading) =
                 split.and_then(|(plans, text)| Self::planned_trailing_zh_reading(plans, text))
             {

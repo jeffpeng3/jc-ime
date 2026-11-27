@@ -80,6 +80,14 @@ impl Session {
 
     /// 把字面文字插進組字結果；記錄插入位置。
     pub(super) fn push_literal(&mut self, text: &str) {
+        let anchor = if self.literal.is_empty() {
+            self.syllables.len()
+        } else {
+            self.literal_anchor
+        };
+        // 字面插在游標之前時，canonical rune 要跟著右移，否則游標會退回
+        // 字面前面。正常按鍵流程多半插在結尾，這裡也涵蓋前導符號。
+        let shift = self.in_zh_lane() && anchor <= self.zh_cell();
         if self.literal.is_empty() {
             self.literal_anchor = self.syllables.len();
             self.literal_tail_absorbed = false;
@@ -90,6 +98,9 @@ impl Session {
             }
         }
         self.literal.push_str(text);
+        if shift {
+            self.cursor_rune = self.cursor_rune.saturating_add(text.chars().count());
+        }
     }
 
     /// Shift＋字母要當成字面，不讓前面的注音被重播成原始按鍵。
@@ -143,11 +154,11 @@ impl Session {
         let _ = self.literal(text);
         // 字面固定接在整段最後，游標跟著到最後。
         if self.in_ja_lane() {
-            self.ja_cursor = self.base_with_highlight().len();
+            self.set_ja_byte(self.base_with_highlight().len());
         } else if self.in_zh_lane() {
-            self.cursor = self.syllables.len();
+            self.set_zh_cell(self.syllables.len());
         } else {
-            self.mixed_cursor = Self::MIXED_CURSOR_END;
+            self.cursor_rune = Self::MIXED_CURSOR_END;
         }
         self.snapshot()
     }
@@ -203,9 +214,13 @@ impl Session {
     /// 解除，因為它原本覆蓋的讀音已經被拆開。對照上游 `shiftLocks(at, +1)`。
     pub(super) fn insert_syllable(&mut self, at: usize, syllable: Syllable) {
         let at = at.min(self.syllables.len());
+        // 先取插入點在目前顯示字串的 rune 位置，再把新音節佔用的 rune 數加上去；
+        // 游標 canonical 只有這一份，重建後不必再猜結尾。
+        let start = self.zh_rune_at_cell(at);
+        let advance = self.decode_syllable(&syllable).chars().count();
         self.syllables.insert(at, syllable);
         self.shift_locks(at, 1);
-        self.cursor = at + 1;
+        self.cursor_rune = start.saturating_add(advance);
         self.edit = None;
         self.keep_candidates = false;
         self.zh_window_last = false;
@@ -218,9 +233,22 @@ impl Session {
         if at >= self.syllables.len() {
             return false;
         }
+        let before = self.zh_cell();
+        let cells = self.syllables.len();
+        let removed = self
+            .zh_cell_rune(at + 1)
+            .saturating_sub(self.zh_cell_rune(at));
         self.syllables.remove(at);
         self.shift_locks(at, -1);
-        self.cursor = self.cursor.min(self.syllables.len());
+        if before >= cells {
+            // 原本在結尾：重建後仍留在結尾，字面與暫存注音都算在游標前面。
+            self.cursor_rune = Self::MIXED_CURSOR_END;
+        } else {
+            if at < before {
+                self.cursor_rune = self.cursor_rune.saturating_sub(removed);
+            }
+            self.cursor_rune = self.cursor_rune.min(self.base_rune_count());
+        }
         self.edit = None;
         self.keep_candidates = false;
         self.zh_window_last = false;
@@ -255,7 +283,7 @@ impl Session {
             crate::zh::input::ZhInputEvent::SyllableComplete(syllable) => {
                 self.zh_pending_keys.clear();
                 self.zh_pending_caps.clear();
-                self.insert_syllable(self.cursor, syllable);
+                self.insert_syllable(self.zh_cell(), syllable);
                 self.zh.reset();
                 true
             }
@@ -348,7 +376,7 @@ impl Session {
             self.navigating = false;
             self.keep_candidates = false;
             self.highlighted = 0;
-            self.mixed_cursor = Self::MIXED_CURSOR_END;
+            self.cursor_rune = Self::MIXED_CURSOR_END;
             self.rebuild();
             return;
         }
@@ -403,7 +431,6 @@ impl Session {
         }
         {
             {
-                self.mixed_cursor = Self::MIXED_CURSOR_END;
                 // 純注音組字走注音狀態機，與舊的純注音模式一致；按鍵打不成
                 // 注音時整段交回混打管線。
                 if self.zh_lane {
@@ -421,6 +448,7 @@ impl Session {
                     self.press_zh_char(ch, caps);
                     return;
                 }
+                self.cursor_rune = Self::MIXED_CURSOR_END;
                 // 直接送來的漢字照字面留下，不當成英數按鍵推斷。
                 if is_han(ch) {
                     self.push_literal(&ch.to_string());
@@ -445,7 +473,7 @@ impl Session {
                 // 音節完成後搬進工作階段自己的音節清單，才能在中間插字。
                 self.zh_pending_keys.clear();
                 self.zh_pending_caps.clear();
-                self.insert_syllable(self.cursor, syllable);
+                self.insert_syllable(self.zh_cell(), syllable);
                 self.zh.reset();
             }
             crate::zh::input::ZhInputEvent::Commit(reading) => {
@@ -552,7 +580,6 @@ impl Session {
         self.zh_pending_keys.clear();
         self.zh_pending_caps.clear();
         self.syllables.clear();
-        self.cursor = 0;
         self.locks.clear();
         self.composition.clear();
         self.edit = None;
@@ -571,7 +598,7 @@ impl Session {
         self.literal_tail.clear();
         self.pending_tone = None;
         self.ascii.replay_caps(&keys, caps, &self.lexicon);
-        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
         self.rebuild();
     }
 
@@ -603,7 +630,6 @@ impl Session {
         self.zh_lane = false;
         self.zh_space_closed = false;
         self.syllables.clear();
-        self.cursor = 0;
         self.locks.clear();
         self.composition.clear();
         self.edit = None;
@@ -630,7 +656,7 @@ impl Session {
                     .push(LiteralSpan::new(pending_start, end));
             }
         }
-        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
         self.rebuild();
         completed_runes
     }
@@ -658,7 +684,6 @@ impl Session {
         self.zh_pending_keys.clear();
         self.zh_pending_caps.clear();
         self.syllables.clear();
-        self.cursor = 0;
         self.locks.clear();
         self.composition.clear();
         self.edit = None;
@@ -678,7 +703,7 @@ impl Session {
         self.pending_tone = None;
         self.ascii.replay(&keys, &self.lexicon);
         self.literal_spans.clear();
-        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
         self.rebuild();
         (literal_start < literal_end && literal_end <= self.ascii.typed().len())
             .then_some((literal_start, literal_end))
@@ -879,7 +904,7 @@ impl Session {
         if !applied {
             return false;
         }
-        self.cursor = (edit.start + 1).min(self.syllables.len());
+        self.set_zh_cell((edit.start + 1).min(self.syllables.len()));
         if action.learn {
             if let Some(candidate) = candidate {
                 self.learn_window_candidate(edit, &candidate);
@@ -940,7 +965,7 @@ impl Session {
         self.candidate_window = false;
         self.navigating = false;
         self.highlighted = 0;
-        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
     }
 
     /// 一般插入：字面接到組字結果後送出整段。
@@ -1030,11 +1055,11 @@ impl Session {
         if text.is_empty() {
             return false;
         }
-        let at = rune_offset(&text, self.ja_cursor.min(text.len()));
+        let at = rune_offset(&text, self.ja_byte().min(text.len()));
         // 日文的 ↓ 只開候選，不移動游標。游標在組字結尾時，延遲整句模式
         // 列出整段組字的轉換結果；游標已經移到某個片段內時，即使還在延遲
         // 整句模式，也只列那一段的候選（`私|は` 的 `は` 要有「は」可選）。
-        let at_end = self.ja_cursor >= text.len();
+        let at_end = self.ja_byte() >= text.len();
         let whole = at_end
             && self
                 .live
@@ -1315,11 +1340,11 @@ impl Session {
                 .next()
                 .map(char::len_utf8)
                 .unwrap_or(0);
-            self.ja_cursor = if candidate.surface.chars().count() > 1 {
+            self.set_ja_byte(if candidate.surface.chars().count() > 1 {
                 (segment_start + first).min(segment.end)
             } else {
                 segment.end.min(self.base.len())
-            };
+            });
         }
         self.candidate_window = false;
         self.navigating = false;
@@ -1362,7 +1387,7 @@ impl Session {
         self.highlighted = 0;
         self.mixed_target = None;
         self.mixed_choices.clear();
-        self.ja_cursor = self.base.len();
+        self.set_ja_byte(self.base.len());
         true
     }
 
@@ -1394,7 +1419,8 @@ impl Session {
         }
         self.base = base;
         self.segments = segments;
-        self.ja_cursor = self.ja_cursor.min(self.base.len());
+        let byte = self.ja_byte().min(self.base.len());
+        self.set_ja_byte(byte);
         self.sync_composition_ja();
     }
 
@@ -1404,20 +1430,23 @@ impl Session {
         if text.is_empty() {
             return false;
         }
-        let mut at = self.ja_cursor.min(text.len());
-        if delta < 0 {
-            at = text[..at]
-                .char_indices()
-                .last()
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-        } else if delta > 0 && at < text.len() {
-            at += text[at..].chars().next().map(char::len_utf8).unwrap_or(0);
-        }
-        if at == self.ja_cursor {
+        let byte = self.ja_byte().min(text.len());
+        let at = rune_offset(&text, byte);
+        let runes = text.chars().count();
+        let target = if delta < 0 {
+            at.saturating_sub(delta.unsigned_abs())
+        } else {
+            at.saturating_add(delta.unsigned_abs()).min(runes)
+        };
+        if target == at {
             return false;
         }
-        self.ja_cursor = at;
+        let byte = text
+            .char_indices()
+            .nth(target)
+            .map(|(byte, _)| byte)
+            .unwrap_or(text.len());
+        self.set_ja_byte(byte);
         true
     }
 
@@ -1528,8 +1557,8 @@ impl Session {
             return false;
         }
         let pos = pos.min(self.syllables.len());
-        let before = self.cursor;
-        self.cursor = pos;
+        let before = self.zh_cell();
+        self.set_zh_cell(pos);
         if pos == before {
             return false;
         }
@@ -1562,7 +1591,7 @@ impl Session {
         let Some((anchor, len)) = self
             .edit
             .map(|edit| (edit.start, edit.len))
-            .or_else(|| self.cell_segment(self.cursor))
+            .or_else(|| self.cell_segment(self.zh_cell()))
         else {
             return;
         };
@@ -1575,8 +1604,8 @@ impl Session {
             start: anchor,
             len: target,
         });
-        if self.cursor < anchor || self.cursor >= anchor + target {
-            self.cursor = anchor;
+        if self.zh_cell() < anchor || self.zh_cell() >= anchor + target {
+            self.set_zh_cell(anchor);
         }
         self.candidate_window = true;
         self.navigating = false;
@@ -1591,11 +1620,11 @@ impl Session {
     pub(super) fn candidate_edge(&mut self, end: bool) {
         if !self.navigating {
             if self.in_ja_lane() {
-                self.ja_cursor = if end {
+                self.set_ja_byte(if end {
                     self.base_with_highlight().len()
                 } else {
                     0
-                };
+                });
                 return;
             }
             if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
@@ -2033,7 +2062,7 @@ impl Session {
             return;
         }
         if self.in_zh_lane() && self.candidate_window && !self.navigating {
-            let target = self.cursor.saturating_add_signed(delta);
+            let target = self.zh_cell().saturating_add_signed(delta);
             if self.move_cursor_to(target) {
                 return;
             }
@@ -2045,7 +2074,7 @@ impl Session {
         }
         if self.in_zh_lane() && !self.candidate_window {
             // 候選窗沒開時方向鍵只移動游標，不順便開窗。
-            self.move_cursor_to(self.cursor.saturating_add_signed(delta));
+            self.move_cursor_to(self.zh_cell().saturating_add_signed(delta));
             return;
         }
         if self.candidates.is_empty() {
@@ -2061,12 +2090,12 @@ impl Session {
 
     /// 把混合模式的游標移到指定 rune；會關掉候選窗。
     pub(super) fn move_mixed_cursor_to(&mut self, pos: usize) {
-        let len = self.base_with_highlight().chars().count();
+        let len = self.rune_count();
         let target = pos.min(len);
-        if target == self.mixed_cursor.min(len) {
+        if target == self.mixed_rune().min(len) {
             return;
         }
-        self.mixed_cursor = target;
+        self.set_mixed_rune(target);
         self.candidate_window = false;
         self.candidate_expanded = false;
         self.navigating = false;
@@ -2082,12 +2111,11 @@ impl Session {
     /// 顯示字串可能是注音詞、かな或英文；游標一律停在 rune 邊界，跨越片段
     /// 邊界時直接進到相鄰片段的第一／最後一個 rune。
     pub(super) fn navigate_mixed(&mut self, delta: isize) {
-        let text = self.base_with_highlight();
-        let len = text.chars().count();
+        let len = self.rune_count();
         if len == 0 {
             return;
         }
-        let at = self.mixed_cursor.min(len);
+        let at = self.mixed_rune().min(len);
         let target = at.saturating_add_signed(delta).min(len);
         self.move_mixed_cursor_to(target);
     }
@@ -2418,9 +2446,7 @@ impl Session {
         self.zh_window_last = false;
         self.zh_run_breaks.clear();
         self.syllables.clear();
-        self.cursor = 0;
-        self.ja_cursor = 0;
-        self.mixed_cursor = Self::MIXED_CURSOR_END;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
         self.edit = None;
         self.keep_candidates = false;
         self.romaji.reset();
@@ -2566,10 +2592,10 @@ impl Session {
         let base = self.insert_literal(&self.displayed_base());
         let mut out = if self.pending.is_empty() {
             base
-        } else if !self.in_zh_lane() || self.cursor >= self.syllables.len() {
+        } else if !self.in_zh_lane() || self.zh_cell() >= self.syllables.len() {
             format!("{}{}", base, self.pending)
         } else {
-            let mut at = self.cell_byte(&base, self.cursor).unwrap_or(base.len());
+            let mut at = self.cell_byte(&base, self.zh_cell()).unwrap_or(base.len());
             while at > 0 && !base.is_char_boundary(at) {
                 at -= 1;
             }
@@ -3199,7 +3225,7 @@ impl Session {
         let reading_changed = previous != reading;
         self.apply_live_plan(&plan, units, &reading);
         if reading_changed {
-            self.ja_cursor = self.base.len();
+            self.set_ja_byte(self.base.len());
         }
     }
 
@@ -3211,7 +3237,6 @@ impl Session {
         self.live_plan = Some(plan.clone());
         // 只有讀音真的改變（打字、倒退）才把游標移到結尾；單純左右移動觸發
         // 的重畫要保留游標，否則片段選字永遠選到最後一段。
-        let previous_cursor = self.ja_cursor;
         let mut base = String::new();
         let mut segments = Vec::new();
         let mut display = reading.to_string();
@@ -3235,7 +3260,10 @@ impl Session {
         }
         self.base = base;
         self.segments = segments;
-        self.ja_cursor = previous_cursor.min(self.base.len());
+        // `rebuild()` 已先清空 `base`；保留 canonical rune，只夾到新字串長度。
+        if self.cursor_rune != Self::MIXED_CURSOR_END {
+            self.cursor_rune = self.cursor_rune.min(self.rune_count());
+        }
 
         let mut candidates = Vec::new();
         let mut results = Vec::new();
@@ -3651,6 +3679,21 @@ mod tests {
             .map(|segment| &snap.preedit[segment.start..segment.end])
             .collect();
         assert_eq!(joined, snap.preedit, "片段要覆蓋整個組字字串");
+    }
+
+    /// 結尾有字面時 Backspace 仍回到新的結尾，不會停到字面前面。
+    #[test]
+    fn test_backspace_at_end_keeps_cursor_after_literal() {
+        let mut s = session();
+        type_syllable(&mut s, "ㄨㄛˇ");
+        s.push_literal("，");
+        s.rebuild();
+        let before = s.snapshot();
+        assert_eq!(before.preedit, "我，");
+        assert_eq!(before.cursor_rune, 2, "游標在字面之後");
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "，");
+        assert_eq!(snap.cursor_rune, 1, "刪掉音節後游標仍在字面之後");
     }
 
     /// 游標移到中間插入新音節，結果與直接打完整字串相同。

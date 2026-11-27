@@ -65,6 +65,19 @@ fn press(child: &mut Child, output: &mut BufReader<std::process::ChildStdout>, t
     }
 }
 
+fn send_key(
+    child: &mut Child,
+    output: &mut BufReader<std::process::ChildStdout>,
+    key: Key,
+) -> Response {
+    let input = child.stdin.as_mut().expect("stdin");
+    write_message(input, &Request::Key { key }, DEFAULT_MAX_FRAME).unwrap();
+    input.flush().unwrap();
+    read_message::<_, Response>(output, DEFAULT_MAX_FRAME)
+        .unwrap()
+        .expect("要有按鍵回應")
+}
+
 fn state(child: &mut Child, output: &mut BufReader<std::process::ChildStdout>) -> Response {
     let input = child.stdin.as_mut().expect("stdin");
     write_message(input, &Request::Snapshot, DEFAULT_MAX_FRAME).unwrap();
@@ -318,6 +331,180 @@ fn japanese_tab_enter_does_not_duplicate_prefix() {
     );
     shutdown(child);
     std::fs::remove_dir_all(&settings_dir).ok();
+}
+
+/// 真實資料的游標回歸：`ji3`、`ji394su3`、日文 `watashi` 的左移、右移與
+/// Backspace 都要落在 rune 邊界，而且不能把游標推到看不見的位置。
+#[test]
+fn cursor_arrows_and_backspace_on_real_data() {
+    let Some(root) = jc_testdata::root() else {
+        eprintln!("缺少測試資料：JC_TESTDATA");
+        return;
+    };
+    let root = root.into_os_string();
+    let mut child = spawn(&[
+        std::ffi::OsStr::new("--data"),
+        &root,
+        std::ffi::OsStr::new("--mode"),
+        std::ffi::OsStr::new("mixed"),
+    ]);
+    let mut output = hello(&mut child);
+    for phrase in ["ji3", "ji394su3", "watashi"] {
+        for ch in phrase.chars() {
+            let reply = send_key(&mut child, &mut output, Key::char(ch, false));
+            assert!(
+                matches!(reply, Response::State { .. }),
+                "{phrase:?} 的按鍵 {ch:?} 應回 State，得到 {reply:?}"
+            );
+        }
+        let snapshot = state(&mut child, &mut output);
+        let Response::State {
+            preedit: typed,
+            cursor_rune: typed_cursor,
+            ..
+        } = snapshot
+        else {
+            panic!("{phrase:?} 應收到 State，得到 {snapshot:?}");
+        };
+        let typed_runes = typed.chars().count();
+        assert!(!typed.is_empty(), "{phrase:?} 組字不該是空的");
+        assert!(
+            typed_cursor <= typed_runes,
+            "{phrase:?} 游標 {typed_cursor} 超出 rune 數 {typed_runes}：{typed:?}"
+        );
+
+        let left = send_key(
+            &mut child,
+            &mut output,
+            Key::new(KeyCode::ArrowLeft, None, false),
+        );
+        let Response::State {
+            preedit: left_text,
+            cursor_rune: left_cursor,
+            ..
+        } = left
+        else {
+            panic!("{phrase:?} 左移應回 State");
+        };
+        assert_eq!(left_text, typed, "{phrase:?} 左移不改組字");
+        assert_eq!(
+            left_cursor,
+            typed_cursor.saturating_sub(1),
+            "{phrase:?} 左移一格"
+        );
+
+        let right = send_key(
+            &mut child,
+            &mut output,
+            Key::new(KeyCode::ArrowRight, None, false),
+        );
+        let Response::State {
+            preedit: right_text,
+            cursor_rune: right_cursor,
+            ..
+        } = right
+        else {
+            panic!("{phrase:?} 右移應回 State");
+        };
+        assert_eq!(right_text, typed, "{phrase:?} 右移不改組字");
+        assert_eq!(
+            right_cursor,
+            (left_cursor + 1).min(typed_runes),
+            "{phrase:?} 右移回到原位移"
+        );
+
+        let back = send_key(
+            &mut child,
+            &mut output,
+            Key::new(KeyCode::Backspace, None, false),
+        );
+        let Response::State {
+            preedit: back_text,
+            cursor_rune: back_cursor,
+            ..
+        } = back
+        else {
+            panic!("{phrase:?} Backspace 應回 State");
+        };
+        // 結尾 Backspace 要刪掉一個音節並停在新的結尾；日文 lane 目前是
+        // no-op，維持原字串與游標。這裡斷言精確位置，不用「不超過長度」。
+        let (want_text, want_cursor) = match phrase {
+            "ji3" => (String::new(), 0),
+            "ji394su3" => ("我愛".to_string(), 2),
+            "watashi" => (right_text.clone(), right_cursor),
+            _ => unreachable!("未定義的測試字串"),
+        };
+        assert_eq!(back_text, want_text, "{phrase:?} Backspace 後組字");
+        assert_eq!(back_cursor, want_cursor, "{phrase:?} Backspace 後游標");
+        let _ = send_key(
+            &mut child,
+            &mut output,
+            Key::new(KeyCode::Escape, None, false),
+        );
+    }
+    shutdown(child);
+}
+
+/// 多音節結尾 Backspace 後游標要停在新的結尾，而不是退回舊的音節格。
+///
+/// 這是本次修正的行為：base 在 `ji394su3` 按 Backspace 後游標是 1，
+/// 新實作是 2；接著按 Delete 應該是 no-op，不會再刪掉「愛」。
+#[test]
+fn backspace_at_end_then_delete_stays() {
+    let Some(root) = jc_testdata::root() else {
+        eprintln!("缺少測試資料：JC_TESTDATA");
+        return;
+    };
+    let root = root.into_os_string();
+    let mut child = spawn(&[
+        std::ffi::OsStr::new("--data"),
+        &root,
+        std::ffi::OsStr::new("--mode"),
+        std::ffi::OsStr::new("mixed"),
+    ]);
+    let mut output = hello(&mut child);
+    for (phrase, want_text, want_cursor) in [("ji394su3", "我愛", 2), ("ji3su3", "我", 1)] {
+        for ch in phrase.chars() {
+            let _ = send_key(&mut child, &mut output, Key::char(ch, false));
+        }
+        let back = send_key(
+            &mut child,
+            &mut output,
+            Key::new(KeyCode::Backspace, None, false),
+        );
+        let Response::State {
+            preedit,
+            cursor_rune,
+            ..
+        } = back
+        else {
+            panic!("{phrase:?} Backspace 應回 State");
+        };
+        assert_eq!(preedit, want_text, "{phrase:?} Backspace 後組字");
+        assert_eq!(cursor_rune, want_cursor, "{phrase:?} Backspace 後游標");
+
+        let delete = send_key(
+            &mut child,
+            &mut output,
+            Key::new(KeyCode::Delete, None, false),
+        );
+        let Response::State {
+            preedit: after_delete,
+            cursor_rune: after_cursor,
+            ..
+        } = delete
+        else {
+            panic!("{phrase:?} Delete 應回 State");
+        };
+        assert_eq!(after_delete, want_text, "{phrase:?} 結尾 Delete 應 no-op");
+        assert_eq!(after_cursor, want_cursor, "{phrase:?} 結尾 Delete 不改游標");
+        let _ = send_key(
+            &mut child,
+            &mut output,
+            Key::new(KeyCode::Escape, None, false),
+        );
+    }
+    shutdown(child);
 }
 
 #[test]
