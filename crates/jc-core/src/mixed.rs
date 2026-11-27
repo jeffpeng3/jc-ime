@@ -2150,6 +2150,8 @@ pub(crate) fn plan_input(
     cfg: &Config,
     split_lex: Option<&dyn crate::mixed_latin::SplitLexicon>,
 ) -> Vec<Plan> {
+    #[cfg(test)]
+    crate::engine::probe::note_plan_input();
     let mut atoms = build_atoms(input, lookup, cfg, split_lex, None);
     group_words(&mut atoms, input);
     resolve_han(&mut atoms);

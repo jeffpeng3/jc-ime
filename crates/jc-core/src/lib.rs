@@ -12,6 +12,7 @@ pub mod candidate_layout;
 pub mod composition;
 pub mod decode;
 pub mod emoji;
+pub(crate) mod engine;
 pub mod inputstyle;
 pub mod ja;
 pub mod key;

@@ -161,15 +161,18 @@ if self.in_ja_lane() {
 
 ## 3. 介面草案
 
-新模組放在 `crates/jc-core/src/engine/`：
+新模組放在 `crates/jc-core/src/engine/`。P1 先以 `pub(crate) mod engine`
+存在，等 P2 把引擎狀態與 `CandidateAction` 接上後才對外公開；下列樹狀圖是
+P1＋P2 的目標結構，`merge.rs`／`pool.rs`／`prefix.rs` 不在 P1。
 
 ```text
 engine/
   mod.rs          re-export 與註冊表
   id.rs           LanguageId、Interest
   span.rs         Span、StateToken
-  context.rs      InputContext
+  context.rs      InputContext、LaneView
   hypothesis.rs   Hypothesis、CommitUnit、StyleHint、Released
+  trait.rs        LanguageEngine、EngineKind
   registry.rs     EngineRegistry
   router.rs       interest 分派、快速路徑、release 重送
   merge.rs        P2 的 SpanGraph／Viterbi
@@ -218,7 +221,8 @@ impl Interest {
 `interest()` 必須是 O(1)：
 
 - 只能看 `key`、`ctx.active`、`ctx.mode`、`ctx.composing`、
-  `ctx.candidate_window`、`ctx.cursor_rune` 與 `ctx.keys.len()`。
+  `ctx.candidate_window`、`ctx.cursor_rune`、`ctx.keys.len()` 與
+  `ctx.lanes` 的 O(1) 旗標。
 - 不得做字典查詢、不得掃 `ctx.keys`、不得呼叫 `plan_input()`／
   `kana_for()`／`Lattice::build()`。
 - 「需要查表才知道」的判斷一律回 `Maybe`，把成本放進 `feed()`。
@@ -286,6 +290,21 @@ use crate::key::Key;
 use crate::lang::Mode;
 use std::time::Instant;
 
+/// `interest()` 可用的 lane 快照；全部是 O(1) 旗標。
+pub struct LaneView {
+    pub zh_lane: bool,
+    pub ja_lane: bool,
+    pub ja_only: bool,
+    pub ascii_empty: bool,
+    pub ascii_len: usize,
+    pub ascii_pieces_empty: bool,
+    pub syllables_empty: bool,
+    pub zh_pending: bool,
+    pub ja_available: bool,
+    /// `Session` 目前使用的注音鍵盤；與 `ZhInput::keyboard()` 相同。
+    pub keyboard: Keyboard,
+}
+
 /// 一鍵的唯讀上下文；不含 `&mut Session`，引擎不能從這裡改畫面。
 pub struct InputContext<'a> {
     pub mode: Mode,
@@ -303,6 +322,8 @@ pub struct InputContext<'a> {
     pub left_context: &'a str,
     /// P2 的軟／硬預算；`None` 表示同步路徑不限時。
     pub deadline: Option<Instant>,
+    /// P1 的路由快照；轉換狀態仍由 `Session` 持有。
+    pub lanes: LaneView,
 }
 
 impl InputContext<'_> {
@@ -414,12 +435,15 @@ pub(crate) struct CandidateAction {
 }
 ```
 
-P1 只新增一個欄位：
+P1 已新增一個欄位：
 
 ```rust
 /// 這個動作要交給哪個引擎更新內部狀態；`None` 表示沿用舊路徑。
 pub engine: Option<LanguageId>,
 ```
+
+P1 的 adapter 尚未接管 lane 狀態，所有既有建構子都沿用 `Default` 的
+`None`；P2 接上 `apply()` 後才開始填值。
 
 `CandidateAction` 仍是「套用什麼」的唯一資料來源。引擎的 `apply()` 只更新
 引擎自己的輸入／候選快取，不插入、不提交；真正的插入仍由
@@ -434,6 +458,17 @@ use crate::key::Key;
 pub trait LanguageEngine: Send {
     /// 穩定 id；同一 registry 不可重複。
     fn id(&self) -> LanguageId;
+
+    /// 引擎種類；P1 只有 `Language`，P1.5 的前導引擎用 `Control`。
+    fn kind(&self) -> EngineKind {
+        EngineKind::Language
+    }
+
+    /// 複製這次按鍵的 O(1) lane 快照。
+    ///
+    /// P1 的 owned adapter 用它保存路由狀態；`interest()` 仍只讀
+    /// `ctx.lanes`，因此直接呼叫 `interest()` 也能得到相同結果。
+    fn observe(&mut self, _ctx: &InputContext<'_>) {}
 
     /// O(1) 的興趣判斷；不得轉換、不得查字典。
     fn interest(&self, key: &Key, ctx: &InputContext<'_>) -> Interest;
@@ -486,6 +521,8 @@ classDiagram
     class LanguageEngine {
         <<trait>>
         +id() LanguageId
+        +kind() EngineKind
+        +observe(InputContext)
         +interest(Key, InputContext) Interest
         +feed(Key, InputContext) Option~Hypothesis~
         +candidates(Span) Vec~Candidate~
@@ -528,14 +565,15 @@ pub enum EngineKind {
 pub struct EngineRegistry {
     /// 明確是 `'static`：adapter 擁有 lane 狀態，不借用 Session。
     engines: Vec<Box<dyn LanguageEngine + 'static>>,
-    kind: std::collections::BTreeMap<LanguageId, EngineKind>,
     index: std::collections::BTreeMap<LanguageId, usize>,
+    router: Router,
 }
 ```
 
 - `register()` 檢查重複 id；重複直接 panic（程式設定錯誤，不是使用者輸入）。
 - 排序一律用 `LanguageId` 的 `&'static str`，不用註冊順序。
-- 控制引擎（前導）用 `EngineKind::Control` 標記；它不進語言合併。
+- 控制引擎（前導）由 `LanguageEngine::kind()` 回 `EngineKind::Control`；它
+  不進語言合併。P1 的 registry 不另存 kind map。
 - P1 的 `zh`／`ja`／`ascii` 三個 adapter 在 `Session::new()` 註冊；P1.5 再
   註冊 `prefix`。三個 adapter 都必須是 owned；`Session` 只透過
   `EngineRegistry` 呼叫，不把 `&mut self` 傳進 trait object。
@@ -546,12 +584,15 @@ pub struct EngineRegistry {
 pub enum Route {
     /// 只有一個參與者，直接跑它。
     Fast(LanguageId),
-    /// 多個參與者，平行跑再合併。
-    FanOut(Vec<LanguageId>),
+    /// 多個參與者；P1 退回 `Session` 的既有 lane。
+    Fallback,
     /// 沒有人參與；照字面。
     Literal,
 }
 ```
+
+P2 會在 `Fallback` 之外新增 `FanOut(Vec<LanguageId>)` 與平行合併；P1 的
+`Fallback` 是刻意的退化，不建立執行緒。
 
 演算法：
 
@@ -562,12 +603,16 @@ pub enum Route {
    - 恰好一個 `Claim`，其他都是 `Maybe` → `Fast(claim)`；`Maybe` 不跑。
      （與現在 `zh_lane` 的 sticky 行為一致；`Claim` 是排他。若之後要讓
      同鍵的 `Maybe` 也提供候選，改成 `FanOut` 即可，P2 用 golden 決定。）
-   - 多個參與者且沒有單一排他 `Claim` → `FanOut`。
-   - 多個 `Claim` → `FanOut`，衝突由 §5 的合併解決，並記錄 debug 診斷。
+   - 多個參與者且沒有單一排他 `Claim` → P1 `Fallback`；P2 `FanOut`。
+   - 多個 `Claim` → P1 `Fallback` 並記 debug 診斷；P2 `FanOut`，衝突由
+     §5 的合併解決。
 4. 沒有人參與 → `Literal`；由 router 產生字面邊，不呼叫引擎。
 
 `Claim` 的意義是「這一鍵一定是我的」，不是「我比較想要」。實作不得用
 `Claim` 搶候選排序；排序只在合併階段用 `score`。
+
+下圖是 P2 的目標流程；P1 的 `Fast` 由 `Session` 執行既有 lane，不呼叫
+`feed()`。
 
 ```mermaid
 sequenceDiagram
@@ -595,16 +640,22 @@ sequenceDiagram
 
 ### 4.3 快速路徑
 
-`Route::Fast(id)`：
+P2 目標的 `Route::Fast(id)`：
 
 ```rust
 let engine = registry.get_mut(id);
 let hypothesis = engine.feed(&key, &ctx);
 ```
 
+P1 的實作只做到「選 lane」：`Route::Fast(id)` 之後由
+`Session::press_char_zh()`／`press_char_ja()`／`press_char_ascii()` 執行既有
+lane；`feed()`／`candidates()`／`apply()` 仍是 shadow／stub，production 不
+呼叫 `feed()`。P2 把 lane 狀態搬進 adapter 後才切換成上面的 `feed()`。
+
 - 不建立執行緒、不複製 `InputContext`、不跑其他引擎。
 - 只有 `feed()` 回 `None` 且 `release()` 有值時，才把 released keys 加目前
-  按鍵重送一次；重送最多一次，避免無限 handoff。
+  按鍵重送一次；重送最多一次，避免無限 handoff。P1 的 handoff 仍由既有
+  `leave_zh_lane_for_mixed()`／`leave_ja_run_for_mixed()` 執行。
 - 這一條是 P1 的行為基準：現有 golden 必須在快速路徑下完全不變。
 
 ### 4.4 平行路徑
@@ -1084,7 +1135,7 @@ test_prefix_punctuation_still_uses_existing_tables
 
 | 階段 | 內容 | 工作量（估） | 風險 | 驗收 |
 |---|---|---:|---|---|
-| P1 | `engine/` 骨架、`LanguageId`／`Interest`／`InputContext`／`Hypothesis`；`ZhEngine`、`JaEngine`、`AsciiEngine`；**owned adapter**（lane 狀態搬進引擎）；`interest()` 分派與單一 `Claim` 快速路徑；`CandidateSet` 不變；不新增依賴 | 8–12 人日 | lane 狀態搬家造成行為漂移；`release()` handoff 漏鍵；`interest()` 偷做轉換；`Session` 內大量欄位存取要改 | `cargo test -p jc-core` 全綠；既有 golden／snapshot 不變；`zh`／`ja`／`ascii` 三條快速路徑各有等價測試；`cargo fmt --all -- --check` |
+| P1 | `engine/` 骨架、`LanguageId`／`Interest`／`InputContext`／`Hypothesis`；`ZhEngine`、`JaEngine`、`AsciiEngine`；**owned adapter**（先 own 路由快照，轉換狀態暫留 `Session`）；`interest()` 分派與單一 `Claim` 快速路徑；多參與者用 `Route::Fallback`；`CandidateSet` 不變；不新增依賴 | 8–12 人日 | lane 狀態搬家造成行為漂移；`release()` handoff 漏鍵；`interest()` 偷做轉換；`Session` 內大量欄位存取要改 | `cargo test -p jc-core` 全綠；既有 golden／snapshot 不變；`zh`／`ja`／`ascii` 三條快速路徑各有等價測試；`cargo fmt --all -- --check` |
 | P1.5 | `PrefixEngine`；`u`／`b` 碼位查詢；反引號標點收斂；Big5 表 | 2–3 人日 | Big5 與 CP950 差異；前導與組字／候選窗互動；錯誤時吃掉輸入 | §7.7 測試全綠；既有標點前導測試不變；`prefix_u_*`／`prefix_b_*` 改成新語意；手動測 `` `u 4e00 ``、`` `b a440 ``、Esc、Backspace、非法碼 |
 | P2 | 固定大小執行緒池；多 `Claim`／`Maybe` 平行；`SpanGraph` Viterbi；deadline／epoch；候選在 winner span 展開 | 6–9 人日 | 延遲不穩、候選爆炸、late result 污染、thread 安全 | 離線 golden 比對顯示字、候選前 N、`CandidateAction` 索引；同一輸入重跑 100 次結果一致；逾時注入測試；延遲待量測 |
 | P3 | context scorer 介面化；引擎註冊 API；`Space`／刪除／游標的通用化；`KeyPolicy` 剩餘分支收斂 | 3–5 人日 | 排序改變、commit 單位不一致、`User` 片段被重寫 | golden 不變；`Composition` 的 `User` 在所有路徑不掉；新語言只實作 trait 的 smoke test |
@@ -1097,22 +1148,23 @@ P1 的具體工作順序：
 2. 把 `CandidateAction` 改成 `pub(crate)`，加 `engine` 欄位；同時把
    `ActionLane`、`ChoiceCursor`、`EditWindow` 提升到 `pub(crate)`。既有
    建構子用 `..Default::default()` 的地方不用改。
-3. 建 `ZhEngine` 的 owned 狀態（`zh`、`syllables`、pending keys 等），把
-   `Session` 的欄位存取改成經由引擎；每搬一個欄位就跑 `rebuild_zh()`
-   golden，確認 `Lattice::build()`／`Decoder::nbest()` 結果不變。
-4. 建 `JaEngine` 的 owned 狀態（`romaji`、`ja_run`、raw keys）與
-   `AsciiEngine` 的 owned 狀態（`ascii`）；`LiveController` 仍留 `Session`。
-   兩者都用同一組 golden 對照舊 `rebuild_ja()`／`rebuild_mixed()`。
+3. 建 `ZhEngine` 的 owned 路由狀態（`zh_lane`、`ascii_empty`、`syllables`
+   等 O(1) 旗標）；轉換狀態（`ZhInput`、`syllables`、pending keys）P1 仍留
+   `Session`，P2 才搬進引擎。`starts_key()` 由 `Session` 傳入
+   `self.zh.keyboard()`，避免非標準排列漂移。
+4. 建 `JaEngine` 的 owned 路由狀態與 `AsciiEngine` 的 owned 路由狀態；
+   `RomajiInput`、`AsciiInput` 與 `LiveController` P1 仍留 `Session`。三者
+   都用同一組 golden 對照舊 `rebuild_ja()`／`rebuild_mixed()`。
 5. 建 `router.rs`，用 `interest()` 選出單一參與者；`Session::press_char()`
-   只改呼叫點，不動其他按鍵。
-6. 三個引擎都註冊進 `EngineRegistry` 後，移除 `Session` 內舊的
-   `zh_lane` 分派與 `try_japanese_run()` 呼叫點；保留舊路徑當 feature
-   flag 的 fallback 一輪，確認 golden 後再刪。
+   只改呼叫點，不動其他按鍵。多參與者回 `Route::Fallback`。
+6. 三個引擎都註冊進 `EngineRegistry`；P1 的 `Route::Fast` 仍呼叫 `Session`
+   既有 lane，P2 才移除舊 `zh_lane` 分派與 `try_japanese_run()` 呼叫點。
 
 > P1 的 adapter 一律 owned；不提供 borrowed adapter。`Session` 內的
 > `EngineRegistry` 存 `Box<dyn LanguageEngine + 'static>`，不能存
-> `&'session mut Session`。若某個 lane 暫時搬不動，就先不註冊它、讓它走舊
-> 路徑；不要用 `Rc<RefCell<Session>>` 或 self-reference 繞過 lifetime。
+> `&'session mut Session`。P1 只把路由快照 owned 在 adapter；轉換狀態仍留
+> `Session`，`Route::Fast` 執行既有 lane。P2 搬移狀態時才用
+> `Rc<RefCell<Session>>` 以外的 owned 邊界，不要用 self-reference 繞過 lifetime。
 
 ## 9. 風險
 

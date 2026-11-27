@@ -436,6 +436,87 @@ impl Session {
             self.highlighted = 0;
         }
         // 符號與表情選單改由外殼或公開 API 開啟；一般標點與等號照字面。
+        // P1：先問 router。只有單一 `Claim` 或單一參與者時直接跑該 lane；
+        // 多個參與者退回既有決策，行為與 base 完全相同。
+        match self.route_char(ch) {
+            Route::Fast(LanguageId::ZH) => self.press_char_zh(ch, caps),
+            Route::Fast(LanguageId::JA) => self.press_char_ja(ch, caps),
+            Route::Fast(_) | Route::Literal => self.press_char_ascii(ch, caps),
+            Route::Fallback => self.press_char_legacy(ch, caps),
+        }
+    }
+
+    /// 問一次 P1 router。
+    ///
+    /// 測試可用 `legacy_routing` 強制走既有決策，對照快速路徑。
+    fn route_char(&mut self, ch: char) -> Route {
+        #[cfg(test)]
+        if self.legacy_routing {
+            return Route::Fallback;
+        }
+        let context = self.input_context();
+        self.engines.route(&Key::char(ch, false), &context)
+    }
+
+    /// 測試專用：切換快速路徑與既有決策。
+    #[cfg(test)]
+    pub(crate) fn set_legacy_routing(&mut self, on: bool) {
+        self.legacy_routing = on;
+    }
+
+    /// 測試專用：看這一鍵的 router 決策。
+    #[cfg(test)]
+    pub(crate) fn route_for_test(&mut self, ch: char) -> Route {
+        self.route_char(ch)
+    }
+
+    /// 測試專用：註冊額外引擎，驗證多 `Claim` 的 fallback。
+    #[cfg(test)]
+    pub(crate) fn register_engine_for_test(
+        &mut self,
+        engine: Box<dyn crate::engine::LanguageEngine + 'static>,
+    ) {
+        self.engines.register(engine);
+    }
+
+    /// 建立路由用的唯讀上下文。
+    ///
+    /// 字串欄位留空：P1 的 `interest()` 只能讀 O(1) lane 旗標，不得掃按鍵流
+    /// 或呼叫轉換。
+    fn input_context(&self) -> InputContext<'static> {
+        let lanes = LaneView {
+            zh_lane: self.zh_lane,
+            ja_lane: self.in_ja_lane(),
+            ja_only: self.config.ja_only,
+            ascii_empty: self.ascii.is_empty(),
+            ascii_len: self.ascii.typed().len(),
+            ascii_pieces_empty: self.ascii.pieces().is_empty(),
+            syllables_empty: self.syllables.is_empty(),
+            zh_pending: !self.zh_pending_keys.is_empty(),
+            ja_available: self.config.ja.is_some(),
+            keyboard: self.zh.keyboard(),
+        };
+        let active = if self.in_ja_lane() {
+            Some(LanguageId::JA)
+        } else if self.in_zh_lane() {
+            Some(LanguageId::ZH)
+        } else {
+            None
+        };
+        InputContext::routing(self.config.mode, active, lanes)
+    }
+
+    /// base 的決策順序：日文 lane → 注音 lane／注音開頭 → 一般英數。
+    fn press_char_legacy(&mut self, ch: char, caps: bool) {
+        if self.in_ja_lane() {
+            self.press_char_ja(ch, caps);
+        } else {
+            self.press_char_zh(ch, caps);
+        }
+    }
+
+    /// 日文 lane 的既有實作；沒有日文 lane 時回到一般英數路徑。
+    fn press_char_ja(&mut self, ch: char, caps: bool) {
         // 混打推斷出來的日文片段：羅馬字接不上的按鍵（數字、標點）結束推斷，
         // 把原始羅馬字按鍵交回混打重算，這個鍵也一起送。
         if self.in_ja_lane() {
@@ -448,37 +529,41 @@ impl Session {
             }
             return;
         }
-        {
-            {
-                // 純注音組字走注音狀態機，與舊的純注音模式一致；按鍵打不成
-                // 注音時整段交回混打管線。
-                if self.zh_lane {
-                    if self.mixed_zh_lane_continues(ch) {
-                        self.press_zh_char(ch, caps);
-                    } else {
-                        self.leave_zh_lane_for_mixed(ch, caps);
-                    }
-                    return;
-                }
-                if self.mixed_zh_lane_starts(ch) {
-                    self.zh_lane = true;
-                    self.zh_pending_keys.clear();
-                    self.zh_pending_caps.clear();
-                    self.press_zh_char(ch, caps);
-                    return;
-                }
-                self.cursor_rune = Self::MIXED_CURSOR_END;
-                // 直接送來的漢字照字面留下，不當成英數按鍵推斷。
-                if is_han(ch) {
-                    self.push_literal(&ch.to_string());
-                    return;
-                }
-                if !self.ascii.tone(ch, &self.lexicon) {
-                    self.ascii.press_caps(ch, caps);
-                }
-                self.try_japanese_run();
+        self.press_char_ascii(ch, caps);
+    }
+
+    /// 注音 lane 的既有實作；打不成注音時整段交回混打管線。
+    fn press_char_zh(&mut self, ch: char, caps: bool) {
+        if self.zh_lane {
+            if self.mixed_zh_lane_continues(ch) {
+                self.press_zh_char(ch, caps);
+            } else {
+                self.leave_zh_lane_for_mixed(ch, caps);
             }
+            return;
         }
+        if self.mixed_zh_lane_starts(ch) {
+            self.zh_lane = true;
+            self.zh_pending_keys.clear();
+            self.zh_pending_caps.clear();
+            self.press_zh_char(ch, caps);
+            return;
+        }
+        self.press_char_ascii(ch, caps);
+    }
+
+    /// 一般英數／混打路徑的既有實作。
+    fn press_char_ascii(&mut self, ch: char, caps: bool) {
+        self.cursor_rune = Self::MIXED_CURSOR_END;
+        // 直接送來的漢字照字面留下，不當成英數按鍵推斷。
+        if is_han(ch) {
+            self.push_literal(&ch.to_string());
+            return;
+        }
+        if !self.ascii.tone(ch, &self.lexicon) {
+            self.ascii.press_caps(ch, caps);
+        }
+        self.try_japanese_run();
     }
 
     /// 把一個按鍵交給注音狀態機；純注音與 Mixed 的注音路徑共用。
@@ -527,17 +612,8 @@ impl Session {
         if self.in_ja_lane() || !self.ascii.is_empty() || !self.syllables.is_empty() {
             return false;
         }
-        // 孤立的聲調鍵已在 `segments_press` 當成數字處理，不會走到這裡。
-        // 直接送來的注音符號（非鍵盤字母）也走注音路徑。
-        if crate::zh::syllable::class_of(ch) != crate::zh::syllable::Class::None {
-            return crate::zh::syllable::class_of(ch) != crate::zh::syllable::Class::Tone;
-        }
-        // 鍵盤上的標點（`, . / ; -`）雖然也是注音鍵，單獨按下時是字面
-        // 標點，不自動開始一個注音音節。
-        self.zh.keyboard().symbol(ch).is_some_and(|symbol| {
-            crate::zh::syllable::class_of(symbol) != crate::zh::syllable::Class::Tone
-                && (ch.is_ascii_alphabetic() || ch.is_ascii_digit())
-        })
+        // 按鍵分類與 `ZhEngine::interest()` 共用；這裡只補 lane 前置條件。
+        crate::engine::starts_key(self.zh.keyboard(), ch)
     }
 
     /// 注音路徑中的下一個按鍵是否仍打得成注音。
@@ -2647,6 +2723,8 @@ impl Session {
     }
 
     pub(super) fn rebuild(&mut self) {
+        #[cfg(test)]
+        crate::engine::probe::note_rebuild();
         if !self.candidate_window {
             self.mixed_target = None;
             self.mixed_choices.clear();

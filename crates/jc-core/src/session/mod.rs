@@ -46,6 +46,9 @@ use crate::candidate::{Candidate, CandidateSource};
 use crate::composition::Composition;
 use crate::decode::{Decoder, Hypothesis, Locks};
 use crate::emoji::{self, Stat};
+use crate::engine::{
+    AsciiEngine, EngineRegistry, InputContext, JaEngine, LaneView, LanguageId, Route, ZhEngine,
+};
 use crate::ja::decode::{JaClause, JaContext, JaDecoder, JaResult};
 use crate::ja::input::RomajiInput;
 use crate::ja::live::{self, Controller as LiveController, Plan as LivePlan};
@@ -269,11 +272,11 @@ pub(super) struct Menu {
 ///
 /// `start`、`len` 都是音節索引；候選清單只解碼這一段，選字也只鎖定這一段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct EditWindow {
+pub(crate) struct EditWindow {
     /// 視窗起點（音節索引）。
-    pub(super) start: usize,
+    pub(crate) start: usize,
     /// 視窗長度（音節數）。
-    pub(super) len: usize,
+    pub(crate) len: usize,
 }
 
 /// 使用者固定成字面的按鍵範圍（相對 `AsciiInput::typed`）。
@@ -344,34 +347,39 @@ pub(super) struct MixedTarget {
 /// [`Session::apply_candidate_action`] 執行、再收尾；`finish_composition`
 /// 也用同一份 action 判斷 Enter 要先套用還是直接送出。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(super) struct CandidateAction {
+pub(crate) struct CandidateAction {
     /// 由哪一條 lane 執行套用。
-    pub(super) lane: ActionLane,
+    pub(crate) lane: ActionLane,
+    /// 這個動作要交給哪個引擎更新內部狀態；`None` 表示沿用舊路徑。
+    ///
+    /// P1 的 adapter 還不接管 lane 狀態，所有既有建構子都沿用 `Default`
+    /// 的 `None`；P2 接上 `apply()` 後才開始填值。
+    pub(crate) engine: Option<LanguageId>,
     /// 候選在目前清單裡的索引；學習與片段套用要用。
-    pub(super) index: usize,
+    pub(crate) index: usize,
     /// 要取代的原始按鍵範圍（`AsciiInput::typed()` 位元組）；沒有時為 `None`。
-    pub(super) typed_span: Option<(usize, usize)>,
+    pub(crate) typed_span: Option<(usize, usize)>,
     /// 要取代的顯示範圍（rune 起點與長度）；沒有時為 `None`。
-    pub(super) rune_span: Option<(usize, usize)>,
+    pub(crate) rune_span: Option<(usize, usize)>,
     /// 插進按鍵流的字面。
-    pub(super) insert: String,
+    pub(crate) insert: String,
     /// 插在字面後面、仍屬於原本音節的尾巴（例如 `ji3` 的 `3`）。
-    pub(super) leftover: String,
+    pub(crate) leftover: String,
     /// 插入的是不是會被管線重新解讀的 ASCII 字面。
-    pub(super) force_literal: bool,
+    pub(crate) force_literal: bool,
     /// 套用後游標要放在哪裡。
-    pub(super) cursor: ChoiceCursor,
+    pub(crate) cursor: ChoiceCursor,
     /// 走既有的音節片段選字，不重播按鍵流。
-    pub(super) syllable_edit: Option<EditWindow>,
+    pub(crate) syllable_edit: Option<EditWindow>,
     /// 成功套用後要不要記一次學習；只在套用成功後執行，且每次套用只執行一次。
-    pub(super) learn: bool,
+    pub(crate) learn: bool,
     /// 選單候選為 `true`：一次送出，不保留組字。
-    pub(super) commit_on_apply: bool,
+    pub(crate) commit_on_apply: bool,
 }
 
 /// 候選套用要走哪一條 lane。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(super) enum ActionLane {
+pub(crate) enum ActionLane {
     /// 重播按鍵流的混打候選。
     #[default]
     Mixed,
@@ -391,7 +399,7 @@ pub(super) enum ActionLane {
 
 /// 套用候選後的游標位置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(super) enum ChoiceCursor {
+pub(crate) enum ChoiceCursor {
     /// 留在目標起點（選回原始按鍵）。
     Start,
     /// 放在插入字面的第一個 rune 之後。
@@ -408,6 +416,13 @@ pub(super) enum ChoiceCursor {
 /// 只保留組字所需的狀態；送出後立即清空，因此呼叫端每次都用快照重畫。
 pub struct Session {
     pub(super) config: SessionConfig,
+    /// P1 語言引擎註冊表；owned adapter 不借用 `Session`。
+    ///
+    /// 這一輪只用 `interest()` 選出快速路徑；`feed()` 與候選仍走既有 lane。
+    pub(super) engines: EngineRegistry,
+    /// 測試專用：強制走既有 lane 決策，用來對照快速路徑。
+    #[cfg(test)]
+    pub(super) legacy_routing: bool,
     pub(super) zh: ZhInput,
     /// 已完成的注音音節；組字游標與片段編輯都以這份清單為準。
     ///
@@ -628,8 +643,15 @@ impl Session {
         } else {
             None
         };
+        let mut engines = EngineRegistry::new();
+        engines.register(Box::new(ZhEngine::new()));
+        engines.register(Box::new(JaEngine::new()));
+        engines.register(Box::new(AsciiEngine::new()));
         let mut session = Self {
             config,
+            engines,
+            #[cfg(test)]
+            legacy_routing: false,
             zh: ZhInput::standard(),
             syllables: Vec::new(),
             cursor_rune: Self::MIXED_CURSOR_END,
