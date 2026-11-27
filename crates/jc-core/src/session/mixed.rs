@@ -1213,6 +1213,29 @@ impl Session {
             let typed = self.ascii.typed().to_string();
             let (start, end) = target.typed;
             if start < end && end <= typed.len() && typed.is_char_boundary(start) {
+                // 凍結的注音字面：游標在尾端時 Backspace 只刪最後一個符號，
+                // 回到 0.1.27 可刪聲調的行為；不要把整段字面一次刪掉。
+                let forced = self
+                    .literal_spans
+                    .iter()
+                    .any(|&(span_start, span_end)| span_start <= start && end <= span_end);
+                let at_literal_end = target.rune_start + target.rune_len == cursor;
+                if forced && target.reading.is_some() && at_literal_end && target.rune_len > 1 {
+                    let delete = typed[..end]
+                        .char_indices()
+                        .next_back()
+                        .map(|(at, _)| at)
+                        .unwrap_or(start)
+                        .max(start);
+                    let mut next = String::with_capacity(typed.len().saturating_sub(end - delete));
+                    next.push_str(&typed[..delete]);
+                    next.push_str(&typed[end..]);
+                    self.ascii.replay(&next, &self.lexicon);
+                    self.literal_spans.clear();
+                    let len = self.base_with_highlight().chars().count();
+                    self.mixed_cursor = (cursor - 1).min(len);
+                    return true;
+                }
                 let mut next = String::with_capacity(typed.len().saturating_sub(end - start));
                 next.push_str(&typed[..start]);
                 next.push_str(&typed[end..]);
@@ -1419,16 +1442,19 @@ impl Session {
                 .literal_spans
                 .iter()
                 .any(|&(start, end)| start <= span.0 && span.1 <= end);
-            let whole = forced && inside == 0;
+            let reading = forced.then(|| zh_reading_from_literal(&raw)).flatten();
+            // 凍結成注音的整段是一個可拆回的單位；游標停在中間時，候選
+            // 仍要涵蓋整個字面，不能只取游標右側那一個 rune。英文等其他
+            // 字面維持逐字元，`hel|lo` 才停得進單一字母。
+            let whole = forced && (inside == 0 || reading.is_some());
             if whole {
                 let (toneless, tone) = split_tone_key(&raw);
-                let reading = zh_reading_from_literal(&raw);
                 return Some(MixedTarget {
                     typed: (span.0, span.1),
                     raw,
                     raw_toneless: toneless,
                     tone_key: tone,
-                    rune_start,
+                    rune_start: rune_start.saturating_sub(inside),
                     rune_len,
                     syllable: None,
                     reading,
@@ -1846,13 +1872,9 @@ impl Session {
                     insert: current.to_string(),
                     leftover: String::new(),
                     force_literal: literal,
-                    // 字面候選（含注音字面）留在起點，再開候選時整段都是
-                    // 同一個可拆回的單位；真字才把游標移到字後。
-                    cursor: if literal {
-                        ChoiceCursor::Start
-                    } else {
-                        ChoiceCursor::AfterInsert
-                    },
+                    // 字面候選（含注音字面）整段凍結成同一個可拆回的單位，
+                    // 游標留在字面尾端，Backspace 才能像舊版一樣刪聲調。
+                    cursor: ChoiceCursor::AfterInsert,
                     syllable_edit: if literal { None } else { syllable_edit },
                     ..CandidateAction::default()
                 },
@@ -1870,7 +1892,8 @@ impl Session {
                     insert: raw.clone(),
                     leftover: String::new(),
                     force_literal: true,
-                    cursor: ChoiceCursor::Start,
+                    // 原始輸入整段凍結；游標留在尾端。
+                    cursor: ChoiceCursor::AfterInsert,
                     syllable_edit: None,
                     ..CandidateAction::default()
                 },
@@ -1892,7 +1915,11 @@ impl Session {
         // 注音本身、無聲調按鍵與日文解讀接在推薦排序後面。
         let (toneless, tone_key) = split_tone_key(&raw);
         push_decomposition(&mut out, reading, &raw, &toneless, tone_key);
-        split_choices(out)
+        let (mut candidates, mut choices) = split_choices(out);
+        // 實機回報：尾端偶爾又出現一次與 [1] 相同的拆解候選。只移除最後
+        // 那一項，不做全域去重；其他位置的重複仍由既有來源規則處理。
+        trim_duplicate_tail(&mut candidates, &mut choices);
+        (candidates, choices)
     }
 
     /// 把按鍵流 `text` 的前 `at` 個位元組換成目前顯示的轉換結果。
@@ -2431,13 +2458,17 @@ impl Session {
 
     /// 用一個注音讀音重建候選：詞格＋解碼器取最佳解，字面也保留。
     fn fill_zh_candidates(&mut self, reading: String) {
-        self.candidates = self
+        let mut candidates = self
             .zh_candidate_set(&reading)
             .assemble(AssemblyOptions {
                 dedupe: false,
                 display_first: false,
             })
             .into_candidates();
+        // 實機回報尾端偶爾又出現一次 `[1]` 的拆解；只砍最後一項，保持
+        // CandidateSet 的排序與截斷結果。
+        trim_candidate_tail(&mut candidates);
+        self.candidates = candidates;
     }
 
     /// 已完成的注音音節轉成字面。
@@ -3104,6 +3135,27 @@ fn split_choices(
     (assembled.candidates, assembled.actions)
 }
 
+/// 移除尾端那一個與第二項相同的候選。
+///
+/// 實機回報候選清單最後一項又出現一次 `[1]` 的拆解（原始輸入／注音字面）。
+/// 只處理最後一項，不動中間或前面的重複：那些由來源與 `split_choices` 的
+/// 規則決定，不能在這裡做全域去重。
+fn trim_duplicate_tail(candidates: &mut Vec<Candidate>, choices: &mut Vec<Option<CandidateAction>>) {
+    let last = candidates.len().saturating_sub(1);
+    if candidates.len() > 2 && candidates[last].surface == candidates[1].surface {
+        candidates.pop();
+        choices.pop();
+    }
+}
+
+/// 候選清單版本：只移除尾端與第二項相同的候選。
+fn trim_candidate_tail(candidates: &mut Vec<Candidate>) {
+    let last = candidates.len().saturating_sub(1);
+    if candidates.len() > 2 && candidates[last].surface == candidates[1].surface {
+        candidates.pop();
+    }
+}
+
 /// 把注音讀音、原始按鍵、無聲調按鍵與日文解讀排進候選。
 fn push_decomposition(
     out: &mut Vec<(Candidate, CandidateAction)>,
@@ -3135,8 +3187,8 @@ fn push_decomposition(
             insert: reading.to_string(),
             leftover: String::new(),
             force_literal: true,
-            // 注音字面整段留在起點，再開候選才拆得回同一個音節。
-            cursor: ChoiceCursor::Start,
+            // 注音字面整段凍結；游標留在尾端，Backspace 可刪聲調。
+            cursor: ChoiceCursor::AfterInsert,
             syllable_edit: None,
             ..CandidateAction::default()
         },
@@ -3149,7 +3201,7 @@ fn push_decomposition(
                 insert: raw.to_string(),
                 leftover: String::new(),
                 force_literal: true,
-                cursor: ChoiceCursor::Start,
+                cursor: ChoiceCursor::AfterInsert,
                 syllable_edit: None,
                 ..CandidateAction::default()
             },
@@ -4739,7 +4791,7 @@ mod tests {
             .expect("ji3 候選");
         let snap = s.choose_candidate(index).expect("選回原始按鍵");
         assert_eq!(snap.preedit, "ji3");
-        assert_eq!(snap.cursor_rune, 0, "選原始按鍵留在原位");
+        assert_eq!(snap.cursor_rune, 3, "選原始按鍵後游標在字面尾端");
 
         let snap = s.press(Key::new(KeyCode::Down, None, false));
         let surfaces: Vec<&str> = snap
@@ -4865,23 +4917,123 @@ mod tests {
         assert_eq!(s.commit(), "ㄨㄛˇ", "第二次 Enter 才送出");
     }
 
-    /// 選注音字面後游標停在整段起點，Backspace 目前不刪字。
-    ///
-    /// 這是為了讓 `ㄨㄛˇ` 保持同一個可拆回的單位：游標在起點時 Backspace
-    /// 沒有上一個單位可退，維持原字面；要修改請先把游標移到字面後面。
+    /// 游標停在凍結注音字面中間時，↓ 仍要列出整個音節的候選。
     #[test]
-    fn test_backspace_after_choosing_reading_literal_is_noop() {
+    fn test_down_inside_frozen_zh_literal_lists_whole_syllable() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3");
+        s.press(Key::new(KeyCode::Down, None, false));
+        let chosen = choose_surface(&mut s, "ㄨㄛˇ");
+        assert_eq!(chosen.preedit, "ㄨㄛˇ");
+        assert_eq!(chosen.cursor_rune, 3, "字面候選停在尾端");
+
+        // ㄨ|ㄛˇ：游標在字面中間，不是起點。
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(s.snapshot().cursor_rune, 1);
+
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        let list = surfaces(&snap);
+        assert_eq!(snap.candidates[0].surface, "ㄨㄛˇ", "目前值是整個字面");
+        assert_eq!(snap.candidates[1].surface, "ji3", "第二項是原始按鍵");
+        for want in ["我", "窩"] {
+            assert!(list.contains(&want), "{want} 不在 {list:?}");
+        }
+        assert!(
+            !list.is_empty() && list.len() > 2,
+            "不能只剩單一注音：{list:?}"
+        );
+
+        let applied = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(applied.preedit, "ㄨㄛˇ", "第一次 Enter 只套用");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "ㄨㄛˇ", "第二次 Enter 才送出");
+    }
+
+    /// 選了原始輸入後，游標在字面尾端，↓ 用整個字面重算候選。
+    #[test]
+    fn test_down_after_choosing_raw_input_uses_whole_literal() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3");
+        s.press(Key::new(KeyCode::Down, None, false));
+        let chosen = choose_surface(&mut s, "ji3");
+        assert_eq!(chosen.preedit, "ji3");
+        assert_eq!(chosen.cursor_rune, 3, "原始輸入停在尾端");
+
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        let list = surfaces(&snap);
+        assert_eq!(snap.candidates[0].surface, "ji3", "目前值仍是原始輸入");
+        assert!(list.contains(&"我"), "推薦候選跑掉了：{list:?}");
+        assert!(list.len() > 2, "不能只剩游標右側的候選：{list:?}");
+    }
+
+    /// 選注音字面後游標在字面尾端；Backspace 回到 0.1.27：可刪聲調。
+    #[test]
+    fn test_backspace_after_choosing_reading_literal_deletes_tone() {
         let mut s = cursor_session();
         mixed_type(&mut s, "ji3");
         s.press(Key::new(KeyCode::Down, None, false));
         let snap = choose_surface(&mut s, "ㄨㄛˇ");
         assert_eq!(snap.preedit, "ㄨㄛˇ");
-        assert_eq!(snap.cursor_rune, 0, "字面候選游標留在起點");
+        assert_eq!(snap.cursor_rune, 3, "字面候選游標在尾端");
 
         let snap = s.press(Key::new(KeyCode::Backspace, None, false));
-        assert_eq!(snap.preedit, "ㄨㄛˇ", "起點的 Backspace 不刪字");
+        assert_eq!(snap.preedit, "ㄨㄛ", "尾端 Backspace 刪掉聲調");
+    }
+
+    /// 選原始按鍵後，Backspace 也是一鍵一鍵刪，不會整段消失。
+    #[test]
+    fn test_backspace_after_choosing_raw_input_deletes_last_key() {
+        let mut s = cursor_session();
+        mixed_type(&mut s, "ji3");
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = choose_surface(&mut s, "ji3");
+        assert_eq!(snap.preedit, "ji3");
+        assert_eq!(snap.cursor_rune, 3, "原始輸入游標在尾端");
+
         let snap = s.press(Key::new(KeyCode::Backspace, None, false));
-        assert_eq!(snap.preedit, "ㄨㄛˇ", "再按一次也不刪字");
+        assert_eq!(snap.preedit, "じ", "刪掉聲調鍵後只剩 ji，交給混打重新解讀");
+    }
+
+    /// 尾端重複的拆解候選只移除最後一項，不做全域去重。
+    #[test]
+    fn test_trailing_decomposition_duplicate_is_removed() {
+        let candidate =
+            |surface: &str| Candidate::new(surface, "ㄨㄛˇ", 0, CandidateSource::Literal);
+        let mut list = vec![
+            candidate("我"),
+            candidate("ji3"),
+            candidate("窩"),
+            candidate("ji3"),
+        ];
+        let mut choices = vec![None; list.len()];
+        trim_duplicate_tail(&mut list, &mut choices);
+        let surfaces: Vec<&str> = list.iter().map(|c| c.surface.as_str()).collect();
+        assert_eq!(surfaces, ["我", "ji3", "窩"], "尾端重複的拆解要移除");
+        assert_eq!(choices.len(), list.len(), "套用動作要跟著候選對齊");
+
+        // 中間的重複不動：這裡只處理尾端那一項。
+        let mut list = vec![
+            candidate("我"),
+            candidate("ji3"),
+            candidate("我"),
+            candidate("窩"),
+        ];
+        let mut choices = vec![None; list.len()];
+        trim_duplicate_tail(&mut list, &mut choices);
+        let surfaces: Vec<&str> = list.iter().map(|c| c.surface.as_str()).collect();
+        assert_eq!(surfaces, ["我", "ji3", "我", "窩"], "不做全域去重");
+
+        // 打字中的顯示清單（沒有套用動作）用同一個尾端規則。
+        let mut list = vec![
+            candidate("我"),
+            candidate("ji3"),
+            candidate("窩"),
+            candidate("ji3"),
+        ];
+        trim_candidate_tail(&mut list);
+        let surfaces: Vec<&str> = list.iter().map(|c| c.surface.as_str()).collect();
+        assert_eq!(surfaces, ["我", "ji3", "窩"]);
     }
 
     /// 多音節時，第二項是游標所在音節的按鍵。

@@ -117,14 +117,16 @@ impl CandidateLayout {
 
     /// 由目前索引往左跳一欄（十項），停在同一個列號。
     ///
-    /// 直向單欄或已在本頁第一欄時不移動。
+    /// 直向單欄時不移動。四欄時在本頁第一欄再往左，會接到上一頁的最後
+    /// 一欄；第一頁第一欄則停住。
     pub fn left(self, index: usize, count: usize) -> usize {
         self.jump_column(index, count, -1)
     }
 
     /// 由目前索引往右跳一欄（十項），停在同一個列號。
     ///
-    /// 直向單欄或已在本頁最後一欄時不移動。
+    /// 直向單欄時不移動。四欄時在本頁最後一欄再往右，會接到下一頁的第
+    /// 一欄；最後一頁最後一欄則停住。
     pub fn right(self, index: usize, count: usize) -> usize {
         self.jump_column(index, count, 1)
     }
@@ -144,19 +146,34 @@ impl CandidateLayout {
         if self.columns <= VERTICAL_COLUMNS {
             return index;
         }
-        let target = if delta < 0 {
-            index.checked_sub(self.rows)
-        } else {
-            index.checked_add(self.rows)
-        };
-        let Some(target) = target else {
-            return index;
-        };
         let (page_start, page_end) = self.page_span(index, count);
-        if target < page_start || target >= page_end {
+        let page_size = self.page_size().max(1);
+        let row = index - page_start;
+        let row = row % self.rows.max(1);
+        if delta > 0 {
+            let target = index.checked_add(self.rows).unwrap_or(index);
+            if target < page_end {
+                return target;
+            }
+            // 本頁最後一欄：接到下一頁第一欄的同一個列號。
+            if page_end >= count {
+                return index;
+            }
+            let next_end = (page_end + page_size).min(count);
+            return (page_end + row).min(next_end - 1);
+        }
+        if let Some(target) = index.checked_sub(self.rows) {
+            if target >= page_start {
+                return target;
+            }
+        }
+        // 本頁第一欄：接到上一頁最後一欄的同一個列號。
+        if page_start == 0 {
             return index;
         }
-        target
+        let previous_start = page_start - page_size;
+        let last_column = previous_start + (self.columns - 1) * self.rows;
+        (last_column + row).min(page_start - 1)
     }
 }
 
@@ -254,7 +271,45 @@ mod tests {
         assert_eq!(layout.cell(13), (3, 1));
         assert_eq!(layout.right(3, 45), 13, "→ 從欄 0 列 3 到欄 1 列 3");
         assert_eq!(layout.left(13, 45), 3, "← 回到欄 0 列 3");
-        assert_eq!(layout.right(39, 45), 39, "最後一欄不再往右");
+        assert_eq!(layout.right(39, 45), 44, "最後一欄往右接到下一頁");
+    }
+
+    #[test]
+    fn test_right_at_last_column_moves_to_next_page_first_column() {
+        let layout = CandidateLayout::new(DEFAULT_ROWS, EXPANDED_COLUMNS);
+        // 80 項 = 兩頁；第 1 頁第 4 欄列 3 → 下一頁第 1 欄列 3。
+        assert_eq!(layout.right(33, 80), 43);
+        assert_eq!(layout.right(39, 80), 49, "列 9 也維持同列");
+        assert_eq!(layout.left(43, 80), 33, "← 對稱回到上一頁最後一欄");
+        assert_eq!(layout.left(49, 80), 39);
+    }
+
+    #[test]
+    fn test_left_at_first_column_moves_to_previous_page_last_column() {
+        let layout = CandidateLayout::new(DEFAULT_ROWS, EXPANDED_COLUMNS);
+        assert_eq!(layout.left(40, 80), 30);
+        assert_eq!(layout.left(49, 80), 39);
+        assert_eq!(layout.left(3, 80), 3, "第一頁最左欄停住");
+    }
+
+    #[test]
+    fn test_right_at_last_page_last_column_stops() {
+        let layout = CandidateLayout::new(DEFAULT_ROWS, EXPANDED_COLUMNS);
+        assert_eq!(layout.right(79, 80), 79, "最後一頁最右欄停住");
+        // 下一頁不滿 40 項時夾到最後一項，不會跳回第一頁。
+        assert_eq!(layout.right(39, 45), 44, "下一頁只有 5 項");
+        assert_eq!(layout.right(44, 45), 44);
+    }
+
+    #[test]
+    fn test_left_right_page_wrap_is_symmetric() {
+        let layout = CandidateLayout::new(DEFAULT_ROWS, EXPANDED_COLUMNS);
+        for index in [0, 3, 9, 33, 39, 43, 49, 70, 79, 89, 119] {
+            let right = layout.right(index, 120);
+            if right != index {
+                assert_eq!(layout.left(right, 120), index, "index {index} 左右對稱");
+            }
+        }
     }
 
     #[test]

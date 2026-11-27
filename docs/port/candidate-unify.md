@@ -38,8 +38,9 @@
     回到上一頁第 10 項。
 - 頭尾停住、不回捲：整份清單最後一項按 `↓` 停在原地，第一項按 `↑` 也
   停在原地。`PageUp`／`PageDown` 仍可直接跳頁。
-- `←`／`→` 跳一整欄：索引 `-10`／`+10`。直向單欄時是 no-op；四欄時在
-  本頁第一欄按 `←`、最後一欄按 `→` 也不移動（換欄不跨頁）。
+- `←`／`→` 跳一整欄：索引 `-10`／`+10`。直向單欄時是 no-op。四欄時在本頁
+  第一欄按 `←` 接到上一頁最後一欄、在本頁最後一欄按 `→` 接到下一頁第一欄，
+  都停在同一個列號；第一頁最左欄與最後一頁最右欄才停住。
 - 一頁容量是「列數 × 欄數」：直向十項，橫向四十項。
 - 頁內索引的版面位置是 `(列, 欄) = (index % 10, index / 10)`。
 - 換頁只移動 `highlighted`，頁碼一律由 `highlighted / page_size` 推導。
@@ -105,16 +106,17 @@
 
 ### 字面候選的游標與 Backspace
 
-選了字面候選（原始按鍵或注音字面）後，游標停在整段起點，字面維持同一個
+選了字面候選（原始按鍵或注音字面）後，游標停在整段尾端，字面維持同一個
 可拆回的單位。因此：
 
-- 選 `ji3`：游標在起點，Backspace 沒有上一個單位可退，內容不變（與舊版
-  原始按鍵候選一致）。
-- 選 `ㄨㄛˇ`：舊版游標在尾端、Backspace 會刪掉聲調變成 `ㄨㄛ`；現在游標
-  在起點，Backspace 一樣不刪字。要修改字面請先把游標移到字面後面，或直接
-  重打。
+- 選 `ji3`：游標在 `3` 之後，Backspace 逐鍵刪除（先刪 `3`）。
+- 選 `ㄨㄛˇ`：游標在 `ˇ` 之後，Backspace 會刪掉聲調變成 `ㄨㄛ`（回到 0.1.27
+  的行為）；再按一次才刪介音／韻母。
+- 游標在字面中間時按 `↓`：候選仍以整個字面重算，不會只取游標右側那一個
+  符號。
 
-`test_backspace_after_choosing_reading_literal_is_noop` 鎖住這個預期。
+`test_backspace_after_choosing_reading_literal_deletes_tone` 鎖住這個預期；
+`test_down_inside_frozen_zh_literal_lists_whole_syllable` 鎖住整段候選。
 
 ## 程式位置
 
@@ -162,8 +164,16 @@
 - `test_enter_still_two_stage_when_selecting_variant`（前導變體窗選了不同字時）
 - `test_first_candidate_is_current_display`／`test_second_candidate_is_raw_input`
 - `test_choosing_raw_input_keeps_full_candidate_list`
+- `test_down_inside_frozen_zh_literal_lists_whole_syllable`
+- `test_down_after_choosing_raw_input_uses_whole_literal`
 - `test_digit_selects_raw_input_candidate`
-- `test_backspace_after_choosing_reading_literal_is_noop`
+- `test_backspace_after_choosing_reading_literal_deletes_tone`
+- `test_backspace_after_choosing_raw_input_deletes_last_key`
+- `test_trailing_decomposition_duplicate_is_removed`
+- `test_right_at_last_column_moves_to_next_page_first_column`
+- `test_left_at_first_column_moves_to_previous_page_last_column`
+- `test_right_at_last_page_last_column_stops`
+- `test_left_right_page_wrap_is_symmetric`
 - `test_ja_candidates_second_is_raw_romaji`／`test_ja_katakana_can_revert_to_romaji`
 
 `jc-tsf`：
