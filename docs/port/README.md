@@ -178,6 +178,12 @@
 | [`data-download.md`](data-download.md) | 首次啟動下載、`.part` 與 SHA-256 |
 | [`legal-update.md`](legal-update.md) | 授權帳本與第三方聲明同步 |
 
+### Workspace 結構
+
+| 文件 | 一句話 |
+|---|---|
+| [`crate-layout.md`](crate-layout.md) | crate 職責、相依方向、命名、語言與模型邊界、重組順序 |
+
 ### 工具與流程
 
 | 文件 | 一句話 |
