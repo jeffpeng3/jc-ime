@@ -26,7 +26,7 @@ cargo run -p jc-cli --release --bin jc-cli -- eval zh-golden
 | 10 | `mixed-chinese-english-chinese` | F | Mixed 模式把 ASCII 直接丟給 `mixed::Router`，Router 只認注音符號／かな；`ji3`、`hello`、`t` 都沒進注音鍵盤，結果整串照字面。 | 未修：`core/session/mixed.go`（1748 行）的按鍵推斷未移植。 |
 | 11 | `mixed-english-prefix` | F | 同上。 | 未修。 |
 | 12 | `english-completion` | F | 英文補完依賴 Mixed 前綴與 `English` 學習層；session 沒有接。 | 未修。 |
-| 13 | `english-mode` | E | `toggle` 請求不支援，session 模式固定。 | 已修：`Session::toggle_english`。 |
+| 13 | `english-mode` | E | `toggle` 請求不支援，session 模式固定。 | session 一律 Mixed；中英切換由外殼保存，`Request::Toggle` 已移除。 |
 | 14 | `cjk-latin-space` | F | `CjkLatinSpace` 已在 `output` 實作，但 commit 路徑沒接；且本例依賴 Mixed 先把 `ji3hellot ` 切成中英段。 | 未修：等 Mixed 接上。 |
 | 15 | `ctrl-punct` | E | `Ctrl+,` 不是合法具名鍵，`Key` 也沒有 Ctrl 欄位。 | 已修：`Key::ctrl` 加 `ctrl_punct` 選項，`Ctrl+,` 輸出「，」。 |
 | 16 | `punctuator-commit` | E | 補標點替身沒接，commit 直接送出「今天」。 | 已修：`punct_mark` 在最後一個漢字前插入標點。 |
@@ -61,7 +61,7 @@ cargo run -p jc-cli --release --bin jc-cli -- eval zh-golden
 | `internal/golden/mixed.go` | `crates/jc-cli/src/eval_cmd.rs` | rewritten：seed 與混合案例的資料準備未搬，D 類不跑 |
 | `internal/golden/golden_test.go` | `crates/jc-cli/src/eval_cmd.rs` 的 `mod tests` | rewritten：只驗證 45 例都跑到 |
 | `core/engine/engine.go`（選項） | `crates/jc-core/src/session.rs` 的 `SessionConfig` | 部分：toneless、ctrl_punct、rerank、punct、fuzzy 已接；simplified、mixed、english autocomplete 未接 |
-| `core/engine/engine.go`（toggle） | `Session::toggle_english` | rewritten |
+| `core/engine/engine.go`（toggle） | 外殼保存中英模式；core 沒有 toggle 路徑 | rewritten |
 | `core/session/candidates.go`（翻頁） | `Session::page`、`PAGE_SIZE` | rewritten：保留全部候選，翻頁只移動高亮 |
 | `core/session/ctrl_punct.go` | `Key::ctrl`、`Session::press_ctrl` | rewritten：只支援 `Ctrl+,` |
 | `core/punct`（固定替身） | `SessionConfig::punct_mark`、`Session::puncted` | rewritten：在最後一個漢字前插入 |

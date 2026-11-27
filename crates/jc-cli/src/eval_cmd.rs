@@ -1283,7 +1283,7 @@ fn apply_request(session: &mut Session, request: &serde_json::Value) -> Result<(
             Ok(())
         }
         "toggle" => {
-            session.toggle_english();
+            // 中英切換由外殼保存；golden 的 toggle 動作不進引擎。
             Ok(())
         }
         "forget" => {

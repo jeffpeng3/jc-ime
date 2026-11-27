@@ -310,8 +310,6 @@ pub struct Snapshot {
     /// 候選窗一列幾項；舊引擎沒有時預設單欄。
     pub columns: usize,
     /// jc 尚無對應；空字串。
-    pub candidate_kind: String,
-    /// jc 尚無對應；空字串。
     pub candidate_title: String,
     /// jc 尚無對應；0。
     pub page: i64,
@@ -681,7 +679,6 @@ pub fn to_jc_request(envelope: &Value) -> Value {
                 "op": "literal",
                 "text": envelope["req"]["text"].as_str().unwrap_or(""),
             }),
-            "toggle" => json!({"op": "toggle"}),
             "commit" => json!({"op": "commit"}),
             // 0c 的 display 是「給我目前的顯示狀態」。jc 沒有這個 op，送過去會回
             // UnknownOp；那個請求又進了重播紀錄，之後每次 ensure_open 重播都會
@@ -1095,7 +1092,6 @@ fn parse(reply: &Value) -> Snapshot {
                 jc_proto::candidate_layout::MAX_COLUMNS,
             ),
         };
-        s.candidate_kind = c["kind"].as_str().unwrap_or("").to_string();
         s.candidate_title = c["title"].as_str().unwrap_or("").to_string();
         s.candidate_start = c["start"].as_u64().unwrap_or(0) as usize;
         s.candidate_length = c["length"].as_u64().unwrap_or(0) as usize;
@@ -1134,14 +1130,11 @@ pub struct Session {
     /// 不含 Caps Lock 暫時英文的程式模式；關掉 Caps Lock 要回到這裡。
     /// jc 的 snapshot 沒有 caps_english，外殼必須自己記住這層。
     base_english: bool,
-    replay_english: bool,
     pub english_state: Snapshot,
     down: bool,
     log: Vec<Value>,
-    cleared: Option<(Vec<Value>, bool)>,
     /// 傳輸失敗後，下一次連上先送 display 對齊引擎目前的組字，不重播按鍵。
     align_pending: bool,
-    toggled: bool,
     context_enabled: bool,
     pending_context: Option<(u64, String)>,
     private: bool,
@@ -1192,13 +1185,10 @@ impl Session {
             generation: 0,
             english: false,
             base_english: false,
-            replay_english: false,
             english_state: Snapshot::default(),
             down: false,
             log: Vec::new(),
-            cleared: None,
             align_pending: false,
-            toggled: false,
             context_enabled: std::env::var("ZUIN_DOCUMENT_CONTEXT").as_deref() != Ok("0"),
             pending_context: None,
             private: false,
@@ -1716,7 +1706,6 @@ impl Session {
             );
         }
         self.log.clear();
-        self.cleared = None;
         self.pending_context = None;
         self.align_pending = true;
         true
@@ -1736,33 +1725,19 @@ impl Session {
             request["private"] = Value::Bool(true);
         }
         let generation_before = self.client.generation();
-        let english_before = self.english;
         let kind = request["type"].as_str().unwrap_or("").to_string();
         // jc 的 State 只有組字片段帶模式，Committed 完全不帶；0c 快照的
         // mode／caps_english 得由外殼自己記住，成功後補回快照。
         let mut base = self.base_english;
         let mut want_english = self.english;
         let mut want_caps = self.caps_english;
-        match kind.as_str() {
-            "toggle" => {
-                base = !base;
-                want_english = base;
-                want_caps = false;
-            }
-            "caps_lock" => {
-                let on = request["on"].as_bool().unwrap_or(false);
-                want_caps = on && !base;
-                want_english = on || base;
-            }
-            _ => {}
+        if kind == "caps_lock" {
+            let on = request["on"].as_bool().unwrap_or(false);
+            want_caps = on && !base;
+            want_english = on || base;
         }
         #[cfg(test)]
         self.sent.push(kind.clone());
-        let mut cleared = None;
-        if kind != "context" && kind != "display" {
-            self.toggled = false;
-            cleared = self.cleared.take();
-        }
         let mut attempts = 0;
         let mut wait_until: Option<Instant> = None;
         loop {
@@ -1793,7 +1768,7 @@ impl Session {
             }
             // 重開 session 可能剛學到新的能力（例如 Caps Lock 英文被關掉），
             // 按鍵請求要用重連後的模式，而不是進迴圈前的快照。
-            if !matches!(kind.as_str(), "toggle" | "caps_lock") {
+            if kind != "caps_lock" {
                 base = self.base_english;
                 want_english = self.english;
                 want_caps = self.caps_english;
@@ -1858,22 +1833,8 @@ impl Session {
             self.english_state = s.clone();
             self.down = false;
             if !s.commit.is_empty() || kind == "cancel" || !s.composing() {
-                if kind == "toggle" && s.commit.is_empty() && !self.log.is_empty() {
-                    let mut log = std::mem::take(&mut self.log);
-                    log.push(request);
-                    self.cleared = Some((log, self.replay_english));
-                }
                 self.log.clear();
             } else if kind != "caps_lock" && kind != "output_simplified" {
-                if self.log.is_empty() {
-                    match cleared.take().filter(|_| kind == "toggle") {
-                        Some((log, english)) => {
-                            self.log = log;
-                            self.replay_english = english;
-                        }
-                        None => self.replay_english = english_before,
-                    }
-                }
                 self.log.push(request);
             }
             zlog!(
@@ -1896,9 +1857,7 @@ impl Session {
     /// 清除重播紀錄。
     pub fn reset(&mut self) {
         self.log.clear();
-        self.cleared = None;
         self.align_pending = false;
-        self.toggled = false;
         self.english_state = Snapshot::default();
         self.pending_context = None;
         if self.shared {
@@ -1976,12 +1935,10 @@ impl Session {
         self.english = self.base_english;
         self.caps_english = false;
         self.mode_known = true;
-        self.toggled = false;
         // 英文補全的待選字不是文件裡的組字：切回中文時丟掉，不要重連後又
         // 從重播紀錄長回來。中文組字則保留，切換不得提交或清掉它。
         if from_english && self.english_state.english_pending {
             self.log.clear();
-            self.cleared = None;
             self.english_state = Snapshot::default();
         }
         let mut snapshot = self.english_state.clone();
@@ -1995,11 +1952,6 @@ impl Session {
         snapshot.notices.clear();
         snapshot.bell = false;
         snapshot
-    }
-
-    /// 沒有送給核心就交還宿主的按鍵同樣表示切換之後有操作。
-    pub fn bypassed(&mut self) {
-        self.toggled = false;
     }
 }
 
@@ -3438,7 +3390,6 @@ mod tests {
         let palette = s.key("=");
         assert!(palette.ok && palette.handled && palette.composing());
         assert_eq!(palette.text(), "");
-        assert_eq!(palette.candidate_kind, "", "jc 尚無對應 candidate_kind");
         assert!(!palette.candidates.is_empty());
         let literal = s.key("=");
         assert_eq!(literal.commit, "=", "第二次 = 提交字面（mock 的 = 沒組字）");
@@ -3726,7 +3677,6 @@ mod tests {
         let replayed = s.key("i");
         assert!(!replayed.english, "斷線重播後仍是注音");
         s.toggle();
-        s.bypassed();
         let snap = s.toggle();
         assert!(
             !snap.english && snap.composing() && snap.commit.is_empty(),

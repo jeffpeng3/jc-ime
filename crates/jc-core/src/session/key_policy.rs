@@ -179,16 +179,13 @@ impl Session {
             self.move_highlight(1);
             return KeyOutcome::Changed;
         }
-        let accepted = self.config.mode == Mode::Mixed
-            && !self.in_zh_lane()
+        let accepted = !self.in_zh_lane()
             && !self.in_ja_lane()
             && self.config.english_autocomplete
             && self.ascii.accept_suggestion();
         if !accepted && !self.accept_suggestion() {
             self.move_highlight(1);
-            if self.config.mode == Mode::Mixed {
-                self.navigating = true;
-            }
+            self.navigating = true;
         }
         KeyOutcome::Changed
     }

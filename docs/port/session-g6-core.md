@@ -12,7 +12,7 @@ hook 接進同一條按鍵流程，並補上快照欄位。沒有改任何群組
 | 上游（`session.go`／相關檔） | Rust 位置 | 狀態 |
 |---|---|---|
 | `Session` 欄位、`New`、`SetLayout` | `session/mod.rs`（`Session`、`Session::new`） | ported（欄位已依 Stage 0 分組） |
-| `Handle` 的請求分派 | `Session::press`、`set_mode`、`toggle_english`、`open_symbol_menu`、`open_symbol_tab`、`open_palette`、`open_emoji`、`page`、`select`、`commit`、`reset` | rewritten：Rust 用一個 `Key`／公開方法對應多種 `proto.Request`，沒有 `handled` 旗標 |
+| `Handle` 的請求分派 | `Session::press`、`set_mode`、`open_symbol_menu`、`open_symbol_tab`、`open_palette`、`open_emoji`、`page`、`select`、`commit`、`reset` | rewritten：Rust 用一個 `Key`／公開方法對應多種 `proto.Request`，沒有 `handled` 旗標 |
 | `Handle` 的 `Commit`／`Cancel` | `Session::commit`、`reset` | ported |
 | `Handle` 的 `Page`／`Select` | `Session::page`、`select`、`core::select_by_digit` | ported |
 | `key()` 的按鍵順序（風格、選單、候選、一般鍵） | `Session::press` → `style_key`（G1）→ `menu_key`（G3）→ `segments_press`（G2）→ `core` 分派 | integrated |
@@ -38,7 +38,7 @@ hook 接進同一條按鍵流程，並補上快照欄位。沒有改任何群組
 | `selectCandidate` | `core::select_by_digit`、`finish_composition`、`learn_candidate` | rewritten：選字即送進待提交區，不保留組字游標與鎖定 |
 | `accept`／`acceptZh` | `core::accept_suggestion` | rewritten：接受後以整詞取代組字，不新增音節與鎖定 |
 | `composing`／`Composing` | `input_style::composing`（注音）、`snapshot` 的組字字串 | partial：沒有 `cand != nil` 的公開查詢 |
-| `setMode`／`Toggle` | `Session::set_mode`、`toggle_english` | ported：`toggle_english` 記住切換前模式，再按一次回到 Mixed/Ja，而非固定 Zh |
+| `setMode` | `Session::set_mode` | ported：`set_mode` 只改快照；中英切換由外殼保存，core 沒有 toggle 路徑 |
 | `capsLockChanged`／`CapsLockOn` | 無 | n/a：`Key` 沒有 caps_lock 請求，外殼直接送 `set_mode` |
 | `View`／`status` | `Session::snapshot` | rewritten：模式與語言欄位由外殼的 `Snapshot` 表達 |
 | `ctrlPunct` | `core::press_ctrl` | ported（G1） |

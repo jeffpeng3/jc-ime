@@ -50,7 +50,7 @@ jc-engine --data <資料根目錄> [--mode zh|ja|mixed|en] \
 | 參數 | 說明 |
 |---|---|
 | `--data <dir>` | 資料根目錄；沒給時讀 `JC_DATA`，兩者都沒有就結束（exit 1） |
-| `--mode` | 啟動時的輸入模式；執行期可用 `{"op":"toggle"}` 在目前語言與 En 間切換 |
+| `--mode` | 啟動時的輸入模式；中英切換由外殼保存，引擎沒有執行期 toggle |
 | `--socket <path>` | Unix 上用 domain socket；Windows 上取最後一段掛到 `\\.\pipe\`；`--supervise` 不給時用 `jc-ime-<SID 尾段>` |
 | `--max-frame` | 單一訊框上限，預設 1048576 |
 | `--allow-empty-data` | 不載入資料，只給協定測試用；**產品不可使用** |
@@ -362,9 +362,9 @@ Shift+Tab 有兩種表示：`{"kind":"shift_tab"}` 配 `shift:true`，或
 - 關閉時：一個按鍵都不送引擎，全部 pass-through；同時要把引擎裡殘留的
   組字收掉。
 - 開啟時：依 §4.5 的規則送。
-- 中英切換：單按左／右 Shift 時送 `{"op":"toggle"}`，引擎在目前語言（Mixed 或
-  Ja）與純英文 En 之間切換，回一個完整 `State`；再按一次回到原本的語言。
-  搭配其他鍵的 Shift 不算單按，不要送。
+- 中英切換：單按左／右 Shift 由 wrapper 自己切換並保存，不送引擎、不送
+  `toggle` 請求。引擎只回快照，不會改變組字。
+  搭配其他鍵的 Shift 不算單按。
 - 全形／半形、標點樣式、Shift+Space：都是 wrapper 的 UI 決策。引擎沒有
   這些請求，Shift+Space 也不要送給引擎。
 
@@ -400,8 +400,8 @@ Shift+Tab 有兩種表示：`{"kind":"shift_tab"}` 配 `shift:true`，或
 | `en` | 直接累積英數到組字區 | Enter 會提交但不產生換行，見 §7.3 |
 | `mixed` | 自動判斷英數與注音／日文 | 候選清單可用，仍是新功能 |
 
-啟動模式由 `--mode` 指定；執行期可用 `Toggle` 請求暫時切到 En 並回到原模式。
-要指定其他語言仍須重啟引擎。
+啟動模式由 `--mode` 指定；中英切換由外殼保存，引擎沒有執行期 `Toggle`。
+要切換語言仍須重啟引擎。
 
 ## 5. 組字顯示
 
@@ -900,8 +900,7 @@ unix domain socket。`jc-linux`／`jc-mac` 的佔位 crate 沒有 `todo!()`，�
 7. **沒有執行期設定套用**。`apply_settings` 只收下設定並回 `Health`，沒有
    真的套用；簡繁轉換、Ctrl 標點、英文自動補完、輸入風格、模糊音都只能在
    啟動時由 `settings.json` 決定，改了要重啟引擎。
-8. **模式切換只支援 En**。執行期可用 `Toggle` 在目前語言與 En 間切換；切到其他
-   語言仍須重啟引擎。
+8. **中英模式由外殼保存**。引擎沒有執行期 `Toggle`；切換語言仍須重啟引擎。
 9. **`undo_learning`／`forget_word` 沒有協定入口**。核心方法已實作，但
    wrapper 只能送 `reset_personal` 清空全部學習，不能單筆 undo。
 10. **日文 reranker 預設關閉**。重排由 Jinen small 取代，`ja_rerank` 只
@@ -925,7 +924,7 @@ unix domain socket。`jc-linux`／`jc-mac` 的佔位 crate 沒有 `todo!()`，�
 | 4 | `Shutdown` 不檢查握手 | 任何本機行程都能關引擎 | 要求先 `Hello`，或加權限檢查 |
 | 5 | 沒有學習次數與來源權重 | 候選窗無法顯示「常用」或信心 | v4 加欄位，保持舊 wrapper 可解析 |
 | 6 | `Ready` 沒有通告 `max_frame` 與完整能力 | wrapper 只能猜；能力要另外送 `health` | 加 `max_frame`，`features` 可先沿用 `HealthInfo.capabilities` |
-| 7 | `Toggle` 只能在目前語言與 En 間切換 | 切到其他語言仍要重啟引擎 | 加完整的 `set_mode` 請求 |
+| 7 | ~~`Toggle` 只能在目前語言與 En 間切換~~ | 已移除 `Toggle`；中英模式由外殼保存 | 不需要再加 `set_mode` |
 | 8 | `apply_settings` 只收下設定，沒有套用 | 設定改了要重啟引擎 | 完成執行期套用，或明確寫成啟動時設定 |
 | 9 | 沒有 undo／forget 請求 | 無法撤銷單筆學習或提交 | 加 `undo`／`forget` |
 | 10 | 沒有焦點事件 | 共用引擎時組字會跨應用程式殘留 | 加 `focus_lost`，或由 wrapper 保證送 Esc |

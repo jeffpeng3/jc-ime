@@ -2330,7 +2330,7 @@ impl Session {
     /// 只處理 Mixed 且候選窗開著的情況；英文待定詞真正的結尾空白不會走到
     /// 這裡（那時候沒有中文候選）。
     pub(super) fn trim_mixed_candidate_space(&mut self) {
-        if self.config.mode != Mode::Mixed || !self.candidate_window {
+        if !self.candidate_window {
             return;
         }
         let typed = self.ascii.typed().to_string();

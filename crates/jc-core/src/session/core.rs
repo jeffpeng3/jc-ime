@@ -382,10 +382,9 @@ impl Session {
                 _ => {}
             }
         }
-        // Mixed 模式下聲調鍵先於選字鍵：未完成的注音前綴遇到數字時先補成音節，
+        // 聲調鍵先於選字鍵：未完成的注音前綴遇到數字時先補成音節，
         // 即使外殼在單一數字鍵前補了 Down，也不會選到英文補全候選。
-        if self.config.mode == Mode::Mixed
-            && !self.in_zh_lane()
+        if !self.in_zh_lane()
             && self.candidate_window
             && self.ascii.tone_completes(ch, &self.lexicon)
         {
@@ -741,10 +740,10 @@ impl Session {
         {
             return None;
         }
-        // 混合模式只有按過 ↓／↑ 進入選取模式才用數字選字；空白開窗後
+        // 只有按過 ↓／↑ 進入選取模式才用數字選字；空白開窗後
         // 直接打數字仍照一般按鍵走，避免吃掉下一個注音或英數。選單開著時
         // 仍然照選單的選字鍵處理。
-        if self.config.mode == Mode::Mixed && !self.navigating && self.menu.is_none() {
+        if !self.navigating && self.menu.is_none() {
             return None;
         }
         let row = self.selection_index(ch)?;
@@ -831,13 +830,13 @@ impl Session {
             return Some(self.zh_syllable_action(index, edit));
         }
         // ↓／空白開的純注音候選只涵蓋最後一個音節：選字換那一段，整段留著。
-        if self.config.mode == Mode::Mixed && self.in_zh_lane() && self.zh_window_last {
+        if self.in_zh_lane() && self.zh_window_last {
             let start = self.syllables.len().saturating_sub(1);
             return Some(self.zh_syllable_action(index, EditWindow { start, len: 1 }));
         }
-        // 混合模式的候選是英文補完、拼字建議或已完成的注音詞；純注音路徑
-        // （含 Mixed 的 zh_lane）與選單走上面的動作。
-        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
+        // 混打的候選是英文補完、拼字建議或已完成的注音詞；注音 lane 與選單
+        // 走上面的動作。
+        if !self.in_zh_lane() && !self.in_ja_lane() {
             return Some(CandidateAction {
                 lane: ActionLane::MixedGeneral,
                 index,
@@ -1077,7 +1076,7 @@ impl Session {
     /// ↓／空白要選字時才縮到游標那一格，與 Mixed 既有的選字行為一致。
     /// Enter 不選字，仍送出整段，所以不能直接把 `edit` 設起來。
     fn narrow_mixed_zh_candidates(&mut self) {
-        if self.config.mode != Mode::Mixed || self.syllables.is_empty() {
+        if self.syllables.is_empty() {
             return;
         }
         self.zh_window_last = true;
@@ -1505,7 +1504,7 @@ impl Session {
             self.move_row(1);
             return;
         }
-        if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
+        if !self.in_zh_lane() {
             if !self.candidate_window {
                 self.open_mixed_cursor_candidates();
                 return;
@@ -1657,7 +1656,7 @@ impl Session {
                 self.set_ja_byte(if end { self.composed_text().len() } else { 0 });
                 return;
             }
-            if self.config.mode == Mode::Mixed && !self.in_zh_lane() {
+            if !self.in_zh_lane() {
                 let runes = self.composed_text().chars().count();
                 self.move_mixed_cursor_to(if end { runes } else { 0 });
                 return;
@@ -1683,11 +1682,7 @@ impl Session {
         if self.menu.is_some() || self.candidate_window || self.accepted_completion.is_some() {
             return None;
         }
-        if self.config.mode == Mode::Mixed
-            && !self.in_zh_lane()
-            && !self.in_ja_lane()
-            && self.config.english_autocomplete
-        {
+        if !self.in_zh_lane() && !self.in_ja_lane() && self.config.english_autocomplete {
             if let Some(text) = self.ascii.suggestion() {
                 let rest = text.strip_prefix(self.ascii.pending()).unwrap_or(&text);
                 return (!rest.is_empty()).then(|| rest.to_string());
@@ -1768,7 +1763,7 @@ impl Session {
 
     /// 沒有要先套用的候選時，把整段組字交給 lane 送出。
     fn finalize_lane(&mut self) {
-        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
+        if !self.in_zh_lane() && !self.in_ja_lane() {
             self.ascii.flush();
             self.trim_mixed_candidate_space();
         }
@@ -2078,7 +2073,7 @@ impl Session {
             self.keep_candidates = false;
             return;
         }
-        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
+        if !self.in_zh_lane() && !self.in_ja_lane() {
             self.navigate_mixed(delta);
             return;
         }
@@ -2176,9 +2171,7 @@ impl Session {
         if self.in_zh_lane() {
             self.note_learning_event();
             self.learn_zh_candidate(index);
-            if self.config.mode == Mode::Mixed {
-                self.learn_zh_lane_languages();
-            }
+            self.learn_zh_lane_languages();
             return;
         }
         if self.in_ja_lane() {
@@ -2769,7 +2762,7 @@ impl Session {
                 .unwrap_or(self.base.len())
         };
         self.last_hypotheses = hypotheses.clone();
-        let mixed_lane = self.config.mode == Mode::Mixed && self.zh_lane;
+        let mixed_lane = self.zh_lane;
         let hypotheses: Vec<Candidate> = hypotheses
             .into_iter()
             .map(|hypothesis| {
@@ -2844,11 +2837,7 @@ impl Session {
             if edit.len > 0 && edit.start.saturating_add(edit.len) <= syllables.len() {
                 self.candidates = self.window_candidates(edit);
             }
-        } else if self.zh_window_last
-            && self.config.mode == Mode::Mixed
-            && self.candidate_window
-            && !syllables.is_empty()
-        {
+        } else if self.zh_window_last && self.candidate_window && !syllables.is_empty() {
             // ↓／空白開窗：只列游標所在音節；顯示仍是整段最佳路徑。
             let last = syllables.len() - 1;
             self.candidates = self.window_candidates(EditWindow {

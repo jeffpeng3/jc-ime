@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn interactive_requests_get_ten_seconds() {
-        for op in ["key", "toggle", "commit", "snapshot", "idle"] {
+        for op in ["key", "commit", "snapshot", "idle"] {
             assert_eq!(
                 request_budget_ms(&json!({"op": op})),
                 HANDLE_TIMEOUT_MS,

@@ -882,21 +882,10 @@ impl Session {
     }
 
     /// 切換到指定模式；清空目前組字，並丟掉先前記錄的 Shift 切換來源。
-    ///
-    /// 單按 Shift 的英文切換由 [`Session::toggle_english`] 進入。
     pub fn set_mode(&mut self, mode: Mode) -> Snapshot {
         self.clear_composition();
         self.config.mode = mode;
         self.rebuild();
-        self.snapshot()
-    }
-
-    /// 中英切換。
-    ///
-    /// 英文由外殼直接放行按鍵，不進引擎；引擎只回目前快照，不改變組字或
-    /// 記住前一個模式。外殼自己保存中英模式並在重連後還原。切換不清組字，
-    /// 也不鎖定片段：先前的中文仍是 `Auto`，游標移回去照常能選字。
-    pub fn toggle_english(&mut self) -> Snapshot {
         self.snapshot()
     }
 
@@ -1016,14 +1005,14 @@ impl Session {
             self.remember_committed(&text);
             return text;
         }
-        if self.config.mode == Mode::Mixed && self.in_zh_lane() && self.zh_window_last {
+        if self.in_zh_lane() && self.zh_window_last {
             self.zh_window_last = false;
             self.rebuild();
         }
         if !private {
             self.remember_selection();
         }
-        if self.config.mode == Mode::Mixed && !self.in_zh_lane() && !self.in_ja_lane() {
+        if !self.in_zh_lane() && !self.in_ja_lane() {
             self.ascii.flush();
         }
         let text = self.output_text(self.finalize(self.commit_text()));
@@ -2687,22 +2676,19 @@ mod tests {
 
     /// 單按 Shift 由外殼處理；引擎只回快照，不切換核心模式也不清組字。
     #[test]
-    fn test_toggle_english_keeps_mixed_composition() {
+    fn test_snapshot_keeps_mixed_composition() {
         let mut s = Session::new(SessionConfig::new(Mode::Mixed));
         type_syllable(&mut s, "ㄨㄛˇ");
         let before = s.snapshot().preedit;
         assert_eq!(s.mode(), Mode::Mixed);
-        s.toggle_english();
-        assert_eq!(s.mode(), Mode::Mixed);
         assert_eq!(s.snapshot().preedit, before, "切英文不清緩衝");
-        s.toggle_english();
         assert_eq!(s.mode(), Mode::Mixed);
         assert_eq!(s.snapshot().preedit, before);
     }
 
-    /// 混合輸入中真正的日文片段也一樣：toggle 不改變核心狀態。
+    /// 混合輸入中真正的日文片段也一樣：外殼切換不改變核心狀態。
     #[test]
-    fn test_toggle_english_keeps_japanese_run() {
+    fn test_snapshot_keeps_japanese_run() {
         let mut config = SessionConfig::new(Mode::Mixed);
         config.ja = Some(Arc::new(JaDecoder::new(Arc::new(LiveTestSource(
             Vec::new(),
@@ -2713,10 +2699,8 @@ mod tests {
         assert_eq!(before, "わたし", "要先建立 romaji → kana 的日文片段");
         assert!(s.ja_run, "這段組字必須是日文推斷出來的 ja_run");
 
-        s.toggle_english();
         assert_eq!(s.mode(), Mode::Mixed);
         assert_eq!(s.snapshot().preedit, before, "切英文後日文片段仍在");
-        s.toggle_english();
         assert_eq!(s.mode(), Mode::Mixed);
         assert_eq!(s.snapshot().preedit, before, "切回中文後日文片段仍在");
     }
@@ -2772,25 +2756,18 @@ mod tests {
         );
     }
 
-    /// 引擎一律停在 Mixed，沒有「切換來源」可以回到其他模式。
+    /// 引擎一律停在 Mixed，沒有其他輸入模式。
     #[test]
-    fn test_toggle_english_without_previous_mode_uses_mixed() {
-        let mut s = english_session();
-        s.toggle_english();
-        assert_eq!(s.mode(), Mode::Mixed);
-        s.toggle_english();
+    fn test_mixed_is_the_only_mode() {
+        let s = english_session();
         assert_eq!(s.mode(), Mode::Mixed);
     }
 
-    /// 外部 `set_mode` 之後 toggle 仍停在 Mixed，不會回到過期模式。
+    /// 外部 `set_mode` 後仍停在 Mixed。
     #[test]
-    fn test_set_mode_keeps_toggle_in_mixed() {
+    fn test_set_mode_stays_mixed() {
         let mut s = Session::new(SessionConfig::new(Mode::Mixed));
-        s.toggle_english();
         s.set_mode(Mode::Mixed);
-        s.toggle_english();
-        assert_eq!(s.mode(), Mode::Mixed);
-        s.toggle_english();
         assert_eq!(s.mode(), Mode::Mixed);
     }
 
@@ -2999,7 +2976,6 @@ mod tests {
     #[test]
     fn test_english_literal_appends_in_order() {
         let mut s = session();
-        s.toggle_english();
         for ch in "abc".chars() {
             s.press(Key::char(ch, false));
         }
@@ -3022,7 +2998,6 @@ mod tests {
     fn test_english_literal_after_zh_syllable() {
         let mut s = session();
         type_keys(&mut s, "w96j0");
-        s.toggle_english();
         for ch in "abc".chars() {
             s.literal(&ch.to_string());
         }
@@ -3072,7 +3047,6 @@ mod tests {
     fn test_english_literal_keeps_buffer_and_commits_whole_segment() {
         let mut s = session();
         type_keys(&mut s, "w96j0");
-        s.toggle_english();
         let snap = s.literal("hello");
         assert_eq!(snap.preedit, "台ㄨㄢhello");
         assert!(snap.candidates.is_empty());
@@ -3083,7 +3057,6 @@ mod tests {
         assert_eq!(s.commit(), "台ㄨㄢhello");
 
         type_keys(&mut s, "w96j0");
-        s.toggle_english();
         s.literal("hello");
         let snap = s.press(Key::new(KeyCode::Escape, None, false));
         assert_eq!(snap.preedit, "");
@@ -3095,7 +3068,6 @@ mod tests {
     fn test_english_literal_space_and_backspace() {
         let mut s = session();
         type_keys(&mut s, "w96j0");
-        s.toggle_english();
         s.literal("hello");
         let snap = s.literal(" ");
         assert_eq!(snap.preedit, "台ㄨㄢhello ");
@@ -3190,22 +3162,20 @@ mod tests {
         for check in [enter, backspace, escape, tab] {
             let mut s = session();
             type_keys(&mut s, "w96j0");
-            s.toggle_english();
             s.literal("abc");
             assert_eq!(s.snapshot().preedit, "台ㄨㄢabc");
             check(&mut s);
         }
     }
 
-    /// toggle 兩次都保留整段緩衝，owners 仍是 Auto。
+    /// 取兩次快照都保留整段緩衝，owners 仍是 Auto。
     #[test]
-    fn test_toggle_twice_keeps_literal_buffer() {
+    fn test_snapshot_twice_keeps_literal_buffer() {
         let mut s = session();
         type_keys(&mut s, "w96j0");
-        s.toggle_english();
         s.literal("hello");
         for _ in 0..2 {
-            let snap = s.toggle_english();
+            let snap = s.snapshot();
             assert_eq!(snap.preedit, "台ㄨㄢhello");
             assert!(!snap.owners.contains(&Owner::User));
         }

@@ -61,7 +61,6 @@ Windows 的 `--socket` 只取最後一段，掛到 `\\.\pipe\`；`--supervise` �
 ```json
 { "op": "hello", "protocol": 3, "client": "jc-tsf/<version>" }
 { "op": "key", "key": { ... } }
-{ "op": "toggle" }
 { "op": "snapshot" }
 { "op": "commit" }
 { "op": "ping" }
@@ -72,9 +71,9 @@ Windows 的 `--socket` 只取最後一段，掛到 `\\.\pipe\`；`--supervise` �
 { "op": "shutdown" }
 ```
 
-`key` 的形狀見 `jc_core::Key`／`KeyCode`。`toggle` 是單按左／右 Shift：引擎在目前
-語言（Mixed 或 Ja）與純英文 En 之間切換，並記住切換前的模式；再收到一次就回到
-它。未定義的 `op` 由 `unknown` 接住並回 `UnknownOp`，不會斷線。
+`key` 的形狀見 `jc_core::Key`／`KeyCode`。中英切換由外殼保存，不送引擎；
+舊的 `{"op":"toggle"}` 已移除，會由 `unknown` 接住並回 `UnknownOp`。
+未定義的 `op` 由 `unknown` 接住並回 `UnknownOp`，不會斷線。
 
 以下是 0c adapter 的擴充 op，沿用協定版本 3；每個都是獨立 variant，不改變
 既有請求的 JSON 形狀。
@@ -228,7 +227,6 @@ UTF-16 位移的外殼請自己從 `cursor_rune` 換算，不要假設 `cursor` 
   │
   ├─ Key ─────▶ State（一般按鍵）
   │             └─ Enter 且提交文字非空 ──▶ Committed
-  ├─ Toggle ──▶ State（在目前語言與 En 間切換，回完整快照）
   ├─ Snapshot ▶ State
   ├─ Commit ──▶ Committed（文字可能為空字串）
   │
@@ -239,7 +237,6 @@ UTF-16 位移的外殼請自己從 `cursor_rune` 換算，不要假設 `cursor` 
 |---|---|
 | `hello` | `ready`；版本不符時 `error` 後關線 |
 | `key` | `state`；Enter 且有可提交的文字時 `committed` |
-| `toggle` | `state` |
 | `snapshot` | `state` |
 | `commit` | `committed`，`text` 可為空字串 |
 | `ping`／`close`／`reset_personal` | `acknowledged` |
@@ -251,7 +248,7 @@ UTF-16 位移的外殼請自己從 `cursor_rune` 換算，不要假設 `cursor` 
 
 規則：
 
-- 一般 `Key` 與 `Toggle` 都回完整 `State`，wrapper 不需要自己維護組字狀態。
+- 一般 `Key` 都回完整 `State`，wrapper 不需要自己維護組字狀態。
 - Enter 且引擎提交了非空文字時回 `Committed`，不是 `State`；wrapper 要同時
   處理這兩種回應。
 - `Commit` 後組字區清空，回 `Committed { text }`。

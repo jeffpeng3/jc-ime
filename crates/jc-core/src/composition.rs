@@ -21,8 +21,6 @@ use std::ops::Range;
 
 use thiserror::Error;
 
-use crate::lang::Mode;
-
 /// 片段語言。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
@@ -35,14 +33,6 @@ pub enum Lang {
 }
 
 impl Lang {
-    /// 由輸入模式對應到片段語言。
-    ///
-    /// 收斂後唯一的輸入模式是混打，沒有單一片段語言；語言一律由分段器依
-    /// 實際文字判定。
-    pub fn from_mode(_mode: Mode) -> Option<Self> {
-        None
-    }
-
     /// 這個語言是否會被送去轉換。
     pub fn convertible(self) -> bool {
         matches!(self, Self::Zh | Self::Ja)

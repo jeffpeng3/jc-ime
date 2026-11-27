@@ -33,9 +33,8 @@
 - `←` 可以回到「我」，候選窗作用在游標所在的那一段。
 - 再 Shift 切回中文，緩衝照樣保留。
 
-現在的 `toggle_english()` 走 `set_mode(Mode::En)`，而 `set_mode()` 會
-`clear_composition()`——實機症狀是「切英文，打到一半的字全部消失」。這一條要在
-`Mode::En` 移出 core 的階段一起改，見 `/tmp/opencode/task-toggle-keeps-buffer.md`。
+G7 已移除 `Session::toggle_english()` 與 `Request::Toggle`；中英切換只由外殼
+保存，引擎只回快照，不會 `clear_composition()`。
 
 ## 現況（2026-11-26）
 
@@ -63,8 +62,8 @@
 
 ## 風險
 
-- `Mode::En` 從 core 移除會影響 `toggle_english()`：目前引擎記住 previous mode；
-  之後 TSF 自己記，引擎只回 `ok`。`toggle` 的 replay 邏輯要跟著改。
+- `Mode::En` 已從 core 移除；TSF 自己記中英模式，引擎沒有 toggle 請求，
+  重播邏輯也不再需要 toggle 特例。
 - 日文 `F6`／`F8` 等變換鍵目前綁在 `Mode::Ja`；併進 Mixed 後要確認不會跟中文
   候選鍵衝突。
 - 這是一整批行為變更，必須每個階段都能單獨發版回滾。

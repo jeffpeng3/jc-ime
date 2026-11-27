@@ -91,9 +91,10 @@ fn request_key_round_trips() {
 }
 
 #[test]
-fn request_toggle_round_trips() {
-    let request: Request = round_trip("request_toggle.json");
-    assert_eq!(request, Request::Toggle);
+fn request_toggle_is_unknown() {
+    // 中英切換由外殼保存，不再送 toggle；舊訊框由 Unknown 收下並回 UnknownOp。
+    let request: Request = serde_json::from_str(&read_fixture("request_toggle.json")).unwrap();
+    assert_eq!(request, Request::Unknown);
 }
 
 #[test]

@@ -871,7 +871,7 @@ impl TextService_Impl {
             page: (page_start / page_size + 1) as i64,
             pages: pages as i64,
             columns: snapshot.columns,
-            kind: snapshot.candidate_kind.clone(),
+            kind: menu.map(|menu| menu.kind.clone()).unwrap_or_default(),
             title: snapshot.candidate_title(),
             menu_kind: menu.map(|menu| menu.kind.clone()).unwrap_or_default(),
             menu_title: menu.map(|menu| menu.title.clone()).unwrap_or_default(),
@@ -1683,9 +1683,6 @@ impl TextService_Impl {
         let mut st = self.state.borrow_mut();
         st.right_shift.observe(right, repeat, modified, now, mouse);
         st.left_shift.observe(left, repeat, modified, now, mouse);
-        if !right && !left {
-            st.session.bypassed();
-        }
     }
 
     fn shift_released(&self, side: keys::Side) -> bool {

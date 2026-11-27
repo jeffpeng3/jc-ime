@@ -473,9 +473,7 @@ impl Session {
 
     /// 把字面文字插進目前組字結果；先用掉混打待定英文，維持顯示順序。
     fn insert_style_literal(&mut self, text: &str) {
-        if self.config.mode == Mode::Mixed {
-            self.ascii.flush();
-        }
+        self.ascii.flush();
         self.push_literal(text);
     }
 

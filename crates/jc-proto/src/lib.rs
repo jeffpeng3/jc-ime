@@ -302,10 +302,6 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "is_zero_u64")]
         session: u64,
     },
-    /// 單按左右 Shift：在目前語言與純英文 En 之間切換。
-    ///
-    /// 引擎記住切換前的模式，再收到一次就回到原本的 Mixed 或 Ja。
-    Toggle,
     /// 取得目前組字狀態。
     Snapshot,
     /// 送出目前的組字結果。
@@ -649,13 +645,9 @@ mod tests {
     }
 
     #[test]
-    fn toggle_uses_op_tag() {
-        let text = serde_json::to_string(&Request::Toggle).unwrap();
-        assert_eq!(text, r#"{"op":"toggle"}"#);
-        assert_eq!(
-            serde_json::from_str::<Request>(&text).unwrap(),
-            Request::Toggle
-        );
+    fn toggle_op_is_unknown() {
+        let request: Request = serde_json::from_str(r#"{"op":"toggle"}"#).unwrap();
+        assert_eq!(request, Request::Unknown);
     }
 
     #[test]
@@ -1161,10 +1153,6 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&Request::Snapshot).unwrap(),
             r#"{"op":"snapshot"}"#
-        );
-        assert_eq!(
-            serde_json::to_string(&Request::Toggle).unwrap(),
-            r#"{"op":"toggle"}"#
         );
         assert_eq!(
             serde_json::to_string(&Request::Commit).unwrap(),

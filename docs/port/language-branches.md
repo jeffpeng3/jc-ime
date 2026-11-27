@@ -20,8 +20,8 @@
    `english_pending` 旗標。
 4. 真正必要的差異只有三件：注音的音節與聲調、日文的羅馬字與文節轉換、字面的 raw input。
    這三件可以用同一個 lane 介面表達，不需要在每個按鍵處理常式重新分派。
-5. 最快的低風險清理是移除永遠成立的 `Mode::Mixed` 條件與死欄位 `candidate_kind`，但這不會修 bug；
-   真正有價值的是下面「最值得先做的 3 件事」。
+5. 最快的低風險清理是移除永遠成立的 `Mode::Mixed` 條件與死欄位 `candidate_kind`（G7 已完成），
+   但這不會修 bug；真正有價值的是下面「最值得先做的 3 件事」。
 
 ## 總表
 
@@ -63,17 +63,17 @@
 | TSF | `crates/jc-tsf/src/service.rs:1500` `english_key_policy` | 外殼 `english` | 英文模式自己處理 literal、Enter／Backspace／Esc／Tab、補全、IMM32 word-end | 與 core 的 mixed English 重複 | 部分：printable 一律交 core `literal`／`key`，只留 IMM32 word-end | 高：宿主相容與 Caps Lock |
 | TSF | `crates/jc-tsf/src/service.rs:1599` | `english_pending` 且字母 | `EnglishKey::Eat(true)` 直接吃鍵，沒有送引擎 | 疑似 bug | 是：先送 core，再依 `handled` 決定是否吃 | 中：英文補全無法續打 |
 | TSF | `crates/jc-tsf/src/service.rs:354,375,381,389` | `session.english()`／`japanese()` | `vocab_keys`、`japanese_key`、Ctrl 標點、簡體熱鍵都依語言互斥 | 部分：Ctrl 標點必要，簡體與 vocab 與語言無關 | 部分：只保留真正語言相關的 gate | 低中 |
-| TSF | `crates/jc-tsf/src/service.rs:757,879` | `present_in_edit` | `show` 只看 composing＋navigating；`candidate_kind` 直接傳空字串 | 已語言無關；`kind` 是死欄位 | 是：刪 `kind` | 低 |
+| TSF | `crates/jc-tsf/src/service.rs` | `present_in_edit` | `show` 只看 composing＋navigating；`kind` 改由選單種類生產 | 已語言無關 | 已刪 `candidate_kind` | 低 |
 | TSF | `crates/jc-tsf/src/session.rs:446,487` | `state_to_snapshot_value` | 任何日文片段就 `japanese`；全部英文才 `english`；任何 suggestion 都變成 `english_pending` | 把片段語言與外殼模式混在一起 | 部分：拆成 `mode`（外殼）與 `languages`（片段） | 中高：`su`＋數字、英文補全 |
 | TSF | `crates/jc-tsf/src/session.rs:1832` | `adopt_engine_mode` | key／literal／idle 一律用外殼 `english`；`japanese` 用 legacy capability 覆寫成 false | 與 core 已無日文模式矛盾 | 是：英文用外殼，日文用片段與 capability | 中：F6–F10、文節樣式 |
 | TSF | `crates/jc-tsf/src/session.rs:1924` | 英文組字中的 `Up/Down/PageUp/PageDown` | 外殼直接吞掉，不送引擎 | 與 core 候選政策重複 | 部分：交給 core 回 `handled=false` | 低 |
-| TSF | `crates/jc-tsf/src/session.rs:1967` `toggle` | 外殼英文切換 | 外殼自己切，core 的 `toggle_english()` 只回快照 | 目前架構必要 | 是：刪掉 core／engine 的 toggle 死路徑 | 低 |
+| TSF | `crates/jc-tsf/src/session.rs` `toggle` | 外殼英文切換 | 外殼自己切；core／engine 不再有 toggle 請求 | 外殼必須自己保存 | 已刪 core 與 engine 的 toggle 路徑 | 低 |
 | TSF | `crates/jc-tsf/src/keys.rs:297` `composing_wants` | English 的 `Down` | 只有英文的 `Down` 不給 core，其他具名鍵都給 | 可疑特例 | 是：英文 `Down` 也交 core，core 回 handled | 低 |
 | TSF | `crates/jc-tsf/src/session.rs:1609` | `start_mode` | `start_mode` 只有 `english`／`zhuyin`；`japanese` 分支還需要 `japanese_cap`，jc-engine 從不廣告 | 日文開機分支永遠不成立 | 是：改用 capability 或 core 的 mixed 設定 | 低中 |
-| 死碼 | `crates/jc-core/src/lang.rs`、`session/mod.rs:816,823`、`core.rs` 16 處 | `config.mode == Mode::Mixed` | 永遠成立 | 多餘 | 是：刪條件，保留 Mixed | 低 |
-| 死碼 | `crates/jc-core/src/composition.rs:42` | `Lang::from_mode` | 永遠回 `None` | 多餘 | 是：刪 | 低 |
-| 死碼 | `crates/jc-tsf/src/session.rs:1040` | `candidate_kind` | jc 沒有生產者，UI 也沒有消費者 | 多餘 | 是：刪欄位或補 producer | 低 |
-| 死碼 | `crates/jc-tsf/src/service.rs:375` `japanese_key` | `session.japanese()` | jc-engine 不廣告 `japanese`，F6–F10／Convert 永遠到不了 core | 死分支，但造成功能不可達 | 是：改成 mixed 能力，不再用語言模式 gate | 中 |
+| 死碼 | `crates/jc-core/src/lang.rs`、`session/mod.rs`、`core.rs`、`key_policy.rs`、`mixed.rs`、`input_style.rs` | `config.mode == Mode::Mixed` | 永遠成立 | 多餘 | 已刪條件，保留 `Mode` 型別 | 低 |
+| 死碼 | `crates/jc-core/src/composition.rs:42` | `Lang::from_mode` | 永遠回 `None` | 多餘 | 已刪 | 低 |
+| 死碼 | `crates/jc-tsf/src/session.rs` | `candidate_kind` | jc 沒有生產者，UI 也沒有消費者 | 多餘 | 已刪；`UiMessage.kind` 改由選單種類生產 | 低 |
+| 死碼 | `crates/jc-tsf/src/service.rs:375` `japanese_key` | `session.japanese()` | jc-engine 不廣告 `japanese`，F6–F10／Convert 永遠到不了 core | 死分支，但造成功能不可達 | G5 已改成 capability，不再用語言模式 gate | 中 |
 
 ## 必要與多餘
 
@@ -208,6 +208,9 @@ priorities:
 合併成什麼：刪掉 `Mode::Mixed` 的永遠成立條件、`composition::Lang::from_mode`、
 `candidate_kind`、core 的 `toggle_english` 死路徑、legacy `japanese` 模式。
 
+狀態：已完成。`Session::toggle_english` 與 `Request::Toggle` 已移除；中英切換只由
+外殼保存。`candidate_kind` 已刪，`UiMessage.kind` 改由選單種類生產。
+
 要改的檔：`lang.rs`、`session/mod.rs`、`session/core.rs`、`composition.rs`、
 `jc-tsf/src/session.rs`、`jc-tsf/src/service.rs`。
 
@@ -275,7 +278,7 @@ priorities:
 | 候選編號 | 核心 `selection_key`，英文候選也有編號 | 同上 |
 | Enter 兩段式 | 一般候選先套用、選單一次送出、前導變體例外 | 同上 |
 | 片段所有權 | `Composition` 的 `Auto`／`User`，注音與日文共用 | `docs/port/composition-model.md` |
-| 中英模式 | 外殼保存，引擎 `toggle` 只回快照 | `docs/port/mode-unification.md` |
+| 中英模式 | 外殼保存，引擎沒有 toggle 請求 | `docs/port/mode-unification.md` |
 | 日文逐字／延遲整句 | `live` 控制器與 `apply_live_plan` | `docs/port/ja-live-rewrite.md` |
 
 ## 待實測或待確認

@@ -515,7 +515,6 @@ impl Engine {
                     }
                     Request::Literal { text, .. } => state(session.literal(&text)),
                     Request::Idle { .. } => state(session.ja_live_idle()),
-                    Request::Toggle => state(session.toggle_english()),
                     Request::Commit => Response::Committed {
                         text: session.commit(),
                     },
@@ -710,14 +709,6 @@ impl Engine {
                     }),
                     |s| state(s.literal(&text)),
                 )
-            }
-            Request::Toggle => {
-                if !self.hello {
-                    return not_handshaked();
-                }
-                self.with_current(Some(Request::Toggle), |session| {
-                    state(session.toggle_english())
-                })
             }
             Request::Idle { session } => {
                 if !self.hello {
@@ -1239,7 +1230,6 @@ fn request_op(request: &Request) -> &'static str {
         Request::Key { .. } => "key",
         Request::Literal { .. } => "literal",
         Request::Idle { .. } => "idle",
-        Request::Toggle => "toggle",
         Request::Snapshot => "snapshot",
         Request::Commit => "commit",
         Request::Select { .. } => "select",
@@ -1919,7 +1909,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_request_keeps_core_in_mixed_and_preserves_composition() {
+    fn snapshot_keeps_core_in_mixed_and_preserves_composition() {
         let config = SessionConfig::new(jc_core::Mode::Mixed);
         let mut engine = Engine::with_session(Session::new(config));
         hello(&mut engine);
@@ -1928,7 +1918,7 @@ mod tests {
         assert!(matches!(before, Response::State { .. }));
         assert_eq!(engine.mode(), jc_core::Mode::Mixed);
         assert!(matches!(
-            engine.handle(Request::Toggle),
+            engine.handle(Request::Snapshot),
             Response::State { .. }
         ));
         assert_eq!(engine.mode(), jc_core::Mode::Mixed, "切英文由外殼處理");
@@ -1941,10 +1931,10 @@ mod tests {
     }
 
     #[test]
-    fn toggle_before_hello_is_rejected() {
+    fn snapshot_before_hello_is_rejected() {
         let mut engine = Engine::new();
         assert_eq!(
-            engine.handle(Request::Toggle),
+            engine.handle(Request::Snapshot),
             Response::error(ErrorCode::Internal, "尚未完成握手")
         );
     }
