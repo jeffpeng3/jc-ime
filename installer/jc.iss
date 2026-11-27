@@ -114,6 +114,7 @@ Name: "smoke"; Description: "{cm:RunSmoke}"; Flags: unchecked
 Source: "{#PayloadDir}\jc-tsf.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\jc-tsf-x86.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\jc-engine.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\jc-engine-launcher.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\jc-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\jc-settings-ui.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\jc-tsf-smoke.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -186,11 +187,15 @@ Root: HKLM32; Subkey: "Software\Classes\CLSID\{{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E
 
 ; 引擎登入自動啟動。REG_EXPAND_SZ 讓 %LOCALAPPDATA% 在每位使用者登入時各自展開。
 ; 必須用 --supervise；直接伺服模式沒給 socket 會退回 stdio，TIP 連不上。
-; 直接呼叫 jc-engine.exe：不用 powershell 算 rid。
+; 呼叫 windows subsystem 的 jc-engine-launcher.exe，由它用 CREATE_NO_WINDOW
+; 啟動 jc-engine.exe。jc-engine 本身是 console subsystem，Run 直接指它會在
+; 登入時開一個終端機視窗，關掉視窗等於殺掉引擎。
+; 升級時先刪舊值再寫新值，避免新舊兩條登入命令同時存在、各帶起一份引擎。
 ; pipe 名由 jc_windows::resolve_pipe_name() 決定，TIP 與引擎都呼叫同一函式，
 ; 所以 autostart 絕對不能帶 --socket（帶了反而和 TIP 腳踏）。
 ; --personal-dir 必須指向使用者目錄：資料根目錄是 ProgramData，寫入會失敗。
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: expandsz; ValueName: "jc-ime-engine"; ValueData: """{app}\jc-engine.exe"" --supervise --data ""{commonappdata}\jc-ime\data"" --settings ""%LOCALAPPDATA%\jc-ime\settings.json"" --personal-dir ""%LOCALAPPDATA%\jc-ime"" --personal-prefix personal"; Flags: uninsdeletevalue
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "jc-ime-engine"
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: expandsz; ValueName: "jc-ime-engine"; ValueData: """{app}\jc-engine-launcher.exe"" --supervise --data ""{commonappdata}\jc-ime\data"" --settings ""%LOCALAPPDATA%\jc-ime\settings.json"" --personal-dir ""%LOCALAPPDATA%\jc-ime"" --personal-prefix personal"; Flags: uninsdeletevalue
 
 [Run]
 ; 機器層級註冊（HKLM\SOFTWARE\Microsoft\CTF）。安裝程式已提權，直接跑。
@@ -209,8 +214,10 @@ Filename: "{app}\jc-tip-register.exe"; Parameters: "user-install"; Tasks: enable
 Filename: "{app}\jc-tip-register.exe"; Parameters: "user-cleanup-legacy"; StatusMsg: "{cm:MsgCleanup}"; Flags: runhidden waituntilterminated runasoriginaluser
 
 ; 裝完就喚起引擎，不等下次登入。
+; 走啟動器，和登入自動啟動同一條路徑；runhidden 留著，就算啟動器未來改成
+; 有 console 的版本也不會閃視窗。
 ; 已經在跑的監督者會回 AlreadyRunning 並直接結束，不是錯誤。
-Filename: "{app}\jc-engine.exe"; Parameters: "--supervise --data ""{commonappdata}\jc-ime\data"" --settings ""{%LOCALAPPDATA}\jc-ime\settings.json"" --personal-dir ""{%LOCALAPPDATA}\jc-ime"" --personal-prefix personal"; Tasks: enableime; Flags: runhidden nowait runasoriginaluser
+Filename: "{app}\jc-engine-launcher.exe"; Parameters: "--supervise --data ""{commonappdata}\jc-ime\data"" --settings ""{%LOCALAPPDATA}\jc-ime\settings.json"" --personal-dir ""{%LOCALAPPDATA}\jc-ime"" --personal-prefix personal"; Tasks: enableime; Flags: runhidden nowait runasoriginaluser
 
 ; 安裝完成後跑一次 doctor；預設不跑，要使用者在 [Tasks] 勾選 smoke 才會執行。
 ; runasoriginaluser 不能省：診斷要讀原使用者的
@@ -286,6 +293,7 @@ begin
   SweepOneLeftover(Dir, 'jc-tsf.dll');
   SweepOneLeftover(Dir, 'jc-tsf-x86.dll');
   SweepOneLeftover(Dir, 'jc-engine.exe');
+  SweepOneLeftover(Dir, 'jc-engine-launcher.exe');
 end;
 
 // 先刪、刪不掉改名 .old-<yyyymmddhhnnss>、再失敗才回錯誤訊息。
@@ -316,6 +324,9 @@ begin
   if Result <> '' then
     Exit;
   Result := ParkFile(Dir + '\jc-engine.exe');
+  if Result <> '' then
+    Exit;
+  Result := ParkFile(Dir + '\jc-engine-launcher.exe');
 end;
 
 // 從 MsiExec.exe /X{GUID} 或 /I{GUID} 取出 ProductCode（含大括號）。
@@ -424,7 +435,7 @@ begin
 end;
 
 // 檔案複製之前唯一的動手時機。先移除舊 MSI，再清 .old-* 殘骸，最後把
-// 三個可能被載入／映射的程式檔讓開。
+// 四個程式檔讓開（其中兩個 TSF DLL 可能被載入，引擎與啟動器可能被執行）。
 // 安裝／反安裝前先結束常駐的 jc-engine。
 //
 // 它從 {app} 執行並握著 jc-engine.exe；不先收掉，Inno 只能把舊檔改名成
@@ -468,6 +479,7 @@ begin
     DeleteOrScheduleDelete(Dir + '\jc-tsf.dll');
     DeleteOrScheduleDelete(Dir + '\jc-tsf-x86.dll');
     DeleteOrScheduleDelete(Dir + '\jc-engine.exe');
+    DeleteOrScheduleDelete(Dir + '\jc-engine-launcher.exe');
 
     RemoveDir(Dir + '\legal\licenses');
     RemoveDir(Dir + '\legal');

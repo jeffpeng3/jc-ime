@@ -70,8 +70,25 @@ require_line 'msiexec.exe'
 # 引擎 autostart 必須用 --supervise，資料、設定與個人資料路徑都不能少。
 # --socket **不能**出現：pipe 名由 jc_windows::resolve_pipe_name() 決定，TIP 與
 # 引擎呼叫同一個函式；autostart 自己算 rid 只會多一個出錯點。
+#
+# Run 值必須指向 windows subsystem 的啟動器，不能直接指 console subsystem 的
+# jc-engine.exe，否則登入會出現終端機視窗。升級前要先刪舊值，避免同時存在
+# 新舊兩條命令。
 if ! grep -Fq -- '--supervise' "$iss"; then
     error 'jc.iss 的引擎 autostart 缺少 --supervise'
+fi
+run_line=$(sed -n 's/.*ValueName: "jc-ime-engine".*/&/p' "$iss")
+if ! grep -Fq -- 'jc-engine-launcher.exe' <<<"$run_line"; then
+    error 'jc.iss 的 jc-ime-engine Run 值必須指向 jc-engine-launcher.exe'
+fi
+if grep -Fq -- '""{app}\jc-engine.exe""' <<<"$run_line"; then
+    error 'jc.iss 的 jc-ime-engine Run 值不可直接執行 console subsystem 的 jc-engine.exe'
+fi
+if ! grep -Fq -- 'ValueType: none; ValueName: "jc-ime-engine"' "$iss"; then
+    error 'jc.iss 升級時要先刪除舊的 jc-ime-engine Run 值'
+fi
+if ! grep -Fq -- 'jc-engine-launcher.exe' "$build"; then
+    error 'build.ps1 沒有建置或暫存 jc-engine-launcher.exe'
 fi
 if ! grep -Fq -- '--data' "$iss" || ! grep -Fq -- '--settings' "$iss"; then
     error 'jc.iss 的引擎 autostart 缺少 --data 或 --settings'

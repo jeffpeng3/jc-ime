@@ -9,6 +9,7 @@ members = [
     "crates/jc-platform",
     "crates/jc-eval",
     "crates/jc-engine",
+    "crates/jc-engine-launcher",
     "crates/jc-windows",
     "crates/jc-linux",
     "crates/jc-mac",

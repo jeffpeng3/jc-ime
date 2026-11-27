@@ -54,7 +54,7 @@ x64 與 x86 的 TSF DLL）。
 腳本做這些事：
 
 1. 依 `.cargo/config.toml` 的 `-C target-feature=+crt-static` 建置 workspace
-   的六個執行檔／DLL 與 `jc-tip-register`，另外用 `i686-pc-windows-msvc` 再建
+   的七個執行檔／DLL 與 `jc-tip-register`，另外用 `i686-pc-windows-msvc` 再建
    一份 `jc-tsf`（暫存成 `jc-tsf-x86.dll`）。靜態 CRT 是必要條件：TSF DLL 會被
    載入 explorer 與任意程式，不能依賴 `vcruntime140.dll`（`docs/history.md` 的
    既有決策）；兩個 Windows target 的 rustflags 都放在 `.cargo/config.toml`。
@@ -68,8 +68,9 @@ x64 與 x86 的 TSF DLL）。
    `legal/licenses/` 空目錄時直接失敗。
 5. `check-payload.py` 比對 `jc.iss` 的 `[Files]`、`shipped` 資料檔與授權文件三份
    清單；repo 的授權文件沒進安裝腳本、payload 少檔或內容與 repo 不同都會失敗。
-6. 有憑證時簽 `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe`、`jc-cli.exe`、
-   `jc-settings-ui.exe`、`jc-tsf-smoke.exe`、`jc-tip-register.exe`，再用
+6. 有憑證時簽 `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe`、
+   `jc-engine-launcher.exe`、`jc-cli.exe`、`jc-settings-ui.exe`、
+   `jc-tsf-smoke.exe`、`jc-tip-register.exe`，再用
    `ISCC` 打包，最後簽 setup.exe。沒憑證時輸出未簽章 setup.exe。
 7. `ISCC /DMyAppVersion=<完整版本> /DIsoVersion=<四段版本> /DPayloadDir=<暫存目錄>
    /O<輸出目錄> installer\jc.iss`。
@@ -85,9 +86,9 @@ x64 與 x86 的 TSF DLL）。
 
 ```text
 %ProgramFiles%\jc-ime\            jc-tsf.dll（x64）、jc-tsf-x86.dll（x86）、
-                                  jc-engine.exe、jc-cli.exe、
-                                  jc-settings-ui.exe、jc-tsf-smoke.exe、
-                                  jc-tip-register.exe
+                                  jc-engine.exe、jc-engine-launcher.exe、
+                                  jc-cli.exe、jc-settings-ui.exe、
+                                  jc-tsf-smoke.exe、jc-tip-register.exe
 %ProgramFiles%\jc-ime\legal\      LICENSE、NOTICE、THIRD-PARTY-NOTICES.md
 %ProgramFiles%\jc-ime\legal\licenses\  legal/licenses/ 的 17 份授權全文
 %ProgramData%\jc-ime\data\        manifest.json 與 13 個 shipped 資料檔
@@ -109,7 +110,7 @@ x64 與 x86 的 TSF DLL）。
 
 ### `[Files]` 與 `[Registry]`
 
-七個程式都放 `{app}` 同一層；資料依 manifest 的子目錄放到
+八個程式都放 `{app}` 同一層；資料依 manifest 的子目錄放到
 `{commonappdata}\jc-ime\data`。
 
 CLSID `{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}` 的兩個機碼檢視由 `[Registry]` 寫：
@@ -119,8 +120,10 @@ CLSID `{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}` 的兩個機碼檢視由 `[Regist
 - `PipePrefix=jc-ime` 兩個檢視各一份
 
 引擎的登入自動啟動是 `HKLM\...\Run\jc-ime-engine`，值型別 `expandsz`，內容用
-PowerShell 從 `whoami /user` 算 RID 後啟動 `--supervise`。`%LOCALAPPDATA%` 由
-REG_EXPAND_SZ 在每位使用者登入時展開。
+`jc-engine-launcher.exe --supervise` 啟動引擎。啟動器是 windows subsystem，以
+`CREATE_NO_WINDOW` 帶起 console subsystem 的 `jc-engine.exe`，登入不會出現終端機
+視窗。`%LOCALAPPDATA%` 由 REG_EXPAND_SZ 在每位使用者登入時展開。升級時先寫一筆
+`ValueType: none` 刪掉舊值，再寫新值，避免新舊命令同時存在。
 
 ### `[Tasks]` 與 `[Run]`
 
@@ -147,8 +150,9 @@ REG_EXPAND_SZ 在每位使用者登入時展開。
 
 - `MoveFileExW` 外部宣告，第二個參數是 `Cardinal`，傳 `0` 才是 NULL。
 - `DeleteOrScheduleDelete`：能刪就刪，刪不掉登記 `MOVEFILE_DELAY_UNTIL_REBOOT`。
-- `SweepLeftovers`：清 `jc-tsf.dll`／`jc-tsf-x86.dll`／`jc-engine.exe` 的 `.old-*`。
-- `PrepareToInstall`：先移除舊 MSI，再逐一讓開三個程式檔。先刪、刪不掉改名
+- `SweepLeftovers`：清 `jc-tsf.dll`／`jc-tsf-x86.dll`／`jc-engine.exe`／
+  `jc-engine-launcher.exe` 的 `.old-*`。
+- `PrepareToInstall`：先移除舊 MSI，再逐一讓開四個程式檔。先刪、刪不掉改名
   `.old-<yyyymmddhhnnss>`、再失敗才回錯誤訊息。時間戳命名是刻意的，固定名稱會在
   上一輪殘骸仍被占用時卡住。
 - `RemoveLegacyMsi`：掃 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`

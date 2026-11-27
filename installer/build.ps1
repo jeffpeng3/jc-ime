@@ -120,8 +120,9 @@ $tsfProfileArgs = @('--profile', $TsfConfiguration)
 # 全部換指紋重編，實測多花 3m27s。單次呼叫用 --bin 逐一挑出貨的 target。
 $cargoX64Args = @('build') + $profileArgs + @(
     '--target', $Target,
-    '-p', 'jc-engine', '-p', 'jc-cli', '-p', 'jc-settings-ui', '-p', 'jc-tsf-smoke',
-    '--bin', 'jc-engine', '--bin', 'jc-cli',
+    '-p', 'jc-engine', '-p', 'jc-engine-launcher', '-p', 'jc-cli',
+    '-p', 'jc-settings-ui', '-p', 'jc-tsf-smoke',
+    '--bin', 'jc-engine', '--bin', 'jc-engine-launcher', '--bin', 'jc-cli',
     '--bin', 'jc-settings-ui', '--bin', 'jc-tsf-smoke'
 )
 $cargoTsfX64Args = @('build') + $tsfProfileArgs + @(
@@ -274,11 +275,12 @@ New-Item -ItemType Directory -Path $Payload | Out-Null
 
 # jc-tsf 是 cdylib，Cargo 的 lib target 名稱用底線，產物因此是 jc_tsf.dll；
 # payload 內才改成安裝腳本使用的 jc-tsf.dll／jc-tsf-x86.dll。
-# 其餘 bin target 保留連字號：jc-engine.exe、jc-cli.exe、jc-settings-ui.exe、
-# jc-tsf-smoke.exe，已用 cargo metadata 確認。
+# 其餘 bin target 保留連字號：jc-engine.exe、jc-engine-launcher.exe、
+# jc-cli.exe、jc-settings-ui.exe、jc-tsf-smoke.exe，已用 cargo metadata 確認。
 $tsfLibName = 'jc_tsf.dll'
 $programs = @(
-    'jc-engine.exe', 'jc-cli.exe', 'jc-settings-ui.exe', 'jc-tsf-smoke.exe'
+    'jc-engine.exe', 'jc-engine-launcher.exe', 'jc-cli.exe',
+    'jc-settings-ui.exe', 'jc-tsf-smoke.exe'
 )
 foreach ($name in $programs) {
     Copy-FreshArtifact -Source (Join-Path $ReleaseDir $name) `

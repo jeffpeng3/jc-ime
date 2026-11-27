@@ -18,6 +18,10 @@ GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`�
 
 ### 修正
 
+- 登入自動啟動不再開終端機視窗：Run 值改走 windows subsystem 的
+  `jc-engine-launcher.exe`，由它以 `CREATE_NO_WINDOW` 啟動引擎。引擎的
+  `--supervise`、單例與 `%LOCALAPPDATA%\jc-ime\` log 不變；手動執行
+  `jc-engine.exe` 仍看得到輸出。
 - 直向候選窗按 `↓` 到底會換到下一頁，不再看起來像在同一欄循環。
 - 開著 Caps Lock 時英文字母一律大寫字面，不再被打成注音（反轉 #168 的舊行為）。
 - 日文逐鍵預覽不再遺失未完成的羅馬字：先前要打完才會看到轉換結果。

@@ -43,16 +43,18 @@ jc-ime-0.1.0-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\
    `machine-register` 結束碼，再看 `%TEMP%\jc-ime-install.log` 的註冊細節。
    32 位元程式因此看得到同一項「jc 注音」。
 4. 寫入引擎開機啟動：`HKLM\Software\Microsoft\Windows\CurrentVersion\Run\jc-ime-engine`。
-   Run 值直接執行 `jc-engine.exe --supervise`，並帶 `--data`、`--settings`、
+   Run 值執行 `jc-engine-launcher.exe --supervise`，並帶 `--data`、`--settings`、
    `--personal-dir` 與 `--personal-prefix personal`；**不帶** `--socket`，pipe
    名稱由引擎與 TIP 共用的 `jc_windows::resolve_pipe_name()` 從目前使用者 SID
-   推出。
+   推出。啟動器是 windows subsystem，用 `CREATE_NO_WINDOW` 帶起 console
+   subsystem 的 `jc-engine.exe`，登入時不會出現終端機視窗。升級時安裝器先刪
+   舊 Run 值再寫新值，不會同時啟動兩份。
 5. 勾選 `enableime`（預設）時，以 `runasoriginaluser` 執行 `user-install`，把
    單一「jc 注音」加進你的語言清單；再執行 `user-cleanup-legacy` 清掉舊語言
    清單項目。不改你的預設輸入法。
 6. 建立開始功能表的「jc 注音設定」與「jc 注音授權」兩個捷徑。
-7. 勾選 `enableime`（預設）時，以原使用者身分先啟動一次
-   `jc-engine.exe --supervise`。若另外勾了 `smoke`，再執行
+7. 勾選 `enableime`（預設）時，以原使用者身分先透過
+   `jc-engine-launcher.exe` 啟動一次引擎。若另外勾了 `smoke`，再執行
    `post-install-doctor.ps1 -NoUi`，跑一次安裝診斷並把紀錄寫到
    `%LOCALAPPDATA%\jc-ime\doctor\`。安裝期固定不跳訊息框，避免中斷靜默安裝；
    `jc-tsf-smoke` 超過 120 秒會被中止並記成 FAIL。見〈安裝診斷（doctor）〉。
@@ -90,6 +92,8 @@ jc-ime-0.1.0-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\
      --personal-dir "%LOCALAPPDATA%\jc-ime"
    ```
 
+   手動執行直接用 `jc-engine.exe`，它是 console 程式，`--help`／`--version` 與
+   錯誤訊息都看得到；只有登入自動啟動改走無視窗的 `jc-engine-launcher.exe`。
    `--supervise` 不能省：直接伺服模式沒給 `--socket` 會走 stdio，TIP 連不上。
    不要手動加 `--socket`：引擎會用目前使用者的 SID 尾段推出 `jc-ime-<rid>`，
    與 TIP 相同。只有在 `JC_IME_PIPE` 環境變數或
@@ -185,6 +189,7 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%ProgramFiles%\jc-ime\jc-tsf.dll` | TSF 文字服務（x64） |
 | `%ProgramFiles%\jc-ime\jc-tsf-x86.dll` | TSF 文字服務（x86，給 32 位元程式用；同一個 CLSID） |
 | `%ProgramFiles%\jc-ime\jc-engine.exe` | 引擎，named pipe `jc-ime-<SID 尾段>`，與 TIP 同名 |
+| `%ProgramFiles%\jc-ime\jc-engine-launcher.exe` | 登入自動啟動用的無視窗啟動器；以 `CREATE_NO_WINDOW` 帶起引擎 |
 | `%ProgramFiles%\jc-ime\jc-cli.exe` | 資料驗證與評測工具 |
 | `%ProgramFiles%\jc-ime\jc-settings-ui.exe` | 設定程式 |
 | `%ProgramFiles%\jc-ime\jc-tsf-smoke.exe` | 免管理員冒煙測試 |
@@ -320,7 +325,8 @@ supervisor.log、tsf.log）。要清全部使用者資料，以該使用者身�
 2. `[Registry]` 用 `uninsdeletekey` 移除兩個檢視（64 位元與 `Wow6432Node`）的
    CLSID 子樹，再刪檔案與 `Run` 值。
 3. `CurUninstallStepChanged(usPostUninstall)` 清 `.old-*` 殘骸；仍在的
-   `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe` 刪不掉就登記下次開機刪除，
+   `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe`、`jc-engine-launcher.exe`
+   刪不掉就登記下次開機刪除，
    然後收掉 `legal\licenses` 與 `legal`。安裝目錄本身還留著反安裝程式檔案時交給
    Inno 收尾；只有前面真的排了開機刪除，才會把整個目錄一起登記。
    `[UninstallDelete]` 另外刪除 `%LOCALAPPDATA%\jc-ime\doctor`。
@@ -346,8 +352,8 @@ supervisor.log、tsf.log）。要清全部使用者資料，以該使用者身�
 2. 找到就停掉 `jc-engine` 與載入 `jc-tsf.dll` 的行程，執行
    `msiexec /x <ProductCode> /qn /norestart`。失敗只寫 log，不中斷安裝。
 3. 清掉安裝目錄的 `.old-*` 殘骸。
-4. 對 `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe` 先刪；刪不掉就改名
-   `.old-<yyyymmddhhnnss>` 讓路；再失敗才回報錯誤。
+4. 對 `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe`、`jc-engine-launcher.exe`
+   先刪；刪不掉就改名 `.old-<yyyymmddhhnnss>` 讓路；再失敗才回報錯誤。
 
 舊版反安裝後，新安裝器會重新寫入 CLSID、Run 值與 profile。`%LOCALAPPDATA%\jc-ime`
 （settings.json、personal.json）不在安裝目錄，升級時保留；rc.15 加進語言清單的
@@ -410,31 +416,35 @@ Linux 只能做 `.iss`、payload 與 manifest 的靜態一致性檢查，下面�
 
 1. ISCC 完整產出 setup.exe，以及 `/VERYSILENT` 安裝與 `install.log`。
 2. 安裝後 `Win+Space` 看得到「jc 注音」，選取後可打注音、選字、提交。
-3. 安裝後重新登入，`jc-engine.exe` 是否由 Run 項目自動啟動，pipe
+3. 安裝後重新登入，`jc-engine.exe` 是否由 Run 項目透過
+   `jc-engine-launcher.exe` 自動啟動，登入過程完全沒有終端機視窗；pipe
    `jc-ime-<目前使用者的 SID 尾段>` 是否建立；`tsf.log` 不應出現「連線引擎 pipe
    … 失敗」。
-4. 組字外觀、游標、Enter／Esc／Backspace 與應用程式（記事本、Word、Chromium、
+4. 手動在 cmd／PowerShell 執行 `jc-engine.exe --help` 與 `--version` 仍有輸出，
+   `supervisor.log` 仍寫在 `%LOCALAPPDATA%\jc-ime\`。
+5. 組字外觀、游標、Enter／Esc／Backspace 與應用程式（記事本、Word、Chromium、
    PowerShell）的相容性。
-5. UWP 應用程式（例如 Windows 設定或小算盤）能否載入 TIP；若不行，檢查安裝目錄上
+6. UWP 應用程式（例如 Windows 設定或小算盤）能否載入 TIP；若不行，檢查安裝目錄上
    `ALL APPLICATION PACKAGES` 的讀取權限。
-6. 升級：舊版反安裝、新版安裝後，語言清單只剩一項「jc 注音」、舊 CLSID 機碼與舊 DLL 檔案消失、個人資料與設定檔保留。
-7. 反安裝後機碼、檔案是否清乾淨；反安裝只會刪除 `%LOCALAPPDATA%\jc-ime\doctor`，
-   其他 `%LOCALAPPDATA%\jc-ime` 內容要另外確認 `user-uninstall 0` 是否清掉。
-8. 非管理員帳號只按 `Win+Space` 使用時，是否會因為 Run 項目或 ACL 出問題。
-9. 未簽章與已簽章兩種 setup.exe 的 SmartScreen 行為。
-10. 32 位元應用程式（例如舊版 Office）與 64 位元應用程式使用**同一個**「jc 注音」
+7. 升級：舊版反安裝、新版安裝後，語言清單只剩一項「jc 注音」、舊 CLSID 機碼與舊 DLL 檔案消失、個人資料與設定檔保留；Run 值只剩一條且指向啟動器。
+8. 反安裝後機碼、檔案是否清乾淨，`jc-engine-launcher.exe` 是否消失；反安裝只會刪除
+   `%LOCALAPPDATA%\jc-ime\doctor`，其他 `%LOCALAPPDATA%\jc-ime` 內容要另外確認
+   `user-uninstall 0` 是否清掉。
+9. 非管理員帳號只按 `Win+Space` 使用時，是否會因為 Run 項目或 ACL 出問題。
+10. 未簽章與已簽章兩種 setup.exe 的 SmartScreen 行為。
+11. 32 位元應用程式（例如舊版 Office）與 64 位元應用程式使用**同一個**「jc 注音」
     項目都能輸入；`reg query ... /reg:32` 與 `/reg:64` 分別指到 `jc-tsf-x86.dll` 與
     `jc-tsf.dll`（完整指令見 `docs/port/x86-tip.md`）。
-11. 安裝目錄的 `LICENSE`、`NOTICE` 與 `legal\` 底下 19 份授權文件是否齊全（共 21
+12. 安裝目錄的 `LICENSE`、`NOTICE` 與 `legal\` 底下 19 份授權文件是否齊全（共 21
     份）、「jc 注音授權」捷徑是否真的用記事本開啟 `THIRD-PARTY-NOTICES.md`，以及
     反安裝後 `legal\` 目錄與兩份根目錄授權檔是否消失。
-12. 單按左／右 Shift 從中文或日文切到純英文，再按一次回到原本模式；
+13. 單按左／右 Shift 從中文或日文切到純英文，再按一次回到原本模式；
     Shift+字母、Shift+Ctrl 等組合不誤觸。設定程式不再顯示中英切換鍵、
     啟動模式、Esc 清除、日文神經模型等已停用項目。
-13. 引擎啟動後 `jc-tsf-smoke` 的「安裝檔案」看得到
+14. 引擎啟動後 `jc-tsf-smoke` 的「安裝檔案」看得到
     `%ProgramData%\jc-ime\data\english\words.bin`，且 `Health` 的
     `english_words` 大於 1000；若是 0 或約 104，代表退回內建原型詞表。
-14. 安裝完成後 `%LOCALAPPDATA%\jc-ime\doctor\` 是否產生 `<時間>.json`、
+15. 安裝完成後 `%LOCALAPPDATA%\jc-ime\doctor\` 是否產生 `<時間>.json`、
     `<時間>.log` 與 `last.txt`；有 FAIL 時剪貼簿與訊息框是否出現，Session 0
     是否只寫 log。install-smoke 會用 `-NoUi -ExitWithSmokeCode` 跑同一支腳本。
 
