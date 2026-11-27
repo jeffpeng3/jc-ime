@@ -4,6 +4,32 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。內部重構、測試補強與移植對照留在 `docs/port/`。
 
+## 0.1.31 - 2026-11-28
+
+### 新增
+
+- 前導字元 `u`／`b`：`` `u 4e00 `` 加空白插入「一」，`` `b a440 `` 加空白也插入
+  「一」（Unicode／Big5 碼位查詢）。
+- 混合模式的英文補全改用候選窗：打 `hellp` 按 Tab 開窗，選 `hello`；方向鍵、
+  數字鍵、Enter 與其他候選一致。
+
+### 變更
+
+- 英文模式改成純 raw：文字鍵直接交給應用程式，不經引擎；已註冊的選單快捷鍵
+  （Ctrl+Alt+,／.）仍然可用。
+- 移除 `caps_letter` 設定，Caps Lock 一律照系統行為。
+
+### 修正
+
+- `caps_lock_english` 設定現在真的生效，Caps Lock 開著會切英文。
+- 重播連線記錄時不再重複寫入學習統計。
+
+### 內部
+
+- 新增語言引擎介面（`LanguageEngine` trait、Fast path、前導控制引擎）。
+- Big5 → Unicode 查表與產生腳本。
+- 移除 `jc-ui`、`Request::Context`／`Mode`／`CapsLock` 等死路徑。
+
 ## 0.1.30 - 2026-11-27
 
 ### 變更
