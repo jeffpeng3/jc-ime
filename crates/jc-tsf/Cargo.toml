@@ -19,6 +19,8 @@ panic-test = []
 serde = { workspace = true }
 serde_json = { workspace = true }
 jc-proto = { path = "../jc-proto" }
+# 全域快捷鍵直接讀 settings.json 的 [keybinds]，與引擎共用同一份 chord 解析。
+jc-settings = { path = "../jc-settings" }
 # log.rs 在非 Windows 也要用到 windows_core 的 Result／HRESULT 型別。
 windows-core = "0.62"
 

@@ -4468,6 +4468,7 @@ name = "jc-tsf"
 version = "0.1.31"
 dependencies = [
  "jc-proto",
+ "jc-settings",
  "jc-tsf-register",
  "serde",
  "serde_json",

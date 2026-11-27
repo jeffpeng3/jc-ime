@@ -13,6 +13,11 @@ pub mod session;
 /// 快捷鍵 chord 的正規化（Linux 也編、也測）。
 pub mod chord;
 
+/// 全域快捷鍵：設定 → `RegisterHotKey` → engine `Request::Key`。
+///
+/// chord 解析與註冊清單在 Linux 也編、也測；訊息視窗只在 Windows 編譯。
+pub mod hotkey;
+
 /// 逾時重試政策：單次 I/O 逾時與整體期限分開（Linux 也編、也測）。
 #[cfg(any(windows, test))]
 pub(crate) mod ipc_retry;

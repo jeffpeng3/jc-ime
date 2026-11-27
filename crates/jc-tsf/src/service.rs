@@ -313,6 +313,8 @@ struct State {
     activate_flags: u32,
     /// 候選窗的訊息視窗（0c 的 CandidateWindow）；收 `WM_SELECT_CANDIDATE` 與延後焦點確認。
     callback: Option<candidate::CandidateWindow>,
+    /// 全域快捷鍵的 message-only window（Activate 建立、Deactivate 拆除）。
+    hotkey: Option<Box<crate::hotkey::HotkeyWindow>>,
     /// 候選窗訊息用戶端，持有 UI-less 宿主的候選清單元件。
     ui: ui::UiClient,
     revision: u32,
@@ -437,6 +439,7 @@ impl TextService {
                 ui_less: false,
                 activate_flags: 0,
                 callback: None,
+                hotkey: None,
                 ui: ui::UiClient::new(),
                 revision: 0,
                 selection: None,
@@ -1208,6 +1211,82 @@ impl TextService_Impl {
         let eaten = self.present(ctx, &snapshot);
         self.schedule_ja_live_idle(&snapshot);
         eaten
+    }
+
+    /// 建立快捷鍵訊息視窗（已存在就不做事）；失敗只留 key sink 路徑。
+    fn create_hotkey_window(&self) -> bool {
+        if self.state.borrow().hotkey.is_some() {
+            return true;
+        }
+        match crate::hotkey::HotkeyWindow::new(self) {
+            Ok(window) => {
+                self.state.borrow_mut().hotkey = Some(window);
+                true
+            }
+            Err(error) => {
+                log::log(&format!(
+                    "hotkey：建立訊息視窗失敗（{error}），保留 key sink 路徑"
+                ));
+                false
+            }
+        }
+    }
+
+    /// 這個服務取得前景：建立（必要時）並啟用全域快捷鍵視窗。
+    fn enable_hotkeys(&self) {
+        if !self.activated.get() {
+            return;
+        }
+        if !self.create_hotkey_window() {
+            return;
+        }
+        if let Some(window) = self.state.borrow().hotkey.as_ref() {
+            window.enable();
+        }
+    }
+
+    /// 失去前景：先反註冊，避免背景行程霸占其他程式的全域快捷鍵。
+    fn release_hotkeys(&self) {
+        if let Some(window) = self.state.borrow().hotkey.as_ref() {
+            window.disable();
+        }
+    }
+
+    /// `WM_HOTKEY`：把已註冊的 chord 當成一次按鍵送給 engine。
+    ///
+    /// 熱鍵由系統直接送進訊息佇列，不會經過 key sink；隱私與安全模式的判斷
+    /// 要在這裡補上。欄位被擋下時組合鍵已經被系統吃掉，只記日誌不送 engine。
+    pub(crate) fn hotkey_pressed(&self, hotkey: &crate::hotkey::Hotkey) {
+        // 宿主可能在按鍵處理中幫我們跑訊息迴圈；狀態正被借用時不要重入。
+        if self.state.try_borrow_mut().is_err() {
+            log::log(&format!("hotkey：狀態忙碌，忽略 {}", hotkey.chord));
+            return;
+        }
+        zlog!(
+            "hotkey 觸發 {} {} vk={:#04x}",
+            hotkey.action,
+            hotkey.chord,
+            hotkey.vk
+        );
+        let (secure, client, ui_less) = {
+            let st = self.state.borrow();
+            (st.secure, st.client_id, st.ui_less)
+        };
+        if secure {
+            log::log(&format!("hotkey：安全模式不處理 {}", hotkey.chord));
+            return;
+        }
+        let Some(ctx) = self.focused_context() else {
+            log::log(&format!("hotkey：沒有焦點文件，忽略 {}", hotkey.chord));
+            return;
+        };
+        if !privacy::hotkey_allowed(Some(&ctx), client, ui_less) {
+            log::log(&format!("hotkey：目前欄位阻擋 {}", hotkey.chord));
+            return;
+        }
+        let key = hotkey.to_key();
+        let eaten = self.handle_chord(Some(&ctx), &key);
+        zlog!("hotkey 完成 {} eaten={eaten}", hotkey.chord);
     }
 
     /// 把字面文字送進引擎的 `literal` op，不重新規劃前面的注音。
@@ -1988,6 +2067,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                 let english = st.session.english();
                 let simplified = st.session.simplified();
                 drop(st);
+                // 全域快捷鍵：message-only window 必須和 key sink 在同一條 UI 執行緒。
+                self.create_hotkey_window();
                 // 輸入指示器的中／英按鈕與選單；按鈕持有本服務的參考，Deactivate 時移除以解開循環。
                 let tm = self.state.borrow().thread_mgr.clone();
                 if let Some(Ok(mgr)) = tm.map(|tm| tm.cast::<ITfLangBarItemMgr>()) {
@@ -2031,6 +2112,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             let (tm, tid, cookie) = {
                 let mut st = self.state.borrow_mut();
                 st.callback = None;
+                // 先反註冊再銷毀訊息視窗；Drop 也會做一次，這裡讓卸載前的狀態明確。
+                st.hotkey = None;
                 st.ui.hide();
                 st.ui.set_elements(None);
                 // Deactivate 要真的銷毀候選窗與 D2D／D3D／DComp 資源，DllCanUnloadNow 才能回 0。
@@ -2106,7 +2189,11 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     fn OnSetFocus(&self, foreground: BOOL) -> windows_core::Result<()> {
         crate::guarded("OnSetFocus", || {
             if foreground.as_bool() {
+                // 只有前景行程保留全域組合；背景行程占住會讓前景的 TSF 收不到。
+                self.enable_hotkeys();
                 let _ = self.state.borrow_mut().session.refresh_bindings();
+            } else {
+                self.release_hotkeys();
             }
             if !foreground.as_bool() {
                 {
