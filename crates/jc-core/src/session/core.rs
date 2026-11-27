@@ -6,6 +6,7 @@ use std::borrow::Cow;
 
 use super::candidate_set::{AssemblyOptions, CandidateSet, SurfaceMatch};
 use super::*;
+use crate::engine::LanguageEngine;
 use crate::ja::decode::mean_candidates;
 use crate::score::BigramLm;
 
@@ -214,7 +215,7 @@ impl Session {
     ///
     /// 注音路徑先把未完成的音節收成音節，字面才會落在它之後；所有權仍由
     /// [`Session::composition`] 的既有規則決定，不會因此變成 `User`。
-    fn absorb_literal_tail(&mut self) {
+    pub(super) fn absorb_literal_tail(&mut self) {
         if self.literal_tail.is_empty() {
             return;
         }
@@ -483,7 +484,7 @@ impl Session {
     ///
     /// 字串欄位留空：P1 的 `interest()` 只能讀 O(1) lane 旗標，不得掃按鍵流
     /// 或呼叫轉換。
-    fn input_context(&self) -> InputContext<'static> {
+    pub(super) fn input_context(&self) -> InputContext<'static> {
         let lanes = LaneView {
             zh_lane: self.zh_lane,
             ja_lane: self.in_ja_lane(),
@@ -494,6 +495,7 @@ impl Session {
             syllables_empty: self.syllables.is_empty(),
             zh_pending: !self.zh_pending_keys.is_empty(),
             ja_available: self.config.ja.is_some(),
+            prefix_active: self.engines.prefix().is_active() || self.symbol_prefix,
             keyboard: self.zh.keyboard(),
         };
         let active = if self.in_ja_lane() {
@@ -2593,6 +2595,9 @@ impl Session {
         self.accepted_completion = None;
         self.suggestion = None;
         self.menu = None;
+        self.symbol_prefix = false;
+        self.prefix_mark_literal = false;
+        self.engines.prefix_mut().reset();
         if let Some(live) = &mut self.live {
             live.reset();
         }

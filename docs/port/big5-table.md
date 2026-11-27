@@ -1,7 +1,7 @@
 # big5-table：Big5 → Unicode 查表資料
 
-前導字元 `b` 的資料層。這一支只提供碼位查表，不動前導解析、按鍵或注音
-行為；`b` 在 `PREFIX_RESERVED` 裡仍是保留但未實作的鍵。
+前導字元 `b` 的資料層。提供碼位查表；`engine/prefix.rs` 的 `PrefixEngine`
+在 `b` 前導完成時呼叫它，不依賴 Windows API 或系統 locale。
 
 ```rust
 pub fn big5_to_unicode(code: u16) -> Option<char>;

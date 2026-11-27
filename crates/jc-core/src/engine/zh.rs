@@ -88,6 +88,9 @@ impl LanguageEngine for ZhEngine {
     }
 
     fn interest(&self, key: &Key, ctx: &InputContext<'_>) -> Interest {
+        if ctx.lanes.prefix_active {
+            return Interest::No;
+        }
         let KeyCode::Char(ch) = key.code else {
             return Interest::No;
         };

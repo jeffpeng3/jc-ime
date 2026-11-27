@@ -19,6 +19,7 @@ mod context;
 mod hypothesis;
 mod id;
 mod ja;
+mod prefix;
 mod registry;
 mod router;
 mod span;
@@ -31,6 +32,8 @@ pub use context::{InputContext, LaneView};
 pub use hypothesis::{CommitUnit, Hypothesis, ReleaseReason, Released, StyleHint};
 pub use id::{Interest, LanguageId};
 pub use ja::JaEngine;
+pub(crate) use prefix::PrefixEffect;
+pub use prefix::PrefixEngine;
 pub use r#trait::{EngineKind, LanguageEngine};
 pub use registry::EngineRegistry;
 pub use router::{Route, Router};
@@ -109,10 +112,15 @@ mod tests {
     #[test]
     fn registry_registers_three_owned_adapters() {
         let registry = registry();
-        assert_eq!(registry.len(), 3);
+        assert_eq!(registry.len(), 4, "三個語言引擎加前導控制引擎");
         assert_eq!(
             registry.ids(),
-            vec![LanguageId::ASCII, LanguageId::JA, LanguageId::ZH]
+            vec![
+                LanguageId::ASCII,
+                LanguageId::JA,
+                LanguageId::PREFIX,
+                LanguageId::ZH
+            ]
         );
         assert_eq!(
             registry.get(LanguageId::ZH).unwrap().style(),
@@ -126,6 +134,26 @@ mod tests {
             registry.get(LanguageId::ASCII).unwrap().commit_unit(),
             CommitUnit::Run
         );
+    }
+
+    #[test]
+    fn prefix_control_claims_backtick_and_the_whole_run() {
+        let mut registry = registry();
+        assert_eq!(
+            route(&mut registry, '`', None, empty_lanes()),
+            Route::Fast(LanguageId::PREFIX)
+        );
+        let context = InputContext::routing(Mode::Mixed, None, empty_lanes());
+        let prefix = registry.get_mut(LanguageId::PREFIX).unwrap();
+        prefix.feed(&Key::char('`', false), &context);
+        assert!(registry.prefix().is_active());
+        for key in ['u', '4', 'e', '0', '0', ' '] {
+            assert_eq!(
+                route(&mut registry, key, None, empty_lanes()),
+                Route::Fast(LanguageId::PREFIX),
+                "{key:?} 前導期間要由控制引擎獨佔"
+            );
+        }
     }
 
     #[test]

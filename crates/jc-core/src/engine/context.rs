@@ -31,6 +31,11 @@ pub struct LaneView {
     pub zh_pending: bool,
     /// 這個 session 是否載入日文解碼器；沒有時日文引擎不參與。
     pub ja_available: bool,
+    /// 前導序列（反引號、`u`／`b`）是否正在進行。
+    ///
+    /// 前導由控制引擎獨佔；語言引擎看到這個旗標一律回 `No`，不進 Viterbi，
+    /// 也不接收按鍵。
+    pub prefix_active: bool,
     /// 注音鍵盤排列；`starts_key()` 用它避免與 `ZhInput` 漂移。
     pub keyboard: Keyboard,
 }
@@ -47,6 +52,7 @@ impl Default for LaneView {
             syllables_empty: true,
             zh_pending: false,
             ja_available: false,
+            prefix_active: false,
             keyboard: Keyboard::standard(),
         }
     }

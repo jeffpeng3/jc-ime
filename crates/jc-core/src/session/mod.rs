@@ -47,7 +47,8 @@ use crate::composition::Composition;
 use crate::decode::{Decoder, Hypothesis, Locks};
 use crate::emoji::{self, Stat};
 use crate::engine::{
-    AsciiEngine, EngineRegistry, InputContext, JaEngine, LaneView, LanguageId, Route, ZhEngine,
+    AsciiEngine, EngineRegistry, InputContext, Interest, JaEngine, LaneView, LanguageId,
+    PrefixEffect, Route, ZhEngine,
 };
 use crate::ja::decode::{JaClause, JaContext, JaDecoder, JaResult};
 use crate::ja::input::RomajiInput;
@@ -590,6 +591,10 @@ pub struct Session {
     pub(super) full_width: bool,
     /// 微軟風格的反引號前導是否等待下一個字元。
     pub(super) symbol_prefix: bool,
+    /// 前導開始後才插入的 literal 是否把反引號留在一般組字。
+    ///
+    /// 此時引擎的 raw_len 仍包含反引號，但畫面改寫要跳過那一個字元。
+    pub(super) prefix_mark_literal: bool,
     /// 執行期是否把送出的文字轉成簡體。
     ///
     /// 與 [`SessionConfig::simplified`] 分開：轉換器是資料依賴，這個旗標才是
@@ -716,6 +721,7 @@ impl Session {
             style,
             full_width: false,
             symbol_prefix: false,
+            prefix_mark_literal: false,
             output_simplified: false,
         };
         session.install_tone_gate();
@@ -858,6 +864,12 @@ impl Session {
         if let Some(text) = Self::shift_literal_text(&key) {
             key.text = text.chars().next();
         }
+        // 前導控制引擎先接手：反引號、`u`／`b` 碼位與前導中的任何鍵都在
+        // 這裡攔下，Backspace 不會先被字面尾巴的刪除邏輯吃掉。
+        if !key.ctrl && self.prefix_engine_claims(&key) && self.press_prefix_engine(&key) {
+            self.rebuild();
+            return self.snapshot();
+        }
         // 字面尾巴只刪一個字元，不重算前面的組字；重建會把剩下的英文重新
         // 判成注音或かな。兩個刪除鍵共用同一個可見 rune 位置。
         if !self.literal_tail.is_empty() && matches!(key.code, KeyCode::Backspace | KeyCode::Delete)
@@ -981,6 +993,21 @@ impl Session {
         self.accepted_completion = None;
         self.suggestion = None;
         self.candidates.clear();
+        // 前導開始後才收到的 literal：反引號已被引擎算進 raw，但使用者把
+        // literal 插在兩者之間；把反引號留在一般組字，後續碼位才會接在
+        // literal 之後，完成時也只替換真正的碼位。
+        let detach_mark = self.engines.prefix().is_active()
+            && !self.prefix_mark_literal
+            && self.literal_tail.is_empty()
+            && self.engines.prefix().raw() == "`";
+        if detach_mark {
+            self.clear_prefix_mark();
+            self.push_literal("`");
+            // `clear_prefix_mark()` 改了按鍵流；重建後 base 才不會留著舊的
+            // 反引號，snapshot 也會是 `` `A `` 而不是 `` ``A ``。
+            self.rebuild();
+            self.prefix_mark_literal = true;
+        }
         self.literal_tail.push_str(text);
         self.snapshot()
     }

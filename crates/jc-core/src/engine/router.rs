@@ -1,11 +1,12 @@
 //! P1 的快速路由：只有一個 `Claim` 或只有一個參與者時直接跑該引擎。
 //!
 //! P1 不做 FanOut、平行或 lattice；多個參與者一律回 [`Route::Fallback`]，
-//! 由 `Session` 的既有 lane 邏輯處理。
+//! 由 `Session` 的既有 lane 邏輯處理。前導控制引擎先問；它回 `Claim` 時
+//! 這一鍵由前導獨佔，語言引擎不參與。
 
 use crate::key::Key;
 
-use super::{EngineKind, InputContext, Interest, LanguageEngine, LanguageId};
+use super::{EngineKind, InputContext, Interest, LanguageEngine, LanguageId, PrefixEngine};
 
 /// 一鍵的決策。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,16 +27,24 @@ impl Router {
     /// 依註冊順序問每個引擎，但決策與順序無關。
     ///
     /// 規則：
-    /// 1. 控制引擎回 `Claim` → 只跑它。
-    /// 2. 恰好一個 `Claim` → `Fast(claim)`；其他 `Maybe` 不跑。
-    /// 3. 沒有 `Claim`、只有一個參與者 → `Fast`。
-    /// 4. 多個參與者或沒有參與者 → `Fallback`／`Literal`。
+    /// 1. 前導控制引擎回 `Claim` → 只跑前導。
+    /// 2. 其他控制引擎回 `Claim` → 只跑它。
+    /// 3. 恰好一個 `Claim` → `Fast(claim)`；其他 `Maybe` 不跑。
+    /// 4. 沒有 `Claim`、只有一個參與者 → `Fast`。
+    /// 5. 多個參與者或沒有參與者 → `Fallback`／`Literal`。
     pub fn route(
         &self,
+        prefix: &mut PrefixEngine,
         engines: &mut [Box<dyn LanguageEngine + 'static>],
         key: &Key,
         ctx: &InputContext<'_>,
     ) -> Route {
+        // 前導是控制引擎：`Claim` 就獨佔，語言引擎連 `Maybe` 都不跑。
+        prefix.observe(ctx);
+        if prefix.interest(key, ctx) == Interest::Claim {
+            return Route::Fast(LanguageId::PREFIX);
+        }
+
         let mut participants = Vec::new();
         let mut claims = Vec::new();
         for engine in engines.iter_mut() {

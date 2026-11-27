@@ -16,7 +16,7 @@ impl LanguageId {
     pub const JA: Self = Self("ja");
     /// 英數／混打引擎。
     pub const ASCII: Self = Self("ascii");
-    /// 前導解析引擎；P1.5 才會註冊。
+    /// 前導解析引擎；P1.5 起由註冊表固定持有。
     pub const PREFIX: Self = Self("prefix");
 
     /// 穩定的字串形式。

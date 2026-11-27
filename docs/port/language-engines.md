@@ -1,7 +1,7 @@
 # language-engines：語言引擎介面與前導解析
 
-狀態：設計文件。P1 尚未實作，這一輪只留文件。
-Branch：`lang-interface-design`。Base：最新 `main`。
+狀態：設計文件；P1 語言引擎介面與 P1.5 前導解析已實作。
+Branch：`prefix-codepoint`（P1.5）。Base：含 P1 的最新 `main`。
 範圍：`crates/jc-core` 的按鍵分派、候選合併與前導解析；不改 `proto`、外殼與
 產品行為。
 
@@ -146,18 +146,19 @@ if self.in_ja_lane() {
 
 `session/input_style.rs`：
 
-- `PREFIX_RESERVED` 有 `('u', "unicode")` 與 `('b', "big5")`，附
-  `TODO(prefix-u)`／`TODO(prefix-b)`。
-- `prefix_reserved_reason()` 只回報原因，`prefix_key()` 對保留鍵回 `false`，
-  所以反引號與 `u`／`b` 目前都照字面留下。
 - 既有反引號標點走 `prefix_single()`、`prefix_variants()`、
   `microsoft_prefix_punctuation()`、`ctrl_punct()`、
   `zh.keyboard().punct()`；變體由 `open_prefix_variants()` 開候選窗。
-- 風格版本另有一條 `symbol_prefix_key()`；P1.5 會把兩條收斂到同一個
-  前導引擎，行為以 `prefix_key()` 的現況為基準。
-- 鎖住目前行為的測試：
-  `prefix_u_is_reserved_and_falls_through_for_now`、
-  `prefix_b_is_reserved_and_falls_through_for_now`。
+- 風格版本另有一條 `symbol_prefix_key()`；P1.5 把兩條收斂到同一個
+  前導引擎的 ownership，行為以 `prefix_key()` 的現況為基準。
+- P1.5 已完成：`engine/prefix.rs` 的 `PrefixEngine` 持有 `u`／`b` 狀態機；
+  `Session::press()` 先問 `interest()`，反引號與前導序列由控制引擎獨佔。
+  Big5 使用 `crate::big5::big5_to_unicode` 的 `big5.bin` 查表。
+- 鎖住行為的測試：
+  `test_prefix_u_inserts_unicode_scalar`、`test_prefix_b_inserts_big5_char`、
+  `test_prefix_invalid_code_keeps_raw_literal`、`test_prefix_code_escape_cancels`、
+  `test_prefix_code_backspace_edits_digits`、
+  `test_prefix_punctuation_still_uses_existing_tables`。
 
 ## 3. 介面草案
 
@@ -966,21 +967,32 @@ enum CodeKind {
 enum PrefixState {
     Idle,
     /// 已按反引號，等下一個鍵決定是標點還是碼位。
-    AwaitKind { mark: Span },
+    AwaitKind { raw: String },
     /// 已看到 `u`／`b`，正在收集十六進位。
-    Collect {
-        kind: CodeKind,
-        digits: String,
-        mark: Span,
-    },
-    /// 位數或字元不合法；下一個空白才決定怎麼收尾。
-    Invalid { kind: CodeKind, raw: String, mark: Span },
+    Collect { kind: CodeKind, digits: String },
+    /// 位數或字元不合法；保留原文，等空白收尾。
+    Invalid { raw: String },
 }
 ```
 
-`mark` 是反引號在按鍵流的 span；顯示上它會先以字面 `` ` `` 出現在組字區，
-成功解析後由 `CandidateAction` 的 `typed_span`／`rune_span` 整段取代。
-`digits` 只存 ASCII 十六進位，長度上限：Unicode 6、Big5 4。
+實作沒有 `mark: Span`：前導狀態只存 `raw`／`digits`，畫面改寫由
+`Session::press_prefix_engine()` 依引擎回傳的 `PrefixEffect` 執行。
+`PrefixEffect` 有 `Start`／`Display`／`Replace`／`Remove`／`Keep`／`Release`；
+`replace_prefix_text()`／`remove_prefix_text()` 只處理組字尾端的 raw，不經過
+`CandidateAction`、`typed_span` 或 `rune_span`。
+
+`digits` 只存 ASCII 十六進位，長度上限：Unicode 6、Big5 4。反引號前導開始
+時，`Session` 先把既有的 `literal_tail` 併回一般組字，所以 raw 一定接在
+先前字面之後，不會插到它前面。
+
+反引號**之後**才收到 `Session::literal()` 時（TSF 的 Shift 字面），反引號
+改留在一般組字，literal 接在它後面；後續 `u`／`b` 與碼位接在 literal 之後。
+完成或取消時 `Session` 會跳過這一個反引號，只替換真正的碼位：
+
+```text
+` → literal("A") → u4e00 空白  =>  `A一
+` → literal("A") → uzz 空白    =>  `Auzz
+```
 
 ### 7.3 `interest()`
 
@@ -991,34 +1003,38 @@ key.code == Char('`') 且 !key.ctrl    -> Claim
 ```
 
 - 不在前導狀態時，`u`／`b` 單獨按下仍是注音／英數鍵，不歸前導引擎。
-- 前導序列進行中，任何鍵都先歸前導引擎（包含 Esc、Backspace、空白），
-  才能保證不會被其他引擎插隊。
-- 前導不與語言引擎平行：router 看到控制引擎 `Claim` 就直接走快速路徑。
+- 前導序列進行中，`PrefixEngine` 對任何鍵都回 `Claim`（包含 Esc、Backspace、
+  空白與具名鍵），語言引擎在 `LaneView::prefix_active` 為真時一律回 `No`。
+- `Session` 的 early guard 另外排除 `key.ctrl`：Ctrl 組合鍵仍交給外殼／
+  一般路徑，不會進入前導。這是刻意的保護，不是 `interest()` 的例外。
+- 前導不與語言引擎平行：router 看到控制引擎 `Claim` 就回
+  `Route::Fast(LanguageId::PREFIX)`。
 
-### 7.4 `feed()` 行為
+### 7.4 `press()` 行為
 
-| 目前狀態 | 按鍵 | 行為 |
+| 目前狀態 | 按鍵 | 效果 |
 |---|---|---|
-| `Idle` | `` ` `` | 進 `AwaitKind`；回 `Hypothesis { surface: "`", span: mark }`。 |
-| `AwaitKind` | `u`／`U` | 進 `Collect(Unicode)`；顯示 `` `u ``。 |
-| `AwaitKind` | `b`／`B` | 進 `Collect(Big5)`；顯示 `` `b ``。 |
-| `AwaitKind` | 既有標點鍵 | 呼叫 `prefix_single()`／`prefix_variants()`／`microsoft_prefix_punctuation()`／`ctrl_punct()`／`zh.keyboard().punct()`；成功回插入字元的 `Hypothesis`，變體另由 `candidates()` 提供。 |
-| `AwaitKind` | Esc／Backspace | 取消前導，回 `Released { keys: "", span: mark, reason: Cancelled }`；反引號一起移除。 |
-| `AwaitKind` | 其他字元 | 取消前導，回 `Released { keys: "`", span: mark, reason: Invalid }`；反引號照字面留下，原鍵由 router 重送。 |
-| `Collect` | 0–9／a–f／A–F | 追加；未超過上限就留在 `Collect`；超過上限進 `Invalid`。 |
-| `Collect` | 空白 | 解析；成功插入一個字、回 `Idle`；失敗進 `Invalid`。 |
-| `Collect` | Esc | 取消整個前導，回 `Released { reason: Cancelled }`；不插入任何字。 |
-| `Collect` | Backspace | 刪最後一位；位數歸零回 `AwaitKind`；再退一次取消前導。 |
-| `Collect` | 其他鍵 | 進 `Invalid`；保留 raw，讓下一個空白收尾。 |
-| `Invalid` | 空白 | 清除前導狀態，回 `Released { keys: raw, span: mark, reason: Invalid }`；router 把 raw（例如 `` `u 110000 ``）當字面留下，不插入字元。 |
-| `Invalid` | Esc／Backspace | 取消整個前導，回 `Released { keys: "", span: mark, reason: Cancelled }`；不留下 raw。 |
-| 任何前導狀態 | Enter／方向鍵／F 鍵等具名鍵 | 清除前導狀態；raw 照字面留下，按鍵照一般路徑處理。 |
+| `Idle` | `` ` `` | 進 `AwaitKind`；回 `Start`，由 `Session::start_symbol_prefix()` 顯示反引號。 |
+| `AwaitKind` | `u`／`U` | 進 `Collect(Unicode)`；回 `Display`，把字元接在 raw 後面。 |
+| `AwaitKind` | `b`／`B` | 進 `Collect(Big5)`；回 `Display`。 |
+| `AwaitKind` | 既有標點鍵 | 回 `Release`；狀態回 `Idle`，由 `Session::prefix_key()` 的既有表處理。 |
+| `AwaitKind` | Esc／Backspace | 回 `Remove { raw_len: 1 }`；反引號移除，前文保留。 |
+| `AwaitKind` | 其他字元或具名鍵 | 回 `Release`；狀態回 `Idle`，反引號照字面留下。 |
+| `Collect` | 0–9／a–f／A–F | 追加並回 `Display`；超過上限或不是 hex 就進 `Invalid` 並顯示該鍵。 |
+| `Collect` | 空白 | 解析；成功回 `Replace { raw_len, text }`，失敗回 `Keep`（raw 不動）。 |
+| `Collect` | Esc | 回 `Remove`，移除整段 raw；不插入任何字。 |
+| `Collect` | Backspace | 刪最後一位並回 `Remove { raw_len: 1 }`；位數已空時再退，回 `Remove` 移除 `` `u ``。 |
+| `Collect` | 其他字元 | 進 `Invalid`；該鍵接進 raw，不交給其他引擎。 |
+| `Collect`／`Invalid` | Enter／方向鍵等具名鍵 | 回 `Release`；狀態回 `Idle`，raw 照字面留下，按鍵走一般路徑。 |
+| `Invalid` | 空白 | 回 `Keep`；狀態回 `Idle`，raw 照字面留下，不插入字元。 |
+| `Invalid` | Esc | 回 `Remove`，移除整段 raw。 |
+| `Invalid` | Backspace | 一字一字刪 raw；raw 只剩 `` `u ``／`` `b `` 時再退就整段取消。 |
+| `Invalid` | 其他字元 | 接進 raw 並回 `Display`。 |
 
-`Hypothesis.span` 一律覆蓋從反引號到目前按鍵的整段，讓 Viterbi 與
-`CandidateAction.typed_span` 可以整段取代；前導引擎不參與 Viterbi，但
-span 仍要正確，否則 `Session` 無法換算顯示範圍。
+前導引擎不參與 Viterbi；`feed()` 只產生 shadow `Hypothesis`，真正的畫面
+仍由 `Session` 的 `PrefixEffect` 分支執行。
 
-### 7.5 解析與 commit
+### 7.5 解析與插入
 
 Unicode：
 
@@ -1035,101 +1051,102 @@ Big5：
 
 ```text
 digits 必須正好 4 位十六進位
-bytes = [第一、二位, 第三、四位]
-用 Big5 解碼成 Unicode
-必須得到恰好一個 char；錯誤或空字串視為失敗
+u16::from_str_radix(digits, 16)
+crate::big5::big5_to_unicode(code)
+必須得到恰好一個 char；錯誤或查無對應視為失敗
 ```
 
-成功時的 `CandidateAction`：
+成功時引擎回：
 
 ```rust
-CandidateAction {
-    engine: Some(LanguageId::PREFIX),
-    insert: decoded.to_string(),
-    typed_span: Some((mark.start, current_end)),
-    rune_span: Some((mark_rune, current_runes)),
-    force_literal: true,
-    cursor: ChoiceCursor::AfterInsert,
-    learn: false,
-    commit_on_apply: false,
-    ..CandidateAction::default()
+PrefixEffect::Replace {
+    raw_len: 1 + 1 + digits.len(), // 反引號 + u/b + 碼位
+    text: decoded.to_string(),
 }
 ```
 
-- 只插入一個字，**不送出整段組字**；`CommitUnit::Char` 只描述單位，
-  真正提交仍由使用者按 Enter 或後續流程決定。
-- `force_literal = true`，避免插入的 ASCII 字元被 `plan_input()` 重新解讀。
-- `typed_span` 是 `AsciiInput::typed()` 位元組；`rune_span` 是顯示 rune。
-  兩者都由前導引擎的 `mark` 換算，轉換集中在
-  `Session::build_prefix_action()`。
+`Session::replace_prefix_text(raw_len, text)` 從目前的按鍵流／字面尾巴尾端
+移除這段 raw，接上解出來的字，再用 `AsciiInput::force_literal()` 固定
+ASCII 結果。它**只插入一個字，不送出整段組字**：
+
+- 不建立 `CandidateAction`；`CandidateAction.engine` 仍是 `None`。
+- 沒有 `Session::build_prefix_action()`、`typed_span` 或 `rune_span`。
+- `CommitUnit::Char` 只描述單位；真正提交仍由 Enter 或後續流程決定。
 - 學習不記錄；碼位查詢不是語言選擇。
+- 前導開始時既有 `literal_tail` 已併回一般組字，所以 `raw_len` 不會算到
+  使用者先前打的字。
 
 ### 7.6 錯誤與取消
 
 - **空碼位＋空白**：視為失敗；raw 照字面留下，不插入。
 - **非法 Unicode**（surrogate、> 0x10FFFF、空字串）：同上；raw 留下。
-- **非法 Big5**（位數不是 4、解碼錯誤、解出多字）：同上。
+- **非法 Big5**（位數不是 4、解碼錯誤、查無對應）：同上。
 - **超過位數上限**：進 `Invalid`，後續十六進位不再接受；空白時 raw 留下。
-- **非十六進位字元**：進 `Invalid`，該鍵不再送給其他引擎；空白時 raw
-  留下。若要放棄，按 Esc／Backspace。
-- **Esc**：取消整個前導，反引號與碼位都不留；與現有
-  `test_backtick_prefix_escape_cancels` 一致。
-- **Backspace**：先刪碼位，再取消前導；不直接刪組字區其他字。
-- **Enter**：前導不攔；清除狀態，raw 照字面留下，Enter 照一般提交流程。
-- **候選窗**：前導期間不開語言候選；既有標點變體例外，由
-  `PrefixEngine::candidates(mark_span)` 提供。`StyleHint::Prefix` 加上非空
-  候選時，router 才替它開候選窗，順序與 `open_prefix_variants()` 相同：先
-  插入預設值，再把游標放回插入字後面。
+- **非十六進位字元**：進 `Invalid`；空白時 raw 留下。若要放棄，按 Esc。
+- **Esc**：取消整個前導的 raw，反引號與碼位都不留；先前已完成的字面
+  （例如 `Session::literal("A")` 的 `A`）保留。
+- **Backspace**：只退碼位字元，不動前面的字。實作以前後 raw 的差額決定
+  要刪幾個顯示字元；單退一位不會被 detached 的反引號扣成 0。碼位退完後
+  再退一次才取消整個前導。`Invalid` 是一字一字刪 raw，raw 只剩
+  `` `u ``／`` `b `` 時再退就整段取消。
+- **detached literal**（反引號後才收到 `Session::literal()`）：反引號已是
+  一般字面，Backspace／Esc 只處理碼位，反引號與 literal 保留；AwaitKind
+  的 Backspace 只結束前導狀態，畫面維持 `` `A ``。成功、錯誤、Esc、
+  Backspace 都是 `` `A一 ``／`` `Auzz ``／`` `A ``／`` `Au4e0 `` 這組結果。
+- **Enter／方向鍵**：前導不攔；清除狀態，raw 照字面留下，按鍵照一般流程。
+- **候選窗**：`PrefixEngine::candidates()` 回空；既有標點變體仍由
+  `Session::open_prefix_variants()` 開窗，和碼位前導無關。
 
 「raw 留下」是刻意的：碼位打錯時不能靜默吃掉使用者輸入；使用者看得到
 `` `u 110000 ``，可以用 Backspace 修改或 Esc 取消。
 
 ### 7.7 Big5 對照表的來源與跨平台
 
-優先方案：`encoding_rs`（純 Rust，已在 workspace 的 `Cargo.lock` 中，透過
-其他 crate 間接引入；P1.5 在 `jc-core` 列為直接依賴）。
+採用方案 1：`crates/jc-core/data/big5/big5.bin`，由
+`scripts/gen-big5-table.py` 從 CPython 3.12 的 `big5` codec 產生，編譯時以
+`include_bytes!` 帶進二進位。
 
-- 解碼：`encoding_rs::BIG5.decode(&bytes)`；回傳
-  `(Cow<str>, &'static Encoding, bool)`，第三個值是 `had_errors`。
-- `had_errors == false` 且 `text.chars().count() == 1` 才算成功。
+- 查表：`crate::big5::big5_to_unicode(code: u16) -> Option<char>`，O(1)。
+- 合法區間：lead `0xA1..=0xF9`、trail `0x40..=0x7E` 與 `0xA1..=0xFE`。
+- 映射數 13,710；SHA-256 與表格內容由 `jc-core` 測試鎖住。
 - 不在 Windows 呼叫 `MultiByteToWideChar(CP_950)`，也不依賴系統 locale；
-  Windows／Linux／macOS 走同一份 Rust 表。
-- 授權：`encoding_rs` 是 Apache-2.0／MIT；加進 `docs/legal` 的第三方清單。
+  Windows／Linux／macOS 走同一份表，Linux 測試可完整驗證。
+- 授權與來源細節見 [`big5-table.md`](big5-table.md)。
 
-風險與備案：
-
-- `encoding_rs` 的 `BIG5` 是 WHATWG 的 Big5（含 HKSCS 擴充），與微軟
-  CP950 在少數未定義碼可能不同。P1.5 的驗收要拿微軟注音的實際輸出做
-  golden；已知差異先用測試列出。
-- 若必須逐碼等於 CP950，改成 vendored 表：從 Unicode Consortium 的
-  `CP950.TXT` 產生 `crates/jc-core/src/engine/prefix/big5_table.rs`（或
-  `jc-data` 的 `big5.bin`），用 `include_bytes!`／零拷貝查表；產生器與
-  SHA-256 一起進 repo。這條路不依賴作業系統，也不會有 crate 版本漂移。
-- 兩條路都不使用平台 API；跨平台行為一致。
+與微軟 CP950 的已知差異：CPython codec 對 Unicode 官方 BIG5.TXT 標成
+「NO MAPPING」的 7 個碼位（`A15A`、`A1C3`、`A1C5`、`A1FE`、`A240`、`A2CC`、
+`A2CE`）改用 CP950 映射，和微軟產品一致。
 
 建議測試向量：
 
 - Unicode：`4e00` → 一、`1f600` → 😀、`d800` → 失敗、`110000` → 失敗。
+  `u9` 是合法 scalar（TAB），目前照規格插入，不額外拒絕 C0 控制字元。
 - Big5：`a440` → 一、`a441` → 乙；`ff00`／`a4`（位數不足）→ 失敗。
 - 前導：`` `u 4e00 `` → 一、`` `b a440 `` → 一、`` `u 4e00 `` 後
   Backspace 再輸入、Esc 取消、非法碼位保留 raw。
+- 既有字面：`Session::literal("A")` 後接 `` `u4e00 `` → `A一`；Esc
+  保留 `A`；錯誤是 `A`＋raw；Backspace 只退碼位。反引號後才加 literal 時，
+  順序仍是 `` `A ``。
 
-測試名稱（P1.5 新增／改寫）：
+測試名稱（P1.5 已新增／改寫）：
 
 ```text
 test_prefix_u_inserts_unicode_scalar
 test_prefix_b_inserts_big5_char
-test_prefix_code_rejects_surrogate
-test_prefix_code_rejects_invalid_big5
+test_prefix_invalid_code_keeps_raw_literal
 test_prefix_code_escape_cancels
 test_prefix_code_backspace_edits_digits
-test_prefix_invalid_code_keeps_raw_literal
 test_prefix_punctuation_still_uses_existing_tables
+test_prefix_after_literal_tail_keeps_previous_text
+test_literal_after_backtick_keeps_order
+test_literal_after_backtick_then_code
+test_literal_after_backtick_backspace_keeps_engine_in_sync
+test_literal_after_backtick_backspace_and_escape_edges
 ```
 
 原本的 `prefix_u_is_reserved_and_falls_through_for_now` 與
-`prefix_b_is_reserved_and_falls_through_for_now` 會刻意改寫成上面前兩項；
-`TODO(prefix-u)`／`TODO(prefix-b)` 標記在 P1.5 完成後才移除。
+`prefix_b_is_reserved_and_falls_through_for_now` 已改寫成上面前兩項；
+`TODO(prefix-u)`／`TODO(prefix-b)` 與 `PREFIX_RESERVED` 已移除。
 
 ## 8. 分階段落地
 

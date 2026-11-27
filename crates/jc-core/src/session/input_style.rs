@@ -13,6 +13,7 @@
 //! [`Session::style_key`] 完全不介入。
 
 use super::*;
+use crate::engine::LanguageEngine;
 use crate::inputstyle::Rules;
 use crate::zh::keyboard::{Keyboard, LayoutKind};
 use crate::zh::syllable::{class_of, Class, TONE1};
@@ -176,25 +177,6 @@ fn halfwidth_punct(punct: &str, key: char) -> String {
 /// 微軟參考風格直接打半形原字元的鍵。
 fn microsoft_raw_punctuation(key: char) -> bool {
     matches!(key, '\\' | '\'' | '"' | '<' | '>' | '?')
-}
-
-/// 這一版保留、尚未實作的前導鍵。
-///
-/// 兩者目前都視為「非表內鍵」：反引號照字面送出，`u`／`b` 照一般注音鍵輸入。
-/// 未來實作時改寫 [`prefix_reserved_reason`] 與兩個 reserved 測試即可。
-const PREFIX_RESERVED: &[(char, &str)] = &[
-    // TODO(prefix-u): ` u 4e00 空白 → 一（Unicode 碼位）
-    ('u', "unicode"),
-    // TODO(prefix-b): ` b a440 空白 → 一（Big5 碼位）
-    ('b', "big5"),
-];
-
-/// 保留鍵的 TODO 字串；`None` 代表不是保留鍵。
-fn prefix_reserved_reason(key: char) -> Option<&'static str> {
-    PREFIX_RESERVED
-        .iter()
-        .find(|(reserved, _)| *reserved == key)
-        .map(|(_, reason)| *reason)
 }
 
 /// 微軟注音前導表的單一結果。
@@ -478,7 +460,7 @@ impl Session {
     }
 
     /// 移除反引號前導留在組字區的標記。
-    fn clear_prefix_mark(&mut self) {
+    pub(super) fn clear_prefix_mark(&mut self) {
         if self.literal.ends_with('`') {
             self.literal.pop();
             return;
@@ -491,8 +473,153 @@ impl Session {
         }
     }
 
+    /// 前導控制引擎是否要這一鍵。
+    ///
+    /// 只有反引號或前導序列已經開始時才問；一般 `u`／`b` 仍屬注音／英數，
+    /// 不會誤入前導。
+    pub(super) fn prefix_engine_claims(&self, key: &Key) -> bool {
+        if key.ctrl {
+            return false;
+        }
+        if !self.engines.prefix().is_active() && key.code != KeyCode::Char('`') {
+            return false;
+        }
+        let context = self.input_context();
+        self.engines.prefix().interest(key, &context) == Interest::Claim
+    }
+
+    /// 把一鍵交給前導引擎；回傳是否已處理。
+    ///
+    /// `Release` 代表這一鍵不屬於前導（例如 `,`），狀態已清乾淨，呼叫端
+    /// 要讓既有標點前導或一般路徑接手。
+    pub(super) fn press_prefix_engine(&mut self, key: &Key) -> bool {
+        let context = self.input_context();
+        let before_raw = self.engines.prefix().raw();
+        let mark_len = usize::from(self.prefix_mark_literal);
+        let effect = self.engines.prefix_mut().press(key, &context);
+        let active_after = self.engines.prefix().is_active();
+        let after_raw = self.engines.prefix().raw();
+        let handled = match effect {
+            PrefixEffect::Start => {
+                self.prefix_mark_literal = false;
+                self.start_symbol_prefix();
+                true
+            }
+            PrefixEffect::Display(text) => {
+                // `u`／`b` 之後由前導引擎獨佔，不再走舊的標點前導。
+                self.symbol_prefix = false;
+                self.append_prefix_text(&text);
+                self.mark_prefix_literal();
+                self.rebuild();
+                true
+            }
+            PrefixEffect::Replace { raw_len, text } => {
+                self.symbol_prefix = false;
+                // 完成時替換整段碼位；detached 的反引號已在一般組字，不計入。
+                let raw_len = raw_len.saturating_sub(mark_len);
+                self.replace_prefix_text(raw_len, &text);
+                self.rebuild();
+                true
+            }
+            PrefixEffect::Remove { .. } => {
+                self.symbol_prefix = false;
+                // 只刪「引擎不再持有的碼位字元」：單退一位與整段取消都依
+                // 前後 raw 的差額計算，不能拿 effect 的 raw_len 直接扣
+                // mark_len（單退一位會被扣成 0）。
+                let before_code = before_raw.chars().count().saturating_sub(mark_len);
+                let after_code = if active_after {
+                    after_raw.chars().count().saturating_sub(mark_len)
+                } else {
+                    0
+                };
+                let count = before_code.saturating_sub(after_code);
+                self.remove_prefix_text(count);
+                self.mark_prefix_literal();
+                self.rebuild();
+                true
+            }
+            PrefixEffect::Keep => {
+                self.symbol_prefix = false;
+                self.mark_prefix_literal();
+                self.rebuild();
+                true
+            }
+            PrefixEffect::Release => false,
+        };
+        if !active_after {
+            self.prefix_mark_literal = false;
+        }
+        handled
+    }
+
+    /// 從組字尾端移除 `count` 個顯示字元。
+    fn remove_prefix_text(&mut self, count: usize) {
+        if !self.literal_tail.is_empty() {
+            let keep = self.literal_tail.chars().count().saturating_sub(count);
+            self.literal_tail = self.literal_tail.chars().take(keep).collect();
+            return;
+        }
+        let typed = self.ascii.typed().to_string();
+        let keep = typed.chars().count().saturating_sub(count);
+        let next: String = typed.chars().take(keep).collect();
+        self.ascii.replay(&next, &self.lexicon);
+        self.literal_spans.clear();
+    }
+
+    /// 用 `text` 取代組字尾端 `count` 個顯示字元。
+    fn replace_prefix_text(&mut self, count: usize, text: &str) {
+        if !self.literal_tail.is_empty() {
+            let keep = self.literal_tail.chars().count().saturating_sub(count);
+            let mut next: String = self.literal_tail.chars().take(keep).collect();
+            next.push_str(text);
+            self.literal_tail = next;
+            return;
+        }
+        let typed = self.ascii.typed().to_string();
+        let keep = typed.chars().count().saturating_sub(count);
+        let mut next: String = typed.chars().take(keep).collect();
+        next.push_str(text);
+        self.ascii.replay(&next, &self.lexicon);
+        self.literal_spans.clear();
+        // 解出來的 ASCII 字元不能被下一次重建重新解讀成注音或かな。
+        self.ascii.force_literal();
+    }
+
+    /// 把目前前導原文標成字面，避免 `u`／`b`／十六進位被混打管線重讀成
+    /// 注音或羅馬字。
+    fn mark_prefix_literal(&mut self) {
+        if !self.literal_tail.is_empty() {
+            return;
+        }
+        let raw_len = self.engines.prefix().raw().chars().count();
+        if raw_len == 0 {
+            return;
+        }
+        let typed = self.ascii.typed();
+        let total = typed.chars().count();
+        let start_chars = total.saturating_sub(raw_len);
+        let start = typed
+            .char_indices()
+            .nth(start_chars)
+            .map(|(byte, _)| byte)
+            .unwrap_or(typed.len());
+        let end = typed.len();
+        if let Some(last) = self.literal_spans.last_mut() {
+            if last.end == start && last.reading.is_none() {
+                last.end = end;
+                return;
+            }
+        }
+        self.literal_spans.push(LiteralSpan::new(start, end));
+    }
+
     /// 開始反引號前導；中文組字要先交回混打管線，符號才會落在同一條流上。
     pub(super) fn start_symbol_prefix(&mut self) {
+        // 已有的字面尾巴要先併回一般組字，前導 raw 才會接在它後面；
+        // 直接 seed 到 ascii 會讓反引號跑到 literal_tail 前面（`A` → `` `A ``）。
+        if !self.literal_tail.is_empty() {
+            self.absorb_literal_tail();
+        }
         self.candidate_window = false;
         self.candidate_expanded = false;
         self.navigating = false;
@@ -602,11 +729,6 @@ impl Session {
             self.clear_prefix_mark();
             self.append_prefix_text(punct);
             return true;
-        }
-        if prefix_reserved_reason(ch).is_some() {
-            // TODO(prefix-u)／TODO(prefix-b)：保留語法尚未實作，照非表內鍵
-            // 處理，反引號與按鍵都留在字面。
-            return false;
         }
         // 非表內鍵：反引號留在組字區，這個鍵照常處理。
         false
@@ -877,6 +999,14 @@ mod tests {
         let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         Session::new(config)
+    }
+
+    /// 反引號後才插入 literal 的前導狀態。
+    fn detached_prefix_session() -> Session {
+        let mut session = plain_session();
+        session.press(Key::char('`', false));
+        session.literal("A");
+        session
     }
 
     fn type_syllable(session: &mut Session, reading: &str) {
@@ -1732,33 +1862,195 @@ mod tests {
         assert_eq!(snap.preedit, "");
     }
 
-    /// `u` 是保留鍵；這一版反引號照字面、`u` 照一般注音鍵（TODO(prefix-u)）。
+    /// `u` 前導：Unicode 碼位在空白後才插入一個字。
     #[test]
-    fn prefix_u_is_reserved_and_falls_through_for_now() {
-        assert_eq!(prefix_reserved_reason('u'), Some("unicode"));
+    fn test_prefix_u_inserts_unicode_scalar() {
         let mut s = plain_session();
-        s.press(Key::char('`', false));
-        let snap = s.press(Key::char('u', false));
-        assert!(
-            snap.preedit.starts_with('`'),
-            "反引號照字面：{:?}",
-            snap.preedit
-        );
-        assert_ne!(snap.preedit, "`u 一", "尚未實作 Unicode 前導");
+        type_keys(&mut s, "`u4e00 ");
+        assert_eq!(s.preedit(), "一", "空白完成後才插入");
+        assert_eq!(enter(&mut s), "一");
+
+        let mut s = plain_session();
+        type_keys(&mut s, "`u4E2D ");
+        assert_eq!(s.preedit(), "中", "大小寫 hex 都可");
+
+        let mut s = plain_session();
+        type_keys(&mut s, "`u1f600 ");
+        assert_eq!(s.preedit(), "😀", "BMP 以外的 scalar 也可");
     }
 
-    /// `b` 是保留鍵；這一版反引號照字面、`b` 照一般注音鍵（TODO(prefix-b)）。
+    /// `b` 前導：Big5 碼位走共用的跨平台查表。
     #[test]
-    fn prefix_b_is_reserved_and_falls_through_for_now() {
-        assert_eq!(prefix_reserved_reason('b'), Some("big5"));
+    fn test_prefix_b_inserts_big5_char() {
+        let mut s = plain_session();
+        type_keys(&mut s, "`ba440 ");
+        assert_eq!(s.preedit(), "一");
+        assert_eq!(enter(&mut s), "一");
+
+        let mut s = plain_session();
+        type_keys(&mut s, "`ba4a4 ");
+        assert_eq!(s.preedit(), "中");
+
+        let mut s = plain_session();
+        type_keys(&mut s, "`ba441 ");
+        assert_eq!(s.preedit(), "乙");
+    }
+
+    /// 錯誤碼位不插入，反引號與鍵照字面留下，之後仍能繼續打字。
+    #[test]
+    fn test_prefix_invalid_code_keeps_raw_literal() {
+        for (input, raw) in [
+            ("`uzzzz ", "`uzzzz"),
+            ("`u110000 ", "`u110000"),
+            ("`bd800 ", "`bd800"),
+            ("`bzzzz ", "`bzzzz"),
+            ("`b123 ", "`b123"),
+        ] {
+            let mut s = plain_session();
+            type_keys(&mut s, input);
+            assert_eq!(s.preedit(), raw, "{input:?} 應回到字面");
+            type_keys(&mut s, "x");
+            assert!(
+                s.preedit().starts_with(raw),
+                "{input:?} 出錯後不可卡住：{:?}",
+                s.preedit()
+            );
+        }
+    }
+
+    /// Esc 取消整個前導，不留反引號或碼位。
+    #[test]
+    fn test_prefix_code_escape_cancels() {
+        let mut s = plain_session();
+        type_keys(&mut s, "`u4e0");
+        s.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(s.preedit(), "");
+    }
+
+    /// Backspace 先退碼位字元；退完再退就取消前導。
+    #[test]
+    fn test_prefix_code_backspace_edits_digits() {
+        let mut s = plain_session();
+        type_keys(&mut s, "`u4e00");
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(s.preedit(), "`u4e0");
+        type_keys(&mut s, "0 ");
+        assert_eq!(s.preedit(), "一", "補回碼位後空白仍可完成");
+
+        let mut s = plain_session();
+        type_keys(&mut s, "`u4e");
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(s.preedit(), "`u", "碼位退完只剩前導");
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(s.preedit(), "", "再退一次取消前導");
+    }
+
+    /// 字面尾巴（`Session::literal`／Shift 字面）後面接前導時，raw 一定接在
+    /// 既有文字之後，不能吃掉或重排前面的字。
+    #[test]
+    fn test_prefix_after_literal_tail_keeps_previous_text() {
+        let mut s = plain_session();
+        s.literal("A");
+        type_keys(&mut s, "`u4e00 ");
+        assert_eq!(s.preedit(), "A一", "成功只加一個字，前面的 A 要留著");
+
+        let mut s = plain_session();
+        s.literal("A");
+        type_keys(&mut s, "`u4e00");
+        s.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(s.preedit(), "A", "Esc 只取消前導，A 要留著");
+
+        let mut s = plain_session();
+        s.literal("A");
+        type_keys(&mut s, "`uzz ");
+        assert_eq!(s.preedit(), "A`uzz", "錯誤 raw 要接在 A 後面");
+
+        let mut s = plain_session();
+        s.literal("A");
+        type_keys(&mut s, "`u4e00");
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(s.preedit(), "A`u4e0", "Backspace 只退碼位，不動 A");
+    }
+
+    /// 反引號之後才加入的 literal 要保持「反引號在前、literal 在後」的順序。
+    #[test]
+    fn test_literal_after_backtick_keeps_order() {
         let mut s = plain_session();
         s.press(Key::char('`', false));
-        let snap = s.press(Key::char('b', false));
-        assert!(
-            snap.preedit.starts_with('`'),
-            "反引號照字面：{:?}",
-            snap.preedit
-        );
-        assert_ne!(snap.preedit, "`b 一", "尚未實作 Big5 前導");
+        s.literal("A");
+        assert_eq!(s.preedit(), "`A", "反引號在前，literal 接在後面");
+    }
+
+    /// 前導開始後才收到的 literal：反引號與 literal 保留，碼位只接在後面。
+    #[test]
+    fn test_literal_after_backtick_then_code() {
+        let mut s = detached_prefix_session();
+        type_keys(&mut s, "u4e00 ");
+        assert_eq!(s.preedit(), "`A一", "成功只插入碼位，A 要留著");
+        assert_eq!(enter(&mut s), "`A一");
+
+        let mut s = detached_prefix_session();
+        type_keys(&mut s, "uzz ");
+        assert_eq!(s.preedit(), "`Auzz", "錯誤 raw 接在 A 後面，不拆開前文");
+    }
+
+    /// detached 狀態的 Backspace 必須同時退引擎與畫面，不能只退引擎。
+    #[test]
+    fn test_literal_after_backtick_backspace_keeps_engine_in_sync() {
+        let mut s = detached_prefix_session();
+        type_keys(&mut s, "u4e00");
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(s.preedit(), "`Au4e0", "只退一個碼位，A 不動");
+        type_keys(&mut s, "0 ");
+        assert_eq!(s.preedit(), "`A一", "補回碼位後空白仍能完成");
+        assert_eq!(enter(&mut s), "`A一");
+    }
+
+    /// detached 狀態的其餘 Backspace／Esc 邊界。
+    #[test]
+    fn test_literal_after_backtick_backspace_and_escape_edges() {
+        // 只打了 kind 就退：刪掉 u，前導結束，A 留著。
+        let mut s = detached_prefix_session();
+        type_keys(&mut s, "u");
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(s.preedit(), "`A");
+
+        // AwaitKind 的 Backspace：反引號已是一般字面，取消前導狀態但不動畫面。
+        let mut s = detached_prefix_session();
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(s.preedit(), "`A");
+
+        // Invalid 的 Backspace 逐字編輯 raw。
+        let mut s = detached_prefix_session();
+        type_keys(&mut s, "uzz");
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(s.preedit(), "`Auz");
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(s.preedit(), "`A", "raw 剩 u 時再退取消碼位");
+
+        // Esc 只取消碼位，反引號與 A 留著。
+        let mut s = detached_prefix_session();
+        type_keys(&mut s, "u4e00");
+        s.press(Key::new(KeyCode::Escape, None, false));
+        assert_eq!(s.preedit(), "`A");
+    }
+
+    /// 既有反引號標點前導完全不受碼位前導影響。
+    #[test]
+    fn test_prefix_punctuation_still_uses_existing_tables() {
+        let mut s = plain_session();
+        s.press(Key::char('`', false));
+        s.press(Key::char(',', false));
+        assert_eq!(s.preedit(), "，");
+        s.press(Key::char('`', false));
+        s.press(Key::char('[', false));
+        assert_eq!(s.preedit(), "，［");
+
+        let mut s = plain_session();
+        s.literal("A");
+        s.press(Key::char('`', false));
+        s.press(Key::char(',', false));
+        assert_eq!(s.preedit(), "A，", "既有字面後接標點前導仍是 A，");
     }
 }
