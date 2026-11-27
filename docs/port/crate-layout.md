@@ -175,9 +175,12 @@ workspace 目前有 20 個成員。`docs/architecture.md` 寫 19 個，漏了
 
 - `Cargo.toml` 的 workspace member 與 `crates/jc-windows/Cargo.toml` 的
   `package.name`。
-- 10 個 `.rs` 檔、21 處 `jc_windows`，主要在 `jc-engine` 的 `main.rs`、
-  `pipe_listener.rs`、`supervise.rs`、`tests/socket.rs` 與
-  `jc-tsf-smoke/src/engine.rs`。`jc-tsf/src/ipc_transport.rs` 只有註解提到。
+- `jc-windows` 的 crate 原始碼有 4 個 `.rs` 檔，其中只有 `src/pipe_name.rs`
+  的 doctest 直接寫 `jc_windows`；另有 `tests/client.rs`。全 repo 的
+  `jc_windows` 字串共 10 個 `.rs` 檔、21 處，其餘 8 個檔是
+  `jc-engine` 的 `main.rs`、`pipe_listener.rs`、`supervise.rs`、
+  `tests/socket.rs`、`jc-tsf-smoke/src/engine.rs`、`jc-tsf/src/ipc_transport.rs`
+  與 `jc-linux`、`jc-mac` 的引用或註解。
 - `.github/workflows/ci.yml` 的 `-p jc-windows`。
 - `scripts/verify-keybinds.sh` 的說明文字。
 - `README.md`、`docs/architecture.md`、`docs/wrapper.md`、`docs/proto.md`、
@@ -213,8 +216,8 @@ schema 和文件用語一致。
 
 **影響檔案與 CI／installer**
 
-- `installer/jc.iss` 的 `[Files]`、簽章清單與安裝後執行項目。
-- `installer/build.ps1` 的 `-p`、`--bin` 與預期產物清單。
+- `installer/jc.iss` 的 `[Files]` 與安裝後執行項目。
+- `installer/build.ps1` 的 `-p`、`--bin`、預期產物清單與簽章清單。
 - `installer/post-install-doctor.ps1` 的 `$SmokeExe` 預設值。
 - `.github/workflows/ci.yml` 的套件清單、Windows 安裝 job 與 doctor 步驟。
 - `scripts/gen-rust-notices.py` 的 `SHIPPED` 與
@@ -303,7 +306,8 @@ wire 型別，不應該承擔解碼器與模型。這也是 `jc-settings-ui` 與
 - `crates/jc-core/Cargo.toml`、`crates/jc-core/src/lib.rs`，以及
   `zh/select.rs`、`ja/rerank.rs` 與 `session` 內相關的型別轉換。
 - `crates/jc-windows`、`crates/jc-tsf`、`crates/jc-tsf-smoke` 的 `use`。
-- `Cargo.lock`、授權清單、CI 的 `cargo tree` 檢查。
+- `Cargo.lock`、授權清單。CI 目前沒有 `cargo tree` 步驟；若要用它防止退化，
+  需新增一個檢查。
 - installer 不需改檔名，但 TSF 與 doctor 的建置圖會變。
 
 **遷移步驟**
@@ -347,7 +351,8 @@ crate，core 與 settings 都依賴它，設定程式就能脫離推論堆疊。
   測試。
 - `crates/jc-settings/Cargo.toml`、`settings.rs`、`profiles.rs`、
   `profile_rules.rs`。
-- `Cargo.lock`、授權清單、`cargo tree` 檢查。
+- `Cargo.lock`、授權清單。CI 目前沒有 `cargo tree` 步驟；若要用它防止退化，
+  需新增一個檢查。
 - installer 不改檔名。
 
 **遷移步驟**
@@ -443,8 +448,10 @@ language -> core，core 不能再依賴 language。D 的 `jc-wire` 可以讓語�
 - `crates/jc-engine/src/loader.rs` 的模型路徑、`ModelSet`、Jinen 與 zh-select
   載入。
 - `crates/jc-cli/src/{cli.rs,eval_cmd.rs,tokenize.rs}` 與三個模型 bin。
-- `Cargo.lock`、授權清單、`cargo tree` 檢查、CI 的 `-p jc-model` 或
-  `cargo run -p jc-model` 指令。
+- `Cargo.lock`、授權清單。CI 目前沒有 `cargo tree` 步驟；若要用它防止退化，
+  需新增一個檢查。CI 也沒有直接建置或執行 `jc-model`，只有
+  `scripts/candle-quant-run.sh` 使用 `target/release/candle-quant`，以及
+  `scripts/legacy/` 的舊路徑提到它；搬移時要同步更新這些腳本。
 - installer 不改檔名，但 TSF、doctor、settings-ui 的建置圖會變。
 
 **遷移步驟**
@@ -521,7 +528,7 @@ zh-select 與 ja-rerank，改成 trait 注入會動到 `Session` 初始化與
 **影響檔案與 CI／installer**
 
 - `crates/jc-cli/Cargo.toml`、`src/bin/*`、`src/lib.rs` 與 `cli.rs` 的子命令。
-- 若停止出貨：`installer/jc.iss`、`installer/build.ps1`、簽章清單、
+- 若停止出貨：`installer/jc.iss`、`installer/build.ps1` 的簽章清單、
   `scripts/gen-rust-notices.py` 的 `SHIPPED`、`README.md` 與 installer 文件。
 - 若保留出貨但拆開發 bin：新增 `jc-dev` 套件、CI 的 `-p` 清單、授權清單。
 - `scripts/build-data-bundle.sh`、`scripts/verify-bundle.py` 與
