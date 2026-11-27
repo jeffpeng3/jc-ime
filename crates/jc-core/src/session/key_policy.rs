@@ -262,116 +262,339 @@ impl Session {
         }
     }
 
-    /// `Backspace`：先判斷字面尾巴，再交給 lane 的刪除單位。
+    /// `Backspace`：刪游標左邊一個可見字元。
     pub(super) fn backspace(&mut self) {
-        self.candidate_window = false;
-        self.navigating = false;
-        self.keep_candidates = false;
-        self.edit = None;
-        self.highlighted = 0;
-        match self.backspace_lane() {
-            BackspaceLane::LiteralTail => {
-                self.literal_tail.pop();
-            }
-            BackspaceLane::Ja => {
-                self.romaji.backspace();
-                self.sync_ja_run_keys();
-                self.leave_empty_japanese_run();
-            }
-            BackspaceLane::Zh => self.backspace_zh(),
-            BackspaceLane::Mixed => {
-                // 孤立聲調鍵先留在字面；沒有混打按鍵可退時退回那一個字面。
-                if !self.backspace_mixed() && !self.literal.is_empty() {
-                    self.literal.pop();
-                }
-            }
-        }
+        self.delete_visible(false);
     }
 
-    fn backspace_lane(&self) -> BackspaceLane {
-        if !self.literal_tail.is_empty() {
-            BackspaceLane::LiteralTail
-        } else if self.in_ja_lane() {
-            BackspaceLane::Ja
-        } else if self.zh_lane {
-            BackspaceLane::Zh
-        } else {
-            BackspaceLane::Mixed
-        }
-    }
-
-    /// 注音路徑的 Backspace：先退未完成的注音，再退已完成音節與字面。
-    fn backspace_zh(&mut self) {
-        if !self.zh.pending().is_empty() {
-            // 還沒完成的注音先退一格；退完才動已完成的音節。
-            self.zh.press(Key::new(KeyCode::Backspace, None, false));
-            self.zh_pending_keys.pop();
-            self.zh_pending_caps.pop();
-        } else if self.zh_cell() > 0 {
-            self.remove_syllable(self.zh_cell() - 1);
-        } else if !self.literal.is_empty() {
-            self.literal.pop();
-        }
-    }
-
-    /// `Delete`：刪除游標後一個音節；沒有可刪的音節時只關候選窗。
+    /// `Delete`：刪游標右邊一個可見字元。
     pub(super) fn delete_forward(&mut self) {
+        self.delete_visible(true);
+    }
+
+    /// 所有 lane 共用的刪除入口：一次只刪一個可見 rune。
+    ///
+    /// 先關候選窗，再依游標方向取目標 rune。字面尾巴、注音、日文、混打都
+    /// 只拿這一個位置去對應自己的狀態；沒有可刪的字元時不動作。
+    fn delete_visible(&mut self, forward: bool) {
         self.candidate_window = false;
         self.candidate_expanded = false;
         self.navigating = false;
         self.keep_candidates = false;
         self.edit = None;
         self.highlighted = 0;
-        match self.delete_lane() {
-            DeleteLane::Mixed => self.delete_mixed_forward(),
-            DeleteLane::Zh => {
-                if self.zh.pending().is_empty() {
-                    self.remove_syllable(self.zh_cell());
-                }
-            }
-            // 既有缺口：日文 lane 的 Delete 沒有刪除動作，只關候選窗。
-            DeleteLane::Ja => {}
-        }
-    }
 
-    fn delete_lane(&self) -> DeleteLane {
-        if !self.in_zh_lane() && !self.in_ja_lane() {
-            DeleteLane::Mixed
-        } else if self.in_zh_lane() {
-            DeleteLane::Zh
-        } else {
-            DeleteLane::Ja
-        }
-    }
-
-    fn delete_mixed_forward(&mut self) {
-        let text = self.composed_text();
-        let runes = text.chars().count();
-        let at = self.mixed_rune().min(runes);
-        if at >= runes {
-            return;
-        }
-        let saved = self.mixed_rune();
-        self.set_mixed_rune(at);
-        let target = self.mixed_target_at_cursor();
-        self.set_mixed_rune(saved);
-        if let Some(target) = target {
-            let typed = self.ascii.typed().to_string();
-            let (start, end) = target.typed;
-            if start < end && end <= typed.len() && typed.is_char_boundary(start) {
-                let mut next = String::with_capacity(typed.len().saturating_sub(end - start));
-                next.push_str(&typed[..start]);
-                next.push_str(&typed[end..]);
-                self.ascii.replay(&next, &self.lexicon);
-                self.literal_spans.clear();
-                let len = self.composed_text().chars().count();
-                self.set_mixed_rune(at.min(len));
+        let at = self.cursor_runes();
+        let total = self.rune_count();
+        if forward {
+            if at >= total {
                 return;
             }
+        } else if at == 0 {
+            return;
         }
-        if let Some(index) = self.mixed_segment_index_at_rune(at) {
-            self.remove_mixed_segment(index);
+        let target = if forward { at } else { at - 1 };
+        let after = if forward { at } else { at - 1 };
+
+        let deleted = if self.in_zh_lane() {
+            self.delete_zh_visible(target)
+        } else if self.in_ja_lane() {
+            self.delete_ja_visible(target)
+        } else {
+            self.delete_mixed_visible(target)
+        };
+        if deleted {
+            self.cursor_rune = after.min(self.rune_count());
         }
+    }
+
+    /// 目標 rune 落在字面尾巴時，只從尾巴移除那一個字元。
+    ///
+    /// 字面尾巴不重算組字，否則英文片段會被重新判成注音或かな；呼叫端在
+    /// 刪除後直接回快照。回傳 `false` 表示目標不在尾巴內。
+    pub(super) fn delete_literal_tail_rune(&mut self, rune: usize) -> bool {
+        let runes = self.literal_tail.chars().count();
+        if runes == 0 {
+            return false;
+        }
+        let start = self.rune_count().saturating_sub(runes);
+        if rune < start {
+            return false;
+        }
+        let mut chars: Vec<char> = self.literal_tail.chars().collect();
+        chars.remove(rune - start);
+        self.literal_tail = chars.into_iter().collect();
+        true
+    }
+
+    /// 注音狀態下刪一個可見字元：字面、未完成注音、已完成音節各對應一格。
+    fn delete_zh_visible(&mut self, rune: usize) -> bool {
+        let pending = self.pending.chars().count();
+        if pending > 0 {
+            let start = self.zh_pending_start();
+            if rune >= start && rune < start + pending {
+                return self.delete_zh_pending_at(rune - start);
+            }
+        }
+        if self.delete_literal_rune(rune) {
+            return true;
+        }
+        self.zh_units_at_rune(rune)
+            .is_some_and(|(start, count)| self.remove_syllable_range(start, count))
+    }
+
+    /// 未完成注音在顯示字串中的起點。
+    ///
+    /// 游標在音節結尾時注音接在 `base` 後面；游標停在中間時插在游標所在
+    /// 音節格，起點就是游標扣掉注音長度。
+    fn zh_pending_start(&self) -> usize {
+        let pending = self.pending.chars().count();
+        if pending == 0 {
+            return 0;
+        }
+        let base = self.base_rune_count();
+        if self.cursor_rune == Self::MIXED_CURSOR_END || self.cursor_rune >= base {
+            base
+        } else {
+            self.cursor_runes().saturating_sub(pending)
+        }
+    }
+
+    /// 從未完成注音刪一個按鍵，再用剩下的按鍵重建注音狀態。
+    fn delete_zh_pending_at(&mut self, index: usize) -> bool {
+        let mut keys: Vec<char> = self.zh_pending_keys.chars().collect();
+        let mut caps: Vec<char> = self.zh_pending_caps.chars().collect();
+        if index >= keys.len() {
+            return false;
+        }
+        keys.remove(index);
+        if index < caps.len() {
+            caps.remove(index);
+        }
+        self.zh.reset();
+        self.zh_pending_keys.clear();
+        self.zh_pending_caps.clear();
+        for (at, ch) in keys.into_iter().enumerate() {
+            let cap = caps.get(at).copied().unwrap_or('0');
+            self.zh.press(Key::char(ch, false));
+            self.zh_pending_keys.push(ch);
+            self.zh_pending_caps.push(cap);
+        }
+        // 刪除鍵本身就是「下一個按鍵」；重播剩下的按鍵不該讓上一個被擋的
+        // 聲調旗標復活。
+        self.zh.clear_tone_blocked();
+        true
+    }
+
+    /// 注音顯示字元對應的全部音節範圍。
+    ///
+    /// 一般漢字一個字對應一個音節；若一個可見字元涵蓋多個讀音單位，整個
+    /// 範圍一起刪除，不能留下隱藏音節。
+    fn zh_units_at_rune(&self, rune: usize) -> Option<(usize, usize)> {
+        let mut units = 0usize;
+        for segment in self.composition.segments() {
+            let chars = segment.chars();
+            if rune < segment.span.start + chars {
+                if segment.lang != crate::composition::Lang::Zh || segment.units == 0 {
+                    return None;
+                }
+                let offset = rune.saturating_sub(segment.span.start);
+                if chars >= segment.units {
+                    return Some((units + offset.min(segment.units - 1), 1));
+                }
+                let start = units + offset * segment.units / chars;
+                let end = units + (offset + 1) * segment.units / chars;
+                return Some((start, (end - start).max(1)));
+            }
+            units += segment.units;
+        }
+        None
+    }
+
+    /// 刪除一段連續音節；游標位置由呼叫端設定。
+    fn remove_syllable_range(&mut self, start: usize, count: usize) -> bool {
+        let mut removed = false;
+        for _ in 0..count {
+            if !self.remove_syllable(start) {
+                break;
+            }
+            removed = true;
+        }
+        removed
+    }
+
+    /// 日文狀態下刪一個可見字元：讀音單位與未完成前綴都各算一格。
+    fn delete_ja_visible(&mut self, rune: usize) -> bool {
+        let base_runes = self.base.chars().count();
+        let surface = (rune < base_runes).then(|| {
+            let mut chars: Vec<char> = self.base.chars().collect();
+            chars.remove(rune);
+            chars.into_iter().collect::<String>()
+        });
+        let deleted = if rune < base_runes {
+            self.ja_units_at_rune(rune)
+                .is_some_and(|(start, count)| self.romaji.delete_units(start, count))
+        } else {
+            self.romaji.delete_pending_at(rune - base_runes)
+        };
+        if deleted {
+            self.ja_delete_surface = surface;
+            self.ja_run_keys = self.romaji.raw_keys();
+            if let Some(live) = self.live.as_mut() {
+                live.invalidate_for_edit();
+            }
+            self.leave_empty_japanese_run();
+            // 先重建一次，逐字変換才不會在游標已定位後又把游標推到結尾。
+            self.rebuild();
+        }
+        deleted
+    }
+
+    /// 可見字元對應的全部讀音單位範圍。
+    ///
+    /// かな組字時字元與單位一對一。轉換後的漢字可能一個字對應多個讀音
+    /// 單位（`私` → `わたし`），必須整段刪掉，不能留下隱藏單位。
+    fn ja_units_at_rune(&self, rune: usize) -> Option<(usize, usize)> {
+        let reading: String = self.romaji.units().iter().map(Unit::as_str).collect();
+        let base = self.base.as_str();
+        if base == reading {
+            return (rune < base.chars().count()).then_some((rune, 1));
+        }
+        let mut units = 0usize;
+        for segment in self.composition.segments() {
+            let chars = segment.chars();
+            if rune < segment.span.start + chars {
+                if segment.lang != crate::composition::Lang::Ja || segment.units == 0 {
+                    return None;
+                }
+                let offset = rune.saturating_sub(segment.span.start);
+                if chars >= segment.units {
+                    return Some((units + offset.min(segment.units - 1), 1));
+                }
+                // 字元比讀音單位少時，把該字元涵蓋的單位平均切給它；
+                // 一個字元對多個單位時取完整範圍。
+                let start = units + offset * segment.units / chars;
+                let end = units + (offset + 1) * segment.units / chars;
+                return Some((start, (end - start).max(1)));
+            }
+            units += segment.units;
+        }
+        None
+    }
+
+    /// 混合狀態下刪一個可見字元：字面先處理，其餘從按鍵流移除對應字元。
+    fn delete_mixed_visible(&mut self, rune: usize) -> bool {
+        if self.delete_literal_rune(rune) {
+            return true;
+        }
+        let typed = self.ascii.typed().to_string();
+        if typed.is_empty() {
+            return false;
+        }
+        let saved = self.mixed_rune();
+        self.set_mixed_rune(rune);
+        let target = self.mixed_target_at_cursor();
+        self.set_mixed_rune(saved);
+        let Some(target) = target else {
+            return false;
+        };
+        let (start, end) = self.mixed_one_rune_span(&target, rune, &typed);
+        if start >= end || end > typed.len() || !typed.is_char_boundary(start) {
+            return false;
+        }
+        let mut next = String::with_capacity(typed.len().saturating_sub(end - start));
+        next.push_str(&typed[..start]);
+        next.push_str(&typed[end..]);
+        let spans = self.mixed_literal_spans_after(start, end);
+        self.ascii.replay(&next, &self.lexicon);
+        self.literal_spans = spans;
+        true
+    }
+
+    /// 把候選目標的按鍵範圍縮到游標所在的那一個可見 rune。
+    fn mixed_one_rune_span(
+        &self,
+        target: &MixedTarget,
+        rune: usize,
+        typed: &str,
+    ) -> (usize, usize) {
+        let (start, end) = target.typed;
+        if target.rune_len <= 1 || start >= end || end > typed.len() {
+            return (start, end);
+        }
+        let offset = rune.saturating_sub(target.rune_start);
+        let slice = &typed[start..end];
+        let at = slice
+            .char_indices()
+            .nth(offset)
+            .map(|(byte, _)| byte)
+            .unwrap_or(slice.len());
+        let next = slice[at..]
+            .chars()
+            .next()
+            .map(|ch| at + ch.len_utf8())
+            .unwrap_or(slice.len());
+        (start + at, start + next)
+    }
+
+    /// 混合字面片段在刪除後仍要留成字面，避免剩下的字母被重新判成注音。
+    fn mixed_literal_spans_after(&self, start: usize, end: usize) -> Vec<LiteralSpan> {
+        let removed = end.saturating_sub(start);
+        let mut spans: Vec<(usize, usize)> = self
+            .literal_spans
+            .iter()
+            .map(|span| (span.start, span.end))
+            .collect();
+        let segments = self.segments();
+        let typed_spans = self.mixed_typed_spans();
+        for (index, segment) in segments.iter().enumerate() {
+            if segment.mode == Lang::Zh || segment.mode == Lang::Ja {
+                continue;
+            }
+            if let Some(&(from, to)) = typed_spans.get(index) {
+                if from < to {
+                    spans.push((from, to));
+                }
+            }
+        }
+        spans.sort_unstable();
+        spans.dedup();
+        let mut out = Vec::new();
+        for (from, to) in spans {
+            let (from, to) = if to <= start {
+                (from, to)
+            } else if from >= end {
+                (from.saturating_sub(removed), to.saturating_sub(removed))
+            } else {
+                (
+                    from.min(start),
+                    if to > end {
+                        to.saturating_sub(removed)
+                    } else {
+                        start
+                    },
+                )
+            };
+            if from < to {
+                out.push(LiteralSpan::new(from, to));
+            }
+        }
+        out
+    }
+
+    /// 刪除 `self.literal` 裡第 `rune` 個可見字元；不在字面內時回傳 `false`。
+    fn delete_literal_rune(&mut self, rune: usize) -> bool {
+        let base = self.displayed_base();
+        let at = self.literal_offset.min(base.len());
+        let start = crate::output::rune_offset(&base, at);
+        let end = start + self.literal.chars().count();
+        if rune < start || rune >= end {
+            return false;
+        }
+        let mut chars: Vec<char> = self.literal.chars().collect();
+        chars.remove(rune - start);
+        self.literal = chars.into_iter().collect();
+        true
     }
 }
 
@@ -436,23 +659,6 @@ enum EscapeLayer {
     Composition,
 }
 
-/// `Backspace` 的刪除單位。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BackspaceLane {
-    LiteralTail,
-    Ja,
-    Zh,
-    Mixed,
-}
-
-/// `Delete` 的刪除單位。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeleteLane {
-    Mixed,
-    Zh,
-    Ja,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,19 +714,5 @@ mod tests {
         assert_eq!(s.escape_layer(), EscapeLayer::CandidateWindow);
         s.literal_tail.push('a');
         assert_eq!(s.escape_layer(), EscapeLayer::LiteralTail);
-    }
-
-    /// 刪除單位由 lane 決定；日文目前沒有 Delete 動作（既有缺口）。
-    #[test]
-    fn delete_lane_keeps_japanese_gap() {
-        let mut s = session();
-        assert_eq!(s.backspace_lane(), BackspaceLane::Mixed);
-        assert_eq!(s.delete_lane(), DeleteLane::Mixed);
-        s.literal_tail.push('a');
-        assert_eq!(s.backspace_lane(), BackspaceLane::LiteralTail);
-        s.literal_tail.clear();
-        s.config.ja_only = true;
-        assert_eq!(s.backspace_lane(), BackspaceLane::Ja);
-        assert_eq!(s.delete_lane(), DeleteLane::Ja);
     }
 }

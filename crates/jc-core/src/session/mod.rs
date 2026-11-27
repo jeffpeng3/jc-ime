@@ -541,6 +541,10 @@ pub struct Session {
     /// 的かな：`rishiree` 會顯示成 `りしれえ`，但批次規劃會把 `e` 留給後面的
     /// 注音（`rishire`＋`ej/`）。
     pub(super) ja_run_keys: String,
+    /// 刪除後要凍結的日文顯示字面；下一次逐字変換重建時套成 User 片段。
+    ///
+    /// 只保存刪除後剩下的可見字串，讓 live 不重轉已存在的字元；用過即清。
+    pub(super) ja_delete_surface: Option<String>,
     /// 目前開啟的候選選單。
     pub(super) menu: Option<Menu>,
     /// 表情分頁的最後選擇；下次開選單時沿用。
@@ -670,6 +674,7 @@ impl Session {
             zh_run_breaks: Vec::new(),
             ja_run: false,
             ja_run_keys: String::new(),
+            ja_delete_surface: None,
             menu: None,
             palette_tab: 0,
             symbol_recent: Vec::new(),
@@ -811,18 +816,36 @@ impl Session {
         if let Some(text) = Self::shift_literal_text(&key) {
             key.text = text.chars().next();
         }
-        // 字面尾巴存在時，Backspace 只刪一個字元，不重算前面的組字；這樣
-        // 英文路徑不會因為重建而冒出新候選。
-        if key.code == KeyCode::Backspace && !self.literal_tail.is_empty() {
-            self.literal_tail.pop();
-            self.candidate_window = false;
-            self.navigating = false;
-            self.keep_candidates = false;
-            self.edit = None;
-            self.highlighted = 0;
-            self.suggestion = None;
-            self.candidates.clear();
-            return self.snapshot();
+        // 字面尾巴只刪一個字元，不重算前面的組字；重建會把剩下的英文重新
+        // 判成注音或かな。兩個刪除鍵共用同一個可見 rune 位置。
+        if !self.literal_tail.is_empty() && matches!(key.code, KeyCode::Backspace | KeyCode::Delete)
+        {
+            let at = self.cursor_runes();
+            let forward = key.code == KeyCode::Delete;
+            let target = if forward {
+                if at >= self.rune_count() {
+                    None
+                } else {
+                    Some(at)
+                }
+            } else if at == 0 {
+                None
+            } else {
+                Some(at - 1)
+            };
+            if let Some(target) = target {
+                if self.delete_literal_tail_rune(target) {
+                    self.candidate_window = false;
+                    self.navigating = false;
+                    self.keep_candidates = false;
+                    self.edit = None;
+                    self.highlighted = 0;
+                    self.suggestion = None;
+                    self.candidates.clear();
+                    self.cursor_rune = if forward { at } else { at - 1 };
+                    return self.snapshot();
+                }
+            }
         }
         // 私密狀態跟著每個按鍵走：true 設起來，false 明確清掉，不跨欄位殘留。
         self.private = key.private;
@@ -3475,6 +3498,278 @@ mod tests {
         }
     }
 
+    /// 純日文かな組字：沿用測試用的逐字変換 session，畫面停在かな。
+    fn ja_kana_session() -> Session {
+        ja_romaji_session()
+    }
+
+    /// 所有 lane 共用：Delete 刪右一個可見字元，Backspace 刪左一個。
+    #[test]
+    fn test_delete_and_backspace_remove_one_visible_rune() {
+        fn keys(session: &mut Session, text: &str) {
+            for ch in text.chars() {
+                session.press(Key::char(ch, false));
+            }
+        }
+
+        // 日文：わ|たし Delete 刪 た；き|ゃ Backspace 刪 き。
+        let mut ja = ja_kana_session();
+        type_ja(&mut ja, "watashi");
+        ja.press(Key::new(KeyCode::ArrowLeft, None, false));
+        ja.press(Key::new(KeyCode::ArrowLeft, None, false));
+        let snap = ja.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "わし");
+        assert_eq!(snap.cursor_rune, 1);
+
+        let mut ja = ja_kana_session();
+        type_ja(&mut ja, "kya");
+        ja.press(Key::new(KeyCode::ArrowLeft, None, false));
+        let snap = ja.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "ゃ");
+        assert_eq!(snap.cursor_rune, 0);
+
+        // 注音：我|吃 Delete 刪 吃；我|吃 Backspace 刪 我。
+        let mut zh = session();
+        type_syllable(&mut zh, "ㄨㄛˇ");
+        type_syllable(&mut zh, "ㄔ");
+        zh.press(Key::new(KeyCode::ArrowLeft, None, false));
+        let snap = zh.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "我");
+        assert_eq!(snap.cursor_rune, 1);
+
+        let mut zh = session();
+        type_syllable(&mut zh, "ㄨㄛˇ");
+        type_syllable(&mut zh, "ㄔ");
+        zh.press(Key::new(KeyCode::ArrowLeft, None, false));
+        let snap = zh.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "吃");
+        assert_eq!(snap.cursor_rune, 0);
+
+        // 漢字字面：我|愛 兩個方向都只刪一個字。
+        let mut han = english_session();
+        han.press(Key::char('我', false));
+        han.press(Key::char('愛', false));
+        han.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(
+            han.press(Key::new(KeyCode::Delete, None, false)).preedit,
+            "我"
+        );
+        let mut han = english_session();
+        han.press(Key::char('我', false));
+        han.press(Key::char('愛', false));
+        han.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(
+            han.press(Key::new(KeyCode::Backspace, None, false)).preedit,
+            "愛"
+        );
+
+        // 英文：hello| Backspace 刪 o；|hello Delete 刪 h。
+        let mut en = english_session();
+        keys(&mut en, "hello");
+        let snap = en.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "hell");
+        assert_eq!(snap.cursor_rune, 4);
+
+        let mut en = english_session();
+        keys(&mut en, "hello");
+        for _ in 0..5 {
+            en.press(Key::new(KeyCode::ArrowLeft, None, false));
+        }
+        let snap = en.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "ello");
+        assert_eq!(snap.cursor_rune, 0);
+    }
+
+    /// 候選窗開著時兩個刪除鍵都先關窗，再照同一條 rune 規則刪。
+    #[test]
+    fn test_delete_and_backspace_close_candidate_window_first() {
+        for backspace in [false, true] {
+            let mut zh = session();
+            type_syllable(&mut zh, "ㄨㄛˇ");
+            type_syllable(&mut zh, "ㄔ");
+            zh.press(Key::new(KeyCode::ArrowLeft, None, false));
+            zh.candidate_window = true;
+            zh.navigating = true;
+            let code = if backspace {
+                KeyCode::Backspace
+            } else {
+                KeyCode::Delete
+            };
+            let snap = zh.press(Key::new(code, None, false));
+            assert!(!snap.navigating);
+            assert_eq!(snap.preedit, if backspace { "吃" } else { "我" });
+        }
+    }
+
+    /// 邊界不動作：Delete 在結尾、Backspace 在開頭。
+    #[test]
+    fn test_delete_and_backspace_boundaries_are_noop() {
+        let mut ja = ja_kana_session();
+        type_ja(&mut ja, "watashi");
+        let snap = ja.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "わたし");
+        assert_eq!(snap.cursor_rune, 3);
+
+        let mut en = english_session();
+        for ch in "hello".chars() {
+            en.press(Key::char(ch, false));
+        }
+        for _ in 0..5 {
+            en.press(Key::new(KeyCode::ArrowLeft, None, false));
+        }
+        let snap = en.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "hello");
+        assert_eq!(snap.cursor_rune, 0);
+
+        let mut empty = english_session();
+        assert_eq!(
+            empty.press(Key::new(KeyCode::Delete, None, false)).preedit,
+            ""
+        );
+        assert_eq!(
+            empty
+                .press(Key::new(KeyCode::Backspace, None, false))
+                .preedit,
+            ""
+        );
+    }
+
+    /// 未完成注音也是可見字元：Backspace 只刪最後一個符號。
+    #[test]
+    fn test_zh_pending_backspace_removes_one_symbol() {
+        let mut s = session();
+        for ch in "su".chars() {
+            s.press(Key::char(ch, false));
+        }
+        assert_eq!(s.snapshot().preedit, "ㄋㄧ");
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "ㄋ");
+        assert_eq!(snap.cursor_rune, 1);
+
+        // 剩下的不完整注音可以繼續輸入。
+        let snap = s.press(Key::char('u', false));
+        assert_eq!(snap.preedit, "ㄋㄧ");
+    }
+
+    /// 日文轉換後的詞面也按可見字元刪，不擴大刪整個文節。
+    #[test]
+    fn test_ja_delete_visible_surface_rune_real_data() {
+        let Some(mut s) = real_ja_live_session() else {
+            eprintln!("缺少測試資料：packs/ja-lexicon-mozc-v2.pack");
+            return;
+        };
+        type_ja(&mut s, "watashi");
+        s.ja_live_idle();
+        type_ja(&mut s, "shi");
+        let shown = s.ja_live_idle();
+        assert_eq!(shown.preedit, "私し");
+        assert_eq!(shown.cursor_rune, 2);
+
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        let snap = s.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "私");
+        assert_eq!(snap.cursor_rune, 1);
+
+        let mut s = real_ja_live_session().expect("載入 ja pack");
+        type_ja(&mut s, "watashi");
+        s.ja_live_idle();
+        type_ja(&mut s, "shi");
+        s.ja_live_idle();
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "私");
+        assert_eq!(snap.cursor_rune, 1);
+    }
+
+    /// 刪除後凍結剩下的可見字面，live 不能把 わし 重轉成 はし。
+    #[test]
+    fn test_ja_delete_freeze_keeps_surviving_surface_real_data() {
+        let Some(mut s) = real_ja_live_session() else {
+            eprintln!("缺少測試資料：packs/ja-lexicon-mozc-v2.pack");
+            return;
+        };
+        type_ja(&mut s, "watashi");
+        let hira = s.press(Key::new(KeyCode::F(6), None, false));
+        assert_eq!(hira.preedit, "わたし");
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(s.snapshot().cursor_rune, 1);
+
+        let snap = s.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "わし", "只刪 た，不重轉剩下的 わし");
+        assert_eq!(snap.cursor_rune, 1);
+
+        // 候選窗開著時同樣先關窗再刪，剩下的字面也不重轉。
+        let Some(mut s) = real_ja_live_session() else {
+            return;
+        };
+        type_ja(&mut s, "watashi");
+        s.press(Key::new(KeyCode::F(6), None, false));
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(s.snapshot().cursor_rune, 2);
+        s.press(Key::new(KeyCode::Down, None, false));
+        let snap = s.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "わた");
+        assert_eq!(snap.cursor_rune, 2);
+    }
+
+    /// 一漢字多讀音單位：刪可見字元時要把對應的全部單位一起刪掉。
+    #[test]
+    fn test_ja_delete_removes_all_units_of_visible_hanzi_real_data() {
+        let Some(mut s) = real_ja_live_session() else {
+            eprintln!("缺少測試資料：packs/ja-lexicon-mozc-v2.pack");
+            return;
+        };
+        type_ja(&mut s, "watashi");
+        s.ja_live_idle();
+        type_ja(&mut s, "shi");
+        let shown = s.ja_live_idle();
+        assert_eq!(shown.preedit, "私し");
+        assert_eq!(shown.cursor_rune, 2);
+
+        // 私|し Backspace 刪 私（わたし 三個單位），游標到 0。
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(s.snapshot().cursor_rune, 1);
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "し");
+        assert_eq!(snap.cursor_rune, 0);
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "し", "沒有更左的字元，不再刪隱藏單位");
+        assert_eq!(snap.cursor_rune, 0);
+
+        // cursor 0 Delete：先刪 私 整個字，再刪 し，中間不能冒出別的字。
+        let Some(mut s) = real_ja_live_session() else {
+            return;
+        };
+        type_ja(&mut s, "watashi");
+        s.ja_live_idle();
+        type_ja(&mut s, "shi");
+        s.ja_live_idle();
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        assert_eq!(s.snapshot().cursor_rune, 0);
+        let snap = s.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "し");
+        assert_eq!(snap.cursor_rune, 0);
+        let snap = s.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "");
+        assert_eq!(snap.cursor_rune, 0);
+
+        // Home 到開頭再 Delete，序列同上，不出現 獅子。
+        let Some(mut s) = real_ja_live_session() else {
+            return;
+        };
+        type_ja(&mut s, "watashi");
+        s.ja_live_idle();
+        type_ja(&mut s, "shi");
+        s.ja_live_idle();
+        s.press(Key::new(KeyCode::Home, None, false));
+        assert_eq!(s.snapshot().cursor_rune, 0);
+        let snap = s.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "し");
+        let snap = s.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "");
+    }
+
     /// preedit 扣掉尾巴未完成的羅馬字與最後一個かな單位。
     fn prev_prefix(preedit: &str) -> &str {
         let without_pending = preedit.trim_end_matches(|ch: char| ch.is_ascii_lowercase());
@@ -3545,9 +3840,9 @@ mod tests {
             );
             prev = next;
         }
-        // 未完成的 `t` 先留在畫面，倒退鍵刪掉後再停頓補完。
+        // 未完成的 `t` 先留在畫面；游標停在它前面，Delete 刪掉下一個可見字元。
         assert!(prev.ends_with('t'), "未完成的羅馬字消失：{prev:?}");
-        s.press(Key::new(KeyCode::Backspace, None, false));
+        s.press(Key::new(KeyCode::Delete, None, false));
         // 停頓補完最後一個文節；已顯示的前綴不得退回かな。
         let idled = s.ja_live_idle().preedit;
         assert!(idled.starts_with(&prefix), "停頓後退回前綴：{idled:?}");

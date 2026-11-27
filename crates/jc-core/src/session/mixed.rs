@@ -1238,154 +1238,11 @@ impl Session {
         self.ja_run_keys.clear();
     }
 
-    /// 日文組字中退格後，把原始按鍵同步回目前的羅馬字狀態。
-    ///
-    /// `romaji.backspace` 可能一次退掉一整組羅馬字（`kya` 是三個鍵），直接
-    /// 砍一個字元會讓退回混打時重播錯的按鍵。用目前狀態反推最長的原始前綴；
-    /// 找不到時清空，退回混打時就不會硬塞已刪除的按鍵。
-    ///
-    /// `ja_only`（日文主語言）也走同一條路徑：原始羅馬字要留著當退化候選。
-    pub(super) fn sync_ja_run_keys(&mut self) {
-        if !self.in_ja_lane() {
-            return;
-        }
-        let units = self.romaji.units().to_vec();
-        let pending = self.romaji.pending().to_string();
-        let chars: Vec<char> = self.ja_run_keys.chars().collect();
-        let mut probe = self.romaji.clone();
-        probe.reset();
-        for len in (0..=chars.len()).rev() {
-            let mut trial = probe.clone();
-            trial.reset();
-            let mut accepted = true;
-            for ch in &chars[..len] {
-                if trial.press(Key::char(*ch, false)) == crate::ja::input::RomajiEvent::Rejected {
-                    accepted = false;
-                    break;
-                }
-            }
-            if accepted && trial.units() == units.as_slice() && trial.pending() == pending {
-                self.ja_run_keys = chars[..len].iter().collect();
-                return;
-            }
-        }
-        self.ja_run_keys.clear();
-    }
-
-    /// 混合模式的 Backspace：刪掉游標左邊一個字元。
-    ///
-    /// 游標以 rune 為單位；中文一個字背後的整个音節按鍵一起刪，英文只刪一個
-    /// 字母。沒有可刪的目標時才退回舊的整片段路徑。
-    pub(super) fn backspace_mixed(&mut self) -> bool {
-        let text = self.composed_text();
-        let runes = text.chars().count();
-        if runes == 0 {
-            return false;
-        }
-        let cursor = self.mixed_rune().min(runes);
-        if cursor == 0 {
-            return false;
-        }
-        let saved = self.mixed_rune();
-        self.set_mixed_rune(cursor - 1);
-        let target = self.mixed_target_at_cursor();
-        self.set_mixed_rune(saved);
-        if let Some(target) = target {
-            let typed = self.ascii.typed().to_string();
-            let (start, end) = target.typed;
-            if start < end && end <= typed.len() && typed.is_char_boundary(start) {
-                // 凍結的注音字面：游標在尾端時 Backspace 只刪最後一個符號，
-                // 回到 0.1.27 可刪聲調的行為；不要把整段字面一次刪掉。
-                let forced_span = self
-                    .literal_spans
-                    .iter()
-                    .find(|literal| literal.contains(start, end))
-                    .cloned();
-                let at_literal_end = target.rune_start + target.rune_len == cursor;
-                if let Some(span) = forced_span {
-                    if target.reading.is_some() && at_literal_end && target.rune_len > 1 {
-                        let delete = typed[..end]
-                            .char_indices()
-                            .next_back()
-                            .map(|(at, _)| at)
-                            .unwrap_or(start)
-                            .max(start);
-                        let mut next =
-                            String::with_capacity(typed.len().saturating_sub(end - delete));
-                        next.push_str(&typed[..delete]);
-                        next.push_str(&typed[end..]);
-                        // 剩下的字面要保持「可拆回同一個音節」：讀音優先從剩下的
-                        // 字面重算；かな無法反推時，把原本讀音的聲調去掉。
-                        let remaining = next.get(start..delete).unwrap_or_default();
-                        let reading = zh_reading_from_literal(remaining)
-                            .or_else(|| span.reading.as_deref().map(strip_trailing_tone));
-                        self.ascii.replay(&next, &self.lexicon);
-                        self.literal_spans.clear();
-                        if start < delete {
-                            match reading {
-                                Some(reading) => self
-                                    .literal_spans
-                                    .push(LiteralSpan::with_reading(start, delete, reading)),
-                                None => self.literal_spans.push(LiteralSpan::new(start, delete)),
-                            }
-                        }
-                        let len = self.composed_text().chars().count();
-                        self.set_mixed_rune((cursor - 1).min(len));
-                        return true;
-                    }
-                }
-                let mut next = String::with_capacity(typed.len().saturating_sub(end - start));
-                next.push_str(&typed[..start]);
-                next.push_str(&typed[end..]);
-                self.ascii.replay(&next, &self.lexicon);
-                self.literal_spans.clear();
-                let len = self.composed_text().chars().count();
-                self.set_mixed_rune((cursor - 1).min(len));
-                return true;
-            }
-        }
-        let len = self.segments.len();
-        let at = self.mixed_rune().min(len);
-        if at == 0 {
-            return false;
-        }
-        if self.remove_mixed_segment(at - 1) {
-            return true;
-        }
-        // 舊路徑（沒有統一管線片段）至少退掉按鍵流最後一個字元。
-        let mut typed = self.ascii.typed().to_string();
-        if typed.pop().is_none() {
-            return false;
-        }
-        self.ascii.replay(&typed, &self.lexicon);
-        self.literal_spans.clear();
-        self.cursor_rune = Self::MIXED_CURSOR_END;
-        true
-    }
-
-    /// 混合模式的 Delete：刪掉游標後一個片段。
-    pub(super) fn remove_mixed_segment(&mut self, index: usize) -> bool {
-        let Some((start, end)) = self.mixed_typed_spans().get(index).copied() else {
-            return false;
-        };
-        let typed = self.ascii.typed().to_string();
-        if start > end || end > typed.len() || !typed.is_char_boundary(start) {
-            return false;
-        }
-        let mut next = String::with_capacity(typed.len().saturating_sub(end - start));
-        next.push_str(&typed[..start]);
-        next.push_str(&typed[end..]);
-        self.ascii.replay(&next, &self.lexicon);
-        // 游標停在被刪片段的位置：後面若還有片段就停在它前面，否則回到結尾。
-        self.set_mixed_rune(index.min(self.segments.len()));
-        true
-    }
-
     /// 目前顯示片段對應的按鍵流範圍（位元組）。
     ///
     /// 顯示一律走統一管線，因此用同一份 `plan_input` 重算；回傳長度與
     /// [`Session::segments`] 對不上時表示目前是舊路徑，呼叫端不要依索引刪除。
-    fn mixed_typed_spans(&self) -> Vec<(usize, usize)> {
+    pub(super) fn mixed_typed_spans(&self) -> Vec<(usize, usize)> {
         let Some(text) = self.latin_run_text() else {
             return Vec::new();
         };
@@ -1491,14 +1348,6 @@ impl Session {
     }
 
     /// 游標右側 rune 所屬的片段索引。
-    pub(super) fn mixed_segment_index_at_rune(&self, rune: usize) -> Option<usize> {
-        let text = self.composed_text();
-        let byte = Self::rune_byte(&text, rune);
-        self.segments()
-            .iter()
-            .position(|segment| segment.start <= byte && byte < segment.end)
-    }
-
     /// 字串中第 `rune` 個字元的位元組位移；超出長度時夾在結尾。
     fn rune_byte(text: &str, rune: usize) -> usize {
         text.char_indices()
@@ -3450,18 +3299,6 @@ fn split_tone_key(raw: &str) -> (String, Option<char>) {
 ///
 /// 選了かな分解後又 Backspace 刪聲調時，剩下かな無法反推回注音，只能用
 /// 原本記下的讀音去掉最後一個聲調。
-fn strip_trailing_tone(reading: &str) -> String {
-    let mut chars = reading.chars();
-    let Some(last) = chars.next_back() else {
-        return String::new();
-    };
-    if class_of(last) == Class::Tone {
-        chars.as_str().to_string()
-    } else {
-        reading.to_string()
-    }
-}
-
 /// 一段注音按鍵裡每個音節的位元組範圍。
 ///
 /// 類別回到開頭（或遇到聲調鍵、空白）時開始下一個音節。長度對不上時整段

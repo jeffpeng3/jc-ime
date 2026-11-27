@@ -17,7 +17,7 @@ Branch：`composition-cursor`。Owned paths 只有 `crates/jc-core/src/session/*
 |---|---|---|
 | `session.go` `Session.syls`、`cursor` | `session/mod.rs` 的 `syllables`、`cursor` | rewritten：音節清單與游標改由 `Session` 持有，`ZhInput` 只負責暫存注音。 |
 | `session.go` `insert`、`pressKey` 的音節插入 | `core::insert_syllable`、`press_char`、`complete_pending` | rewritten：完成的音節插在游標位置，不再固定接在尾端。 |
-| `session.go` `eraseBeforeCursor`、`backspace` | `core::remove_syllable`、`backspace` | ported：Backspace 刪游標前一音節，暫存注音先逐格退。 |
+| `session.go` `eraseBeforeCursor`、`backspace` | `core::remove_syllable`、`Session::delete_visible` | ported：Backspace／Delete 都刪游標一側的一個可見 rune。 |
 | `session.go` `shiftLocks` | `core::shift_locks` | rewritten：鎖定、字面插入點一起平移；被編輯點切到的鎖定解除。 |
 | `session.go` `moveTo`、`segments.go` `SetCursor` | `core::move_cursor_to` | rewritten：游標以音節格儲存，對外換成 rune；暫存注音未完成時不移動。 |
 | `segments.go` `Cursor`、`ActiveSegment`、`SegmentAt` | `segments::cursor`、`active_segment`、`segment_at` | ported：片段結尾屬於下一個片段，整段結尾仍算最後一段。 |
@@ -48,8 +48,8 @@ Branch：`composition-cursor`。Owned paths 只有 `crates/jc-core/src/session/*
 |---|---|
 | ←／→ | 候選窗顯示中且還沒進入選取模式時移動游標；已在頭尾時改成換候選。 |
 | Home／End | 顯示候選時移到組字頭／尾；選取模式中移到候選第一／最後一項。 |
-| Backspace | 有暫存注音先退一格；否則刪游標前一音節。 |
-| Delete | 刪游標後一音節；沒有可刪音節時只關候選窗。 |
+| Backspace | 先關候選窗，再刪游標左邊一個可見 rune（暫存注音也只刪一個符號）。 |
+| Delete | 先關候選窗，再刪游標右邊一個可見 rune；游標在結尾時不動作。 |
 | Shift＋←／→ | 縮短／加長游標片段的讀音長度，重新解碼候選。 |
 | ↓／↑ | 進入選取模式與換候選；第一下只進入選取模式。 |
 | `j`／`k` | 選取模式中換前後一個候選，只套用到游標片段。其他時候仍是注音鍵。 |
@@ -93,8 +93,8 @@ Branch：`composition-cursor`。Owned paths 只有 `crates/jc-core/src/session/*
 
 | 舊行為 | 新測試 |
 |---|---|
-| 候選窗開著時 Backspace 只關窗 | `test_backspace_deletes_before_cursor_and_closes_candidates` |
-| Delete 只關候選窗 | `test_delete_removes_after_cursor_or_closes_candidates` |
+| 候選窗開著時 Backspace 先關窗再刪左邊一個 rune | `test_backspace_deletes_before_cursor_and_closes_candidates` |
+| 候選窗開著時 Delete 先關窗再刪右邊一個 rune | `test_delete_removes_after_cursor_or_closes_candidates` |
 
 依共通規則沒有執行 `cargo test`；測試只寫、編譯，交由整合階段統一跑。
 

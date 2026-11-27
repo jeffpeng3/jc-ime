@@ -426,12 +426,12 @@ fn cursor_arrows_and_backspace_on_real_data() {
         else {
             panic!("{phrase:?} Backspace 應回 State");
         };
-        // 結尾 Backspace 要刪掉一個音節並停在新的結尾；日文 lane 目前是
-        // no-op，維持原字串與游標。這裡斷言精確位置，不用「不超過長度」。
+        // 結尾 Backspace 刪游標左邊一個可見字元；私 對應 わたし 三個單位，
+        // 一次刪完後組字清空。
         let (want_text, want_cursor) = match phrase {
             "ji3" => (String::new(), 0),
             "ji394su3" => ("我愛".to_string(), 2),
-            "watashi" => (right_text.clone(), right_cursor),
+            "watashi" => (String::new(), 0),
             _ => unreachable!("未定義的測試字串"),
         };
         assert_eq!(back_text, want_text, "{phrase:?} Backspace 後組字");

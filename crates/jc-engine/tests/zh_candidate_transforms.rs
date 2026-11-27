@@ -422,16 +422,17 @@ fn candidate_lists_survive_every_transform() {
         5,
     );
     add(
-        "ja Backspace 退羅馬字",
+        "ja Backspace 刪可見字元",
         Box::new(|data| {
             let mut s = base(data);
             press_all(&mut s, &chars("watashi"));
+            press_all(&mut s, &[key(KeyCode::F(6))]);
             press_all(&mut s, &[key(KeyCode::Backspace)]);
             s
         }),
-        "は他",
-        Some("wata"),
-        5,
+        "わた",
+        None,
+        1,
     );
 
     for (name, build, first, second, min) in cases {

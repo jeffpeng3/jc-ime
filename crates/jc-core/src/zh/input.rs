@@ -236,6 +236,11 @@ impl ZhInput {
         self.tone_blocked = false;
     }
 
+    /// 清掉上一鍵被擋下的聲調旗標；刪除鍵重建暫存注音時使用。
+    pub fn clear_tone_blocked(&mut self) {
+        self.tone_blocked = false;
+    }
+
     /// 處理一個按鍵。
     pub fn press(&mut self, key: Key) -> ZhInputEvent {
         self.tone_blocked = false;

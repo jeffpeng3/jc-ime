@@ -889,6 +889,15 @@ impl Controller {
         self.ctx = JaContext::default();
     }
 
+    /// 中間刪除後丟掉轉換快取與鎖定前綴。
+    ///
+    /// 讀音變短時 `converted_upto` 可能還停在刪除前的位置，`preview_input`
+    /// 會直接回舊 draft，畫面留在刪除前的詞面。只清除快取與鎖定，不動
+    /// 使用者片段；下一次 `input` 會從剩下的讀音重新轉換。
+    pub fn invalidate_for_edit(&mut self) {
+        self.drop_locks();
+    }
+
     /// 回傳目前讀音指定範圍的候選。
     ///
     /// 候選仍由原本的轉換器產生，只是把已鎖定的前綴放進 [`JaContext::left`]，

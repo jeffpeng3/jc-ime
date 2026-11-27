@@ -19,8 +19,8 @@ hook 接進同一條按鍵流程，並補上快照欄位。沒有改任何群組
 | `key()` 的 `Enter` | `core::finish_composition` | ported：選字＋送出一次完成（Rust 協定以一次 `Enter` 回 `Commit`） |
 | `key()` 的 `Escape` 優先權 | `core::escape`、`clear_pending_zhuyin` | ported：關候選窗 → 清未完成注音 → 清整段 |
 | `key()` 的空白 | `core::space`、`segments::literal_space`、`segments::finish_tone_key` | ported：完成音節／開候選窗／選字；孤立聲調鍵＋空白在 G2 |
-| `key()` 的 `Backspace`（候選窗） | `core::backspace` 前段 | ported：只關窗、不刪字 |
-| `key()` 的 `Delete`（候選窗） | `core::delete_forward` | rewritten：沒有組字游標，只關窗 |
+| `key()` 的 `Backspace`（候選窗） | `Session::delete_visible` | ported：先關窗，再刪游標左邊一個可見 rune |
+| `key()` 的 `Delete`（候選窗） | `Session::delete_visible` | ported：先關窗，再刪游標右邊一個可見 rune |
 | `key()` 的 `Tab` | `Session::press` 的 `Tab` 分支、`core::accept_suggestion` | rewritten：補全優先，選取模式中換下一項；上游的換詞長未接 |
 | `key()` 的 `Up`／`Down` | `core::up`、`core::down` | ported：↓ 第一次進選取模式不移動，之後上下換項 |
 | `key()` 的 `PageUp`／`PageDown` | `core::page_step` | ported：頁碼頭尾相接 |
@@ -65,7 +65,7 @@ hook 接進同一條按鍵流程，並補上快照欄位。沒有改任何群組
 4. Esc 優先權：先關候選窗，再清未完成的注音，最後才清整段組字。`ZhInput`
    沒有清暫存的公開 API，`clear_pending_zhuyin` 用退格逐格退掉暫存，不碰已
    完成的音節。
-5. 候選窗開著時退格與 Delete 只關窗，不刪字。
+5. 候選窗開著時退格與 Delete 先關窗，再各刪游標左／右邊一個可見字元。
 6. `Snapshot.suggestion` 填入 Tab 會補上的尾綴（注音補全、混打英文補全）。
 7. `Snapshot.label` 填入 `personal`（自訂詞、手選過的單字）與 `common`
    （系統 unigram 機率 ≥ `COMMON_LABEL_PROBABILITY`）。
@@ -107,8 +107,8 @@ hook 接進同一條按鍵流程，並補上快照欄位。沒有改任何群組
 | `TestHomeEndDependOnSelectionMode` | `test_home_end_move_only_in_selection_mode` |
 | `TestTypingLeavesSelectionModeAndCandidateWindowFollows` | `test_typing_leaves_selection_mode` |
 | `TestEscLeavesSelectionMode` | `test_escape_closes_candidate_window_and_keeps_composition` |
-| `TestCandidateWindowSwallowsKeys`（退格） | `test_backspace_closes_candidate_window_without_deleting` |
-| `TestCandidateWindowSwallowsKeys`（Delete） | `test_delete_only_closes_candidate_window` |
+| `TestCandidateWindowSwallowsKeys`（退格） | `test_backspace_deletes_before_cursor_and_closes_candidates` |
+| `TestCandidateWindowSwallowsKeys`（Delete） | `test_delete_removes_after_cursor_or_closes_candidates` |
 | `TestShownCandidatesLetArrowsMoveCompositionCursor`（空白開窗） | `test_space_opens_candidates_after_complete_syllable` |
 | `TestStyleCandidatePageSizeAndSpace` 的關閉設定 | `test_space_inserts_space_keeps_literal_behavior` |
 | `TestPotentialSuggestions` 類的補全尾綴 | `test_snapshot_suggestion_is_completion_tail` |

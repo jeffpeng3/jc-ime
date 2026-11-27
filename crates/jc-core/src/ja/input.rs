@@ -422,6 +422,82 @@ impl RomajiInput {
         false
     }
 
+    /// 刪除一個讀音單位，並調整剩下的原始按鍵對應。
+    ///
+    /// 若它和別的かな共用同一個對照表項（`kya` → `きゃ`），剩下成員的原始
+    /// 按鍵一起清掉：這串按鍵重播會把刪掉的かな復活。回傳 `false` 表示索引
+    /// 超出目前單位。
+    pub fn delete_unit(&mut self, index: usize) -> bool {
+        self.delete_units(index, 1)
+    }
+
+    /// 刪除一段連續讀音單位，並調整剩下的原始按鍵對應。
+    ///
+    /// 一個可見漢字可能對應多個讀音單位；呼叫端用這裡一次刪完整個字元，
+    /// 不留隱藏單位。跨越原始按鍵組時，剩下成員的按鍵一起清掉，避免重播
+    /// 已刪除的字。回傳 `false` 表示範圍不在目前單位內。
+    pub fn delete_units(&mut self, start: usize, count: usize) -> bool {
+        if count == 0 || start >= self.units.len() {
+            return false;
+        }
+        let old_len = self.units.len();
+        let end = start.saturating_add(count).min(old_len);
+        let mut group_start = start;
+        while group_start > 0 && self.raw[group_start].is_empty() {
+            group_start -= 1;
+        }
+        let mut group_end = start + 1;
+        while group_end < old_len && self.raw[group_end].is_empty() {
+            group_end += 1;
+        }
+        while group_end < end {
+            group_end += 1;
+            while group_end < old_len && self.raw[group_end].is_empty() {
+                group_end += 1;
+            }
+        }
+        let removed = end - start;
+        self.units.drain(start..end);
+        self.raw.drain(start..end);
+        if group_end - group_start > removed {
+            let keep_end = (group_end - removed).min(self.raw.len());
+            for raw in &mut self.raw[group_start..keep_end] {
+                raw.clear();
+            }
+        }
+        if end == old_len {
+            self.carry_n = false;
+        }
+        true
+    }
+
+    /// 刪除未完成前綴裡的第 `index` 個按鍵。
+    ///
+    /// 只刪這一個可見字元；剩下字串能不能繼續組字交給下一次按鍵判斷，不在
+    /// 刪除路徑另開前綴特例。
+    pub fn delete_pending_at(&mut self, index: usize) -> bool {
+        let mut chars: Vec<char> = self.pending.chars().collect();
+        if index >= chars.len() {
+            return false;
+        }
+        chars.remove(index);
+        self.pending = chars.into_iter().collect();
+        true
+    }
+
+    /// 目前的按鍵序列：已完成單位的原始羅馬字加上未完成前綴。
+    ///
+    /// 中間刪除後這串可能不再是原本輸入的前綴；重建 `ja_run_keys` 時要改用
+    /// 這個值，不能再用最長前綴反推。
+    pub fn raw_keys(&self) -> String {
+        let mut out = String::new();
+        for raw in &self.raw {
+            out.push_str(raw);
+        }
+        out.push_str(&self.pending);
+        out
+    }
+
     /// 清空所有組字狀態。
     pub fn reset(&mut self) {
         self.units.clear();
@@ -944,6 +1020,34 @@ mod tests {
         seq.iter().map(|s| Unit::new(*s)).collect()
     }
 
+    /// 真實 romaji.tsv：一次只刪一個かな，`kya` 不會整組消失。
+    #[test]
+    fn test_delete_uses_real_romaji_table_one_kana() {
+        let path = jc_testdata::require_data!("0c-testdata/ja/input/romaji.tsv");
+        let text = std::fs::read_to_string(&path).expect("讀取 romaji.tsv");
+        for key in ["wa", "ta", "shi", "kya"] {
+            assert!(
+                text.lines()
+                    .any(|line| line.split('\t').next() == Some(key)),
+                "romaji.tsv 缺少案例 {key}"
+            );
+        }
+
+        let mut input = RomajiInput::new();
+        press_str(&mut input, "watashi");
+        assert_eq!(input.units(), units_of(&["わ", "た", "し"]).as_slice());
+        assert!(input.delete_unit(1));
+        assert_eq!(input.units(), units_of(&["わ", "し"]).as_slice());
+        assert_eq!(input.raw_keys(), "washi");
+
+        let mut input = RomajiInput::new();
+        press_str(&mut input, "kya");
+        assert_eq!(input.units(), units_of(&["き", "ゃ"]).as_slice());
+        assert!(input.delete_unit(1), "只刪 ゃ");
+        assert_eq!(input.units(), units_of(&["き"]).as_slice());
+        assert_eq!(input.raw_keys(), "", "共用的 kya 不能再重播");
+    }
+
     #[test]
     fn test_romaji_composer_table() {
         let path = jc_testdata::require_data!("0c-testdata/ja/input/romaji.tsv");
@@ -1276,6 +1380,55 @@ mod tests {
         press_str(&mut input, "zj");
         assert_eq!(input.units(), units_of(&["ず"]).as_slice());
         assert_eq!(input.press(char_key('a')), RomajiEvent::Rejected);
+    }
+
+    /// 一次只刪一個かな：`kya` 產生的 `きゃ` 不會整組消失。
+    #[test]
+    fn test_delete_unit_removes_one_kana_from_shared_raw() {
+        let mut input = RomajiInput::new();
+        press_str(&mut input, "kya");
+        assert_eq!(input.units(), units_of(&["き", "ゃ"]).as_slice());
+        assert_eq!(input.raw_units(), &["kya".to_string(), String::new()]);
+        assert!(input.delete_unit(0));
+        assert_eq!(input.units(), units_of(&["ゃ"]).as_slice());
+        assert_eq!(input.raw_keys(), "");
+
+        let mut input = RomajiInput::new();
+        press_str(&mut input, "kya");
+        assert!(input.delete_unit(1));
+        assert_eq!(input.units(), units_of(&["き"]).as_slice());
+    }
+
+    /// 中間刪除只動目標單位，前後讀音與原始按鍵保持對應。
+    #[test]
+    fn test_delete_unit_in_middle_keeps_neighbors() {
+        let mut input = RomajiInput::new();
+        press_str(&mut input, "watashi");
+        assert_eq!(input.units(), units_of(&["わ", "た", "し"]).as_slice());
+        assert!(input.delete_unit(1));
+        assert_eq!(input.units(), units_of(&["わ", "し"]).as_slice());
+        assert_eq!(input.raw_units(), &["wa".to_string(), "shi".to_string()]);
+        assert_eq!(input.raw_keys(), "washi");
+    }
+
+    /// 未完成前綴也只刪一個可見按鍵。
+    #[test]
+    fn test_delete_pending_removes_one_key() {
+        let mut input = RomajiInput::new();
+        press_str(&mut input, "shit");
+        assert_eq!(input.units(), units_of(&["し"]).as_slice());
+        assert_eq!(input.pending(), "t");
+        assert!(input.delete_pending_at(0));
+        assert_eq!(input.pending(), "");
+        assert_eq!(input.raw_keys(), "shi");
+
+        let mut input = RomajiInput::new();
+        press_str(&mut input, "shiky");
+        assert_eq!(input.pending(), "ky");
+        assert!(input.delete_pending_at(0));
+        assert_eq!(input.pending(), "y");
+        assert!(input.delete_pending_at(0));
+        assert_eq!(input.pending(), "");
     }
 
     #[test]

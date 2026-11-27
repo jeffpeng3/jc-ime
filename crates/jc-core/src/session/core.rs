@@ -1458,8 +1458,11 @@ impl Session {
     }
 
     /// 日文組字游標往左或往右移一個字元。
+    ///
+    /// 游標範圍包含尾巴未完成的羅馬字前綴，才能把游標停在かな與前綴之間；
+    /// 刪除與插入都以游標看到的下一個字元為準。
     fn move_ja_cursor(&mut self, delta: isize) -> bool {
-        let text = self.base.clone();
+        let text = self.composed_text();
         if text.is_empty() {
             return false;
         }
@@ -2461,6 +2464,7 @@ impl Session {
         self.ja_candidates_span = None;
         self.ja_run = false;
         self.ja_run_keys.clear();
+        self.ja_delete_surface = None;
         self.zh.reset();
         self.zh_lane = false;
         self.zh_space_closed = false;
@@ -3041,6 +3045,7 @@ impl Session {
         let units = self.romaji.units().to_vec();
         let reading: String = units.iter().map(Unit::as_str).collect();
         if reading.is_empty() {
+            self.ja_delete_surface = None;
             self.composition.clear();
             return;
         }
@@ -3048,6 +3053,7 @@ impl Session {
             self.rebuild_ja_live(&units);
             return;
         }
+        self.ja_delete_surface = None;
         let Some(decoder) = self.config.ja.clone() else {
             self.base = reading;
             self.sync_composition_ja();
@@ -3197,6 +3203,19 @@ impl Session {
         let common = super::composition::common_prefix_units(&previous, &reading);
         self.composition
             .retain_units_through(crate::composition::Lang::Ja, common);
+        // 刪除後剩下的可見字面先固定成 User 片段，逐字変換才不會把 `わし`
+        // 重新轉成 `はし`。只凍結刪除後的畫面，不重設整段組字。
+        if let Some(surface) = self.ja_delete_surface.take() {
+            if !units.is_empty() && !surface.is_empty() {
+                self.composition.mark_user_units(
+                    crate::composition::Lang::Ja,
+                    0,
+                    units.len(),
+                    &reading,
+                    &surface,
+                );
+            }
+        }
         self.sync_ja_users();
         let plan = match &mut self.live {
             Some(live) => live.input(units, &JaContext::default()),
@@ -3661,7 +3680,7 @@ mod tests {
         assert_eq!(joined, snap.preedit, "片段要覆蓋整個組字字串");
     }
 
-    /// 結尾有字面時 Backspace 仍回到新的結尾，不會停到字面前面。
+    /// 結尾有字面時 Backspace 刪游標左邊那一個可見字元（字面本身）。
     #[test]
     fn test_backspace_at_end_keeps_cursor_after_literal() {
         let mut s = session();
@@ -3672,8 +3691,8 @@ mod tests {
         assert_eq!(before.preedit, "我，");
         assert_eq!(before.cursor_rune, 2, "游標在字面之後");
         let snap = s.press(Key::new(KeyCode::Backspace, None, false));
-        assert_eq!(snap.preedit, "，");
-        assert_eq!(snap.cursor_rune, 1, "刪掉音節後游標仍在字面之後");
+        assert_eq!(snap.preedit, "我");
+        assert_eq!(snap.cursor_rune, 1, "刪掉游標前的字面，游標留在原位");
     }
 
     /// 游標移到中間插入新音節，結果與直接打完整字串相同。
