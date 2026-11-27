@@ -1,8 +1,7 @@
 # jc 注音安裝器（Inno Setup）
 
 `installer/` 放 per-machine setup.exe 的來源。使用者文件在
-[`../docs/install.md`](../docs/install.md)，決策與驗證結果在
-[`../docs/port/tsf-installer.md`](../docs/port/tsf-installer.md)。
+[`../docs/install.md`](../docs/install.md)。
 
 ## 為什麼是 setup.exe（Inno Setup）
 

@@ -4,7 +4,7 @@
 //! 與快照結構照抄。Adapter 只改兩處：`open_request` 改送 jc `hello`，
 //! `parse()` 前先將 jc `Response::State` 轉成 0c snapshot 的 JSON 形狀。
 //!
-//! T0 結果（`docs/port/0c-api-diff.md`）已套用。三類全域差異在本檔的落點：
+//! T0 的 windows-rs API 差異已套用。三類全域差異在本檔的落點：
 //!
 //! 1. `windows_link::link!` → `windows_core::link!`：session.rs 沒有 link! 宣告；
 //!    0c 唯一一處在 msctf.rs（T6），本 crate 不直接依賴 windows-link。

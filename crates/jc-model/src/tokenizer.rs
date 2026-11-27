@@ -258,7 +258,7 @@ impl Tokenizer {
     /// 同一份詞表改用最長前綴匹配。
     ///
     /// 詞表不變，只換切法；用來量測「沒有 piece 分數」與「有 piece 分數」
-    /// 的差別，見 `docs/port/rerank-tokenizer.md`。
+    /// 的差別。
     pub fn as_max_match(&self) -> Self {
         Self {
             strategy: Strategy::MaxMatch,

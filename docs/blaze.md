@@ -1,6 +1,6 @@
 # blaze
 
-這個 workspace 的日常檢查用 [blaze](https://github.com/…/blaze)，交件前的正式驗證用
+這個 workspace 的日常檢查用 blaze，交件前的正式驗證用
 `cargo`。兩者讀同一份 `Cargo.toml`，不需要額外設定。
 
 ## 指令

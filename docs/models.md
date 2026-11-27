@@ -113,7 +113,7 @@ Q8_0 是量測與建議使用的注音選字權重：33.9 MiB、推論 p50 9.36 
 revision 的官方重量化檔，本專案沒有自行重新量化。用途是日文轉換的
 第二階段：統計結果永遠先算好，`top2 - top1 < 460` 時才送 Jinen，通過五條
 驗證才替換，180 ms 逾時回退統計結果。`jc-engine` 預設載入，`JC_JINEN=off`
-關閉。詳細門檻與量測見 [`docs/port/jinen-default.md`](port/jinen-default.md)。
+關閉。詳細門檻與量測見 [`docs/port/neural.md`](port/neural.md)。
 
 ## 集合 manifest
 

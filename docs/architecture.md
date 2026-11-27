@@ -37,10 +37,10 @@ jc-platform ── wrapper 契約                    （引擎尚未依賴它）
 - `jc-tsf` → `jc-proto`、`jc-tsf-register`；`jc-tsf-smoke` → `jc-proto`、`jc-windows`。
 - `jc-settings-ui` → `jc-data`、`jc-settings`，不經過 client crate。
 
-workspace 目前 19 個成員：`jc-core`、`jc-testdata`、`jc-data`、`jc-model`、
-`jc-proto`、`jc-platform`、`jc-eval`、`jc-engine`、`jc-windows`、`jc-linux`、
-`jc-mac`、`jc-cli`、`jc-jadic`、`jc-englishpack`、`jc-settings`、`jc-tsf`、
-`jc-tsf-register`、`jc-settings-ui`、`jc-tsf-smoke`。
+workspace 目前 20 個成員：`jc-core`、`jc-testdata`、`jc-data`、`jc-model`、
+`jc-proto`、`jc-platform`、`jc-eval`、`jc-engine`、`jc-engine-launcher`、
+`jc-windows`、`jc-linux`、`jc-mac`、`jc-cli`、`jc-jadic`、`jc-englishpack`、
+`jc-settings`、`jc-tsf`、`jc-tsf-register`、`jc-settings-ui`、`jc-tsf-smoke`。
 
 ## 責任
 

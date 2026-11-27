@@ -91,7 +91,7 @@ pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 數值不是版面推導，而是量測結果：k=200 相對 40 的單鍵成本最多 +0.11 ms
 /// （`ㄧˋ` 0.766→0.880 ms），最差單鍵總成本約 0.93 ms，遠低於 16.7 ms 的
 /// 影格預算；k=500 只多出 40–130 個極罕用候選，不值得。量測與方法見
-/// `docs/port/candidate-cap.md`。
+/// `docs/port/candidate-unify.md`。
 ///
 /// 上限只決定「最多保留幾項」，不改變候選排序：解碼器照原本分數輸出，截斷
 /// 發生在尾端。直向一頁 10 項、四欄一頁 40 項，分頁由版面另外決定。
@@ -2241,7 +2241,7 @@ mod tests {
     fn test_candidate_cap_allows_four_columns() {
         assert_eq!(
             DEFAULT_MAX_CANDIDATES, 200,
-            "預設上限固定 200，量測見 docs/port/candidate-cap.md"
+            "預設上限固定 200，量測見 docs/port/candidate-unify.md"
         );
         let page =
             crate::candidate_layout::DEFAULT_ROWS * crate::candidate_layout::EXPANDED_COLUMNS;

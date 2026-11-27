@@ -4,7 +4,7 @@
 //! [`Overrides`] 表示，優先於檔案值。
 //!
 //! 讀檔失敗、JSON 壞掉或單一欄位值不合法都只記警告並退回預設值，不讓引擎
-//! 啟動失敗。欄位對照與「本版忽略」的理由見 `docs/port/settings-wire.md`。
+//! 啟動失敗。欄位對照與「本版忽略」的理由見 `docs/port/settings.md`。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

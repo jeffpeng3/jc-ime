@@ -3,8 +3,7 @@
 //! 對照上游 `core/session/` 的 `pending_literal.go`、`vocab_mark.go`、
 //! `local_evidence.go`、`document_context.go` 與 `corrections.go`。這裡只放
 //! 不依賴組字游標插入／刪除與解碼器個人化成本的行為；需要 `ZhInput` 逐格
-//! 編輯或 `Decoder` 修正成本的部分，依賴關係寫在
-//! `docs/port/session-g5-misc.md`。
+//! 編輯或 `Decoder` 修正成本的部分留在對應模組。
 //!
 //! 上游一個 `Session` 的方法分散在多個檔案；本模組比照同一個模式，用
 //! `impl Session` 掛在 `session::mod` 的型別上。

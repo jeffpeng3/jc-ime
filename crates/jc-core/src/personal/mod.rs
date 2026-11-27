@@ -16,7 +16,7 @@
 //! - 自訂詞與代名詞等資料結構改寫成 Rust 的 map／set；JSON 欄位名稱用
 //!   snake_case，格式版本從 1 起算，不假裝讀得懂前身格式 8。
 //! - 尚未接上外殼的路徑（神經重排、混合輸入、英文補字）由 trait 的預設實作
-//!   隔開，整合點寫在 `docs/port/personal-zh.md`。
+//!   隔開，整合點寫在 `docs/port/personal.md`。
 
 pub mod corrections;
 pub mod diversity;
@@ -81,7 +81,7 @@ const LIFT_CAP: i32 = 1500;
 /// rollback 窗口長度，毫秒。
 ///
 /// 提交後的學習在這段時間內都還能補償；對照 Mozkey 的 rollback window
-/// （`docs/reports/mozkey-study-2026-11-20.md` 第 5 節與 `accepted_rollback`）。
+/// 與 `accepted_rollback`。
 pub const ROLLBACK_WINDOW_MS: i64 = 5_000;
 
 /// 連續跳過幾次後，這個學習詞不再自動排第一。

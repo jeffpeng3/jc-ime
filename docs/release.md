@@ -372,8 +372,7 @@ Cache Size: ~NNN MB (NNNNNNNN B)         # 這次存了多大
 快取上限是每個 repo 10 GB（超過按最久未存取淘汰，7 天沒用到自動刪）。本機 debug 建置
 量到 38 個測試執行檔共 4.5 GB，CI 的快取估計每個 OS 2–4 GB（壓縮後），Linux 加 Windows
 可能吃掉一半以上的額度。接近上限時先把 `ci-windows` 的 `cache-all-crates` 改成
-`"false"`，再不夠才關 `ci-linux` 的；release 的三個 job 維持只快取依賴。細節與清理
-指令見 `docs/port/ci-cache.md`。
+`"false"`，再不夠才關 `ci-linux` 的；release 的三個 job 維持只快取依賴。
 
 快取清理由 `scripts/cache-prune.sh` 執行：先照 family 上限與閒置天數算出刪除清單，再看執行後
 預估是否超過總量上限 8 GB。超標時從剩下的快取依建立時間由舊到新追加刪除，直到低於 8 GB

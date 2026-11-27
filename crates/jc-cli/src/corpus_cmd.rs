@@ -9,9 +9,8 @@
 //! （[`jc_core::mixed_latin::split`]），B 是正式路由（[`Router::convert`] 且
 //! `mixed_latin_split: true`）。這個子命令只讀資料，不改任何轉換行為。
 //!
-//! 分類程式是從 `diff_cmd.rs` 複製的（見
-//! `docs/reports/real-corpus-2026-11-21.md`）：那支檔案屬於 `segment-diff`
-//! 分支，為了避免兩個 branch 同時改同一個檔案，這裡保留一份等價實作。
+//! 分類程式是從 `diff_cmd.rs` 複製的：那裡屬於 `segment-diff`
+//! 的歷史實作，為了避免兩個 branch 同時改同一個檔案，這裡保留一份等價實作。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
@@ -520,9 +519,9 @@ fn collect_english(english: &English, raw: &mut Vec<RawEntry>, warnings: &mut Ve
     // 既有測試與文件裡的英文例句。
     const ENGLISH_TESTS: &[(&str, &str)] = &[
         ("is a good sentence", "crates/jc-core/src/mixed.rs:3738"),
-        ("hello", "docs/reports/mixed-latin-2026-11-20.md:123"),
-        ("small", "docs/reports/mixed-latin-2026-11-20.md:123"),
-        ("code", "docs/reports/mixed-latin-2026-11-20.md:123"),
+        ("hello", "docs/port/composition.md"),
+        ("small", "docs/port/composition.md"),
+        ("code", "docs/port/composition.md"),
         ("kanji", "crates/jc-core/src/mixed.rs:3762"),
         ("hello.", "crates/jc-core/src/mixed.rs:3865"),
     ];
@@ -539,8 +538,7 @@ fn collect_english(english: &English, raw: &mut Vec<RawEntry>, warnings: &mut Ve
 /// 收集真機回報與既有測試裡的混打案例。
 ///
 /// 這些字串都直接抄自 `crates/jc-core/src/mixed.rs` 的測試；行號是
-/// `f619b46` 時的位置。`docs/port/mixed-e2e.md` 的案例已由
-/// `golden/mixed/cases.json` 涵蓋。
+/// `f619b46` 時的位置。
 fn collect_static_cases(raw: &mut Vec<RawEntry>, warnings: &mut Vec<String>) {
     let table = reverse_romaji_table();
     const CASES: &[(&str, &str, bool)] = &[

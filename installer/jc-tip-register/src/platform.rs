@@ -219,7 +219,7 @@ fn machine_register_impl(identity: &Identity) -> Result<(), Error> {
     // AppContainer（UWP）要讀得到安裝目錄才能載入 TIP。目錄取自這支 exe 的位置，
     // 不需要安裝器再傳路徑進來。ACL 是冪等的（`SET_ACCESS`），重跑不會堆疊重複的
     // ACE。這是 UWP 才需要的權限，桌面程式不受影響；預設關閉，避免手工 ACL 操作
-    // 落在安裝關鍵路徑上（見 docs/port/tsf-installer.md 的 RC5 bisect）。
+    // 落在安裝關鍵路徑上。
     if app_container_enabled() {
         match install_dir() {
             Some(dir) => {

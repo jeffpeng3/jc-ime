@@ -6,7 +6,7 @@
 //! 不能選擇模型組。
 //!
 //! 這個 module 只做資料與本機檔案；下載與 pin 不在本 crate（見
-//! `docs/port/settings-core.md`）。
+//! `docs/port/settings.md`）。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

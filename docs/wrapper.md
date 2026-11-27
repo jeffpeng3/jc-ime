@@ -75,7 +75,7 @@ jc-engine --data <資料根目錄> [--mode zh|ja|mixed|en] \
 啟動會把注音詞典讀進記憶體、mmap 日文 pack，並在 `models/` 存在時載入
 注音選字模型與 Jinen。模型缺席只記一次警告，維持統計路徑。不要寫死
 timeout；握手完成前把狀態顯示成「初始化中」。Jinen 的載入與推論成本見
-`docs/port/jinen-default.md`。
+`docs/port/neural.md`。
 
 `jc-engine --version` 會印 `jc-engine <版本>（協定 3）` 後結束。這段文字是給
 人看的，不是穩定格式。wrapper 判斷版本一律以握手回應為準。
@@ -552,7 +552,7 @@ wrapper 必須在焦點離開時主動收尾，否則使用者在另一個應用
 
 - `candidates[0]` 是引擎的第一順位，依序往後畫，不要重排、不要過濾。
 - 一般轉換最多 200 項，由 `SessionConfig::max_candidates`／
-  `DEFAULT_MAX_CANDIDATES` 決定（量測見 `docs/port/candidate-cap.md`）；
+  `DEFAULT_MAX_CANDIDATES` 決定（量測見 `docs/port/candidate-unify.md`）；
   `candidates` 的順序就是解碼順序，不要重排。
 - 符號選單與表情／顏文字選單可能超過一頁，每頁 10 項（核心 `CANDIDATE_PAGE_SIZE`）。
 - 沒有候選時 `candidates` 是空陣列，關掉候選窗。
@@ -795,12 +795,12 @@ stdout。
 
 | 情境 | 數字 | 來源 |
 |---|---|---|
-| 日文解碼 p50（統計） | 3.072 ms（`modern-500`） | `docs/port/ajimee-eval.md` |
-| 日文預設（Jinen 門檻）p50 | 11.4 ms（`modern-500`）、19.7 ms（`hard-cases`） | `docs/integration-log.md` 最終 gate |
-| 注音選字模型，candle Q8_0 | 推論 p50 9.36 ms、p95 15.0–17.5 ms | `docs/port/candle-zh.md` |
-| 注音選字模型，ORT fp32 | 推論 p50 11.8–12.6 ms | 同上 |
-| 第一次推論 | p50 48.45 ms、p95 69.67 ms | `docs/port/defaults-policy.md` |
-| 暖機後 | p50 12.12 ms、p95 19.76 ms | 同上 |
+| 日文解碼 p50（統計） | 3.072 ms（`modern-500`） | `docs/port/neural.md` |
+| 日文預設（Jinen 門檻）p50 | 11.4 ms（`modern-500`）、19.7 ms（`hard-cases`） | `docs/port/neural.md` |
+| 注音選字模型，candle Q8_0 | 推論 p50 9.36 ms、p95 15.0–17.5 ms | `docs/models.md` |
+| 注音選字模型，ORT fp32 | 推論 p50 11.8–12.6 ms | git 歷史（2026-11） |
+| 第一次推論 | p50 48.45 ms、p95 69.67 ms | git 歷史（2026-11） |
+| 暖機後 | p50 12.12 ms、p95 19.76 ms | git 歷史（2026-11） |
 
 這些是引擎內部的推論與解碼數字，不是端到端 IPC。repo 沒有「行程＋pipe
 ＋JSON」的往返量測。5 ms 的預算要用在沒有模型的一般按鍵上。

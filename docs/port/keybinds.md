@@ -1,7 +1,5 @@
 # keybinds：快捷鍵由引擎解析
 
-Worktree：`/mnt/work/jc/wt/feat-keymap`（branch `feat-keymap`）
-
 ## 目標
 
 符號選單與表情選單不再由 TSF 寫死按鍵。TSF 只把「帶修飾鍵、且命中綁定」的
@@ -235,7 +233,7 @@ handle_chord snapshot menu=true navigating=false candidates=... title=""
    能被一般按鍵表示。
 5. `crates/jc-tsf/src/keys.rs`：若新 chord 用到目前沒轉出的按鍵，補
    `chord_key_name`／`chord_key`。
-6. 文件與測試：本檔、`docs/port/settings-wire.md`、引擎與 TSF 的單元測試。
+6. 文件與測試：本檔、`docs/port/settings.md`、引擎與 TSF 的單元測試。
 
 ## 測試與手動驗證
 

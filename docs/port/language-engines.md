@@ -1,7 +1,6 @@
 # language-engines：語言引擎介面與前導解析
 
 狀態：設計文件；P1 語言引擎介面與 P1.5 前導解析已實作。
-Branch：`prefix-codepoint`（P1.5）。Base：含 P1 的最新 `main`。
 範圍：`crates/jc-core` 的按鍵分派、候選合併與前導解析；不改 `proto`、外殼與
 產品行為。
 
@@ -1223,8 +1222,7 @@ P1 的具體工作順序：
 
 ```sh
 git diff --stat
-# 只應看到 docs/port/language-engines.md、docs/port/README.md、
-# docs/port/backlog.md
+# 只應看到 docs/port/language-engines.md 與 docs/port/README.md
 cargo fmt --all -- --check
 ```
 

@@ -111,7 +111,7 @@ workspace 目前有 20 個成員。`docs/architecture.md` 寫 19 個，漏了
 | 11 | `jc-cli` 同時承擔出貨執行檔與開發工具 | `installer/jc.iss` 安裝 `jc-cli.exe`；`jc-cli` 另外有 `ja-eval`、`ja-cost`、`jinen-eval`、`jinen-gate`、`zh-calibrate`、`candle-zh-check` 六個 bin；`jc-testdata` 放在正常依賴 | `-p jc-cli` 會連開發 bin 一起建置，`installer/build.ps1` 必須用 `--bin` 逐一挑選。產品邊界與開發邊界不清楚 |
 | 12 | `jc-platform` 是文件說在用、程式沒接的契約 crate | 只有 `crates/jc-platform/tests/contract.rs` 使用；`jc-core` 沒有 `jc_platform` 的 `use` | 讀者會以為核心透過 `InputHost` 與 wrapper 互動，實際 `Session` 回傳 `Snapshot`，由 wrapper 自行轉換 |
 | 13 | `jc-core` 的「不碰檔案」描述與實作不一致 | `personal/mod.rs` 直接讀寫 `personal.json`；`zhconv.rs` 讀檔；`score.rs`、`ja/lexicon.rs` 直接使用 `jc-data` 的 mmap 型別 | 文件與責任表需要修正。這不代表要馬上拆 crate，但邊界描述要可信 |
-| 14 | 文件的人數與 crate 清單已漂移 | `docs/architecture.md` 寫 19 個成員；`README.md` crate 表缺 `jc-engine-launcher`、`jc-tsf-register`；`docs/port/client-crates.md` 仍寫 `Client<NamedPipe>`，實際是 `Client<S>` 加 `LocalSocket` | 新讀者會用錯型別或漏看啟動器 |
+| 14 | 文件的人數與 crate 清單已漂移 | `README.md` crate 表缺 `jc-engine-launcher`、`jc-tsf-register`；舊 client 文件仍寫 `Client<NamedPipe>`，實際是 `Client<S>` 加 `LocalSocket` | 新讀者會用錯型別或漏看啟動器 |
 
 ### 分層方向的判讀
 
@@ -184,7 +184,7 @@ workspace 目前有 20 個成員。`docs/architecture.md` 寫 19 個，漏了
 - `.github/workflows/ci.yml` 的 `-p jc-windows`。
 - `scripts/verify-keybinds.sh` 的說明文字。
 - `README.md`、`docs/architecture.md`、`docs/wrapper.md`、`docs/proto.md`、
-  `docs/status.md`、`docs/release.md`、`docs/port/client-crates.md` 等文件。
+  `docs/status.md`、`docs/release.md` 等文件。
 - `Cargo.lock` 與 `legal/RUST-THIRD-PARTY-NOTICES.md` 需重新產生。
 - installer 沒有直接寫 `jc-windows` 套件名，`installer/build.ps1` 用
   `-p jc-engine` 帶進來，所以安裝腳本本身不需要改檔名。
@@ -271,7 +271,7 @@ adapter 之後有共用程式，再建立 `jc-linux-common`，不要用一個 `j
 
 - 根 `Cargo.toml` 的 `jc-linux`、`jc-mac` members 與兩個目錄。
 - `README.md`、`docs/architecture.md`、`docs/proto.md`、`docs/status.md`、
-  `docs/wrapper.md`、`docs/port/client-crates.md` 的 adapter 說明。
+  `docs/wrapper.md` 的 adapter 說明。
 - CI 沒有直接 `-p` 這兩個 crate，`--workspace` 會自動少掉。
 - installer 沒有引用，不需要改安裝腳本。
 - 未來的 `jc-fcitx5`／`jc-ibus`／`jc-macos` 目前不建立，沒有 CI 變更。

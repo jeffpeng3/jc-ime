@@ -1450,7 +1450,7 @@ mod tests {
     use super::*;
 
     fn reference_input() -> ZhInput<'static> {
-        // `prepare()` 的 basic 案例（見 docs/port/model-wire-zh.md）：
+        // `prepare()` 的 basic 案例：
         // 前文「一二」、讀音 a b、候選「三四」「五あ」。
         static IDS: [i64; 9] = [1, 8, 9, 2, 0, 0, 3, 10, 12];
         static BASES: [i64; 9] = [0, 0, 0, 0, 2, 3, 0, 0, 0];

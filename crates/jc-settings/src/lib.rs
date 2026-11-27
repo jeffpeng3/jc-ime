@@ -5,7 +5,7 @@
 //! `goos` 字串；檔案位置由呼叫端傳入資料根目錄。
 //!
 //! 對照前身：`internal/settings` 與 `internal/modelsets`。逐檔對照見
-//! `docs/port/settings-core.md`。
+//! `docs/port/settings.md`。
 
 pub mod atomic_file;
 pub mod both_shift;

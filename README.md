@@ -151,17 +151,17 @@ Hugging Face 下載後記下 revision 與 SHA-256。每個檔案都要能對回�
 
 ## 文件
 
-- [`docs/status.md`](docs/status.md)：目前數字與缺口，每個里程碑更新這一頁。
-- [`docs/install.md`](docs/install.md)：MSI 安裝、反安裝、檔案位置與已知限制。
+- [`docs/README.md`](docs/README.md)：整份文件的索引。
+- [`docs/status.md`](docs/status.md)：目前版本、已接上的路徑與未完成項目。
+- [`docs/install.md`](docs/install.md)：setup.exe 安裝、升級、反安裝、檔案位置與已知限制。
 - [`docs/release.md`](docs/release.md)：版本規則、發佈流程、資料包與 release 檢查清單。
 - [`docs/CHANGELOG.md`](docs/CHANGELOG.md)：使用者看得到的變更，release 說明取自這裡。
 - [`docs/proto.md`](docs/proto.md)：v3 協定規格（凍結）。
 - [`docs/wrapper.md`](docs/wrapper.md)：wrapper 作者規格，接引擎不用讀 Rust。
 - [`docs/models.md`](docs/models.md)：模型來源、授權、雜湊與散布規則。
 - [`docs/architecture.md`](docs/architecture.md)：核心、引擎與 wrapper 的邊界。
-- [`docs/port/`](docs/port/)：逐 task 的 Go → Rust 對照表。
-- [`docs/history.md`](docs/history.md)：為什麼重寫、前身學到什麼、M0 以後的紀錄。
-- [`docs/integration-log.md`](docs/integration-log.md)：合併順序、衝突與量測。
+- [`docs/port/`](docs/port/)：行為、資料、設定、平台與工具參考。
+- [`docs/history.md`](docs/history.md)：為什麼重寫、已定的決策與被否決的路線。
 
 ## 致謝
 

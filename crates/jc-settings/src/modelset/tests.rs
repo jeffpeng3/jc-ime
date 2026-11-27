@@ -2,7 +2,7 @@
 //!
 //! 從前身 `internal/modelsets` 的 `manifest_test.go`、`placeholder_test.go`
 //! 搬過來。需要 repo 內正式 lock 檔的測試不在這裡（見
-//! `docs/port/settings-core.md`）。
+//! `docs/port/settings.md`）。
 
 use std::collections::BTreeMap;
 use std::fs;

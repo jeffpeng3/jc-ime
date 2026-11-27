@@ -126,9 +126,8 @@ GGUF 同目錄沒有 `tokenizer.json`，`jc-engine` 會退到 `models/quant/jine
 
 `models/external/` 其餘目錄是 2026-11-20 日文調查留下來的 spike 模型，只在本機留存，
 **不隨產品散布，不進 git、release 或安裝包**。每個目錄的 `manifest.json` 有 repo、revision、
-逐檔大小與 SHA-256；量測結果與 prompt 格式見
-[`docs/port/ja-models-fetch.md`](../docs/port/ja-models-fetch.md)。Jinen small 已改列隨附，
-見上一節。
+逐檔大小與 SHA-256；模型來源與雜湊見
+[`docs/models.md`](../docs/models.md)。Jinen small 已改列隨附，見上一節。
 
 | 目錄 | 主檔 | 大小 | SHA-256 | 授權條目 | 散布 |
 |---|---|---:|---|---|---|
