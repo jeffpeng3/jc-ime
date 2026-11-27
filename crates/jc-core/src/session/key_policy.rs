@@ -181,11 +181,22 @@ impl Session {
         }
         // 混打的英文補全走候選窗：Tab 只開窗，不直接套用。沒有補全時
         // 交還應用程式（引擎回 handled=false），不能把 Tab 吃掉。
-        if !self.in_zh_lane() && !self.in_ja_lane() && self.config.english_autocomplete {
-            if self.ascii.suggestion().is_none() || !self.open_mixed_english_completion() {
-                return KeyOutcome::Unchanged;
+        // 英文補全關閉時也直接交還，不能落進注音的「換下一項」路徑，
+        // 否則會開出一個初始高亮在第二項的候選窗。數字與符號仍走一般
+        // 候選窗，例如 `123` 的全形變體。
+        if !self.in_zh_lane() && !self.in_ja_lane() {
+            let pending = self.ascii.pending();
+            let english_run =
+                !pending.is_empty() && pending.chars().all(|ch| ch.is_ascii_alphabetic());
+            if english_run {
+                if !self.config.english_autocomplete
+                    || self.ascii.suggestion().is_none()
+                    || !self.open_mixed_english_completion()
+                {
+                    return KeyOutcome::Unchanged;
+                }
+                return KeyOutcome::Changed;
             }
-            return KeyOutcome::Changed;
         }
         if !self.accept_suggestion() {
             self.move_highlight(1);

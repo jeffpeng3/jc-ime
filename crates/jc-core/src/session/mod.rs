@@ -2621,6 +2621,78 @@ mod tests {
         assert!(!s.last_key_consumed(), "沒有補全時 Tab 要交還應用程式");
     }
 
+    /// 固定英文詞表的 session；拼字候選權重決定清單順序。
+    fn english_completion_session(autocomplete: bool) -> Session {
+        let words: Vec<crate::mixed::Word> = [("hello", 3.0), ("help", 2.0), ("hell", 1.0)]
+            .into_iter()
+            .map(|(word, weight)| crate::mixed::Word::new(word, weight))
+            .collect();
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
+        config.english = Some(std::sync::Arc::new(crate::mixed::English::new(Some(
+            crate::mixed::Dictionary::new(words),
+        ))));
+        config.english_autocomplete = autocomplete;
+        Session::new(config)
+    }
+
+    fn surfaces(session: &Session) -> Vec<String> {
+        session
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.surface.clone())
+            .collect()
+    }
+
+    /// `hellp` 的清單固定是字面、補全、兩個更正；不含單字元或全形拆解。
+    #[test]
+    fn test_english_candidate_list_shape() {
+        let mut s = english_completion_session(true);
+        type_keys(&mut s, "hellp");
+        let tab = s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(tab.preedit, "hellp", "Tab 只開窗，不能直接套用");
+        assert!(tab.navigating, "Tab 要進入選取模式");
+        assert_eq!(tab.highlighted, 0, "初始高亮必須是字面候選");
+        assert_eq!(
+            surfaces(&s),
+            vec!["hellp", "hello", "help", "hell"],
+            "清單只放字面與真正的補全詞"
+        );
+        // 第一次 Enter 套用高亮項，組字還在；第二次才送出。
+        let first = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(first.preedit, "hellp", "第一次 Enter 只套用候選");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "hellp");
+    }
+
+    /// 移到 `hell` 後套用：第一次 Enter 的 preedit 是 `hell`，第二次才 commit。
+    #[test]
+    fn test_english_candidate_enter_is_two_stage() {
+        let mut s = english_completion_session(true);
+        type_keys(&mut s, "hellp");
+        s.press(Key::new(KeyCode::Tab, None, false));
+        for _ in 0..3 {
+            s.press(Key::new(KeyCode::Down, None, false));
+        }
+        assert_eq!(s.highlighted(), 3, "↓ 移到 hell");
+        let first = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(first.preedit, "hell", "第一次 Enter 只套用候選");
+        s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(s.commit(), "hell", "第二次 Enter 才送出");
+    }
+
+    /// 關閉英文補全時，清單不得出現 hello 或全形拆解，Tab 也交還應用程式。
+    #[test]
+    fn test_english_autocomplete_off_hides_english_candidates() {
+        let mut s = english_completion_session(false);
+        type_keys(&mut s, "hellp");
+        let tab = s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(tab.preedit, "hellp", "Tab 不得改組字");
+        assert!(!tab.navigating, "沒有英文補全不得開窗");
+        assert!(!s.last_key_consumed(), "沒有補全時 Tab 要交還應用程式");
+        assert_eq!(surfaces(&s), vec!["hellp"], "只剩字面候選");
+    }
+
     /// `sug` 已不是合法注音前綴，Down + 數字照舊選英文候選。
     #[test]
     fn test_sug_digit_selects_english_candidate() {
@@ -3475,7 +3547,9 @@ mod tests {
     /// 英文拼錯時，候選在原字後面補上拼字建議；打對的字沒有拼字建議。
     #[test]
     fn test_english_candidates_include_spelling_suggestions() {
-        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.english_autocomplete = true;
+        let mut s = Session::new(config);
         for ch in "recieve".chars() {
             s.press(Key::char(ch, false));
         }
@@ -3491,7 +3565,11 @@ mod tests {
             .expect("要有 receive 的拼字建議");
         assert!(at > 0, "拼字建議要排在原字後面：{surfaces:?}");
 
-        let mut correct = Session::new(SessionConfig::new(Mode::Mixed));
+        let mut correct = Session::new({
+            let mut config = SessionConfig::new(Mode::Mixed);
+            config.english_autocomplete = true;
+            config
+        });
         for ch in "hello".chars() {
             correct.press(Key::char(ch, false));
         }
@@ -3512,6 +3590,7 @@ mod tests {
         // 模式已移除，這裡用等價的 Mixed 設定重現原本的英文候選路徑。
         let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
+        config.english_autocomplete = true;
         Session::new(config)
     }
 
@@ -3631,7 +3710,7 @@ mod tests {
                 .all(|candidate| candidate.source != CandidateSource::Personal),
             "沒有學習紀錄時不得出現個人化候選"
         );
-        // 打對的完整單字不該有拼字建議；全形變體與更長的前綴補完照舊。
+        // 打對的完整單字不該有拼字建議；更長的前綴補完照舊。
         let same_length: Vec<&str> = candidates
             .iter()
             .map(|candidate| candidate.surface.as_str())
@@ -3642,7 +3721,7 @@ mod tests {
             })
             .collect();
         assert!(same_length.is_empty(), "拼字建議：{same_length:?}");
-        for candidate in &candidates[2..] {
+        for candidate in &candidates[1..] {
             assert!(
                 candidate.surface.to_lowercase().starts_with("hello"),
                 "補完要以原字開頭：{candidate:?}"
@@ -3655,6 +3734,7 @@ mod tests {
     fn test_mixed_candidates_include_spelling_suggestions() {
         let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
+        config.english_autocomplete = true;
         let mut s = Session::new(config);
         type_keys(&mut s, "recieve");
         let surfaces: Vec<String> = s

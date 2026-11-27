@@ -2332,7 +2332,7 @@ impl Session {
         ));
         // 長小寫 run 是字面英文，學過的英文修正與注音候選都不會改變它。
         let long_literal = long_literal_keys(&raw);
-        if !long_literal {
+        if self.config.english_autocomplete && !long_literal {
             if let Some(learned) = self.personal.english_correction(&raw) {
                 set.push_unique(Candidate::new(
                     learned.to_string(),
@@ -2347,20 +2347,24 @@ impl Session {
         // 避免組字區被補全取代而鎖死語言。hello、sug 等照字面顯示的前綴
         // 維持原本的英文補全流程。
         let is_zhuyin_prefix = !long_literal && self.ascii.display_pending(&self.lexicon) != raw;
-        if !is_zhuyin_prefix && !long_literal {
+        if self.config.english_autocomplete && !is_zhuyin_prefix && !long_literal {
             for candidate in english_candidates(&self.personal, self.english(), &raw, limit) {
                 set.push_unique(candidate);
             }
         }
         // 半形英數與數字提供全形變體；舊英文直出模式的等價候選路徑。
-        if let Some(full) = crate::symbols::width_variant(&raw) {
-            if full != raw {
-                set.push(Candidate::new(
-                    full,
-                    raw.clone(),
-                    1,
-                    CandidateSource::Literal,
-                ));
+        // 英文待定詞的候選只放字面與補全，全形變體會變成逐字拆解的外觀
+        // （`ｈｅｌｌｐ`），不能進清單。
+        if !raw.chars().all(|ch| ch.is_ascii_alphabetic()) {
+            if let Some(full) = crate::symbols::width_variant(&raw) {
+                if full != raw {
+                    set.push(Candidate::new(
+                        full,
+                        raw.clone(),
+                        1,
+                        CandidateSource::Literal,
+                    ));
+                }
             }
         }
         // 整串可以組成注音時，原按鍵之外另列注音本身（`co6` 的 ㄏㄟˊ）。

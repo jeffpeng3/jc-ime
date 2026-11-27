@@ -2193,6 +2193,7 @@ mod tests {
             Arc::new(move || {
                 let config = SessionConfig {
                     zh_lexicon: Some(Arc::clone(&lexicon)),
+                    english_autocomplete: true,
                     ..Default::default()
                 };
                 Session::new(config)
