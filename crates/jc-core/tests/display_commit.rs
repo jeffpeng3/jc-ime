@@ -3,6 +3,9 @@
 //! 每個候選套用路徑都在套用前後斷言 `display_text()` 與 `commit_text()`
 //! 相同：畫面看到什麼，commit 就送什麼。選單不進組字區，確認送出時仍走
 //! 同一份 `CandidateAction`。
+//!
+//! 選取模式中的預覽另成一組：日文文節只換目標片段；一般注音、英文補全、
+//! 字面候選與選單在套用前都不預覽，等確認後才進組字區。兩邊都有測試鎖住。
 
 use std::sync::Arc;
 
@@ -108,8 +111,16 @@ fn test_general_candidate_display_matches_commit() {
     press_chars(&mut s, "ji3");
     down(&mut s);
     assert_consistent(&s, "一般候選窗");
+    assert!(s.snapshot().navigating, "候選窗要進入選取模式");
+    let before = s.display_text();
+    assert_eq!(before, "我", "開窗後先顯示目前的轉換結果");
 
     let at = select_surface(&mut s, "窩");
+    assert_eq!(
+        s.snapshot().preedit,
+        before,
+        "一般注音候選套用前不預覽：整段維持目前的轉換結果"
+    );
     assert_consistent(&s, "一般候選窗高亮");
     let applied = s.choose_candidate(at).expect("套用候選");
     assert_eq!(applied.preedit, "窩", "套用後畫面就是候選字");
@@ -125,9 +136,21 @@ fn test_menu_display_matches_commit() {
     let mut s = zh_session();
     press_chars(&mut s, "ji3");
     let menu = s.open_symbol_menu();
-    let expected = format!("我{}", menu.candidates[0].surface);
+    assert!(!menu.candidates.is_empty(), "選單要有候選");
     assert_consistent(&s, "選單開著");
     assert_eq!(s.display_text(), "我", "選單不蓋掉組字區");
+    let before = s.display_text();
+
+    // 選單也要走一次選取模式；移動高亮不會把項目塞進組字區。
+    down(&mut s);
+    assert!(s.snapshot().navigating, "選單 ↓ 要進入選取模式");
+    assert_eq!(
+        s.display_text(),
+        before,
+        "選單移動高亮不預覽：項目只在確認後插入"
+    );
+    let chosen = s.highlighted_text().expect("選單要有高亮項目").to_string();
+    let expected = format!("我{chosen}");
 
     enter(&mut s);
     assert_consistent(&s, "選單選取後");
@@ -140,7 +163,10 @@ fn test_prefix_variant_display_matches_commit() {
     let mut s = Session::new(SessionConfig::new(Mode::Mixed));
     press_chars(&mut s, "`[");
     assert_consistent(&s, "前導變體開窗");
+    let before = s.display_text();
     down(&mut s);
+    assert!(s.snapshot().navigating, "前導變體 ↓ 要進入選取模式");
+    assert_eq!(s.display_text(), before, "前導變體候選套用前不預覽");
     assert_consistent(&s, "前導變體高亮");
 
     let shown = enter(&mut s);
@@ -158,8 +184,16 @@ fn test_zh_window_last_display_matches_commit() {
     down(&mut s);
     down(&mut s);
     assert_consistent(&s, "zh_window_last 開窗");
+    assert!(s.snapshot().navigating, "zh_window_last 要進入選取模式");
+    let before = s.display_text();
+    assert_eq!(before, "我", "開窗後先顯示目前的轉換結果");
 
     let at = select_surface(&mut s, "窩");
+    assert_eq!(
+        s.snapshot().preedit,
+        before,
+        "zh_window_last 套用前不預覽：只換目標音節，畫面等套用後才動"
+    );
     assert_consistent(&s, "zh_window_last 高亮");
     let applied = s.choose_candidate(at).expect("套用候選");
     assert_eq!(applied.preedit, "窩", "只換最後一格");
@@ -180,6 +214,7 @@ fn test_ja_clause_display_matches_commit() {
     let before = s.display_text();
     down(&mut s);
     assert_consistent(&s, "日文文節開窗");
+    assert!(s.snapshot().navigating, "日文 ↓ 要進入選取模式");
 
     // 選一個和目前詞面不同的假名候選，確認預覽只換這一段。
     let at = s
@@ -193,11 +228,94 @@ fn test_ja_clause_display_matches_commit() {
         })
         .expect("日文候選清單要有替代寫法");
     s.select(at);
+    let preview = s.snapshot();
+    assert_eq!(
+        preview.preedit,
+        s.candidates()[at].surface,
+        "單一文節的預覽要和目前高亮候選一致"
+    );
+    assert_ne!(preview.preedit, before, "預覽要換掉目標文節");
     assert_consistent(&s, "日文文節高亮");
     let applied = s.choose_candidate(at).expect("套用日文候選");
     assert_consistent(&s, "日文文節套用後");
-    assert_eq!(applied.preedit, s.display_text());
+    assert_eq!(applied.preedit, preview.preedit, "套用後才真正取代");
     assert_commit_matches_display(&mut s, "日文文節送出");
+}
+
+/// 真實資料的長串：游標移到中間文節再開候選，預覽只換那一個文節，
+/// 前後文與其他片段都留在畫面上；套用後才真正取代。
+#[test]
+fn test_ja_long_clause_preview_only_replaces_target() {
+    let Some(mut s) = ja_session() else {
+        eprintln!("缺少測試資料：packs/ja-lexicon-mozc-v2.pack");
+        return;
+    };
+    press_chars(&mut s, "watashihanihongowotukatteimasu");
+    let before = s.display_text();
+    assert_eq!(before, "私は日本語を使っています", "真實資料的長串");
+
+    let target = "使って";
+    let target_start = before.find(target).expect("長串要有目標文節");
+    let target_rune = before[..target_start].chars().count();
+    let tail_runes = before.chars().count() - target_rune;
+    for _ in 0..tail_runes {
+        press(&mut s, Key::new(KeyCode::ArrowLeft, None, false));
+    }
+    assert_eq!(
+        s.snapshot().cursor_rune,
+        target_rune,
+        "游標要停在目標文節開頭"
+    );
+
+    down(&mut s);
+    let opened = s.snapshot();
+    assert!(opened.navigating, "目標文節的 ↓ 要進入選取模式");
+    assert_eq!(opened.preedit, before, "開窗時顯示目前的詞面");
+
+    let at = s
+        .candidates()
+        .iter()
+        .position(|candidate| candidate.surface != target)
+        .expect("目標文節要有替代候選");
+    s.select(at);
+    let surface = s.candidates()[at].surface.clone();
+    let preview = s.snapshot();
+    let want = format!(
+        "{}{}{}",
+        &before[..target_start],
+        surface,
+        &before[target_start + target.len()..]
+    );
+    assert_eq!(preview.preedit, want, "預覽只換目標文節");
+    assert!(preview.preedit.starts_with("私は日本語を"), "前文不變");
+    assert!(preview.preedit.ends_with("います"), "後文不變");
+    assert_eq!(s.display_text(), want, "組字區與高亮候選一致");
+
+    let applied = s.choose_candidate(at).expect("套用長串文節候選");
+    assert_eq!(applied.preedit, want, "套用後才真正取代");
+    assert_commit_matches_display(&mut s, "長串文節送出");
+}
+
+/// 英文補全候選：還沒套用前，移動高亮不會提前把候選塞進組字區。
+#[test]
+fn test_english_completion_candidate_has_no_preview() {
+    let mut s = english_session();
+    press_chars(&mut s, "hell");
+    assert_eq!(s.display_text(), "hell", "補全前只顯示已輸入的字母");
+    assert_eq!(s.snapshot().suggestion.as_deref(), Some("o"));
+
+    down(&mut s);
+    assert!(s.snapshot().navigating, "英文候選 ↓ 要進入選取模式");
+    let at = select_surface(&mut s, "hello");
+    assert_eq!(s.snapshot().preedit, "hell", "英文補全候選套用前不預覽");
+    assert_consistent(&s, "英文補全候選高亮");
+
+    let applied = s.choose_candidate(at).expect("套用英文補全");
+    assert_eq!(applied.preedit, "hello", "套用後才補完");
+    assert_eq!(
+        assert_commit_matches_display(&mut s, "英文補全候選送出"),
+        "hello"
+    );
 }
 
 /// 英文補全：Tab 開候選窗，選了補完的字後畫面與送出都是它。
@@ -224,7 +342,14 @@ fn test_literal_candidate_display_matches_commit() {
     let mut s = zh_session();
     press_chars(&mut s, "ji3");
     down(&mut s);
+    let before = s.display_text();
+    assert_eq!(before, "我", "開窗後先顯示目前的轉換結果");
     let at = select_surface(&mut s, "ji3");
+    assert_eq!(
+        s.snapshot().preedit,
+        before,
+        "字面候選套用前不預覽：原始按鍵只在選取後取代"
+    );
     assert_consistent(&s, "字面候選高亮");
     let applied = s.choose_candidate(at).expect("套用字面候選");
     assert_eq!(applied.preedit, "ji3", "選回原始按鍵要顯示原始字面");

@@ -2885,7 +2885,7 @@ mod tests {
 
     /// 日文 lane 收到數字：結束推斷，把數字交回混打，不當成注音聲調。
     #[test]
-    fn test_digit_in_japanese_run_returns_to_mixed() {
+    fn test_nontone_digit_in_japanese_run_returns_to_mixed() {
         let mut config = SessionConfig::new(Mode::Mixed);
         config.ja = Some(Arc::new(JaDecoder::new(Arc::new(LiveTestSource(
             Vec::new(),
@@ -2905,6 +2905,46 @@ mod tests {
             "日文 lane 的數字不能變成聲調：{}",
             snap.preedit
         );
+    }
+
+    /// 標準注音鍵盤的 3／4／6／7 是聲調鍵；日文 lane 要把它們當普通數字，
+    /// 下一鍵（空白）也不能把孤立的數字補成聲調符號。
+    #[test]
+    fn test_tone_digits_in_japanese_run_stay_literal() {
+        for digit in ['3', '4', '6', '7'] {
+            let mut config = SessionConfig::new(Mode::Mixed);
+            config.ja = Some(Arc::new(JaDecoder::new(Arc::new(LiveTestSource(
+                Vec::new(),
+            )))));
+            let mut s = Session::new(config);
+            type_ja(&mut s, "watashi");
+            assert!(s.ja_run, "{digit}：先建立日文推斷");
+            let snap = s.press(Key::char(digit, false));
+            assert!(!s.ja_run, "{digit}：數字要結束日文推斷");
+            assert!(
+                snap.preedit.ends_with(digit),
+                "{digit}：數字留在字面：{}",
+                snap.preedit
+            );
+            // 聲調鍵的差別在下一鍵：注音路徑會把孤立數字換成聲調符號。
+            let spaced = s.press(Key::new(KeyCode::Space, None, false));
+            assert!(
+                spaced.preedit.ends_with(&format!("{digit} ")),
+                "{digit}：空白要照字面接在數字後：{}",
+                spaced.preedit
+            );
+            for tone in ['ˇ', 'ˋ', 'ˊ', '˙'] {
+                assert!(
+                    !spaced.preedit.contains(tone),
+                    "{digit}：日文 lane 的數字不能變成聲調 {tone}：{}",
+                    spaced.preedit
+                );
+            }
+            assert!(
+                s.pending_tone.is_none(),
+                "{digit}：日文 lane 不該留下待補聲調"
+            );
+        }
     }
 
     /// NonConvert 拆回讀音；Convert 交給核心開候選，不再被外殼擋掉。

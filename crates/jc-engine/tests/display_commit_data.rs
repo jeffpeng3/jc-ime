@@ -79,6 +79,28 @@ fn snapshot(child: &mut Child, output: &mut BufReader<std::process::ChildStdout>
     preedit
 }
 
+fn send_key(
+    child: &mut Child,
+    output: &mut BufReader<std::process::ChildStdout>,
+    key: Key,
+) -> Response {
+    let input = child.stdin.as_mut().expect("stdin");
+    write_message(input, &Request::Key { key }, DEFAULT_MAX_FRAME).unwrap();
+    input.flush().unwrap();
+    read_message(output, DEFAULT_MAX_FRAME)
+        .unwrap()
+        .expect("要有按鍵回應")
+}
+
+fn idle(child: &mut Child, output: &mut BufReader<std::process::ChildStdout>) -> Response {
+    let input = child.stdin.as_mut().expect("stdin");
+    write_message(input, &Request::Idle { session: 0 }, DEFAULT_MAX_FRAME).unwrap();
+    input.flush().unwrap();
+    read_message(output, DEFAULT_MAX_FRAME)
+        .unwrap()
+        .expect("要有停頓回應")
+}
+
 fn commit(child: &mut Child, output: &mut BufReader<std::process::ChildStdout>) -> String {
     let input = child.stdin.as_mut().expect("stdin");
     write_message(input, &Request::Commit, DEFAULT_MAX_FRAME).unwrap();
@@ -127,4 +149,83 @@ fn long_real_input_display_matches_commit() {
         );
         shutdown(child);
     }
+}
+
+/// 真實資料的長串預覽：游標停在目標文節，移動候選時只有那一段變，
+/// 前後文留在畫面上；Commit 送出的也是預覽看到的字。
+#[test]
+fn long_japanese_clause_preview_only_replaces_target() {
+    let Some(root) = jc_testdata::root() else {
+        eprintln!("缺少測試資料：JC_TESTDATA");
+        return;
+    };
+    let root = root.into_os_string();
+    let mut child = spawn("ja", &root);
+    let mut output = hello(&mut child);
+    type_keys(&mut child, &mut output, "watashihanihongowotukatteimasu");
+    let Response::State {
+        preedit: before, ..
+    } = idle(&mut child, &mut output)
+    else {
+        panic!("Idle 應回 State");
+    };
+    assert_eq!(before, "私は日本語を使っています", "真實資料的長串");
+
+    let target = "使って";
+    let target_byte = before.find(target).expect("長串要有目標文節");
+    let target_rune = before[..target_byte].chars().count();
+    let tail_runes = before.chars().count() - target_rune;
+    for _ in 0..tail_runes {
+        send_key(
+            &mut child,
+            &mut output,
+            Key::new(jc_core::KeyCode::ArrowLeft, None, false),
+        );
+    }
+
+    let opened = send_key(
+        &mut child,
+        &mut output,
+        Key::new(jc_core::KeyCode::Down, None, false),
+    );
+    let Response::State {
+        preedit,
+        navigating,
+        ..
+    } = opened
+    else {
+        panic!("第一次 ↓ 應回 State");
+    };
+    assert!(navigating, "目標文節的 ↓ 要進入選取模式");
+    assert_eq!(preedit, before, "開窗時顯示目前的詞面");
+
+    let stepped = send_key(
+        &mut child,
+        &mut output,
+        Key::new(jc_core::KeyCode::Down, None, false),
+    );
+    let Response::State {
+        preedit,
+        candidates,
+        highlighted,
+        ..
+    } = stepped
+    else {
+        panic!("第二次 ↓ 應回 State");
+    };
+    let surface = candidates.get(highlighted).expect("要有高亮候選").clone();
+    assert_ne!(surface, target, "高亮要離開目前詞面");
+    let want = format!(
+        "{}{}{}",
+        &before[..target_byte],
+        surface,
+        &before[target_byte + target.len()..]
+    );
+    assert_eq!(preedit, want, "預覽只換目標文節");
+    assert!(preedit.starts_with("私は日本語を"), "前文不變");
+    assert!(preedit.ends_with("います"), "後文不變");
+
+    let committed = commit(&mut child, &mut output);
+    assert_eq!(committed, preedit, "送出的是畫面上的預覽");
+    shutdown(child);
 }
