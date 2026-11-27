@@ -60,13 +60,13 @@
 | 學習 | `crates/jc-core/src/session/core.rs:2021`、`session/mod.rs:968` | 注音、日文、mixed | 三套學習鍵；`commit` 只在 mixed 非注音／日文時 flush ascii | 必要：資料鍵不同 | 部分：`Lane::learn()`、`Lane::flush_pending()` | 中：重複學習或漏學 |
 | 顯示 | `crates/jc-core/src/session/input_style.rs:360` `composing` | 只算注音 lane 的 pending／syllables | 風格鍵、全形、IMM32 word-end 用這個值判斷「是否在組字」 | 部分：其他 lane 也需要同一個問題的答案 | 部分：`composing()` 改問 lane | 中：全形標點與 word-end |
 | TSF | `crates/jc-tsf/src/service.rs:1734` `wants_key` | English、Japanese、composing、Chinese idle | 英文直接 false；日文 idle 只收 printable；composing 用 `composing_wants`，英文的 `Down` 例外；中文 idle 只收 `idle_key` | 部分 | 部分：改成 capability 或「先送 core，依 handled 決定」 | 高：吃鍵或重複輸入 |
-| TSF | `crates/jc-tsf/src/service.rs:1500` `english_key_policy` | 外殼 `english` | 英文模式自己處理 literal、Enter／Backspace／Esc／Tab、補全、IMM32 word-end | 與 core 的 mixed English 重複 | 部分：printable 一律交 core `literal`／`key`，只留 IMM32 word-end | 高：宿主相容與 Caps Lock |
-| TSF | `crates/jc-tsf/src/service.rs:1599` | `english_pending` 且字母 | `EnglishKey::Eat(true)` 直接吃鍵，沒有送引擎 | 疑似 bug | 是：先送 core，再依 `handled` 決定是否吃 | 中：英文補全無法續打 |
+| TSF | `crates/jc-tsf/src/service.rs:1500` `english_key_policy` | 外殼 `english` | 純 raw：printable／Tab／方向鍵／Backspace 全交還宿主，只留 Shift＋空白與 IMM32 raw passthrough | 已與 core 的混合英文分開 | 已刪 Enter／WordEnd／補全政策 | 低 |
+| TSF | `crates/jc-tsf/src/service.rs:1599` | 舊 `english_pending` 字母 | 直接吃鍵、送 core 再依 `handled` 決定 | 狀態已刪除 | 已刪；混合英文改由 core Tab 開候選窗 | 低 |
 | TSF | `crates/jc-tsf/src/service.rs:354,375,381,389` | `session.english()`／`japanese()` | `vocab_keys`、`japanese_key`、Ctrl 標點、簡體熱鍵都依語言互斥 | 部分：Ctrl 標點必要，簡體與 vocab 與語言無關 | 部分：只保留真正語言相關的 gate | 低中 |
 | TSF | `crates/jc-tsf/src/service.rs` | `present_in_edit` | `show` 只看 composing＋navigating；`kind` 改由選單種類生產 | 已語言無關 | 已刪 `candidate_kind` | 低 |
-| TSF | `crates/jc-tsf/src/session.rs:446,487` | `state_to_snapshot_value` | 任何日文片段就 `japanese`；全部英文才 `english`；任何 suggestion 都變成 `english_pending` | 把片段語言與外殼模式混在一起 | 部分：拆成 `mode`（外殼）與 `languages`（片段） | 中高：`su`＋數字、英文補全 |
-| TSF | `crates/jc-tsf/src/session.rs:1832` | `adopt_engine_mode` | key／literal／idle 一律用外殼 `english`；`japanese` 用 legacy capability 覆寫成 false | 與 core 已無日文模式矛盾 | 是：英文用外殼，日文用片段與 capability | 中：F6–F10、文節樣式 |
-| TSF | `crates/jc-tsf/src/session.rs:1924` | 英文組字中的 `Up/Down/PageUp/PageDown` | 外殼直接吞掉，不送引擎 | 與 core 候選政策重複 | 部分：交給 core 回 `handled=false` | 低 |
+| TSF | `crates/jc-tsf/src/session.rs:446,487` | `state_to_snapshot_value` | 只攤平片段與 suggestion；不再推導 `suggestion_kind`／`english_pending` | 已刪除片段語言與外殼模式的混用 | 是 | 低 |
+| TSF | `crates/jc-tsf/src/session.rs:1832` | `adopt_engine_mode` | key／literal／idle 一律用外殼 `english`；日文用 legacy capability | 與 core 已無日文模式矛盾 | 是：英文用外殼，日文用片段與 capability | 中：F6–F10、文節樣式 |
+| TSF | `crates/jc-tsf/src/session.rs` | 舊英文組字翻頁鍵 | 外殼直接吞掉，不送引擎 | 已無英文組字 | 已刪 `key_with_flags` 特例 | 低 |
 | TSF | `crates/jc-tsf/src/session.rs` `toggle` | 外殼英文切換 | 外殼自己切；core／engine 不再有 toggle 請求 | 外殼必須自己保存 | 已刪 core 與 engine 的 toggle 路徑 | 低 |
 | TSF | `crates/jc-tsf/src/keys.rs:297` `composing_wants` | English 的 `Down` | 只有英文的 `Down` 不給 core，其他具名鍵都給 | 可疑特例 | 是：英文 `Down` 也交 core，core 回 handled | 低 |
 | TSF | `crates/jc-tsf/src/session.rs:1609` | `start_mode` | `start_mode` 只有 `english`／`zhuyin`；`japanese` 分支還需要 `japanese_cap`，jc-engine 從不廣告 | 日文開機分支永遠不成立 | 是：改用 capability 或 core 的 mixed 設定 | 低中 |
@@ -96,7 +96,7 @@
 | 三份 lane 離開／重置 | `leave_zh_lane_for_mixed`、`freeze_pending_zhuyin_for_mixed`、`flush_zh_lane_for_mixed` | 一個 `reset_to_mixed` |
 | 三種游標單位換算 | `cursor_byte`、`navigate`、`candidate_edge` | 一個 canonical rune 位移加 lane 映射 |
 | TSF 英文按鍵政策與 core 英文 lane | `english_key_policy`、`wants_key`、`Session::key` | printable 統一送 core，只留 IMM32 特例 |
-| `suggestion` 與 `english_pending` | `state_to_snapshot_value` | 分成 `suggestion_kind`／`pending_language` |
+| `suggestion` 來源與英文補全 | `state_to_snapshot_value`、`key_policy::tab` | 英文補全進 `CandidateSet`，由一般 `CandidateAction` 套用；外殼不再有待選狀態 |
 | 語言 gate 與 capability gate | `vocab_keys`、`simplified_hotkey`、`japanese_key` | 只用 capability，不用語言模式 |
 
 ## 分組建議

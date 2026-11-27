@@ -567,6 +567,8 @@ pub struct Session {
     pub(super) suppress_learn: bool,
     /// 目前按鍵是否來自私密欄位；每個按鍵明確覆寫，commit／cancel 後歸零。
     pub(super) private: bool,
+    /// 上一次 `press` 是否真的被吃掉；Tab 沒有補全時為 `false`。
+    pub(super) key_consumed: bool,
     /// 輸入風格與鍵位；由設定複製進來。
     pub(super) style: InputStyle,
     /// 是否為全形（Shift＋空白切換）；風格狀態，不存檔。
@@ -688,6 +690,7 @@ impl Session {
             learn_events: 0,
             suppress_learn: false,
             private: false,
+            key_consumed: true,
             style,
             full_width: false,
             symbol_prefix: false,
@@ -815,6 +818,7 @@ impl Session {
     /// 字面尾巴（英文模式或 Shift 字面）存在且沒有補全建議時，Tab 是 no-op：
     /// 英文模式是 raw input，沒有東西可以補全。
     pub fn press(&mut self, mut key: Key) -> Snapshot {
+        self.key_consumed = true;
         self.expire_segment_view();
         // Caps Lock 的路由一律用基礎小寫；大小寫只在最後插入字面時套用。
         // 這樣外殼即使仍把大寫字元放進 text，也不會改變注音鍵的身分。
@@ -906,7 +910,9 @@ impl Session {
                 return self.append_shift_literal(&text);
             }
             if !self.key_preprocess(&key) && self.key_policy(key) == KeyOutcome::Unchanged {
-                // Tab 在沒有補全可用的字面尾巴上是 no-op：不要重建畫面。
+                // Tab 在沒有補全可用的字面尾巴上是 no-op：不要重建畫面，
+                // 並讓引擎明確回 handled=false。
+                self.key_consumed = false;
                 return self.snapshot();
             }
         } else {
@@ -918,6 +924,14 @@ impl Session {
         }
         self.rebuild();
         self.snapshot()
+    }
+
+    /// 上一次 [`Session::press`] 是否真的處理了這一鍵。
+    ///
+    /// 只有 Tab 在混合英文沒有補全時回 `false`；引擎用它回 `handled=false`，
+    /// 外殼才能把 Tab 交還應用程式。
+    pub fn last_key_consumed(&self) -> bool {
+        self.key_consumed
     }
 
     /// 切換到指定模式；清空目前組字，並丟掉先前記錄的 Shift 切換來源。
@@ -2437,14 +2451,25 @@ mod tests {
     }
 
     #[test]
-    fn test_mixed_english_suggestion_and_completion() {
+    fn test_mixed_english_suggestion_opens_candidate_window() {
         let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.english_autocomplete = true;
         let mut s = Session::new(config);
         type_keys(&mut s, "ji3hellp");
         assert_eq!(s.snapshot().preedit, "我hellp");
-        s.press(Key::new(KeyCode::Tab, None, false));
+        let tab = s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(tab.preedit, "我hellp", "Tab 只能開窗，不能直接套用");
+        assert!(tab.navigating, "Tab 要進入選取模式");
+        let surfaces: Vec<String> = s
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.surface.clone())
+            .collect();
+        assert_eq!(surfaces.first().map(String::as_str), Some("hellp"));
+        assert_eq!(surfaces.get(1).map(String::as_str), Some("hello"));
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.snapshot().preedit, "我hello");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "我hello");
@@ -2503,9 +2528,9 @@ mod tests {
         assert_eq!(s.commit(), "這");
     }
 
-    /// 英文前綴不是注音，補全候選與 Tab 接受維持原行為。
+    /// 英文前綴不是注音：Tab 開候選窗，數字鍵套用補全；沒有補全時 Tab 不處理。
     #[test]
-    fn test_hello_tab_completion_unchanged() {
+    fn test_hello_tab_opens_candidates_and_digit_applies() {
         let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lexicon()));
         config.english_autocomplete = true;
@@ -2517,12 +2542,18 @@ mod tests {
             .iter()
             .map(|candidate| candidate.surface.clone())
             .collect();
+        assert_eq!(surfaces.first().map(String::as_str), Some("hellp"));
         assert!(surfaces.iter().any(|text| text == "hello"), "{surfaces:?}");
-        s.press(Key::new(KeyCode::Tab, None, false));
+        let tab = s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(tab.preedit, "hellp", "Tab 開窗但不套用");
+        assert!(tab.navigating && !tab.candidates.is_empty(), "{tab:?}");
+        type_keys(&mut s, "2");
         assert_eq!(s.snapshot().preedit, "hello");
-        // 完整英文詞沒有補全，Tab 不改內容。
-        s.press(Key::new(KeyCode::Tab, None, false));
-        assert_eq!(s.snapshot().preedit, "hello");
+        // 完整英文詞沒有補全，Tab 交還應用程式。
+        let before = s.snapshot();
+        let tab = s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(tab.preedit, before.preedit);
+        assert!(!s.last_key_consumed(), "沒有補全時 Tab 不得吃掉");
     }
 
     /// `sug` 已不是合法注音前綴，Down + 數字照舊選英文候選。
@@ -2550,7 +2581,7 @@ mod tests {
         assert_eq!(s.commit(), expected);
     }
 
-    /// `ji3hellp` 不回歸：注音完成後英文補全提示與 Tab 仍可用。
+    /// `ji3hellp` 不回歸：注音完成後英文補全改由 Tab 開候選窗。
     #[test]
     fn test_ji3hellp_completion_not_regressed() {
         let mut config = SessionConfig::new(Mode::Mixed);
@@ -2560,7 +2591,11 @@ mod tests {
         type_keys(&mut s, "ji3hellp");
         assert_eq!(s.snapshot().preedit, "我hellp");
         assert_eq!(s.snapshot().suggestion.as_deref(), Some("hello"));
-        s.press(Key::new(KeyCode::Tab, None, false));
+        let tab = s.press(Key::new(KeyCode::Tab, None, false));
+        assert_eq!(tab.preedit, "我hellp", "Tab 只開窗");
+        assert!(tab.navigating);
+        s.press(Key::new(KeyCode::Down, None, false));
+        s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.snapshot().preedit, "我hello");
     }
 
@@ -3258,6 +3293,7 @@ mod tests {
         assert!(snap.suggestion.is_none());
         assert!(snap.candidates.is_empty(), "Tab 不得讓候選冒出來");
         assert!(!snap.navigating, "英文模式組字中 Tab 不該進選取模式");
+        assert!(!s.last_key_consumed(), "沒有補全時 Tab 要交還應用程式");
         assert_eq!(s.snapshot().preedit, "abc");
     }
 
@@ -3392,19 +3428,19 @@ mod tests {
         session.commit()
     }
 
-    /// 接受 `recieve → receive` 後，再打同一個拼法時學到的修正排第一。
+    /// 接受 `recieve → receive` 後，再打同一個拼法時字面仍第一，學到的修正排第二。
     #[test]
-    fn test_english_learned_correction_ranks_first() {
+    fn test_english_learned_correction_follows_the_literal() {
         let mut s = english_session();
         type_keys(&mut s, "recieve");
         assert_eq!(accept_english(&mut s, "receive"), "receive");
 
         type_keys(&mut s, "recieve");
-        assert_eq!(s.candidates()[0].surface, "receive");
-        assert!(candidate_index(&s, "recieve").is_some(), "原字仍留在候選裡");
+        assert_eq!(s.candidates()[0].surface, "recieve", "字面永遠第一");
+        assert_eq!(s.candidates()[1].surface, "receive", "學過的修正排第二");
     }
 
-    /// 連續跳過學過的修正 3 次後不再排第一，但仍在候選中。
+    /// 連續跳過學過的修正 3 次後不再優先，但仍在候選中。
     #[test]
     fn test_english_skip_demotes_learned_correction() {
         let mut s = english_session();
@@ -3417,7 +3453,7 @@ mod tests {
         }
 
         type_keys(&mut s, "recieve");
-        assert_ne!(s.candidates()[0].surface, "receive");
+        assert_eq!(s.candidates()[0].surface, "recieve", "字面永遠第一");
         assert!(
             candidate_index(&s, "receive").is_some(),
             "降權不是刪除，修正仍要留在候選裡"
@@ -3435,11 +3471,17 @@ mod tests {
             assert_eq!(accept_english(&mut s, "recieve"), "recieve");
         }
         type_keys(&mut s, "recieve");
-        assert_ne!(s.candidates()[0].surface, "receive");
+        assert_eq!(
+            s.candidates()[0].surface,
+            "recieve",
+            "字面永遠排第一，學習修正接在後面"
+        );
+        assert_ne!(candidate_index(&s, "receive"), Some(0));
 
         assert_eq!(accept_english(&mut s, "receive"), "receive");
         type_keys(&mut s, "recieve");
-        assert_eq!(s.candidates()[0].surface, "receive");
+        assert_eq!(s.candidates()[0].surface, "recieve");
+        assert_eq!(candidate_index(&s, "receive"), Some(1), "學過的修正排第二");
     }
 
     /// 5 個字母的拼法只記錄證據，排序維持原樣。

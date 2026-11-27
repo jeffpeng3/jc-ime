@@ -472,14 +472,6 @@ impl Host {
     fn left(&mut self) -> bool {
         self.press(0x25, 0x14b, Act::Left)
     }
-    fn pending(&self) -> bool {
-        self.service
-            .state
-            .borrow()
-            .session
-            .english_state
-            .english_pending
-    }
     fn composing(&self) -> bool {
         self.service.state.borrow().composing
     }
@@ -616,77 +608,59 @@ impl Drop for Caret {
 }
 
 #[test]
-fn imm32_word_and_space_or_punctuation_arrive_in_order() {
+fn english_mode_keys_are_raw_and_never_reach_the_engine() {
+    // 英文模式純 raw：printable、空白、標點、方向鍵都直接交給程式，
+    // 不組字、不送任何 Request，也不會出現 candidate 或 suggestion。
     let _serial = crate::host_test_lock::serial();
     let Some(pipe) = engine() else { return };
     plain_keyboard();
     let _caret = Caret::new();
     let mut h = open(&pipe, TS_SS_TRANSITORY);
-    // 依序打 abc def,ghi ：修正前程式看到「前 abc,defghi 」（.14 的 EDIT 實測同樣順序）。
+    let before = h.sent().len();
     h.letters("abc");
-    assert!(h.pending(), "有插入點的 IMM32 文字框照常英文補字");
-    let eaten = h.space();
+    assert_eq!(h.app.text(), "前abc", "字母直接打在文件裡");
+    assert!(!h.composing(), "英文模式不建組字");
+    assert!(!h.space(), "空白交給程式");
     assert_eq!(h.app.text(), "前abc ");
-    assert!(eaten, "單字中的空白在 IMM32 程式吃下，連同單字一起送出");
-    assert!(!h.pending());
-    h.letters("def");
-    let eaten = h.comma();
-    assert_eq!(h.app.text(), "前abc def,");
-    assert!(eaten);
-    // 逗號之後不重新開始補字（網址、識別字）：ghi 與之後的空白照常交給程式。
-    for c in ['g', 'h', 'i'] {
-        let vk = c.to_ascii_uppercase() as u32;
-        let scan = unsafe { MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) } as isize;
-        assert!(!h.press(vk, scan, Act::Char(c)), "逗號後的 {c} 交給程式");
-    }
-    assert!(!h.space(), "沒有單字時空白照常交給程式");
-    assert_eq!(h.app.text(), "前abc def,ghi ");
-    // 數字同樣跟單字一起送出。
-    h.letters("abc");
-    let eaten = h.one();
-    assert_eq!(h.app.text(), "前abc def,ghi abc1");
-    assert!(eaten && !h.pending());
+    assert!(!h.comma(), "標點交給程式");
+    assert_eq!(h.app.text(), "前abc ,");
+    assert!(!h.one(), "數字交給程式");
+    assert_eq!(h.app.text(), "前abc ,1");
+    assert!(!h.left(), "方向鍵交給程式");
+    assert_eq!(h.app.caret, 7);
+    assert_eq!(h.sent().len(), before, "英文模式不得產生任何引擎請求");
+    assert!(!h.composing(), "仍然沒有組字");
 }
 
 #[test]
-fn imm32_arrow_after_a_word_only_confirms_it() {
+fn english_mode_tab_is_handed_back_to_the_host() {
+    // Tab 在英文模式沒有候選窗：直接給宿主，不能 no-op 吃掉。
     let _serial = crate::host_test_lock::serial();
     let Some(pipe) = engine() else { return };
     plain_keyboard();
     let _caret = Caret::new();
     let mut h = open(&pipe, TS_SS_TRANSITORY);
-    // 修正前：← 先把插入點移到「前」之前，單字才插進去，得到「abcd,前」。
-    h.letters("abcd");
-    let eaten = h.left();
-    assert!(!h.comma());
-    assert_eq!(h.app.text(), "前abcd,");
-    assert!(
-        eaten,
-        "單字中的 ← 在 IMM32 程式只送出單字（同 Enter，#235）"
-    );
-    assert!(!h.pending());
-    // 沒有單字時 ← 照常交給程式。
-    assert!(!h.left());
-    assert!(!h.comma());
-    assert_eq!(h.app.text(), "前abcd,,");
-    assert_eq!(h.app.caret, 6);
+    h.letters("abc");
+    let before = h.sent().len();
+    assert!(!h.press(0x09, 0x0f, Act::Char('\t')), "Tab 要交給宿主");
+    assert_eq!(h.app.text(), "前abc\t");
+    assert_eq!(h.sent().len(), before, "Tab 不得送引擎");
 }
 
 #[test]
 fn tsf_programs_still_get_the_key_after_the_word() {
-    // 自己接 TSF 的程式（記事本、Word、Chromium）送出當下就在文件裡：照舊送出單字後把空白、← 交給程式。
+    // 自己接 TSF 的程式（記事本、Word、Chromium）在英文模式同樣是 raw。
     let Some(pipe) = engine() else { return };
     plain_keyboard();
     let mut h = open(&pipe, 0);
     h.letters("abc");
-    assert!(h.pending());
-    assert!(!h.space(), "自己接 TSF 的程式照舊把空白交給程式");
+    assert!(!h.space(), "空白交給程式");
     assert_eq!(h.app.text(), "前abc ");
     h.letters("abcd");
-    assert!(!h.left());
-    assert!(!h.pending());
+    assert!(!h.left(), "方向鍵交給程式");
     assert_eq!(h.app.text(), "前abc abcd");
     assert_eq!(h.app.caret, 8);
+    assert!(!h.composing(), "英文模式不建組字");
 }
 
 #[test]
@@ -896,7 +870,6 @@ fn imm32_mixed_english_composition_follows_the_shortcut_rules() {
         "組字裡有英文字母：{word}"
     );
     assert!(!h.service.state.borrow().session.english(), "仍是中文模式");
-    assert!(!h.pending(), "不是英文補字的單字");
     h.cuas.history.borrow_mut().clear();
 
     assert!(!h.ctrl_down(false), "單按 Ctrl 交給程式");
@@ -907,49 +880,6 @@ fn imm32_mixed_english_composition_follows_the_shortcut_rules() {
     assert_eq!(h.app.text(), "前");
 
     assert_ctrl_shortcut_follows_text(&mut h, 0x53, &word, "Ctrl+S");
-}
-
-#[test]
-fn imm32_composition_kept_by_a_mode_switch_follows_the_shortcut_rules() {
-    // #66：組字中單按 Shift 切到英文模式，組字留著（「你」），再打的字母接進同一段組字，不是英文補字的單字
-    // （english_pending 是 false）。這樣的組字仍走一般流程：單按 Ctrl 不送出，Ctrl+S 與 Ctrl+,（英文模式不算
-    // Ctrl＋標點）經相容層送出，快捷鍵重排在字之後。
-    for (vk, tag) in [(0xBCu32, "Ctrl+,"), (0x53, "Ctrl+S")] {
-        let Some(mut h) = open_zhuyin(TS_SS_TRANSITORY) else {
-            return;
-        };
-        plain_keyboard();
-        h.view_is_app();
-        h.cuas.kind.set(HostKind::DefWindowProc);
-        h.zhuyin("su3");
-        assert_eq!(h.doc.composing_text(), "你");
-        // 單按 Shift 切換：按下交給程式、放開才切換
-        assert!(!h.press(0x10, 0x2a, Act::Nothing), "Shift 按下交給程式");
-        h.key_up(0x10, 0x2a);
-        assert!(
-            h.service.state.borrow().session.english(),
-            "單按 Shift 切到英文模式"
-        );
-        assert!(h.composing(), "{tag}：切換後組字留著");
-        for c in "ab".chars() {
-            let vk = c.to_ascii_uppercase() as u32;
-            assert!(h.press(vk, scan_of(vk), Act::Char(c)), "字母 {c} 接進組字");
-        }
-        let word = h.doc.composing_text();
-        assert_eq!(word, "你ab", "{tag}");
-        assert!(!h.pending(), "{tag}：不是英文補字的單字");
-        h.cuas.history.borrow_mut().clear();
-
-        assert!(!h.ctrl_down(false), "{tag}：單按 Ctrl 交給程式");
-        h.ctrl_up();
-        assert!(h.composing(), "{tag}：單按 Ctrl 不送出");
-        assert!(
-            h.cuas.completions.borrow().is_empty(),
-            "{tag}：沒有經相容層送出"
-        );
-
-        assert_ctrl_shortcut_follows_text(&mut h, vk, &word, tag);
-    }
 }
 
 #[test]
@@ -1094,22 +1024,6 @@ fn imm32_focus_move_during_completion_keeps_the_text() {
         1,
         "引擎只收到一次 commit：{sent:?}"
     );
-}
-
-#[test]
-fn imm32_english_word_is_sent_when_ctrl_goes_down() {
-    let _serial = crate::host_test_lock::serial();
-    // 英文補字的單字本來就在 Ctrl 按下時送出（english_key_policy 看 modifier_down），IMM32 程式裡 Ctrl+A 看得到單字。
-    let Some(pipe) = engine() else { return };
-    plain_keyboard();
-    let _caret = Caret::new();
-    let mut h = open(&pipe, TS_SS_TRANSITORY);
-    h.letters("abc");
-    assert!(h.pending());
-    assert!(!h.ctrl_down(false));
-    assert!(!h.ctrl_key(0x41, Act::Shortcut));
-    h.ctrl_up();
-    assert_eq!(h.app.seen, vec!["前abc".to_string()]);
 }
 
 #[test]

@@ -640,7 +640,6 @@ impl Scripted {
                 "preedit": segments,
                 "commit": commit,
                 "cursor": {"rune": preedit.chars().count(), "utf16": preedit.encode_utf16().count()},
-                "suggestion_kind": if self.english && !self.keys.is_empty() { "english" } else { "" },
                 "output_simplified": self.simplified,
             }
         })

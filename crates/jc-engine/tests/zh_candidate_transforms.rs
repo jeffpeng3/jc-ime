@@ -374,15 +374,15 @@ fn candidate_lists_survive_every_transform() {
         5,
     );
     add(
-        "en Tab 補全",
+        "en Tab 開候選窗",
         Box::new(|data| {
             let mut s = base(data);
             press_all(&mut s, &chars("hellp"));
             press_all(&mut s, &[key(KeyCode::Tab)]);
             s
         }),
-        "hello",
-        None,
+        "hellp",
+        Some("hello"),
         2,
     );
     add(

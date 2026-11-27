@@ -119,14 +119,6 @@ impl CandidateSet {
         self.seen.contains(&key)
     }
 
-    /// 先記住字面但不加入候選；混打要用原始按鍵佔住去重鍵。
-    pub(super) fn reserve(&mut self, surface: &str) {
-        let key = self.matching.key(surface);
-        if !self.seen.contains(&key) {
-            self.seen.push(key);
-        }
-    }
-
     /// 直接加入一項，不檢查重複。
     pub(super) fn push(&mut self, candidate: Candidate) {
         self.seen.push(self.matching.key(&candidate.surface));

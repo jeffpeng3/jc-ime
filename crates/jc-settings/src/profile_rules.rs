@@ -119,16 +119,6 @@ pub(crate) fn rule_specs() -> Vec<RuleSpec> {
             set: |rules, value| rules.shift_delete = value.to_string(),
         },
         RuleSpec {
-            key: "style-caps-letter",
-            values: &["platform", "lower"],
-            labels: &[
-                ("platform", "依平台大小寫"),
-                ("lower", "預設小寫，Shift 大寫"),
-            ],
-            get: |rules| rules.caps_letter.clone(),
-            set: |rules, value| rules.caps_letter = value.to_string(),
-        },
-        RuleSpec {
             key: "style-candidate-navigation",
             values: &["0c", "horizontal"],
             labels: &[("0c", "依候選排列"), ("horizontal", "水平操作")],

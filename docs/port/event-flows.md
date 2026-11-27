@@ -98,9 +98,9 @@ flowchart LR
 | `Health { info }` | engine | TSF `learn_*` | 能力、bindings、設定版次、慢請求、session 數 |
 | `Vocab { vocab }` | 目前沒有生產者 | 詞彙工具 | variant 已定義，但 `Request::Vocab` 在 engine 仍落到 `Unsupported` |
 
-`handled` 是 TSF 要不要吃鍵的權威值。`Some(false)` 目前用在候選 index 越界；引擎對組字中的 Backspace／Delete 即使把 preedit 刪空也會明確回 `Some(true)`。
+`handled` 是 TSF 要不要吃鍵的權威值。`Some(false)` 用在候選 index 越界與混合英文沒有補全時的 Tab；引擎對組字中的 Backspace／Delete 即使把 preedit 刪空也會明確回 `Some(true)`。
 
-`jc-proto::Response::State` 只有 `suggestion: Option<String>`，沒有補全來源。TSF 的 `state_to_snapshot_value` 會另外產生 0c reply 的 `suggestion_kind`：`suggestion` 有值且所有片段都是 `english` 時是 `english`，否則有值時是 `zhuyin`，沒有值時是空字串。`parse` 讀回這個欄位後，只把 `SuggestionKind::English` 設成 `english_pending`。消費者 `english_key_policy` 與 `commit_english_pending` 只看 `english_pending`，所以注音補全 `su` 的 `suggestion_kind` 是 `zhuyin`，不能拿來當英文補全。
+`jc-proto::Response::State` 只有 `suggestion: Option<String>`，沒有補全來源。英文補全在 core 已進候選清單：混合模式打 `hellp` 按 Tab 會開候選窗 `[0] hellp`、`[1] hello`，由一般 `CandidateAction` 套用。英文模式（外殼 `english=true`）是純 raw，不送任何 `Request`，也不產生組字、補全或候選窗。
 
 ## 3. 逐事件 sequence diagram
 
@@ -214,7 +214,7 @@ sequenceDiagram
 
 `OnTestKeyDown` 的答案會被 `key_tested` 記住，讓緊接的 `OnKeyDown` 不再問一次；這個紀錄只給同一個 vk 用一次。若 `OnKeyDown` 最後得到 `handled=false`，TSF 回 `false`，宿主收到原始按鍵。
 
-中文 idle 時不是所有 printable 都會進來。`wants_key` 只在 `idle_key` 認定這一鍵是注音起始、聲調鍵或全形字元時回 `true`；其他可列印字元直接放行給宿主。英文模式則相反，printable 一律送 core，由 `handled` 決定。
+中文 idle 時不是所有 printable 都會進來。`wants_key` 只在 `idle_key` 認定這一鍵是注音起始、聲調鍵或全形字元時回 `true`；其他可列印字元直接放行給宿主。英文模式一律放行，不經引擎。
 
 ### 3.3 注音輸入
 
@@ -298,7 +298,7 @@ sequenceDiagram
 3. 數字鍵只有 `candidate_window` 開著才走選字；`select_by_digit` 先找高亮所在頁與欄，再換算絕對 index。
 4. Enter 第一次只套用高亮候選，第二次才 `finalize_lane`。選單是例外，套用即送出。
 
-注音補全也會出現在 `suggestion`，但 TSF 的 `state_to_snapshot_value` 會把有 suggestion 且不是全英文的結果標成 `suggestion_kind=zhuyin`；`parse` 只讓 `english` 設 `english_pending`。所以 `su` 的注音補全不會被英文 policy 自動 commit。
+注音補全仍會出現在 `suggestion`；英文補全則同時進了候選清單。TSF 不再區分 suggestion 來源，也不再有 `english_pending`。
 
 ### 3.4 英文模式
 
@@ -307,63 +307,29 @@ sequenceDiagram
     autonumber
     participant Host
     participant TSF
-    participant TSession
-    participant Engine
-    participant Core
-    participant Edit
 
-    Note over TSF,TSession: english 是外殼狀態 不送 engine
+    Note over TSF: english 是外殼狀態，不送 engine
     Host->>TSF: OnTestKeyDown a
-    TSF->>TSF: english_key_policy
-    Note over TSF: None 不是 IMM32 word-end
-    TSF->>TSF: wants_key
-    Note over TSF: english 且 printable 一律送 core
-    TSF-->>Host: 吃掉這一鍵
+    TSF->>TSF: english_key_policy / wants_key
+    Note over TSF: 英文模式 printable、Tab、方向鍵、Backspace 一律不處理
+    TSF-->>Host: 放行這一鍵
 
     Host->>TSF: OnKeyDown a
-    TSF->>TSession: key_with_flags
-    TSession->>Engine: Request::Key
-    Engine->>Core: Session::press
-    Core->>Core: press_char 與 AsciiInput::press_caps
-    Core->>Core: rebuild 與 rebuild_mixed
-    Core-->>Engine: Snapshot
-    Engine-->>TSession: Response::State
-    TSession->>TSession: state_to_snapshot_value 依 segments.mode 產生 suggestion_kind
-    TSession->>TSession: parse 只讓 suggestion_kind=english 設 english_pending
-    TSession-->>TSF: Snapshot english 由外殼補回
-    TSF->>Edit: edit::apply 英文 preedit
-    TSF-->>Host: true
+    TSF-->>Host: 放行這一鍵
 
-    alt 組字中的 Enter
-        Host->>TSF: OnKeyDown Enter
-        TSF->>TSF: english_key_policy 回 EnterRepost
-        TSF->>TSF: english_enter
-        TSF->>TSession: Session::key Enter
-        TSession->>Engine: Request::Key Enter
-        Engine->>Core: Session::press 與 finalize_lane
-        Engine->>Core: Session::commit
-        Engine-->>TSession: Response::Committed
-        TSF->>Edit: edit::apply 送出
-        TSF->>Host: repost_enter_key 重排 Enter
+    alt Shift＋空白且風格有開
+        TSF->>TSF: type_text("　")
     end
 
-    alt IMM32 word-end
-        TSF->>TSF: english_key_policy 回 WordEnd
-        TSF->>TSF: end_word_with
-        TSF->>TSession: Session::key 標點或空白
-        TSession->>Engine: Request::Key
-        Engine-->>TSession: State 可能 handled=false
-        TSF->>TSF: handled=false 時補上 typed 字串
-        TSF->>Edit: edit::apply 送出完整單字與標點
-    end
-
-    alt 引擎回 handled=false
-        TSF->>TSF: present_in_edit 回 false
-        TSF-->>Host: 放行原始按鍵
+    alt IMM32 沒有插入點
+        TSF->>TSF: english_key_policy 回 Literal 或放行
     end
 ```
 
-舊的 `EnglishKey::Eat(true)` 不再是 printable 的主路徑。現在 printable 一律送 core，由 `handled` 決定吃或放行；`Eat(true)` 只留給 Shift＋空白這類外殼自己處理的鍵。
+英文模式是純 raw：外殼 `english=true` 時不產生任何 `Request::Key` 或
+`Request::Literal`，也不建組字、不顯示候選窗。`english_key_policy` 只保留
+Shift＋空白與 IMM32 raw passthrough；Caps Lock 與其他按鍵交給系統與應用程式。
+混合模式的英文補全改走 Tab 開候選窗，不屬於英文模式。
 
 ### 3.5 Caps Lock
 
@@ -775,7 +741,7 @@ sequenceDiagram
 | 游標單位 | `present_in_edit` 只用 `cursor_utf16` 定位 | 不決定單位 | 注音是音節格，日文是 byte 再換算 rune，混打是 rune；權威值 `cursor_rune` | `core.rs:2055` `navigate`、`core.rs:1591` `move_cursor_to`、`core.rs:1656` `candidate_edge` |
 | 字面大小寫 | `keys::printable` 依鍵盤狀態轉字元；`handle_key` 帶 `caps` 與 `shift` | 不決定大小寫 | `press` 把 Caps Lock 字母改回基礎小寫，路由不變；`press_caps` 只改 Latin 字面 | `service.rs:1163` `handle_key`、`session/mod.rs:801` `press`、`core.rs:344` `press_char` |
 | 候選排序 | 不改順序 | 不改順序 | lane 的 nbest、個人學習、rerank 先排；`CandidateSet` 負責插 extras、去重、截斷、顯示字排第一 | `session/candidate_set.rs:96` `from_hypotheses`、`mixed.rs:1821` `zh_choice_candidates`、`core.rs:3043` `rebuild_ja` |
-| 補全來源 | `state_to_snapshot_value` 由 `suggestion` 是否存在與片段是否全英文推導 `suggestion_kind`；`parse` 只讓 `english` 設 `english_pending` | 只帶 `suggestion` 字串，沒有來源欄位 | `snapshot_suggestion` 決定 suggestion 內容，注音與英文共用同一個 `suggestion` | `session.rs:474` `state_to_snapshot_value`、`session.rs:1026` `parse`、`core.rs:1681` `snapshot_suggestion`、`service.rs:1445` `commit_english_pending` |
+| 補全來源 | 不再推導來源；`parse` 只保存 `suggestion` 字串 | 只帶 `suggestion` 字串，沒有來源欄位 | `snapshot_suggestion` 決定 suggestion 內容；混合英文補全同時進候選清單 | `session.rs` `state_to_snapshot_value`／`parse`、`core.rs:1681` `snapshot_suggestion`、`session/key_policy.rs` `tab` |
 | Enter 語意 | 只送 `Key` 或 `Commit`，不自行判斷 | `Key Enter` 先 `press`；還在組字回 `State`，否則 `commit` 回 `Committed` | `finish_composition` 先 `enter_action`；注音片段與日文文節保留組字，選單與直接插入候選清掉組字 | `engine/lib.rs:655` `enters` 分支、`core.rs:1750` `finish_composition`、`core.rs:902` `apply_menu_action`、`core.rs:1005` `apply_insert_action` |
 | 模式 | `english`／`base_english` 與 Caps Lock 暫時英文只在外殼；`toggle` 不送 IPC | 沒有 toggle 或 mode op；只回報 `caps_lock_english` 能力 | 只依字元與片段選 lane，沒有中英模式旗標 | `session.rs` `toggle`、`session.rs` `caps_lock`、`service.rs` `toggle_mode` |
 | 刪除單位 | 只送 Backspace／Delete | 只回 `handled` | `delete_visible` 一次刪一個可見 rune；字元涵蓋多個讀音單位時整個範圍一起刪 | `key_policy.rs:279` `delete_visible`、`key_policy.rs:331` `delete_zh_visible`、`key_policy.rs:427` `delete_ja_visible` |

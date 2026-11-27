@@ -167,7 +167,7 @@ impl Session {
         KeyAction::Ignore
     }
 
-    /// `Tab`：先看字面尾巴，再看選取模式，最後才是補全／下一個候選。
+    /// `Tab`：先看字面尾巴，再看選取模式，最後才是英文補全／注音補全。
     fn tab(&mut self) -> KeyOutcome {
         if !self.literal_tail.is_empty() && self.suggestion.is_none() {
             // 英文模式是 raw input，沒有 suggestion：Tab 沒有可補全的東西，
@@ -179,11 +179,15 @@ impl Session {
             self.move_highlight(1);
             return KeyOutcome::Changed;
         }
-        let accepted = !self.in_zh_lane()
-            && !self.in_ja_lane()
-            && self.config.english_autocomplete
-            && self.ascii.accept_suggestion();
-        if !accepted && !self.accept_suggestion() {
+        // 混打的英文補全走候選窗：Tab 只開窗，不直接套用。沒有補全時
+        // 交還應用程式（引擎回 handled=false），不能把 Tab 吃掉。
+        if !self.in_zh_lane() && !self.in_ja_lane() && self.config.english_autocomplete {
+            if self.ascii.suggestion().is_none() || !self.open_mixed_english_completion() {
+                return KeyOutcome::Unchanged;
+            }
+            return KeyOutcome::Changed;
+        }
+        if !self.accept_suggestion() {
             self.move_highlight(1);
             self.navigating = true;
         }

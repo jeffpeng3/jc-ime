@@ -200,13 +200,17 @@ fn test_ja_clause_display_matches_commit() {
     assert_commit_matches_display(&mut s, "日文文節送出");
 }
 
-/// 英文補全：Tab 接受後，畫面與送出都是補完的字。
+/// 英文補全：Tab 開候選窗，選了補完的字後畫面與送出都是它。
 #[test]
 fn test_english_completion_display_matches_commit() {
     let mut s = english_session();
     press_chars(&mut s, "hell");
-    press(&mut s, Key::new(KeyCode::Tab, None, false));
-    assert_eq!(s.display_text(), "hello");
+    let opened = press(&mut s, Key::new(KeyCode::Tab, None, false));
+    assert_eq!(opened.preedit, "hell", "Tab 只開窗，不直接套用");
+    assert!(opened.navigating, "Tab 要進入候選選取");
+    let at = select_surface(&mut s, "hello");
+    let applied = s.choose_candidate(at).expect("套用英文補全");
+    assert_eq!(applied.preedit, "hello");
     assert_consistent(&s, "英文補全");
     assert_eq!(
         assert_commit_matches_display(&mut s, "英文補全送出"),

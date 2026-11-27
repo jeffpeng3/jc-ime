@@ -33,9 +33,6 @@ pub enum InputStyleError {
 /// 全零的 `Rules` 保留舊呼叫端既有的引擎行為。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rules {
-    /// Caps Lock 與字母的組合行為。
-    #[serde(default)]
-    pub caps_letter: String,
     /// 候選清單的移動方式。
     #[serde(default)]
     pub candidate_navigation: String,
@@ -86,8 +83,7 @@ impl Rules {
         if self.version != VERSION {
             return Err(InputStyleError::Version(self.version));
         }
-        let checks: [(&'static str, &str, &[&str]); 11] = [
-            ("caps_letter", &self.caps_letter, &["platform", "lower"]),
+        let checks: [(&'static str, &str, &[&str]); 10] = [
             (
                 "candidate_navigation",
                 &self.candidate_navigation,
@@ -245,7 +241,6 @@ pub fn get_for_platform(id: &str, goos: &str) -> Option<Preset> {
     }
     let rules = Rules {
         version: VERSION,
-        caps_letter: "platform".to_string(),
         candidate_navigation: "0c".to_string(),
         shift_delete: "0c".to_string(),
         up: "0c".to_string(),
@@ -297,7 +292,6 @@ pub fn get_for_platform(id: &str, goos: &str) -> Option<Preset> {
             preset.rules.shift_space = "space".to_string();
             preset.rules.shift_letter = "commit".to_string();
             preset.rules.candidate_page_size = 9;
-            preset.rules.caps_letter = "lower".to_string();
         }
         "macos" => {
             preset.name = "macOS 內建注音".to_string();

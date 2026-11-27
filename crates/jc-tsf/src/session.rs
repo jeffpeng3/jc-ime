@@ -325,10 +325,6 @@ pub struct Snapshot {
     pub english: bool,
     /// jc 尚無對應；false。
     pub full_width: bool,
-    /// 補全尾綴的來源；外殼只依來源決定要不要走英文補全。
-    pub suggestion_kind: SuggestionKind,
-    /// 英文補全的待選字；只由 [`SuggestionKind::English`] 設定。
-    pub english_pending: bool,
     /// jc 尚無對應；false。
     pub caps_lock: bool,
     /// jc 尚無對應；false。
@@ -351,36 +347,6 @@ pub struct Snapshot {
     pub clause_count: i64,
     /// jc `State::menu`：開啟中的符號／表情選單；沒有開選單時為 `None`。
     pub menu: Option<MenuState>,
-}
-
-/// 補全尾綴的來源。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SuggestionKind {
-    /// 沒有補全。
-    #[default]
-    None,
-    /// 注音補全；不能拿來當英文補全。
-    Zhuyin,
-    /// 英文拼字補全。
-    English,
-}
-
-impl SuggestionKind {
-    fn from_wire(value: &Value) -> SuggestionKind {
-        match value.as_str() {
-            Some("zhuyin") => SuggestionKind::Zhuyin,
-            Some("english") => SuggestionKind::English,
-            _ => SuggestionKind::None,
-        }
-    }
-
-    fn as_wire(self) -> &'static str {
-        match self {
-            SuggestionKind::None => "",
-            SuggestionKind::Zhuyin => "zhuyin",
-            SuggestionKind::English => "english",
-        }
-    }
 }
 
 impl Snapshot {
@@ -545,15 +511,7 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
         (start, end.saturating_sub(start))
     };
 
-    let all_english = !segments.is_empty() && segments.iter().all(|s| s.mode == "english");
     let pending = suggestion.is_some();
-    // 補全來源要跟外殼模式分開：只有英文片段的補全才是英文補全。
-    // 注音補全（例如 `su`）不能變成 english_pending。
-    let suggestion_kind = match (pending, all_english) {
-        (true, true) => SuggestionKind::English,
-        (true, false) => SuggestionKind::Zhuyin,
-        (false, _) => SuggestionKind::None,
-    };
     // 引擎可以明確說「這次沒處理」（例如候選 index 越界）；有值時尊重它。
     // 組字中或選單開著時的 Backspace／Delete，即使把 preedit 或候選刪空，
     // 引擎也會明確回 `handled = true`；這裡不能改用 preedit 猜，否則那一鍵
@@ -596,7 +554,6 @@ pub fn state_to_snapshot_value(response: &Response) -> Value {
             "tabs": menu.tabs,
             "tab": menu.tab,
         })),
-        "suggestion_kind": suggestion_kind.as_wire(),
     })
 }
 
@@ -951,11 +908,6 @@ impl Client {
     }
 }
 
-/// 會開候選窗的翻頁鍵；英文組字中不交給引擎，選單開著時例外。
-fn is_page_navigation(key: &str) -> bool {
-    matches!(key, "Up" | "Down" | "PageUp" | "PageDown")
-}
-
 /// health 回報的新 session 開始時的模式。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -1030,8 +982,6 @@ fn parse(reply: &Value) -> Snapshot {
     s.handled = j["handled"].as_bool().unwrap_or(false);
     s.commit = j["commit"].as_str().unwrap_or("").to_string();
     s.suggestion = j["suggestion"].as_str().unwrap_or("").to_string();
-    s.suggestion_kind = SuggestionKind::from_wire(&j["suggestion_kind"]);
-    s.english_pending = s.suggestion_kind == SuggestionKind::English;
     s.converting = j["converting"].as_bool().unwrap_or(false);
     s.clause_index = j["clause_index"].as_i64().unwrap_or(0);
     s.clause_count = j["clause_count"].as_i64().unwrap_or(0);
@@ -1239,6 +1189,10 @@ impl Session {
             return;
         }
         self.shift_config = keys::ShiftConfig::from_info(Some(info));
+        // 同一份 health／open 也帶輸入風格；先快取起來，英文模式與
+        // Shift＋空白才不必為了一個設定再送 IPC。
+        self.idle_info = Some(info.clone());
+        self.idle_generation = self.client.generation();
     }
 
     /// 從 Ready／Health 的回應學到 bindings 與設定版次。
@@ -1304,6 +1258,11 @@ impl Session {
 
     /// 每 5 秒最多更新一次 bindings；按鍵路徑用。
     pub fn maybe_refresh_bindings(&mut self) {
+        // 英文模式是純 raw：按鍵路徑不得為了更新 bindings 產生 IPC。
+        // Activate／OnSetFocus 仍會主動更新一次。
+        if self.english {
+            return;
+        }
         if self
             .bindings_at
             .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
@@ -1544,12 +1503,16 @@ impl Session {
         )
     }
 
-    /// Caps Lock  lower 風格。
-    pub fn style_caps_lower(&mut self) -> bool {
-        let _ = self.idle_key("");
-        self.idle_info
-            .as_ref()
-            .is_some_and(|v| v["input_style_caps_letter"] == "lower")
+    /// 已學到的 Shift＋空白設定；只讀快取，不產生 IPC。
+    ///
+    /// 英文模式必須零 IPC，外殼在學 health／open 時就把 `idle_info` 補好。
+    pub fn shift_space_cached(&self) -> bool {
+        matches!(
+            self.idle_info
+                .as_ref()
+                .and_then(|v| v["input_style_shift_space"].as_str()),
+            Some("fullwidth" | "space" | "single")
+        )
     }
 
     /// 沒在組字時這個鍵要不要交給引擎。
@@ -1842,24 +1805,8 @@ impl Session {
         self.key_with_flags(key, false, false)
     }
 
-    /// 送一個按鍵並帶上 Caps Lock 旗標；`key` 本身是基礎字元。
-    pub fn key_with_caps(&mut self, key: &str, caps: bool) -> Snapshot {
-        self.key_with_flags(key, caps, false)
-    }
-
     /// 送一個按鍵與 Caps／Shift 旗標；字串鍵本身保持基礎字元。
     pub fn key_with_flags(&mut self, key: &str, caps: bool, shift: bool) -> Snapshot {
-        if self.english
-            && self.english_state.composing()
-            && self.english_state.menu.is_none()
-            && is_page_navigation(key)
-        {
-            let mut snapshot = self.english_state.clone();
-            snapshot.candidates.clear();
-            snapshot.candidate_keys.clear();
-            snapshot.navigating = false;
-            return snapshot;
-        }
         self.handle(json!({"type": "key", "key": key, "caps": caps, "shift": shift}))
     }
 
@@ -1896,17 +1843,10 @@ impl Session {
     /// 本機狀態，不送 IPC、不提交組字：Shift 是修飾鍵，不該讓引擎慢或暫時
     /// 連不上時把整個 session 判成掛掉，也不該讓進行中的組字消失。
     pub fn toggle(&mut self) -> Snapshot {
-        let from_english = self.english;
         self.base_english = !self.base_english;
         self.english = self.base_english;
         self.caps_english = false;
         self.mode_known = true;
-        // 英文補全的待選字不是文件裡的組字：切回中文時丟掉，不要重連後又
-        // 從重播紀錄長回來。中文組字則保留，切換不得提交或清掉它。
-        if from_english && self.english_state.english_pending {
-            self.log.clear();
-            self.english_state = Snapshot::default();
-        }
         let mut snapshot = self.english_state.clone();
         snapshot.ok = true;
         snapshot.handled = true;
@@ -1983,23 +1923,23 @@ mod parse_tests {
             handled: None,
             menu: None,
         };
-        // 注音補全不是英文補全：`su` 後面按數字不能被英文補全搶走。
+        // 補全尾綴仍照引擎給的來源顯示；外殼不再自行分類成英文待選字。
         let zhuyin = parse(&response_to_reply(&state("zhuyin", Some("你"))));
-        assert_eq!(zhuyin.suggestion_kind, SuggestionKind::Zhuyin);
-        assert!(!zhuyin.english_pending);
+        assert_eq!(zhuyin.suggestion, "你");
 
         let english = parse(&response_to_reply(&state("english", Some("lo"))));
-        assert_eq!(english.suggestion_kind, SuggestionKind::English);
-        assert!(english.english_pending);
+        assert_eq!(english.suggestion, "lo");
 
         let none = parse(&response_to_reply(&state("english", None)));
-        assert_eq!(none.suggestion_kind, SuggestionKind::None);
-        assert!(!none.english_pending);
+        assert!(none.suggestion.is_empty());
 
         // 片段語言不再變成外殼模式。
         let wire = state_to_snapshot_value(&state("english", Some("lo")));
         assert!(wire.get("mode").is_none(), "{wire}");
-        assert_eq!(wire["suggestion_kind"], "english");
+        assert!(
+            wire.get("suggestion_kind").is_none(),
+            "suggestion_kind 已刪除：{wire}"
+        );
         assert!(!english.english, "片段語言不是外殼模式");
     }
 
@@ -2251,9 +2191,9 @@ mod parse_tests {
         }
     }
 
-    // Adapter 改點二的關鍵測試：english_pending 必須來自 jc suggestion。
+    // 外殼現在只保存 suggestion 尾綴；英文補全不再有 pending／kind 狀態。
     #[test]
-    fn english_pending_comes_from_jc_suggestion() {
+    fn english_suggestion_is_plain_text_without_pending() {
         let state = Response::State {
             preedit: "hel".into(),
             cursor: 3,
@@ -2285,9 +2225,8 @@ mod parse_tests {
         };
         let reply = response_to_reply(&state);
         let s = parse(&reply);
-        assert!(s.ok && s.english_pending);
+        assert!(s.ok);
         assert_eq!(s.suggestion, "lo");
-        assert_eq!(s.suggestion_kind, SuggestionKind::English);
         assert_eq!(s.text(), "hel");
         assert_eq!(s.cursor_utf16, 3);
         assert_eq!(s.candidate_keys, vec!["1"]);
@@ -2309,8 +2248,7 @@ mod parse_tests {
             menu: None,
         };
         let s = parse(&response_to_reply(&no_suggestion));
-        assert!(!s.english_pending, "沒有 suggestion 就沒有英文補全");
-        assert_eq!(s.suggestion_kind, SuggestionKind::None);
+        assert!(s.suggestion.is_empty(), "沒有 suggestion 就是空字串");
     }
 
     #[test]
@@ -2859,6 +2797,21 @@ mod tests {
         assert_eq!(sent["key"]["text"], ",");
     }
 
+    /// 英文模式的 bindings 更新不得產生 IPC；快取留給 Activate／OnSetFocus。
+    #[test]
+    fn english_mode_never_refreshes_bindings_over_ipc() {
+        let (mut s, st) = toy_session();
+        s.english = true;
+        s.bindings_at = None;
+        let before = st.lock().unwrap().requests.len();
+        s.maybe_refresh_bindings();
+        assert_eq!(
+            st.lock().unwrap().requests.len(),
+            before,
+            "英文模式按鍵路徑不得為了 bindings 送 health"
+        );
+    }
+
     #[test]
     fn binding_lookup_is_local_and_does_not_send_requests() {
         let (client, st) = mock_client(|_request, _st| Some(json!({"ok": true})));
@@ -3220,44 +3173,6 @@ mod tests {
         assert_eq!(close["session"], 7, "Close 要送引擎給的 id，不是 1");
     }
 
-    /// 英文補全出現後，下一個字母仍要送 core，不能在外殼被吃掉。
-    #[test]
-    fn english_letters_continue_after_suggestion() {
-        let (mut s, st) = toy_session();
-        st.lock().unwrap().candidates = vec!["hello".into()];
-        st.lock().unwrap().start_english = true;
-        assert!(s.learn_mode(false) && s.english());
-        for k in ["h", "e", "l"] {
-            assert!(s.key(k).handled, "{k}");
-        }
-        assert_eq!(s.english_state.suggestion_kind, SuggestionKind::English);
-        assert!(s.english_state.english_pending);
-
-        let before = st.lock().unwrap().requests.len();
-        let next = s.key("l");
-        assert_eq!(
-            st.lock().unwrap().requests.len(),
-            before + 1,
-            "英文補全時字母仍要送 core"
-        );
-        assert!(next.ok && next.handled, "engine 處理了續打");
-        assert_eq!(next.text(), "hell", "字母接得下去");
-        assert_eq!(next.suggestion, "lo", "補全仍可續用");
-    }
-
-    /// core 回 handled=false 時外殼要放行，而不是先吃掉按鍵。
-    #[test]
-    fn english_key_without_core_handling_is_released() {
-        let (mut s, st) = toy_session();
-        st.lock().unwrap().start_english = true;
-        assert!(s.learn_mode(false) && s.english());
-        let snap = s.key("Left");
-        assert!(
-            snap.ok && !snap.handled,
-            "core 沒處理時按鍵要放行：{snap:?}"
-        );
-    }
-
     /// 重開 session 不再送引擎不支援的 `mode`／`caps_lock` 還原請求。
     #[test]
     fn reopen_sends_no_mode_or_caps_lock_restore() {
@@ -3288,41 +3203,6 @@ mod tests {
         let request =
             to_jc_request(&json!({"op": "handle", "req": {"type": "literal", "text": "A"}}));
         assert_eq!(request, json!({"op": "literal", "text": "A"}));
-    }
-
-    /// 英文組字中的翻頁鍵由選單處理；沒有選單時不送 core，選單開著時才送。
-    #[test]
-    fn english_composition_page_keys_follow_the_menu() {
-        let (mut s, st) = toy_session();
-        st.lock().unwrap().candidates = vec!["hello".into()];
-        st.lock().unwrap().start_english = true;
-        assert!(s.learn_mode(false) && s.english());
-        for key in ["h", "e", "l"] {
-            assert!(s.key(key).handled);
-        }
-        let before = st.lock().unwrap().requests.len();
-        for key in ["Down", "Up", "PageDown", "PageUp"] {
-            assert!(s.key(key).ok, "{key}");
-        }
-        assert_eq!(
-            st.lock().unwrap().requests.len(),
-            before,
-            "沒有選單時英文組字不送翻頁鍵"
-        );
-
-        s.english_state.menu = Some(MenuState {
-            kind: "symbols".into(),
-            title: String::new(),
-            tabs: vec![],
-            tab: 0,
-        });
-        let before = st.lock().unwrap().requests.len();
-        assert!(s.key("Down").ok);
-        assert_eq!(
-            st.lock().unwrap().requests.len(),
-            before + 1,
-            "選單開著時翻頁鍵要送 core 換分頁"
-        );
     }
 
     #[test]
@@ -3409,10 +3289,7 @@ mod tests {
         assert!(!s.client.connected(), "Activate 的查詢不留連線");
         assert!(!s.learn_mode(true), "問過就不再問");
         let snap = s.key("t");
-        assert!(
-            snap.ok && snap.english && snap.english_pending,
-            "第一個按鍵是英文補全"
-        );
+        assert!(snap.ok && snap.english, "第一個按鍵仍標成英文模式");
         let snap = s.toggle();
         assert!(snap.ok && !snap.english);
         s.client.disconnect_for_test();
@@ -3998,9 +3875,8 @@ mod tests {
     #[test]
     fn first_style_modifier_after_handoff_uses_replacement_capabilities() {
         let (mut s, st) = toy_session();
-        st.lock().unwrap().info =
-            json!({"input_style_shift_space": "disabled", "input_style_caps_letter": "platform"});
-        assert!(!s.style_shift_space() && !s.style_caps_lower());
+        st.lock().unwrap().info = json!({"input_style_shift_space": "disabled"});
+        assert!(!s.style_shift_space());
         assert!(!s.shift_config().toggles(keys::Side::Left));
         for enabled in [true, false] {
             {
@@ -4013,14 +3889,12 @@ mod tests {
                 state.down = false;
                 state.info = json!({
                     "input_style_shift_space": if enabled { "fullwidth" } else { "disabled" },
-                    "input_style_caps_letter": if enabled { "lower" } else { "platform" },
                     "left_shift": enabled.to_string(),
                 });
             }
             s.client
                 .set_restart_until_for_test(Instant::now() + Duration::from_millis(20));
             assert_eq!(s.style_shift_space(), enabled, "first space after handoff");
-            assert_eq!(s.style_caps_lower(), enabled, "first caps after handoff");
             assert_eq!(
                 s.shift_config().toggles(keys::Side::Left),
                 enabled,

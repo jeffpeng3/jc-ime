@@ -842,14 +842,6 @@ impl AsciiInput {
         true
     }
 
-    /// 接受英文補字建議。
-    pub fn accept_suggestion(&mut self) -> bool {
-        match self.suggestion() {
-            Some(text) => self.accept(&text),
-            None => false,
-        }
-    }
-
     /// 找統一管線判定的英→中切點：回傳（前段字元數, 尾巴的注音音節）。
     ///
     /// 只接受最後一個輸出片段是注音、且尾巴只剩空白的情況；前段是 `text`
@@ -1509,20 +1501,43 @@ impl Session {
     ///
     /// 只有按 ↓ 會走到這裡。回傳是否有可開的候選。
     pub(super) fn open_mixed_cursor_candidates(&mut self) -> bool {
+        self.open_mixed_candidates(false)
+    }
+
+    /// 混合英文補全的候選窗：Tab 用。
+    ///
+    /// 作用範圍是游標所在的整段英文待定詞，即使前面已經有注音轉換
+    /// （`ji3hellp` 的 `hellp`），也不只換最後一個字元。
+    pub(super) fn open_mixed_english_completion(&mut self) -> bool {
+        self.open_mixed_candidates(true)
+    }
+
+    fn open_mixed_candidates(&mut self, whole_pending: bool) -> bool {
         let text = self.composed_text();
         let runes = text.chars().count();
         if runes == 0 {
             return false;
         }
         // 整段都是英文待定詞時，候選是整串的拼字建議與補全，不是單一字母；
-        // 套用時替換整個詞，游標留在結尾。
-        let raw = self.ascii.typed().to_string();
+        // 套用時替換整個詞，游標留在結尾。Tab 允許前段已有注音（`ji3hellp`），
+        // 只要 `typed` 以 `pending` 結尾就作用在整段待定詞；↓ 沿用舊行為，
+        // 只有純英文 run 才整段開窗。
+        let typed = self.ascii.typed().to_string();
+        let pending = self.ascii.pending().to_string();
+        let whole = if whole_pending {
+            !pending.is_empty() && typed.ends_with(&pending)
+        } else {
+            pending == typed
+        };
         if !self.in_zh_lane()
             && !self.in_ja_lane()
-            && self.ascii.pending() == raw
+            && whole
             && self.literal_spans.is_empty()
             && !self.candidates.is_empty()
         {
+            let typed_start = typed.len().saturating_sub(pending.len());
+            let pending_runes = pending.chars().count();
+            let rune_start = runes.saturating_sub(pending_runes);
             let choices: Vec<Option<CandidateAction>> = self
                 .candidates
                 .iter()
@@ -1539,12 +1554,12 @@ impl Session {
                 .collect();
             self.mixed_choices = choices;
             self.mixed_target = Some(MixedTarget {
-                typed: (0, raw.len()),
-                raw: raw.clone(),
-                raw_toneless: raw.clone(),
+                typed: (typed_start, typed.len()),
+                raw: pending.clone(),
+                raw_toneless: pending,
                 tone_key: None,
-                rune_start: 0,
-                rune_len: runes,
+                rune_start,
+                rune_len: pending_runes,
                 syllable: None,
                 reading: None,
                 ja: false,
@@ -2306,9 +2321,15 @@ impl Session {
             }
         }
         let limit = self.max_candidates();
-        // 混打的英文字面去重不分大小寫；先用原始按鍵佔住第一個位置。
+        // 混打的英文字面去重不分大小寫；字面一律排第一，Tab 開窗時
+        // `[0]` 就是使用者目前打的字，補全與修正接在後面。
         let mut set = CandidateSet::new(String::new(), limit, SurfaceMatch::AsciiLower);
-        set.reserve(&raw);
+        set.push(Candidate::new(
+            raw.clone(),
+            raw.clone(),
+            0,
+            CandidateSource::Literal,
+        ));
         // 長小寫 run 是字面英文，學過的英文修正與注音候選都不會改變它。
         let long_literal = long_literal_keys(&raw);
         if !long_literal {
@@ -2321,12 +2342,16 @@ impl Session {
                 ));
             }
         }
-        set.push(Candidate::new(
-            raw.clone(),
-            raw.clone(),
-            0,
-            CandidateSource::Literal,
-        ));
+        // pending 顯示成注音代表它還是未完成的注音前綴（例如 su 是 ㄋㄧ）。
+        // 這時英文補全只留在 Snapshot.suggestion 提示，不進候選讓數字鍵選到，
+        // 避免組字區被補全取代而鎖死語言。hello、sug 等照字面顯示的前綴
+        // 維持原本的英文補全流程。
+        let is_zhuyin_prefix = !long_literal && self.ascii.display_pending(&self.lexicon) != raw;
+        if !is_zhuyin_prefix && !long_literal {
+            for candidate in english_candidates(&self.personal, self.english(), &raw, limit) {
+                set.push_unique(candidate);
+            }
+        }
         // 半形英數與數字提供全形變體；舊英文直出模式的等價候選路徑。
         if let Some(full) = crate::symbols::width_variant(&raw) {
             if full != raw {
@@ -2347,16 +2372,6 @@ impl Session {
                     1,
                     CandidateSource::Literal,
                 ));
-            }
-        }
-        // pending 顯示成注音代表它還是未完成的注音前綴（例如 su 是 ㄋㄧ）。
-        // 這時英文補全只留在 Snapshot.suggestion 提示，不進候選讓數字鍵選到，
-        // 避免組字區被補全取代而鎖死語言。hello、sug 等照字面顯示的前綴
-        // 維持原本的英文補全流程。
-        let is_zhuyin_prefix = !long_literal && self.ascii.display_pending(&self.lexicon) != raw;
-        if !is_zhuyin_prefix && !long_literal {
-            for candidate in english_candidates(&self.personal, self.english(), &raw, limit) {
-                set.push_unique(candidate);
             }
         }
         self.candidates = set

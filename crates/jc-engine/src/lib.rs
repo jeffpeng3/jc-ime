@@ -665,6 +665,7 @@ impl Engine {
                     }
                 }
                 let enters = key.code == KeyCode::Enter;
+                let tab = key.code == KeyCode::Tab;
                 // Alt 組合鍵是新的快捷鍵空間；沒命中就明確說沒處理，讓外殼放行。
                 // 不要先 press：Ctrl+Alt+, 之類的組合若還有 Ctrl 標點副作用，
                 // 會變成「引擎沒處理」但字元已插入，與放行語意矛盾。
@@ -685,6 +686,9 @@ impl Engine {
                     let composing = before.composing();
                     let deleting = matches!(key.code, KeyCode::Backspace | KeyCode::Delete);
                     let snapshot = session.press(key);
+                    if tab && !session.last_key_consumed() {
+                        return Response::state_with_handled(snapshot, Some(false));
+                    }
                     if enters {
                         // 候選窗開著時的 Enter 只套用高亮候選、關窗，組字還留著；
                         // 這時 commit 會把整段組字直接送出去，等組字真的結束
@@ -1665,6 +1669,28 @@ mod tests {
             handled(&response),
             Some(true),
             "沒有組字也沒有選單時不能搶應用程式的刪除鍵"
+        );
+    }
+
+    #[test]
+    fn mixed_tab_without_english_completion_is_not_handled() {
+        let dir = temp_data_dir("tab-no-completion");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"english_autocomplete":true}"#).unwrap();
+        let mut engine = engine_with_settings(Some(path));
+        hello(&mut engine);
+        for ch in "zzzz".chars() {
+            engine.handle(Request::Key {
+                key: Key::char(ch, false),
+            });
+        }
+        let response = engine.handle(Request::Key {
+            key: Key::new(KeyCode::Tab, None, false),
+        });
+        assert_eq!(
+            handled(&response),
+            Some(false),
+            "混合英文沒有補全時 Tab 要交還應用程式"
         );
     }
 

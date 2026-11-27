@@ -210,7 +210,6 @@ fn parse_store(raw: &Value) -> Option<ProfileStore> {
         if !only_keys(
             rules,
             &[
-                "caps_letter",
                 "candidate_navigation",
                 "shift_delete",
                 "up",
