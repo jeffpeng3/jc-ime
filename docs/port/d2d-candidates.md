@@ -132,11 +132,11 @@ UI 執行緒只送訊息，不改組字狀態。`target` 是 `CandidateWindow::h
 
 | 參考 | Rust 檔案 | 狀態 |
 |---|---|---|
-| 0c `ui.rs`（pipe 候選窗） | `crates/jc-tsf/src/ui.rs` | rewritten：改成本行程自繪；`UiMessage`／`WM_SELECT_CANDIDATE` 仍共用 `jc_ui::message` |
+| 0c `ui.rs`（pipe 候選窗） | `crates/jc-tsf/src/ui.rs`、`crates/jc-tsf/src/ui_message.rs` | rewritten：改成本行程自繪；訊息型別已隨 `jc-ui` 刪除搬進 `jc-tsf` |
 | 0c `candidate.rs`（回呼視窗） | `crates/jc-tsf/src/candidate.rs` | 直接沿用，點選與延後焦點確認都沒改 |
 | 0c `caret.rs`（系統插入點） | `crates/jc-tsf/src/caret.rs` | rewritten：新增 `system_caret()`，`choose()` 的退路順序不變 |
 | Tsunagi `platform/windows/src/candidate_window.rs`、`d2d*` | — | n/a：授權不同（GPL-3.0-or-later），只參考「D2D＋DComp、NOACTIVATE、版面與命中分離」的架構 |
-| `crates/jc-ui` 的候選窗程式 | — | n/a：TSF 不再送 pipe；本 task 沒有修改 `jc-ui` |
+| `crates/jc-ui` 的候選窗程式 | — | n/a：已刪除；TSF 不再送 pipe，訊息型別搬到 `jc-tsf/src/ui_message.rs` |
 | 無對應 | `crates/jc-tsf/src/candidate_layout.rs` | 新增：純版面與命中 |
 | 無對應 | `crates/jc-tsf/src/ui_window.rs` | 新增：HWND＋D2D＋DComp |
 
@@ -182,8 +182,8 @@ cargo test --workspace
 ## 已知限制
 
 - **只畫候選與讀音提示。** 依任務要求「空清單就隱藏」，只有一次性提示
-  （`notice`）或補全提示（`suggestion`）而沒有候選時，視窗不會出現。這是
-  與舊 `jc-ui.exe` 的行為差異；提示訊息仍會產生，只是目前沒有畫面。
+  （`notice`）或補全提示（`suggestion`）而沒有候選時，視窗不會出現。提示訊息
+  仍會產生，只是目前沒有畫面。
 - `title`、`suggestion`、`notice` 沒有畫；`reading_hint` 只在有候選時一起出現。
 - 多欄版面已實作並有測試；核心送 `rows`／`columns`，預設十列單欄，按
   `←`／`→` 後是十列四欄。
@@ -192,5 +192,4 @@ cargo test --workspace
   邊緣時切換 DPI 可能有一帧位置微調。
 - 視窗的 DPI 感知模式跟著宿主行程；宿主是 DPI-unaware 時，座標由系統虛擬化，
   候選窗仍然對齊插入點，但不會比宿主更清晰。
-- `jc-ui.exe` 與它的 pipe 沒有刪除，只是 TSF 不再使用；其他工具若直接呼叫
-  `ui_pipe()` 仍然可以連，但不會再收到 TSF 的訊息。
+- 獨立的 `jc-ui.exe` 與它的 pipe 已刪除；候選窗只存在 TSF DLL 內。

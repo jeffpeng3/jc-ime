@@ -1,10 +1,10 @@
 //! 候選窗呈現（T12b → D2D 自繪）。
 //!
-//! 協定型別 [`UiMessage`]／[`UiCandidate`]／[`WM_SELECT_CANDIDATE`] 仍由 `crates/jc-ui`
-//! 的 `message` 模組提供，DLL 與既有工具共用同一份定義，避免 wire 格式漂移。
+//! 協定型別 [`UiMessage`]／[`UiCandidate`]／[`WM_SELECT_CANDIDATE`] 定義在
+//! [`crate::ui_message`]，DLL 內自繪與宿主 UI 元件共用同一份資料。
 //!
-//! 候選窗本體改成 TSF DLL 內自繪（[`crate::ui_window::LocalWindow`]）：Direct2D 畫、
-//! DirectComposition 上屏，不再送 named pipe 給 `jc-ui.exe`，也不新增任何程序。
+//! 候選窗本體位於 TSF DLL 內（[`crate::ui_window::LocalWindow`]）：Direct2D 畫、
+//! DirectComposition 上屏，不開新程序，也不再送 named pipe。
 //! 初始化失敗只收起候選窗並記一行日誌，不影響組字與提交。
 //!
 //! UI-less 宿主（`TF_TMAE_UIELEMENTENABLEDONLY`，例如遊戲）仍走
@@ -17,15 +17,11 @@ use crate::log::zlog;
 use crate::ui_window::LocalWindow;
 use crate::uielement::Candidates;
 
-// 與 jc-ui／舊版 DLL 共用協定型別，不在 DLL 側重複定義。
-pub use jc_ui::message::{
-    has_content, notice_expires, ui_pipe, UiCandidate, UiMessage, WM_SELECT_CANDIDATE,
+pub use crate::ui_message::{
+    notice_expires, UiCandidate, UiMessage, NOTICE_MS, WM_SELECT_CANDIDATE,
 };
 
-/// 提示在候選窗自己收起的時間（毫秒）。jc_ui 定義為 u32，這裡轉成 Duration 用的 u64。
-pub const NOTICE_MS: u64 = jc_ui::message::NOTICE_MS as u64;
-
-/// 候選窗。畫面在 DLL 內自繪，pipe 只留給既有的外部工具。
+/// 候選窗。畫面在 DLL 內自繪，沒有外部程序或 pipe。
 pub struct UiClient {
     /// UI-less 宿主自行繪製候選的清單元件；Activate 到 Deactivate 之間存在。
     elements: Option<CandidatesHolder>,

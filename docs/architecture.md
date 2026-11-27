@@ -15,7 +15,7 @@ wrapper（各平台獨立）                  引擎行程
                                            ├── jc-settings
                                            └── jc-windows（pipe 名稱規則）
 
-jc-tsf ── jc-proto、jc-ui、jc-tsf-register
+jc-tsf ── jc-proto、jc-tsf-register
 jc-tsf-smoke ── jc-proto、jc-windows
 jc-settings-ui ── jc-data、jc-settings
 jc-cli ── jc-core、jc-data、jc-model、jc-eval、jc-engine、jc-testdata（開發工具）
@@ -34,13 +34,13 @@ jc-platform ── wrapper 契約                    （引擎尚未依賴它）
 - `jc-core` → `jc-data`、`jc-model`；神經 runtime 的 worker 在 `jc-core`。
 - `jc-eval` 不依賴 `jc-core`，轉換器由呼叫端注入。
 - `jc-settings` → `jc-core`，只為了共用模糊音與輸入習慣規則表。
-- `jc-tsf` → `jc-proto`、`jc-ui`、`jc-tsf-register`；`jc-tsf-smoke` → `jc-proto`、`jc-windows`。
+- `jc-tsf` → `jc-proto`、`jc-tsf-register`；`jc-tsf-smoke` → `jc-proto`、`jc-windows`。
 - `jc-settings-ui` → `jc-data`、`jc-settings`，不經過 client crate。
 
-workspace 目前 20 個成員：`jc-core`、`jc-testdata`、`jc-data`、`jc-model`、
+workspace 目前 19 個成員：`jc-core`、`jc-testdata`、`jc-data`、`jc-model`、
 `jc-proto`、`jc-platform`、`jc-eval`、`jc-engine`、`jc-windows`、`jc-linux`、
 `jc-mac`、`jc-cli`、`jc-jadic`、`jc-englishpack`、`jc-settings`、`jc-tsf`、
-`jc-tsf-register`、`jc-settings-ui`、`jc-tsf-smoke`、`jc-ui`。
+`jc-tsf-register`、`jc-settings-ui`、`jc-tsf-smoke`。
 
 ## 責任
 
@@ -61,7 +61,6 @@ workspace 目前 20 個成員：`jc-core`、`jc-testdata`、`jc-data`、`jc-mode
 | `jc-windows` | local socket client（Windows named pipe、Unix domain socket）、握手、逾時與重連、pipe 名稱規則 | 平台外殼 |
 | `jc-linux`／`jc-mac` | Unix socket client 的佔位 | 目前全部回 `Unsupported` |
 | `jc-tsf` | Windows TSF 文字服務、按鍵 sink、組字與候選窗、D2D／DComp 自繪、`ITfDisplayAttributeProvider` | 轉換決策 |
-| `jc-ui` | 候選窗的繪製型別與獨立行程 UI | 引擎與 TSF 註冊 |
 | `jc-tsf-register` | 共用的 COM／TSF 註冊常式 | COM 匯出（由 `jc-tsf` 提供） |
 | `jc-tsf-smoke` | 安裝診斷（doctor）與 `jc-ime-doctor/1` JSON | 修改系統註冊狀態 |
 | `jc-settings-ui` | 設定程式 GPUI 介面 | 引擎執行期設定 |
@@ -147,7 +146,7 @@ runtime；沒有模型時 handle 是 `None`，轉換完全走統計，不報錯�
 ## 目前的邊界狀況
 
 - `jc-platform` 的契約與測試已完成，但 `jc-engine` 還沒有依賴它。Windows TSF
-  外殼已實作（`jc-tsf`、`jc-ui`、`jc-tsf-register`）。
+  外殼已實作（`jc-tsf`、`jc-tsf-register`）。
 - `jc-windows` 已是可用的 local socket client（Windows named pipe／Unix domain
   socket）；`jc-linux`／`jc-mac` 只回 `Unsupported`。
 - `jc-model` 已接進 `jc-core` 的注音選字；`jc-engine` 啟動時若資料根目錄有

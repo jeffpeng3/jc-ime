@@ -35,10 +35,6 @@ flowchart LR
         SettingsUI["GPUI 設定程式"]
     end
 
-    subgraph UIProc["jc-ui.exe 行程 目前 TSF 不連"]
-        UIProcess["外部候選窗程式<br/>共用 message 格式"]
-    end
-
     Pipe[("named pipe<br/>jc-ime-SID")]
     SettingsFile["settings.json"]
     PersonalFile["personal 學習檔"]
@@ -55,12 +51,11 @@ flowchart LR
     SettingsFile -->|"mtime 變更"| SettingsWatch
     SettingsWatch -->|"熱重載 keymap 與 SessionConfig"| Conn
     Conn -->|"flush"| PersonalFile
-    TSF -.->|"舊路徑 未使用"| UIProcess
 ```
 
 補充：
 
-- `jc-tsf.dll` 載入宿主行程，`TextService` 是 COM 物件，掛在宿主收到按鍵的 UI thread。候選窗 `LocalWindow` 也在同一個行程自繪，沒有另外開 `jc-ui.exe`。
+- `jc-tsf.dll` 載入宿主行程，`TextService` 是 COM 物件，掛在宿主收到按鍵的 UI thread。候選窗 `LocalWindow` 也在同一個行程自繪，沒有獨立候選窗程序或 pipe。
 - `jc-engine.exe --supervise` 是常駐監督者，子行程才是 `--socket` 服務者。每條 pipe 連線一個 worker thread，session 屬於連線，不跨 thread 共用。
 - `jc-settings` 是純資料 crate，設定程式與 engine 共用。`jc-settings-ui` 只寫 `settings.json`，engine 的 watcher 熱重載。
 - `EditSession` 是 TSF 的 `ITfEditSession` 回呼，跑在宿主提供的 edit cookie 裡。`edit::apply` 用它更新組字區、提交文字與游標。
@@ -842,8 +837,4 @@ sequenceDiagram
 
 ## 6. 待確認
 
-1. `caps_lock_english` 在 `jc-settings` 與 `jc-core` 都有欄位，但 `jc-engine` 的 `build_shell_caps` 沒有回報這個能力，TSF 的 `learn_capabilities` 因此永遠拿到 `false`。目前 Caps Lock 只以 `Key.caps` 影響字面大小寫；`Request::CapsLock` 也還是 `Unsupported`。
-2. `Request::Context` 與 `Request::Mode` 在 engine 都落到 `Unsupported`。TSF 預設會送 `context_enabled` 的 context 請求，但忽略失敗；重連時是否要保留這個行為需要實機確認。
-3. 重播沒有獨立的學習抑制旗標。`Engine::replay_into` 會重跑 log 裡的請求，若 log 含會套用候選的 Enter，可能再寫一次學習。現行 TSF 會在 commit 時清 log，通常不會遇到，仍待確認是否要加旗標。
-4. `jc-ui.exe` 仍是獨立程式，但現行 TSF 的候選窗已改成 DLL 內 `LocalWindow` 自繪，兩者只共用 `jc_ui::message` 型別。文件與安裝流程若還把 `jc-ui` 當必要程序，應另外確認。
-5. 英文模式組字中的 `Up`／`Down`／`PageUp`／`PageDown` 在 `key_with_flags` 會直接回本機快照，不送 engine。這是刻意的外殼特例，是否要改成交給 core 的 `down`／`page_step` 尚未定案。
+1. 英文模式組字中的 `Up`／`Down`／`PageUp`／`PageDown` 在 `key_with_flags` 會直接回本機快照，不送 engine。這是刻意的外殼特例，是否要改成交給 core 的 `down`／`page_step` 尚未定案。

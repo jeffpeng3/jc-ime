@@ -1,5 +1,8 @@
 # T12a：0c UI 候選窗 → crates/jc-ui
 
+> 後續變更：`crates/jc-ui` 已完整刪除。TSF 需要的訊息型別搬到
+> `crates/jc-tsf/src/ui_message.rs`；本文保留當時的移植對照。
+
 Source：`/mnt/work/jc/ref/0c-ime`（main `8f443af`）。windows-rs 從 0.61.3 換成 0.62.2。
 
 | 0c 檔案 | Rust 檔案 | 狀態 |

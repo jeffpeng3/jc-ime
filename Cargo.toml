@@ -21,7 +21,6 @@ members = [
     "crates/jc-tsf-register",
     "crates/jc-settings-ui",
     "crates/jc-tsf-smoke",
-    "crates/jc-ui",
 ]
 
 # 出貨執行檔：strip 符號、thin LTO 換體積。panic = abort 讓執行檔 panic 時

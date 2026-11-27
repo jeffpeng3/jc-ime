@@ -61,6 +61,8 @@ pub mod service;
 #[cfg(windows)]
 pub mod ui;
 #[cfg(windows)]
+pub mod ui_message;
+#[cfg(windows)]
 pub mod ui_window;
 
 pub use session::{

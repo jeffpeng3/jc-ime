@@ -1,5 +1,8 @@
 # T12b 移植對照：0c Windows TSF → jc-tsf（候選窗 UI + CUAS 接線）
 
+> 後續變更：`crates/jc-ui` 已完整刪除，訊息型別移到
+> `crates/jc-tsf/src/ui_message.rs`；本文保留當時的對照。
+
 來源：0c-ime main `8f443af` 的 `platforms/windows/tsf/src/` 與 `platforms/windows/common/src/lib.rs`。
 0c 本身是 Rust，沒有 Go 檔案；沿用 common.md 的三欄格式，第一欄改成 0c 檔案。
 
