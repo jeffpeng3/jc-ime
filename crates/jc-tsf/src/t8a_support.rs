@@ -587,6 +587,8 @@ use crate::session::{Client, Transport};
 pub(crate) struct Scripted {
     connected: bool,
     keys: Vec<String>,
+    /// `literal` op 接在組字後面的字面尾巴。
+    literal: String,
     english: bool,
     /// 上次要求的「輸出簡體字」設定。
     pub(crate) simplified: bool,
@@ -597,6 +599,7 @@ impl Scripted {
         Scripted {
             connected: false,
             keys: Vec::new(),
+            literal: String::new(),
             english: false,
             simplified: false,
         }
@@ -605,21 +608,25 @@ impl Scripted {
     /// 目前注音／英文緩衝區的文字。
     fn preedit(&self) -> String {
         let joined = self.keys.concat();
-        if self.english {
-            return joined;
-        }
-        match joined.as_str() {
-            // 大千排列：s 是 ㄋ、u 是 ㄧ；拼音的 s／ou 對應不適用於注音。
-            "s" => "ㄋ".into(),
-            "su" => "ㄋㄧ".into(),
-            "su3" => "你".into(),
-            "j" => "ㄨ".into(),
-            "ji" => "ㄨㄛ".into(),
-            "ji3" => "我".into(),
-            "c" => "ㄏ".into(),
-            "ji3c" => "我ㄏ".into(),
-            _ => joined,
-        }
+        let base = if self.english {
+            joined
+        } else {
+            match joined.as_str() {
+                // 大千排列：s 是 ㄋ、u 是 ㄧ；拼音的 s／ou 對應不適用於注音。
+                "s" => "ㄋ".into(),
+                "su" => "ㄋㄧ".into(),
+                "su3" => "你".into(),
+                "su3cl3" => "你好".into(),
+                "w96j0" => "台灣".into(),
+                "j" => "ㄨ".into(),
+                "ji" => "ㄨㄛ".into(),
+                "ji3" => "我".into(),
+                "c" => "ㄏ".into(),
+                "ji3c" => "我ㄏ".into(),
+                _ => joined,
+            }
+        };
+        format!("{base}{}", self.literal)
     }
 
     fn snapshot(&self, commit: String) -> Value {
@@ -664,6 +671,7 @@ impl Transport for Scripted {
             "toggle" => {
                 self.english = !self.english;
                 self.keys.clear();
+                self.literal.clear();
                 Some(self.snapshot(String::new()))
             }
             "key" => {
@@ -684,6 +692,13 @@ impl Transport for Scripted {
                         }
                     }
                 };
+                if key == "Backspace" {
+                    // 字面尾巴只刪一個字元；沒有尾巴時刪最後一個按鍵。
+                    if self.literal.pop().is_none() {
+                        self.keys.pop();
+                    }
+                    return Some(self.snapshot(String::new()));
+                }
                 let boundary = matches!(
                     key.as_str(),
                     " " | "Left" | "Enter" | "Delete" | "Tab" | "."
@@ -695,19 +710,27 @@ impl Transport for Scripted {
                 };
                 if boundary {
                     self.keys.clear();
+                    self.literal.clear();
                     Some(self.snapshot(commit))
                 } else {
                     self.keys.push(key);
                     Some(self.snapshot(String::new()))
                 }
             }
+            "literal" => {
+                self.literal
+                    .push_str(request["text"].as_str().unwrap_or(""));
+                Some(self.snapshot(String::new()))
+            }
             "commit" => {
                 let commit = self.preedit();
                 self.keys.clear();
+                self.literal.clear();
                 Some(self.snapshot(commit))
             }
             "cancel" | "reset" => {
                 self.keys.clear();
+                self.literal.clear();
                 Some(self.snapshot(String::new()))
             }
             "snapshot" => Some(self.snapshot(String::new())),

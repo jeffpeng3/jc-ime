@@ -10,6 +10,9 @@
 
 pub mod session;
 
+/// 按鍵路由決策（Linux 也編、也測）。
+pub mod route;
+
 /// 快捷鍵 chord 的正規化（Linux 也編、也測）。
 pub mod chord;
 

@@ -3171,6 +3171,59 @@ mod tests {
         assert_eq!(close["session"], 7, "Close 要送引擎給的 id，不是 1");
     }
 
+    /// 中英切換只改 `english` 旗標：不送請求、不 commit／cancel、不動組字與游標。
+    #[test]
+    fn toggle_only_flips_english_and_keeps_composition() {
+        let (mut s, st) = toy_session();
+        assert!(s.key("j").ok);
+        assert!(s.key("i").composing());
+        let before = {
+            let snap = s.english_state.clone();
+            (
+                snap.text(),
+                snap.cursor_rune,
+                snap.cursor_utf16,
+                snap.candidates.len(),
+            )
+        };
+        let requests = st.lock().unwrap().requests.len();
+
+        let switched = s.toggle();
+        assert!(switched.ok && switched.english);
+        assert_eq!(
+            (
+                switched.text(),
+                switched.cursor_rune,
+                switched.cursor_utf16,
+                switched.candidates.len()
+            ),
+            before,
+            "切英文不得改組字、游標或候選"
+        );
+        assert!(switched.commit.is_empty(), "切英文不得 commit");
+        assert!(switched.composing(), "切英文不得結束組字");
+        assert_eq!(
+            st.lock().unwrap().requests.len(),
+            requests,
+            "切英文不得送引擎"
+        );
+
+        let back = s.toggle();
+        assert!(!back.english, "再切一次回中文");
+        assert_eq!(
+            (
+                back.text(),
+                back.cursor_rune,
+                back.cursor_utf16,
+                back.candidates.len()
+            ),
+            before,
+            "切回中文也不動組字"
+        );
+        assert!(back.composing());
+        assert_eq!(st.lock().unwrap().requests.len(), requests);
+    }
+
     /// 重開 session 不再送引擎不支援的 `mode`／`caps_lock` 還原請求。
     #[test]
     fn reopen_sends_no_mode_or_caps_lock_restore() {

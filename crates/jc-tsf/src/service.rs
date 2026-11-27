@@ -8,10 +8,11 @@
 //! 1. **不補 Down**：[`TextService::handle_key`] 照 0c 的做法把數字直接送給核心。
 //!    舊 `jc-tsf` 的 `needs_selection_prefix()` 會在單一數字前插入 `KeyCode::Down`，
 //!    讓 `su` + `3` 被當成選字鍵；核心 su 修復已 cherry-pick，補 Down 就會舊病復發。
-//! 2. **英文模式文字輸入零 IPC**：外殼 `english` 為 true 時，printable、Tab、
-//!    方向鍵、Enter、Backspace 與修飾鍵都不送引擎請求、不建組字、不顯示候選窗；
-//!    唯一例外是已註冊的全域 chord（選單快捷鍵），它會送一個 `Request::Key`
-//!    讓 engine 依 keymap 執行 command。
+//! 2. **英文模式文字輸入**：沒有組字時 printable、Tab、方向鍵、Enter、Backspace
+//!    與修飾鍵都不送引擎請求、不建組字、不顯示候選窗，直接交還宿主；唯一例外
+//!    是已註冊的全域 chord（選單快捷鍵），它會送一個 `Request::Key` 讓 engine
+//!    依 keymap 執行 command。組字中（例如切英文前已開始的注音）printable 改送
+//!    `Request::Literal`，由 engine 接在既有組字後面，宿主端組字不中斷。
 //!
 //! 與 jc 現行外殼的另一個關鍵差異：Activate 保留 idempotent guard；Deactivate 只清
 //! UI／composition／callback，保留 `session` 與它持有的 IPC client，避免第二次
@@ -54,6 +55,7 @@ use crate::keys;
 use crate::langbar;
 use crate::log::{self, zdebug, zlog};
 use crate::privacy;
+use crate::route::{english_route, EnglishRoute};
 use crate::session::{Session, Snapshot};
 use crate::ui::{self, UiCandidate, UiMessage};
 
@@ -1147,8 +1149,14 @@ impl TextService_Impl {
     /// candidates > 0」時插入 `KeyCode::Down`，讓注音前綴的數字變成選字鍵；核心 su
     /// 修復後 `su` + `3` 應是聲調鍵，補 Down 會讓它又被 suggestion 取代。
     fn handle_key(&self, ctx: Option<&ITfContext>, key: &str) -> bool {
-        if self.state.borrow().session.english() {
-            zlog!("handle_key 略過：英文模式不送引擎 key={}", key);
+        let (english, composing) = {
+            let st = self.state.borrow();
+            (st.session.english(), st.composing)
+        };
+        // 英文模式且沒有組字才是純 raw；組字中的具名鍵（Enter、Backspace、
+        // 方向鍵）仍走原本的 Key 路徑，列印字元由 handle_literal 走 Literal。
+        if english && !composing {
+            zlog!("handle_key 略過：英文模式沒有組字，不送引擎 key={}", key);
             return false;
         }
         zlog!("handle_key 送引擎 key={}", key);
@@ -1291,8 +1299,15 @@ impl TextService_Impl {
 
     /// 把字面文字送進引擎的 `literal` op，不重新規劃前面的注音。
     fn handle_literal(&self, ctx: Option<&ITfContext>, text: &str) -> bool {
-        if self.state.borrow().session.english() {
-            zlog!("handle_literal 略過：英文模式不送引擎 literal={:?}", text);
+        let (english, composing) = {
+            let st = self.state.borrow();
+            (st.session.english(), st.composing)
+        };
+        if english && !composing {
+            zlog!(
+                "handle_literal 略過：英文模式沒有組字，不送引擎 literal={:?}",
+                text
+            );
             return false;
         }
         zlog!("handle_literal 送引擎 literal={:?}", text);
@@ -1591,7 +1606,8 @@ impl TextService_Impl {
     /// 已註冊的 chord 在呼叫端先處理，會送一個 `Request::Key`；其餘文字輸入
     /// 不送 engine、不建組字、沒有補全或候選窗，也不處理全形空白。一般
     /// printable、Tab、方向鍵與 Backspace 都回 `None`，由 [`Self::wants_key`]
-    /// 直接交還宿主；Caps Lock 交給系統與應用程式。
+    /// 直接交還宿主；Caps Lock 交給系統與應用程式。組字中的英文回 `None`，
+    /// 由 `OnKeyDown` 改走 engine 的 Literal。
     fn english_key_policy(
         &self,
         ctx: Option<&ITfContext>,
@@ -1608,6 +1624,11 @@ impl TextService_Impl {
                 return None;
             }
             if !self.state.borrow().session.english() {
+                return None;
+            }
+            // 組字中的英文由 OnKeyDown 走 engine Literal，不交給宿主，也不走
+            // IMM32 的直接字面路徑。
+            if self.state.borrow().composing {
                 return None;
             }
             // Ctrl／Alt／Win 組合鍵直接放行給宿主。
@@ -1732,10 +1753,14 @@ impl TextService_Impl {
             if self.bound_chord(vk, lparam).is_some() {
                 return true;
             }
-            // 英文模式文字輸入是純 raw：一般按鍵一律交還宿主。chord 已在
+            // 英文模式沒有組字時是純 raw：一般按鍵一律交還宿主。chord 已在
             // 上面先判斷；這裡不能呼叫 available／idle_key 等會產生 IPC 的方法。
-            if self.state.borrow().session.english() {
-                return false;
+            // 有組字時 printable 要走 Literal，不能在這裡一起擋掉。
+            {
+                let st = self.state.borrow();
+                if english_route(st.session.english(), st.composing, false) == EnglishRoute::Host {
+                    return false;
+                }
             }
             if keys::modifier_down() && self.state.borrow_mut().ctrl_punct_key(vk, lparam).is_some()
             {
@@ -1747,21 +1772,32 @@ impl TextService_Impl {
             let mut st = self.state.borrow_mut();
             let available = st.session.available();
             available_seen.set(Some(available));
+            let english = st.session.english();
             zlog!(
                 "wants_key vk={}({}) available={} english={} composing={}",
                 vk,
                 vk_label(vk),
                 available,
-                st.session.english(),
+                english,
                 st.composing
             );
             if !available {
                 return false;
             }
+            // 英文模式沒有組字時一般按鍵一律交還宿主（chord 已在上方處理）；
+            // 組字中的 printable 進引擎走 Literal，具名鍵仍走下面的 Key 路徑。
+            if english {
+                let printable =
+                    keys::printable(vk, lparam, false).is_some() && !keys::is_keypad(vk);
+                match english_route(english, st.composing, printable) {
+                    EnglishRoute::Literal => return true,
+                    EnglishRoute::Host => return false,
+                    EnglishRoute::Key => {}
+                }
+            }
             if st.composing && st.convert_key(vk).is_some() {
                 return true;
             }
-            let english = st.session.english();
             let style_key = st.styled_key(vk, lparam, false, english);
             zlog!(
                 "wants_key vk={}({}) style_key={:?}",
@@ -1795,8 +1831,11 @@ impl TextService_Impl {
             if keys::named(vk).is_some() {
                 return false;
             }
-            keys::printable(vk, lparam, false)
-                .map(|key| st.session.idle_key(&key))
+            // 沒在組字：Caps Lock 時 printable 是大寫字面，路由要用
+            // `styled_key` 正規化後的小寫鍵，才對得上 engine 的 idle_keys。
+            style_key
+                .as_deref()
+                .map(|key| st.session.idle_key(key))
                 .unwrap_or(false)
         })();
         let (english, composing) = {
@@ -2411,6 +2450,36 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 self.state.borrow_mut().eaten.insert(vk);
                 return Ok(true.into());
             }
+            // 英文模式且還有組字：可列印字元送 engine 的 literal（跟中文的 @
+            // 一樣接在既有組字後面），不走 Key、也不 type_literal 到宿主。
+            // 具名鍵（Enter、Backspace、方向鍵）仍走下面的原本 Key 路徑。
+            let (english, composing) = {
+                let st = self.state.borrow();
+                (st.session.english(), st.composing)
+            };
+            if english && composing {
+                let text = if keys::modifier_down() || keys::is_modifier(vk) {
+                    None
+                } else {
+                    keys::printable(vk, lparam.0, false)
+                };
+                if let Some(text) = text {
+                    if english_route(english, composing, true) == EnglishRoute::Literal {
+                        let eaten = self.handle_literal(pic.as_ref(), &text);
+                        if eaten {
+                            self.state.borrow_mut().eaten.insert(vk);
+                        }
+                        zlog!(
+                            "OnKeyDown vk={}({}) 結束：英文組字 Literal={:?} eaten={}",
+                            vk,
+                            vk_label(vk),
+                            text,
+                            eaten
+                        );
+                        return Ok(eaten.into());
+                    }
+                }
+            }
             // Shift＋字母／數字先走 literal：先於快捷鍵與 commit_before_host_key，
             // 不能先提交組字，否則組字區會消失、A 變成應用程式直接打進文件。
             // `if let` 會把 borrow 的臨時值延長到整個區塊；`handle_literal`
@@ -2747,8 +2816,9 @@ fn foreground_pid() -> u32 {
     pid
 }
 
-/// 英文模式文字輸入是純 raw：按鍵不進引擎、不建組字，測試替身必須看到 0 個
-/// 一般請求；只有已註冊的全域 chord 例外。
+/// 英文模式沒有組字時，文字輸入是純 raw：按鍵不進引擎、不建組字，測試替身必須
+/// 看到 0 個一般請求；只有已註冊的全域 chord 例外。組字中的英文走 Literal，
+/// 由 `english_route_tests` 覆蓋。
 #[cfg(all(test, windows))]
 mod english_key_policy_tests {
     use super::*;
@@ -2836,9 +2906,11 @@ mod english_key_policy_tests {
         assert!(!service.state.borrow().composing, "英文模式不建組字");
     }
 
-    /// 組字中切到英文：leftover 組字留著，但英文鍵不碰它、也不送引擎。
+    /// 組字中切到英文：leftover 組字留著，之後的 printable 走引擎 Literal。
+    ///
+    /// 這個行為與組字結束分開：切英文本身不 commit、不 cancel，宿主端組字不動。
     #[test]
-    fn english_mode_leaves_leftover_composition_untouched() {
+    fn english_mode_composing_printable_uses_literal_without_commit() {
         plain_keyboard();
         let service = english_service();
         {
@@ -2860,12 +2932,16 @@ mod english_key_policy_tests {
         let (_doc, ctx) = super::support::host(super::support::Sync::Run);
         let sink: ITfKeyEventSink = service.to_interface();
         let (w, l) = (WPARAM(0x41), LPARAM(0x1e));
-        assert!(!unsafe { sink.OnTestKeyDown(&ctx, w, l) }.unwrap().as_bool());
-        assert!(!unsafe { sink.OnKeyDown(&ctx, w, l) }.unwrap().as_bool());
-        assert_eq!(request_count(&service), 0, "leftover 組字不得被送出或清除");
+        assert!(unsafe { sink.OnTestKeyDown(&ctx, w, l) }.unwrap().as_bool());
+        assert!(unsafe { sink.OnKeyDown(&ctx, w, l) }.unwrap().as_bool());
+        assert_eq!(
+            service.state.borrow().session.sent.clone(),
+            vec!["literal".to_string()],
+            "組字中的英文要送 Literal，不是 Key"
+        );
         let st = service.state.borrow();
-        assert!(st.composing, "組字仍留在文件中");
-        assert_eq!(st.session.english_state.text(), "ㄨ", "組字內容不變");
+        assert!(st.composing, "切英文不得終止組字");
+        assert_eq!(st.session.english_state.text(), "a", "引擎收到字面 a");
     }
 
     /// Shift＋空白在英文模式也不由外殼插全形空白，直接交還宿主。
@@ -2950,6 +3026,390 @@ mod english_key_policy_tests {
         );
         st.session.set_japanese_for_test(false);
         assert_eq!(st.convert_key(0x75), None, "沒有 capability 就不送");
+    }
+}
+
+/// 英文路由（printable／Key／Literal）與 Caps Lock 路由的 host 測試。
+///
+/// 只驗外殼的決策與送出的請求；引擎用 `t8a_support` 的記憶體替身，
+/// 不需要真的 pipe。Caps Lock 的實體鍵盤狀態只改本執行緒。
+#[cfg(all(test, windows))]
+mod english_route_tests {
+    use super::*;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyboardState, MapVirtualKeyW, SetKeyboardState, MAPVK_VK_TO_VSC, VK_CAPITAL,
+        VK_CONTROL, VK_LMENU, VK_LWIN, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    };
+    use windows::Win32::UI::TextServices::ITfKeyEventSink;
+
+    const VK_BACKSPACE: u32 = 0x08;
+    const VK_RETURN: u32 = 0x0d;
+
+    fn keyboard_state() -> [u8; 256] {
+        let mut state = [0u8; 256];
+        unsafe { GetKeyboardState(&mut state).unwrap() };
+        state
+    }
+
+    fn set_keyboard_state(state: &[u8; 256]) {
+        unsafe { SetKeyboardState(state).unwrap() };
+    }
+
+    /// 清掉 Caps Lock 與所有修飾鍵。
+    fn plain_keyboard() {
+        let mut state = keyboard_state();
+        state[VK_CAPITAL.0 as usize] = 0;
+        for vk in [VK_CONTROL, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN, VK_SHIFT] {
+            state[vk.0 as usize] = 0;
+        }
+        set_keyboard_state(&state);
+    }
+
+    fn hold_shift(on: bool) {
+        let mut state = keyboard_state();
+        let value = if on { 0x80 } else { 0 };
+        state[VK_SHIFT.0 as usize] = value;
+        set_keyboard_state(&state);
+    }
+
+    fn hold_caps(on: bool) {
+        let mut state = keyboard_state();
+        state[VK_CAPITAL.0 as usize] = if on { 1 } else { 0 };
+        set_keyboard_state(&state);
+    }
+
+    struct Rig {
+        service: ComObject<TextService>,
+        sink: ITfKeyEventSink,
+        ctx: ITfContext,
+        doc: Rc<support::Doc>,
+        host: String,
+    }
+
+    impl Rig {
+        fn new(english: bool) -> Rig {
+            let (doc, ctx) = support::host(support::Sync::Run);
+            let service = ComObject::new(TextService::new());
+            {
+                let mut st = service.state.borrow_mut();
+                st.session = support::session();
+                if english {
+                    assert!(st.session.toggle().english, "切到英文模式");
+                }
+            }
+            let sink: ITfKeyEventSink = service.to_interface();
+            Rig {
+                service,
+                sink,
+                ctx,
+                doc,
+                host: String::new(),
+            }
+        }
+
+        fn sent(&self) -> Vec<String> {
+            self.service.state.borrow().session.sent.clone()
+        }
+
+        fn english(&self) -> bool {
+            self.service.state.borrow().session.english()
+        }
+
+        fn composing(&self) -> bool {
+            self.service.state.borrow().composing
+        }
+
+        /// 一鍵：TestKeyDown 說吃才送 OnKeyDown；不吃就當成宿主收到 `host_char`。
+        /// 回傳 TestKeyDown 的答案。
+        fn press_vk(&mut self, vk: u32, scan: isize, host_char: Option<char>) -> bool {
+            let (w, l) = (WPARAM(vk as usize), LPARAM(1 | scan << 16));
+            let tested = unsafe { self.sink.OnTestKeyDown(&self.ctx, w, l) }
+                .unwrap()
+                .as_bool();
+            if tested {
+                let eaten = unsafe { self.sink.OnKeyDown(&self.ctx, w, l) }
+                    .unwrap()
+                    .as_bool();
+                assert!(eaten, "TestKeyDown 說吃，OnKeyDown 也要吃 vk={vk:#x}");
+            } else if let Some(ch) = host_char {
+                self.host.push(ch);
+            }
+            tested
+        }
+
+        fn press_char(&mut self, ch: char) -> bool {
+            let vk = ch.to_ascii_uppercase() as u32;
+            let scan = unsafe { MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) } as isize;
+            self.press_vk(vk, scan, Some(ch))
+        }
+
+        fn type_chars(&mut self, text: &str) {
+            for ch in text.chars() {
+                assert!(self.press_char(ch), "{ch:?} 要進引擎");
+            }
+        }
+
+        /// 單按右 Shift：keydown 只讓外殼觀察，keyup 觸發模式切換。
+        fn tap_right_shift(&mut self) {
+            let (w, l) = (WPARAM(VK_RSHIFT.0 as usize), LPARAM(1 | (0x36 << 16)));
+            let _ = unsafe { self.sink.OnTestKeyDown(&self.ctx, w, l) }.unwrap();
+            let (w, l) = (
+                WPARAM(VK_RSHIFT.0 as usize),
+                LPARAM(1 | (0x36 << 16) | 1 << 30 | 1 << 31),
+            );
+            let _ = unsafe { self.sink.OnTestKeyUp(&self.ctx, w, l) }.unwrap();
+        }
+
+        fn preedit(&self) -> String {
+            self.doc.composing_text()
+        }
+    }
+
+    /// 1. 無組字、中文、`a` → engine Key "a"。
+    #[test]
+    fn chinese_idle_a_sends_key() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        assert!(rig.press_char('a'));
+        assert_eq!(rig.sent(), vec!["key".to_string()]);
+        assert_eq!(rig.preedit(), "a");
+    }
+
+    /// 2. 無組字、英文、`a` → 0 請求，宿主收到 "a"。
+    #[test]
+    fn english_idle_a_passes_to_host() {
+        plain_keyboard();
+        let mut rig = Rig::new(true);
+        assert!(!rig.press_char('a'), "英文沒有組字要交還宿主");
+        assert_eq!(rig.host, "a");
+        assert!(rig.sent().is_empty(), "不得送引擎");
+        assert!(!rig.composing(), "不建組字");
+    }
+
+    /// 3. 無組字、英文、`@` → 0 請求，宿主收到 "@"。
+    #[test]
+    fn english_idle_at_passes_to_host() {
+        plain_keyboard();
+        let mut rig = Rig::new(true);
+        hold_shift(true);
+        assert!(
+            !rig.press_vk(0x32, 0x03, Some('@')),
+            "英文沒有組字要交還宿主"
+        );
+        hold_shift(false);
+        assert_eq!(rig.host, "@");
+        assert!(rig.sent().is_empty(), "不得送引擎");
+    }
+
+    /// 4. 組字 `hellp`、中文、`@` → 引擎接成字面，preedit `hellp@`。
+    #[test]
+    fn chinese_composing_at_is_appended_as_literal() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("hellp");
+        hold_shift(true);
+        assert!(
+            rig.press_vk(0x32, 0x03, Some('@')),
+            "中文組字中的 @ 要進引擎"
+        );
+        hold_shift(false);
+        assert_eq!(rig.preedit(), "hellp@");
+        assert_eq!(rig.sent().last().map(String::as_str), Some("key"));
+    }
+
+    /// 5. 組字 `hellp`、英文、`a` → Literal "a"，preedit `hellpa`。
+    #[test]
+    fn english_composing_a_sends_literal() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("hellp");
+        rig.tap_right_shift();
+        assert!(rig.english(), "Shift 切到英文");
+        let before = rig.sent().len();
+        assert!(rig.press_char('a'));
+        assert_eq!(rig.sent().last().map(String::as_str), Some("literal"));
+        assert_eq!(rig.sent().len(), before + 1, "只送一個 Literal");
+        assert_eq!(rig.preedit(), "hellpa");
+        assert!(rig.composing(), "切英文不得終止組字");
+    }
+
+    /// 6. 組字 `hellp`、英文、Shift+A → Literal "A"，preedit `hellpA`。
+    #[test]
+    fn english_composing_shift_a_keeps_uppercase_literal() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("hellp");
+        rig.tap_right_shift();
+        hold_shift(true);
+        assert!(rig.press_char('A'));
+        hold_shift(false);
+        assert_eq!(rig.sent().last().map(String::as_str), Some("literal"));
+        assert_eq!(rig.preedit(), "hellpA");
+    }
+
+    /// 7. 組字 `ㄨㄛ`、英文、`a` → Literal "a"，preedit `ㄨㄛa`。
+    #[test]
+    fn english_composing_after_zhuyin_appends_literal() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("ji");
+        assert_eq!(rig.preedit(), "ㄨㄛ");
+        rig.tap_right_shift();
+        assert!(rig.press_char('a'));
+        assert_eq!(rig.sent().last().map(String::as_str), Some("literal"));
+        assert_eq!(rig.preedit(), "ㄨㄛa");
+    }
+
+    /// 8. 組字中 Shift → english=true，preedit／游標不動，0 請求。
+    #[test]
+    fn shift_while_composing_only_flips_english() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("hellp");
+        let before = rig.sent().len();
+        let (text, cursor) = {
+            let st = rig.service.state.borrow();
+            (
+                st.session.english_state.text(),
+                st.session.english_state.cursor_utf16,
+            )
+        };
+        rig.tap_right_shift();
+        assert!(rig.english(), "Shift 只切 english");
+        assert_eq!(rig.sent().len(), before, "Shift 不得送引擎");
+        assert_eq!(rig.preedit(), "hellp", "preedit 不動");
+        let st = rig.service.state.borrow();
+        assert_eq!(st.session.english_state.text(), text, "組字內容不動");
+        assert_eq!(st.session.english_state.cursor_utf16, cursor, "游標不動");
+        assert!(st.composing, "組字仍在");
+    }
+
+    /// 9. 承 8，Enter → 走原本 Key 路徑 commit。
+    #[test]
+    fn enter_after_switch_uses_key_commit() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("hellp");
+        rig.tap_right_shift();
+        assert!(rig.press_vk(VK_RETURN, 0x1c, None), "Enter 要進引擎");
+        assert_eq!(rig.sent().last().map(String::as_str), Some("key"));
+        assert!(!rig.composing(), "Enter 要結束組字");
+        assert_eq!(rig.doc.committed(), "前hellp");
+    }
+
+    /// 10. 承 8，Backspace → 原本刪除路徑。
+    #[test]
+    fn backspace_after_switch_uses_key_delete() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("hellp");
+        rig.tap_right_shift();
+        assert!(rig.press_vk(VK_BACKSPACE, 0x0e, None), "Backspace 要進引擎");
+        assert_eq!(rig.sent().last().map(String::as_str), Some("key"));
+        assert!(rig.composing(), "Backspace 不結束組字");
+        assert_eq!(rig.preedit(), "hell");
+    }
+
+    /// 11. 承 8，切回中文 → english=false，preedit 不動。
+    #[test]
+    fn switch_back_to_chinese_keeps_composition() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("hellp");
+        rig.tap_right_shift();
+        assert!(rig.english());
+        let before = rig.sent().len();
+        rig.tap_right_shift();
+        assert!(!rig.english(), "再按一次 Shift 切回中文");
+        assert_eq!(rig.sent().len(), before, "切換不得送引擎");
+        assert_eq!(rig.preedit(), "hellp", "preedit 不動");
+        assert!(rig.composing(), "組字仍在");
+    }
+
+    /// 12. 無組字、Shift 後打 `hello` → 5 鍵 0 請求。
+    #[test]
+    fn english_after_shift_types_hello_without_requests() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.tap_right_shift();
+        assert!(rig.english());
+        for ch in "hello".chars() {
+            assert!(!rig.press_char(ch), "{ch:?} 要交還宿主");
+        }
+        assert_eq!(rig.host, "hello");
+        assert!(rig.sent().is_empty(), "5 鍵都不得送引擎");
+        assert!(!rig.composing(), "英文不建組字");
+    }
+
+    /// Caps Lock 開著時，字母路由用正規化後的小寫鍵，引擎才會開始組字。
+    #[test]
+    fn caps_lock_chinese_letters_route_as_lowercase() {
+        plain_keyboard();
+        hold_caps(true);
+        let mut rig = Rig::new(false);
+        rig.type_chars("su3cl3");
+        hold_caps(false);
+        plain_keyboard();
+        assert_eq!(rig.preedit(), "你好");
+        assert_eq!(rig.sent(), vec!["key".to_string(); 6]);
+    }
+
+    #[test]
+    fn caps_lock_chinese_w96j0_routes_as_taiwan() {
+        plain_keyboard();
+        hold_caps(true);
+        let mut rig = Rig::new(false);
+        rig.type_chars("w96j0");
+        hold_caps(false);
+        plain_keyboard();
+        assert_eq!(rig.preedit(), "台灣");
+    }
+
+    /// Caps 只改字母字面；Caps＋Shift 是小寫，數字與標點不受影響。
+    #[test]
+    fn caps_lock_changes_only_letter_literal_case() {
+        plain_keyboard();
+        hold_caps(true);
+        let service = ComObject::new(TextService::new());
+        {
+            let mut st = service.state.borrow_mut();
+            st.session = support::session();
+            let a_scan = unsafe { MapVirtualKeyW(0x41, MAPVK_VK_TO_VSC) } as isize;
+            assert_eq!(keys::printable(0x41, a_scan, false).as_deref(), Some("A"));
+            assert_eq!(
+                st.styled_key(0x41, a_scan, false, false).as_deref(),
+                Some("a"),
+                "Caps 的字母路由要用小寫"
+            );
+            hold_shift(true);
+            assert_eq!(
+                keys::printable(0x41, a_scan, false).as_deref(),
+                Some("a"),
+                "Caps＋Shift 是小寫"
+            );
+            assert_eq!(
+                st.styled_key(0x41, a_scan, false, false).as_deref(),
+                Some("a")
+            );
+            hold_shift(false);
+            let one_scan = unsafe { MapVirtualKeyW(0x31, MAPVK_VK_TO_VSC) } as isize;
+            assert_eq!(keys::printable(0x31, one_scan, false).as_deref(), Some("1"));
+            assert_eq!(
+                st.styled_key(0x31, one_scan, false, false).as_deref(),
+                Some("1")
+            );
+            let comma_scan = unsafe { MapVirtualKeyW(0xBC, MAPVK_VK_TO_VSC) } as isize;
+            assert_eq!(
+                keys::printable(0xBC, comma_scan, false).as_deref(),
+                Some(",")
+            );
+            assert_eq!(
+                st.styled_key(0xBC, comma_scan, false, false).as_deref(),
+                Some(",")
+            );
+        }
+        hold_caps(false);
+        plain_keyboard();
     }
 }
 
