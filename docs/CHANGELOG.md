@@ -4,34 +4,27 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。較舊的版本留在 git 歷史，`git log -- docs/CHANGELOG.md` 可回溯。
 
-## 未發布
+## 0.1.33 - 2026-11-28
+
+### 新增
+
+- 全域快捷鍵真正生效：`Ctrl+Alt+,` 開符號選單、`Ctrl+Alt+.` 開表情選單，
+  在任何程式都能用，也不會觸發應用程式自己的同名快捷鍵。
+- Windows Terminal 可以切換到 jc 注音：TIP 補上 immersive 分類註冊。
+- 安裝與升級不用登出：安裝器先請舊引擎收尾，等到它結束再換新版，最後確認
+  跑的是剛安裝的 binary；反安裝同樣先停引擎。
+- 候選窗的 PageUp／PageDown 交還應用程式，輸入法不再攔換頁；組字中會先送出
+  組字再交給應用程式。
 
 ### 修正
 
-- 升級後不必登出登入：安裝器先用 `jc-engine --stop` 要求舊引擎收尾，
-  新版引擎再比對版本與 SHA-256 接手；`[Run]` 最後用
-  `jc-engine --verify-running` 確認跑的是剛安裝的 binary。
-- 舊引擎無法優雅停止時，先送 `Shutdown` 讓個人學習資料存檔，才強制結束行程。
-- 安裝器的引擎行程確認改成 fail-closed：PowerShell 不可用時改用 `tasklist`，
-  兩者都無法確認就不覆蓋檔案。
-- `jc-engine --verify-running` 在接手期間看到舊身分會等到期限，不再提早失敗。
-- `--stop` 即使單例鎖是空的，也會探 socket 清掉沒有 supervisor 的 orphan 引擎。
-- 反安裝同樣先 `--stop`，再移除檔案與註冊；提權身分對不到原使用者時仍以
-  `taskkill` 收尾，最後一次 flush 可能沒有。
-- 引擎行程確認與強制結束改為只處理目前 session；取不到 session 才退回
-  machine-wide 並寫 log。`--stop` 失敗時安裝直接中止，不只看目前 session
-  的行程清單；帳號範圍 socket 仍有回應也不回報停止成功。
-- PowerShell 的 `Get-Process`／`Stop-Process` 改用 `-ErrorAction Stop`，
-  權限或 CIM 錯誤一律視為「無法確認」並 fail-closed。
-- 停止要求檔以 60 秒判定殘骸：崩潰的 `--stop` 可能讓 60 秒內的引擎啟動
-  直接退出，取捨已寫在文件。
-- 身分檔寫入失敗時先探 socket；有回應就等完整 `STOP_GRACE`（12 秒），
-  不提早強制結束。3 秒 legacy 只在鎖被持有但 socket 已死時生效。
-
-### 變更
-
-- `PageUp`／`PageDown` 不再由輸入法換頁；組字中按鍵會先送出組字，再交給
-  應用程式。換頁只保留外殼直接呼叫的 `page()`。
+- Caps Lock 只改英文字母的大小寫，不再切換模式，注音鍵也不會失效。
+- 英文字面、空白與 Tab 補全的路徑統一；混合模式按 Tab 開候選窗選補全。
+- 每個顯示字元都帶自己的原始按鍵，候選與刪除都依同一個 unit，不再錯位。
+- 候選清單第一項是目前值、第二項是原始輸入，`↑` 與 `↓` 共用同一份清單。
+- 候選 Enter 一律兩段式：第一次套用、第二次才送出整段。
+- 候選清單收成單一來源，尾端重複候選不再出現，套用走同一條路徑。
+- 舊引擎無法優雅停止時，先讓個人學習資料存檔再強制結束，學習統計不白寫。
 
 ## 0.1.32 - 2026-11-28
 

@@ -4279,7 +4279,7 @@ checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
 name = "jc-cli"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "jc-core",
  "jc-data",
@@ -4296,7 +4296,7 @@ dependencies = [
 
 [[package]]
 name = "jc-core"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "crc32fast",
  "jc-data",
@@ -4313,7 +4313,7 @@ dependencies = [
 
 [[package]]
 name = "jc-data"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "crc32fast",
  "jc-testdata",
@@ -4326,7 +4326,7 @@ dependencies = [
 
 [[package]]
 name = "jc-engine"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -4349,14 +4349,14 @@ dependencies = [
 
 [[package]]
 name = "jc-engine-launcher"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "jc-englishpack"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "jc-core",
  "jc-testdata",
@@ -4367,7 +4367,7 @@ dependencies = [
 
 [[package]]
 name = "jc-eval"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "jc-testdata",
  "serde",
@@ -4377,7 +4377,7 @@ dependencies = [
 
 [[package]]
 name = "jc-jadic"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "serde",
  "serde_json",
@@ -4387,7 +4387,7 @@ dependencies = [
 
 [[package]]
 name = "jc-linux"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "jc-proto",
  "thiserror 2.0.21",
@@ -4395,7 +4395,7 @@ dependencies = [
 
 [[package]]
 name = "jc-mac"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "jc-proto",
  "thiserror 2.0.21",
@@ -4403,7 +4403,7 @@ dependencies = [
 
 [[package]]
 name = "jc-model"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -4421,7 +4421,7 @@ dependencies = [
 
 [[package]]
 name = "jc-platform"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "serde",
  "serde_json",
@@ -4430,7 +4430,7 @@ dependencies = [
 
 [[package]]
 name = "jc-proto"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "jc-core",
  "serde",
@@ -4440,7 +4440,7 @@ dependencies = [
 
 [[package]]
 name = "jc-settings"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "jc-core",
  "serde",
@@ -4451,7 +4451,7 @@ dependencies = [
 
 [[package]]
 name = "jc-settings-ui"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "env_logger",
  "gpui-kit",
@@ -4462,11 +4462,11 @@ dependencies = [
 
 [[package]]
 name = "jc-testdata"
-version = "0.1.32"
+version = "0.1.33"
 
 [[package]]
 name = "jc-tsf"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "jc-proto",
  "jc-settings",
@@ -4479,14 +4479,14 @@ dependencies = [
 
 [[package]]
 name = "jc-tsf-register"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "windows 0.62.2",
 ]
 
 [[package]]
 name = "jc-tsf-smoke"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "jc-proto",
  "jc-windows",
@@ -4499,7 +4499,7 @@ dependencies = [
 
 [[package]]
 name = "jc-windows"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "interprocess",
  "jc-proto",
