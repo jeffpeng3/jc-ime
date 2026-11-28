@@ -43,7 +43,10 @@ pub const JA_NEURAL_OFF: &str = "off";
 pub const FILE_NAME: &str = paths::FILE_NAME;
 
 /// 本版寫入、也完全理解的檔案格式。
-pub const SCHEMA_VERSION: i32 = 2;
+///
+/// schema 3：舊版把英文補全的隱藏 gate 預設成 `false` 並寫進設定檔；
+/// 升級時讀到舊 schema 一律改成開啟。
+pub const SCHEMA_VERSION: i32 = 3;
 
 /// 標準（大千）注音鍵盤排列。
 pub const LAYOUT_STANDARD: &str = "standard";
@@ -648,7 +651,8 @@ impl Settings {
             selection: NEURAL.to_string(),
             punctuation: false,
             document_context: true,
-            english_autocomplete: false,
+            // 混合模式的英文補全預設開啟；欄位只留給舊檔相容，沒有設定 UI。
+            english_autocomplete: true,
             left_shift: false,
             toggle_key: default_toggle_key(goos).to_string(),
             mode_memory: default_mode_memory(goos).to_string(),
@@ -709,6 +713,7 @@ impl Settings {
     }
 
     fn from_members(members: Map<String, Value>, goos: &str) -> Self {
+        let file_schema = members.get("schema").and_then(Value::as_i64).unwrap_or(0);
         let mut settings = Settings::default_for_platform(goos);
         let mut members = members;
         let mut kept: BTreeMap<String, Value> = BTreeMap::new();
@@ -837,6 +842,11 @@ impl Settings {
         }
         if let Some(raw) = members.remove("input_profile") {
             settings.load_profiles(raw);
+        }
+        if file_schema < i64::from(SCHEMA_VERSION) {
+            // 舊 schema 的 `english_autocomplete=false` 是看不到的預設值，
+            // 不是使用者的選擇；升級後一律開啟，讓混合模式直接有補全。
+            settings.english_autocomplete = true;
         }
         kept.extend(members);
         settings.extra = kept;

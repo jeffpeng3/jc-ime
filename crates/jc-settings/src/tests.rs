@@ -484,7 +484,7 @@ fn test_future_fields_and_values_survive_save() {
         "\"sync\"",
         "\"enabled\": true",
         "\"zeta\"",
-        "\"schema\": 2",
+        "\"schema\": 3",
     ] {
         assert!(text.contains(want), "存檔應包含 {want}：{text}");
     }
@@ -527,7 +527,7 @@ fn test_unusable_bool_value_is_kept_until_set() {
 #[test]
 fn test_newer_schema_is_read_only() {
     for body in [
-        r#"{"schema":3,"selection":"statistical","future":"x"}"#,
+        r#"{"schema":4,"selection":"statistical","future":"x"}"#,
         r#"{"schema":"v2","selection":"statistical"}"#,
     ] {
         let dir = tmpdir("newer-schema");
@@ -570,7 +570,7 @@ fn test_save_writes_schema_first_in_stable_order() {
     let text = read_text(&path);
     let mut last = None;
     for key in [
-        "\"schema\": 2",
+        "\"schema\": 3",
         "\"selection\"",
         "\"punctuation\"",
         "\"document_context\"",
@@ -690,10 +690,15 @@ fn test_old_settings_file_migrates_model_fields() {
         !text.contains("\"language\":"),
         "舊的 language 應移除：{text}"
     );
-    assert_eq!(report.schema, SCHEMA_VERSION);
+    assert_eq!(report.schema, 2, "讀到的仍是舊檔 schema");
     let (back, error) = load(&path, "linux");
     assert!(error.is_none(), "{error:?}");
     assert_eq!(back, settings);
+    assert_eq!(
+        read(&path, "linux").schema,
+        SCHEMA_VERSION,
+        "存檔後要升到本版 schema"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 

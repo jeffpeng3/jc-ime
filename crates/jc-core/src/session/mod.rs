@@ -239,7 +239,8 @@ impl Default for SessionConfig {
             fuzzy_pairs: DEFAULT_FUZZY_PAIRS.to_vec(),
             rerank: None,
             punct_mark: None,
-            english_autocomplete: false,
+            // 混合模式預設就有英文補全；舊設定檔沒有這個欄位時也走預設。
+            english_autocomplete: true,
             cjk_latin_space: false,
             simplified: None,
             personal: PersonalStore::new(),
@@ -375,6 +376,11 @@ pub(crate) struct CandidateAction {
     pub(crate) learn: bool,
     /// 選單候選為 `true`：一次送出，不保留組字。
     pub(crate) commit_on_apply: bool,
+    /// 反引號前導的變體窗為 `true`：高亮項就是組字現值時，Enter
+    /// 直接送出整段，不讓使用者為沒有變化的套用多按一次。
+    ///
+    /// 一般英文候選即使第一項是目前的字面，Enter 仍要走兩段式。
+    pub(crate) skip_when_current_literal: bool,
 }
 
 /// 候選套用要走哪一條 lane。
@@ -2632,8 +2638,8 @@ mod tests {
         assert!(!s.last_key_consumed(), "沒有補全時 Tab 要交還應用程式");
     }
 
-    /// 固定英文詞表的 session；拼字候選權重決定清單順序。
-    fn english_completion_session(autocomplete: bool) -> Session {
+    /// 固定英文詞表的設定；拼字候選權重決定清單順序。
+    fn english_completion_config() -> SessionConfig {
         let words: Vec<crate::mixed::Word> = [("hello", 3.0), ("help", 2.0), ("hell", 1.0)]
             .into_iter()
             .map(|(word, weight)| crate::mixed::Word::new(word, weight))
@@ -2643,6 +2649,12 @@ mod tests {
         config.english = Some(std::sync::Arc::new(crate::mixed::English::new(Some(
             crate::mixed::Dictionary::new(words),
         ))));
+        config
+    }
+
+    /// 固定英文詞表的 session；拼字候選權重決定清單順序。
+    fn english_completion_session(autocomplete: bool) -> Session {
+        let mut config = english_completion_config();
         config.english_autocomplete = autocomplete;
         Session::new(config)
     }
@@ -2690,6 +2702,47 @@ mod tests {
         assert_eq!(first.preedit, "hell", "第一次 Enter 只套用候選");
         s.press(Key::new(KeyCode::Enter, None, false));
         assert_eq!(s.commit(), "hell", "第二次 Enter 才送出");
+    }
+
+    /// 實機路徑：`hellp` 後切英文再打 `x`，組字保留；↓ 開候選後
+    /// 第一次 Enter 只套用高亮，第二次才送出。
+    #[test]
+    fn test_down_enter_after_shift_literal_is_two_stage() {
+        let mut s = english_completion_session(true);
+        type_keys(&mut s, "hellp");
+        // 外殼可能送大寫鍵碼，也可能送小寫鍵碼配 shift；兩者都保留組字。
+        s.press(Key::char('x', true));
+        assert_eq!(s.snapshot().preedit, "hellpX", "Shift 字面不能清掉組字");
+        let down = s.press(Key::new(KeyCode::Down, None, false));
+        assert!(down.navigating, "↓ 要開候選窗");
+        assert!(
+            down.candidates
+                .first()
+                .is_some_and(|candidate| candidate.surface == "X"),
+            "高亮第一項是 Shift 字面：{:?}",
+            down.candidates
+        );
+
+        let first = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(first.preedit, "hellpX", "第一次 Enter 只套用高亮");
+        assert!(s.pending_commit.is_none(), "第一次 Enter 不能送出");
+        assert!(!s.candidate_window, "套用後關窗");
+
+        let second = s.press(Key::new(KeyCode::Enter, None, false));
+        assert_eq!(second.preedit, "", "第二次 Enter 才清空組字");
+        assert_eq!(s.commit(), "hellpX", "第二次才送出整段");
+    }
+
+    /// 混合模式預設就有英文補全，不需要使用者另外開隱藏設定。
+    #[test]
+    fn test_english_autocomplete_is_on_by_default() {
+        let config = english_completion_config();
+        assert!(config.english_autocomplete, "預設必須開啟");
+        let mut s = Session::new(config);
+        type_keys(&mut s, "hellp");
+        let tab = s.press(Key::new(KeyCode::Tab, None, false));
+        assert!(tab.navigating, "預設設定按 Tab 要直接開候選");
+        assert_eq!(tab.highlighted, 0, "初始高亮仍是第一項");
     }
 
     /// 關閉英文補全時，清單不得出現 hello 或全形拆解，Tab 也交還應用程式。

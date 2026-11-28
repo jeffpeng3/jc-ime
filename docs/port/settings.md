@@ -45,7 +45,7 @@ TSF 在 `Ready` 取得 bindings，取得焦點時刷新，按鍵路徑最多每 
 | `selection_keys`、`emoji_shortcut`、`shift_symbol_halfwidth` | 候選與符號行為 | 生效 |
 | `ctrl_punctuation`、`toneless`、`cjk_latin_space`、`zhuyin_error_hint` | 注音輸入規則 | 生效 |
 | `document_context` | 個人學習是否使用文件上下文 | 生效 |
-| `english_autocomplete` | 英文補全 | 生效 |
+| `english_autocomplete` | 英文補全；預設開啟，schema 3 前的 `false` 讀取時遷移成開啟 | 生效 |
 | `keybinds` | 符號／表情選單 chord | 生效（熱重載） |
 | `caps_lock_english` | 由外殼套用；引擎在 health 回報能力 | 外殼 |
 | `punctuation`／`punct_mark` | 送出前補全形逗號 | 生效（簡化） |

@@ -686,6 +686,7 @@ impl Session {
                 force_literal: false,
                 cursor: ChoiceCursor::AfterInsert,
                 syllable_edit: None,
+                skip_when_current_literal: true,
                 ..CandidateAction::default()
             }));
         }

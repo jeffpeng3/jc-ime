@@ -1855,6 +1855,15 @@ impl Session {
                 self.zh_window_last = false;
                 self.rebuild();
             }
+        } else if self.candidate_window
+            && self.highlighted_choice_is_current_literal()
+            && !self.highlighted_literal_skips_enter()
+        {
+            // 高亮就是組字現值：第一次 Enter 只關窗、保留組字，第二次才送出。
+            // 反引號前導變體由 action 的 `skip_when_current_literal` 決定，
+            // 維持原本一次送出的行為。
+            self.close_mixed_choice_window();
+            return;
         }
         self.finalize_lane();
     }
@@ -1941,6 +1950,14 @@ impl Session {
             .take(target.rune_len)
             .collect();
         surface == choice.insert
+    }
+
+    /// 目前高亮是組字現值時，是否維持反引號前導的一次送出語意。
+    fn highlighted_literal_skips_enter(&self) -> bool {
+        self.mixed_choices
+            .get(self.highlighted)
+            .and_then(Option::as_ref)
+            .is_some_and(|choice| choice.skip_when_current_literal)
     }
 
     /// 送出前套用中英自動空格；簡體轉換留到 [`Session::commit`]。

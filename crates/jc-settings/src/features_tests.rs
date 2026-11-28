@@ -29,13 +29,43 @@ fn read_text(path: &Path) -> String {
     fs::read_to_string(path).expect("讀回設定檔")
 }
 
+/// 舊 schema 把英文補全寫成 `false`；這是看不到的預設，升級要改成開啟。
+#[test]
+fn test_old_schema_enables_hidden_english_autocomplete() {
+    let dir = tmpdir("english-autocomplete-migration");
+    let path = dir.join("settings.json");
+    write_settings(
+        &path,
+        r#"{"schema":2,"english_autocomplete":false,"punctuation":false}"#,
+    );
+    let (settings, error) = load(&path, "linux");
+    assert!(error.is_none(), "{error:?}");
+    assert!(settings.english_autocomplete, "舊 schema 要遷移成開啟");
+    assert!(!settings.punctuation, "其他欄位不能被連帶改掉");
+
+    save(&path, &settings).expect("存檔");
+    let text = read_text(&path);
+    assert!(text.contains("\"schema\": 3"), "{text}");
+    assert!(text.contains("\"english_autocomplete\": true"), "{text}");
+
+    // 新 schema 明確寫 false 時仍照欄位行為關閉。
+    write_settings(
+        &path,
+        r#"{"schema":3,"english_autocomplete":false,"punctuation":false}"#,
+    );
+    let (settings, error) = load(&path, "linux");
+    assert!(error.is_none(), "{error:?}");
+    assert!(!settings.english_autocomplete, "新 schema 的 false 要保留");
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn test_bool_settings_defaults_and_persist() {
     let dir = tmpdir("bool");
     let cases = [
         ("punctuation", "off", "on"),
         ("document-context", "on", "off"),
-        ("english-autocomplete", "off", "on"),
+        ("english-autocomplete", "on", "off"),
         ("esc-clear", "on", "off"),
         ("space-selects", "off", "on"),
         ("advance-after-select", "off", "on"),
@@ -412,7 +442,7 @@ fn test_language_migration_and_projection() {
         "\"primary_language\": \"ja\"",
         "\"ja_input_method\": \"romaji\"",
         "\"ja_model\": true",
-        "\"schema\": 2",
+        "\"schema\": 3",
     ] {
         assert!(text.contains(want), "存檔應包含 {want}：{text}");
     }
@@ -683,7 +713,7 @@ fn test_keep_toggle_key() {
             assert_eq!(members.len(), 2, "{name}：只寫 schema 與 toggle_key");
             assert_eq!(
                 members.get("schema"),
-                Some(&serde_json::Value::from(2)),
+                Some(&serde_json::Value::from(crate::SCHEMA_VERSION)),
                 "{name}"
             );
         }
@@ -908,7 +938,7 @@ fn test_future_boolean_value_survives_until_explicit_set() {
         "linux",
     )
     .expect("解析");
-    assert!(!settings.english_autocomplete);
+    assert!(settings.english_autocomplete, "讀不懂的值退回預設開啟");
     let text = serde_json::to_string(&settings).expect("序列化");
     assert!(
         text.contains("\"english_autocomplete\":\"later\""),

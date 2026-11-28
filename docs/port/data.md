@@ -82,7 +82,7 @@ jc-cli data verify <root> --manifest <root>/manifest.json
 4. 不算 SHA-256；完整雜湊留給 `data verify`。
 
 `schema` 是硬界線；`version` 只記錄與顯示，不參與比對。`settings.json` 的
-`schema`（目前 2）另由 `jc-settings` 判定，較新或損毀時唯讀，不擋引擎啟動。
+`schema`（目前 3）另由 `jc-settings` 判定，較新或損毀時唯讀，不擋引擎啟動。
 
 ## 下載
 
