@@ -171,8 +171,8 @@ fn long_japanese_clause_preview_only_replaces_target() {
     };
     assert_eq!(before, "私は日本語を使っています", "真實資料的長串");
 
-    let target = "使って";
-    let target_byte = before.find(target).expect("長串要有目標文節");
+    let target = "使";
+    let target_byte = before.find(target).expect("長串要有目標字元");
     let target_rune = before[..target_byte].chars().count();
     let tail_runes = before.chars().count() - target_rune;
     for _ in 0..tail_runes {
@@ -221,9 +221,9 @@ fn long_japanese_clause_preview_only_replaces_target() {
         surface,
         &before[target_byte + target.len()..]
     );
-    assert_eq!(preedit, want, "預覽只換目標文節");
+    assert_eq!(preedit, want, "預覽只換目標字元");
     assert!(preedit.starts_with("私は日本語を"), "前文不變");
-    assert!(preedit.ends_with("います"), "後文不變");
+    assert!(preedit.ends_with("っています"), "後文不變");
 
     let committed = commit(&mut child, &mut output);
     assert_eq!(committed, preedit, "送出的是畫面上的預覽");

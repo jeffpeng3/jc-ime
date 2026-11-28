@@ -1399,6 +1399,15 @@ impl Session {
         })
     }
 
+    /// 目前候選窗鎖定的 target：顯示字元起點、長度與正規化 keys。
+    ///
+    /// 只給診斷紀錄使用；沒有候選窗時回 `None`。
+    pub fn candidate_target(&self) -> Option<(usize, usize, String)> {
+        self.mixed_target
+            .as_ref()
+            .map(|target| (target.rune_start, target.rune_len, target.raw.clone()))
+    }
+
     /// 候選窗要作用在游標右側的字元；結尾先左移一格。
     ///
     /// 只有按 ↓ 會走到這裡。回傳是否有可開的候選。
@@ -1505,7 +1514,50 @@ impl Session {
         true
     }
 
+    /// 把羅馬字 keys 還原成かな；按鍵還沒打完時回 `None`。
+    fn ja_keys_kana(keys: &str) -> Option<String> {
+        if keys.is_empty() || !keys.chars().all(|ch| ch.is_ascii_alphabetic()) {
+            return None;
+        }
+        let mut input = RomajiInput::new();
+        for ch in keys.chars() {
+            input.press(Key::char(ch, false));
+        }
+        if !input.pending().is_empty() {
+            return None;
+        }
+        let kana: String = input.units().iter().map(Unit::as_str).collect();
+        (!kana.is_empty()).then_some(kana)
+    }
+
+    /// 日文 target 的解碼器讀音。
+    ///
+    /// 優先由 keys 還原，確保同一個 unit 不論在哪個 lane 都拿到同一組候選。
+    /// 小書きかな（`ょ` 的 keys 是 `yo`）還原後字形不同時，才用 unit 的
+    /// 讀音修正。
+    fn ja_decoder_reading(target: &MixedTarget) -> Option<String> {
+        let derived = Self::ja_keys_kana(&target.raw);
+        match (derived, target.reading.clone()) {
+            (Some(keys_kana), Some(reading)) if keys_kana == reading => Some(keys_kana),
+            (Some(keys_kana), None) => Some(keys_kana),
+            (_, reading) => reading,
+        }
+    }
+
+    /// 注音 keys 還原成注音讀音；有非注音鍵時回 `None`。
+    fn zh_reading_from_keys(keys: &str) -> Option<String> {
+        let keyboard = Keyboard::standard();
+        let mut reading = String::new();
+        for key in keys.chars() {
+            reading.push(keyboard.symbol(key)?);
+        }
+        (!reading.is_empty() && !parse_reading(&reading).is_empty()).then_some(reading)
+    }
+
     /// 為一個字元目標產生候選與套用動作。
+    ///
+    /// 範圍只由 `target`（顯示字元與 keys）決定；這裡不讀 lane 狀態或文節。
+    /// 語言只在選解碼器時用到，而解碼器輸入也從同一組 keys 還原。
     fn mixed_candidates_for(
         &self,
         target: &MixedTarget,
@@ -1585,7 +1637,8 @@ impl Session {
         }
         // 日文片段：目前值、原始羅馬字，再來才是漢字／かな／カナ。
         if target.ja {
-            if let Some(kana) = target.reading.as_deref() {
+            let kana = Self::ja_decoder_reading(target);
+            if let Some(kana) = kana.as_deref() {
                 let mut ranked: Vec<(Candidate, CandidateAction)> = Vec::new();
                 if let Some(decoder) = self.config.ja.clone() {
                     let chars: Vec<char> = kana.chars().collect();
@@ -1647,6 +1700,41 @@ impl Session {
                         },
                     ));
                 }
+                // 同一個 target 的かな變體；只看 keys 還原出的かな，不讀文節。
+                for transform in [
+                    crate::ja::live::KanaTransform::Katakana,
+                    crate::ja::live::KanaTransform::HalfwidthKana,
+                ] {
+                    let text = transform.apply(kana);
+                    if text.is_empty()
+                        || text == kana
+                        || ranked
+                            .iter()
+                            .any(|(candidate, _)| candidate.surface == text)
+                    {
+                        continue;
+                    }
+                    ranked.push((
+                        Candidate::new(
+                            text.clone(),
+                            kana.to_string(),
+                            i32::MAX / 2,
+                            CandidateSource::Literal,
+                        ),
+                        CandidateAction {
+                            insert: text.clone(),
+                            leftover: String::new(),
+                            force_literal: false,
+                            cursor: if text.chars().count() > 1 && text.chars().all(is_kana) {
+                                ChoiceCursor::AfterFirst
+                            } else {
+                                ChoiceCursor::AfterInsert
+                            },
+                            syllable_edit: None,
+                            ..CandidateAction::default()
+                        },
+                    ));
+                }
                 // [0] 目前值。[1] 原始羅馬字；選回它時固定在起點，再開候選
                 // 仍是同一個整段目標。
                 if !surface.is_empty() {
@@ -1696,8 +1784,13 @@ impl Session {
         }
         // 注音音節：目前值、原始按鍵，再來才是詞典與其他解讀。
         if let Some(reading) = target.reading.as_deref() {
+            // 讀音由 target 的 keys 還原；還原結果和 provenance 對不上時
+            // 才退回 unit 記下的讀音（例如回放後只得到半個音節）。
+            let reading = Self::zh_reading_from_keys(&target.raw)
+                .filter(|derived| derived == reading)
+                .unwrap_or_else(|| reading.to_string());
             return self.zh_choice_candidates(
-                reading,
+                &reading,
                 &target.raw,
                 &surface,
                 target.syllable.map(|start| EditWindow { start, len: 1 }),
@@ -1863,6 +1956,11 @@ impl Session {
         let Some(target) = self.mixed_target.clone() else {
             return false;
         };
+        // 日文 lane 的狀態存在 romaji／live，不在 AsciiInput；候選內容仍由
+        // 同一份 unit target 產生，套用時才由這裡改寫對應的讀音單位。
+        if self.in_ja_lane() && target.ja {
+            return self.apply_ja_unit_action(action, &target);
+        }
         if let Some(edit) = action.syllable_edit {
             let candidate = self.candidates.get(action.index).cloned();
             self.edit = Some(edit);
@@ -1948,6 +2046,84 @@ impl Session {
         self.keep_candidates = false;
         self.highlighted = 0;
         self.rebuild();
+        let rune_start = target.rune_start.min(self.composed_text().chars().count());
+        let cursor = match action.cursor {
+            ChoiceCursor::Start => rune_start,
+            ChoiceCursor::AfterFirst => rune_start + 1,
+            ChoiceCursor::AfterInsert => rune_start + action.insert.chars().count(),
+            ChoiceCursor::TokenEnd => self.composed_text().chars().count(),
+        };
+        self.set_mixed_rune(cursor.min(self.composed_text().chars().count()));
+        true
+    }
+
+    /// 把日文 unit 候選套進 live 狀態；其他顯示字元保持原樣。
+    ///
+    /// 每當前顯示字元都變成固定的 `UserSegment`，只有 target 換成候選詞面；
+    /// 這樣 `わた|し` 選 `死` 只會得到 `わた死`，前面的 `わた` 不會被重轉。
+    fn apply_ja_unit_action(&mut self, action: &CandidateAction, target: &MixedTarget) -> bool {
+        let chosen = self.candidates.get(action.index).cloned();
+        // 候選窗開著時 `displayed_base()` 會換成高亮候選，不能拿它重算
+        // units；開窗時同步好的 provenance 才是實際畫面。
+        let units = self.units.clone();
+        let target_end = target.rune_start.saturating_add(target.rune_len);
+        let romaji: Vec<String> = self
+            .romaji
+            .units()
+            .iter()
+            .map(|unit| unit.as_str().to_string())
+            .collect();
+        let mut segments = Vec::with_capacity(units.len());
+        for (rune, unit) in units.iter().enumerate() {
+            // 字面尾巴不屬於日文讀音流；它會在套用後原樣接回畫面。
+            let Some((start, count)) = self.ja_units_at_rune(rune) else {
+                continue;
+            };
+            let Some(reading) = romaji
+                .get(start..start + count)
+                .map(|parts| parts.concat())
+                .filter(|reading| !reading.is_empty())
+            else {
+                return false;
+            };
+            let surface = if rune >= target.rune_start && rune < target_end {
+                action.insert.clone()
+            } else {
+                unit.surface.clone()
+            };
+            segments.push(crate::ja::live::UserSegment {
+                start,
+                units: count,
+                reading,
+                surface,
+            });
+        }
+        let reading: String = romaji.concat();
+        let romaji_units = self.romaji.units().to_vec();
+        let Some(live) = self.live.as_mut() else {
+            return false;
+        };
+        let Some(plan) = live.fix_display(segments) else {
+            return false;
+        };
+        self.capture_ja_users();
+        self.apply_live_plan(&plan, &romaji_units, &reading);
+        self.sync_units();
+        if action.learn {
+            if let Some(candidate) = chosen {
+                self.learn_ja_choice(action.index, &candidate, true);
+            }
+        }
+        self.mixed_target = None;
+        self.mixed_choices.clear();
+        self.candidates.clear();
+        self.highlighted = 0;
+        self.candidate_window = false;
+        self.candidate_expanded = false;
+        self.navigating = false;
+        self.keep_candidates = false;
+        self.ja_candidates_whole = false;
+        self.ja_candidates_span = None;
         let rune_start = target.rune_start.min(self.composed_text().chars().count());
         let cursor = match action.cursor {
             ChoiceCursor::Start => rune_start,
@@ -4915,6 +5091,73 @@ mod tests {
             "不能列整串：{:?}",
             surfaces(&snap)
         );
+    }
+
+    /// 同一個 unit keys 放在日文 lane 與混打 lane，候選要完全相同。
+    ///
+    /// 候選來源只讀 target 的 keys；lane 名稱不能用來決定要不要列整段、
+    /// 或去讀文節候選。
+    #[test]
+    fn test_unit_keys_produce_same_candidates_in_every_lane() {
+        use std::sync::Arc;
+
+        let entry = |surface: &'static str,
+                     reading: &'static str|
+         -> crate::ja::lexicon::JaEntry<'static> {
+            crate::ja::lexicon::JaEntry {
+                surface: surface.into(),
+                reading: reading.into(),
+                pos: "名詞,普通名詞,一般,*".into(),
+                conj_type: "*".into(),
+                conj_form: "*".into(),
+                cost: 0,
+                split: crate::ja::lexicon::Split::C,
+            }
+        };
+        let decoder = crate::ja::decode::JaDecoder::new(Arc::new(TestJaSource(vec![
+            entry("私", "わたし"),
+            entry("氏", "し"),
+            entry("市", "し"),
+        ])));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.ja = Some(Arc::new(decoder));
+        let mut s = Session::new(config);
+
+        mixed_type(&mut s, "watashi");
+        s.ja_live_idle();
+        assert_eq!(s.preedit(), "私");
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        let kana = snap
+            .candidates
+            .iter()
+            .position(|candidate| candidate.surface == "わたし")
+            .expect("候選要有 わたし");
+        s.choose_candidate(kana).expect("選 わたし");
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        assert_eq!(s.snapshot().cursor_rune, 2);
+
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        let ja: Vec<String> = snap
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.clone())
+            .collect();
+        assert_eq!(ja.first().map(String::as_str), Some("し"));
+        s.press(Key::new(KeyCode::Escape, None, false));
+
+        // 同樣的顯示字元與 spans，換成混打 lane 的狀態。
+        let units = s.units().to_vec();
+        let spans = s.unit_spans.clone();
+        s.ja_run = false;
+        s.unit_override = Some((units, spans));
+
+        let snap = s.press(Key::new(KeyCode::Down, None, false));
+        let mixed: Vec<String> = snap
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.clone())
+            .collect();
+        assert_eq!(mixed, ja, "lane 不該改變同一個 unit 的候選");
     }
 
     /// `わた|し`：游標在かな中間時，↓ 仍只對右側的 `し`。

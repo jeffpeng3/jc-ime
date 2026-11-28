@@ -1766,11 +1766,12 @@ impl Session {
             self.english_state = s.clone();
             self.down = false;
             zlog!(
-                "handle 引擎回 op={} ok={} handled={} composing={} preedit={} commit={}",
+                "handle 引擎回 op={} ok={} handled={} composing={} cursor_rune={} preedit={} commit={}",
                 kind,
                 s.ok,
                 s.handled,
                 s.composing(),
+                s.cursor_rune,
                 s.text(),
                 s.commit
             );

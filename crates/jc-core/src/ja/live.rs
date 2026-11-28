@@ -1035,6 +1035,46 @@ impl Controller {
         true
     }
 
+    /// 把整段顯示固定成指定的 `UserSegment`，不再呼叫解碼器。
+    ///
+    /// 候選只換其中一個顯示字元時，其他字元必須原樣留下；這裡直接把目前
+    /// 讀音整段鎖成固定片段，套用後的畫面就是 segments 的詞面。
+    pub fn fix_display(&mut self, segments: Vec<UserSegment>) -> Option<Plan> {
+        if segments.is_empty() || self.seq.is_empty() {
+            return None;
+        }
+        let mut at = 0usize;
+        let mut clauses = Vec::with_capacity(segments.len());
+        for segment in &segments {
+            if segment.units == 0 || segment.start != at || segment.surface.is_empty() {
+                return None;
+            }
+            at = at.saturating_add(segment.units);
+            clauses.push(JaClause {
+                reading: segment.reading.clone(),
+                surface: segment.surface.clone(),
+                segments: Vec::new(),
+                cost: 0,
+            });
+        }
+        if at != self.seq.len() {
+            return None;
+        }
+        self.user_segments = segments;
+        self.locked = clauses;
+        self.locked_seq = self.seq.clone();
+        self.cut = at;
+        self.tail.clear();
+        self.tail_neural = false;
+        self.converted_upto = at;
+        self.pending = false;
+        self.due = None;
+        self.idle_due = None;
+        let cost = self.last_cost;
+        let score = self.last_score;
+        Some(self.publish(0, cost, score))
+    }
+
     /// 對指定片段套用假名／英數轉換。
     pub fn transform_clause(&mut self, index: usize, transform: KanaTransform) -> bool {
         let Some(clause) = self.all_clauses().get(index).cloned() else {

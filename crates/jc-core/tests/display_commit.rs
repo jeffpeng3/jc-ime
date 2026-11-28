@@ -242,7 +242,7 @@ fn test_ja_clause_display_matches_commit() {
     assert_commit_matches_display(&mut s, "日文文節送出");
 }
 
-/// 真實資料的長串：游標移到中間文節再開候選，預覽只換那一個文節，
+/// 真實資料的長串：游標移到中間的顯示字元再開候選，預覽只換那一個字元，
 /// 前後文與其他片段都留在畫面上；套用後才真正取代。
 #[test]
 fn test_ja_long_clause_preview_only_replaces_target() {
@@ -254,7 +254,7 @@ fn test_ja_long_clause_preview_only_replaces_target() {
     let before = s.display_text();
     assert_eq!(before, "私は日本語を使っています", "真實資料的長串");
 
-    let target = "使って";
+    let target = "使";
     let target_start = before.find(target).expect("長串要有目標文節");
     let target_rune = before[..target_start].chars().count();
     let tail_runes = before.chars().count() - target_rune;
@@ -286,12 +286,12 @@ fn test_ja_long_clause_preview_only_replaces_target() {
         surface,
         &before[target_start + target.len()..]
     );
-    assert_eq!(preview.preedit, want, "預覽只換目標文節");
+    assert_eq!(preview.preedit, want, "預覽只換目標字元");
     assert!(preview.preedit.starts_with("私は日本語を"), "前文不變");
-    assert!(preview.preedit.ends_with("います"), "後文不變");
+    assert!(preview.preedit.ends_with("っています"), "後文不變");
     assert_eq!(s.display_text(), want, "組字區與高亮候選一致");
 
-    let applied = s.choose_candidate(at).expect("套用長串文節候選");
+    let applied = s.choose_candidate(at).expect("套用長串字元候選");
     assert_eq!(applied.preedit, want, "套用後才真正取代");
     assert_commit_matches_display(&mut s, "長串文節送出");
 }

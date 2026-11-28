@@ -884,7 +884,8 @@ impl Session {
             if let Some(Some(mut action)) = self.mixed_choices.get(index).cloned() {
                 action.lane = ActionLane::Mixed;
                 action.index = index;
-                action.learn = action.syllable_edit.is_some();
+                action.learn = action.syllable_edit.is_some()
+                    || self.mixed_target.as_ref().is_some_and(|target| target.ja);
                 if let Some(target) = &self.mixed_target {
                     action.typed_span = Some(target.typed);
                     action.rune_span = Some((target.rune_start, target.rune_len));
@@ -1176,227 +1177,6 @@ impl Session {
         self.zh_window_last = true;
     }
 
-    /// ↓ 在日文片段上開候選：游標不動，列出整段組字。
-    pub(super) fn open_ja_cursor_candidates(&mut self) -> bool {
-        let text = self.base.clone();
-        if text.is_empty() {
-            return false;
-        }
-        let at = rune_offset(&text, self.ja_byte().min(text.len()));
-        // 日文的 ↓ 只開候選，不移動游標。游標在組字結尾時，延遲整句模式
-        // 列出整段組字的轉換結果；游標已經移到某個片段內時，即使還在延遲
-        // 整句模式，也只列那一段的候選（`私|は` 的 `は` 要有「は」可選）。
-        let at_end = self.ja_byte() >= text.len();
-        let whole = at_end
-            && self
-                .live
-                .as_ref()
-                .is_some_and(LiveController::sentence_mode);
-        // 原始按鍵要在開窗之前取；開窗後 `displayed_base()` 會換成高亮候選，
-        // 片段索引就對不回原本的讀音了。
-        let segment_raw = (!whole).then(|| self.active_segment_raw()).flatten();
-        let opened = if self.live.is_some() {
-            if whole {
-                self.open_ja_all_candidates()
-            } else {
-                self.open_ja_candidates()
-            }
-        } else {
-            !self.candidates.is_empty()
-        };
-        if !opened {
-            return false;
-        }
-        // 只有一個文節時，整段清單就等於該片段清單；記成片段候選，選字後
-        // 游標才會留在第一個字之後（既有單段編輯行為）。
-        if whole {
-            if let Some(live) = self.live.as_ref() {
-                let spans = live.clause_spans();
-                if let [span] = spans.as_slice() {
-                    self.ja_candidates_whole = false;
-                    self.ja_candidates_span = Some((span.start, span.end));
-                }
-            }
-        }
-        let raw = if whole {
-            self.whole_raw_keys()
-        } else {
-            segment_raw.unwrap_or_default()
-        };
-        self.insert_ja_raw_candidate(&raw);
-        self.highlighted = 0;
-        self.candidate_window = true;
-        self.candidate_expanded = false;
-        self.navigating = true;
-        self.keep_candidates = true;
-        self.mixed_target = Some(MixedTarget {
-            typed: (0, 0),
-            raw,
-            raw_toneless: String::new(),
-            tone_key: None,
-            rune_start: at,
-            rune_len: if whole {
-                text.chars().count().max(1)
-            } else {
-                1
-            },
-            syllable: None,
-            reading: None,
-            ja: true,
-            zhuyin: false,
-        });
-        true
-    }
-
-    /// 整段組字的原始按鍵；沒有按鍵記錄時退回かな讀音。
-    fn whole_raw_keys(&self) -> String {
-        if !self.ja_run_keys.is_empty() {
-            self.ja_run_keys.clone()
-        } else {
-            self.romaji
-                .units()
-                .iter()
-                .map(Unit::as_str)
-                .collect::<String>()
-        }
-    }
-
-    /// 游標所在片段的原始羅馬字按鍵。
-    fn active_segment_raw(&self) -> Option<String> {
-        let index = self.active_segment()?;
-        let live = self.live.as_ref()?;
-        let span = live.clause_spans().get(index).cloned()?;
-        Some(
-            self.romaji
-                .raw_units()
-                .get(span.start..span.end)
-                .unwrap_or_default()
-                .concat(),
-        )
-    }
-
-    /// 把原始按鍵插到候選清單第二項；選回原始輸入時不必記羅馬字。
-    fn insert_ja_raw_candidate(&mut self, raw: &str) {
-        if raw.is_empty() || self.candidates.first().map(|c| c.surface.as_str()) == Some(raw) {
-            return;
-        }
-        if let Some(at) = self
-            .candidates
-            .iter()
-            .position(|candidate| candidate.surface == raw)
-        {
-            let candidate = self.candidates.remove(at);
-            let at = at.min(1);
-            self.candidates.insert(at, candidate);
-        } else {
-            let at = self.candidates.len().min(1);
-            self.candidates.insert(
-                at,
-                Candidate::new(raw, raw, i32::MAX, CandidateSource::Literal),
-            );
-        }
-    }
-
-    /// 開啟整段日文組字的候選；日文的 ↓ 用，游標不動。
-    ///
-    /// [`Session::open_ja_candidates`] 只列游標所在片段；停頓轉換後使用者按 ↓
-    /// 想看到整句的替代寫法，所以這裡用整段讀音查一次候選，再把目前詞面排到
-    /// 最前面。
-    fn open_ja_all_candidates(&mut self) -> bool {
-        let Some(live) = self.live.as_ref() else {
-            return false;
-        };
-        let units = self.romaji.units().len();
-        if units == 0 {
-            return false;
-        }
-        let Ok(candidates) = live.candidates(crate::ja::decode::JaSpan::new(0, units)) else {
-            return false;
-        };
-        if candidates.is_empty() {
-            return false;
-        }
-        let mut list: Vec<Candidate> = candidates
-            .into_iter()
-            .map(|candidate| {
-                Candidate::new(
-                    candidate.surface,
-                    candidate.reading,
-                    candidate.cost,
-                    CandidateSource::Lexicon,
-                )
-            })
-            .collect();
-        if let Some(at) = list
-            .iter()
-            .position(|candidate| candidate.surface == self.base)
-        {
-            let current = list.remove(at);
-            list.insert(0, current);
-        }
-        self.candidates = list;
-        self.highlighted = 0;
-        self.candidate_window = true;
-        self.ja_candidates_whole = true;
-        self.ja_candidates_span = None;
-        self.navigating = false;
-        self.keep_candidates = true;
-        true
-    }
-
-    /// 開啟日文逐字変換片段的候選。
-    ///
-    /// 只針對游標所在片段，其他片段保持鎖定。清單由
-    /// [`crate::ja::live::Controller::candidates`] 產生，包含字典候選、
-    /// 目前詞面與原讀音的平假名／片假名版本。
-    pub(super) fn open_ja_candidates(&mut self) -> bool {
-        let Some(index) = self.active_segment() else {
-            return false;
-        };
-        let Some(live) = self.live.as_ref() else {
-            return false;
-        };
-        let spans = live.clause_spans();
-        let Some(span) = spans.get(index) else {
-            return false;
-        };
-        let Ok(candidates) = live.candidates(crate::ja::decode::JaSpan::new(
-            span.start,
-            span.end - span.start,
-        )) else {
-            return false;
-        };
-        if candidates.is_empty() {
-            return false;
-        }
-        let mut list: Vec<Candidate> = candidates
-            .into_iter()
-            .map(|candidate| {
-                Candidate::new(
-                    candidate.surface,
-                    candidate.reading,
-                    candidate.cost,
-                    CandidateSource::Lexicon,
-                )
-            })
-            .collect();
-        if let Some(at) = list
-            .iter()
-            .position(|candidate| candidate.surface == span.surface)
-        {
-            let current = list.remove(at);
-            list.insert(0, current);
-        }
-        self.candidates = list;
-        self.highlighted = 0;
-        self.candidate_window = true;
-        self.ja_candidates_whole = false;
-        self.ja_candidates_span = Some((span.start, span.end));
-        self.navigating = false;
-        self.keep_candidates = true;
-        true
-    }
-
     /// 把候選套到游標所在片段，其他片段不變。
     pub(super) fn apply_ja_candidate(&mut self, index: usize) -> bool {
         // ↓ 開的是整段組字的候選時，選字換掉整段，不是只換游標所在文節。
@@ -1592,16 +1372,8 @@ impl Session {
             return;
         }
         // 外殼送來 Down 只是為了避開數字選字，後面的聲調鍵仍要完成原本的音節；
-        // 這裡不補完未完成的注音。
-        if self.in_ja_lane() {
-            if !self.candidate_window {
-                self.open_ja_cursor_candidates();
-                return;
-            }
-            self.navigating = true;
-            self.move_row(1);
-            return;
-        }
+        // 這裡不補完未完成的注音。日文 lane 與混打共用同一條路徑：target
+        // 由顯示字元（units）決定，語言只在候選來源裡選解碼器；不讀文節。
         if !self.in_zh_lane() {
             if !self.candidate_window {
                 self.open_mixed_cursor_candidates();
@@ -2428,7 +2200,7 @@ impl Session {
     }
 
     /// 日文候選套用成功後的學習；候選由套用前先留下，重建後仍記得到這一項。
-    fn learn_ja_choice(&mut self, index: usize, candidate: &Candidate, manual: bool) {
+    pub(super) fn learn_ja_choice(&mut self, index: usize, candidate: &Candidate, manual: bool) {
         if self.suppress_learn {
             log::debug!("重播：跳過日文候選學習");
             return;

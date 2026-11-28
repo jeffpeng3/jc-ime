@@ -780,6 +780,73 @@ fn split_ja_units(chars: &[char], segment: &CompSegment, raw: &str) -> Vec<Displ
             })
             .collect();
     }
+    // 一個文節有多個漢字／非かな顯示字元時，把讀音單位平均分給每個字元。
+    // `東京`（とうきょう）的 `京` 因此拿到 `きょう` 與 keys `kyou`，候選
+    // 才能只針對游標所在的那一個顯示字元。
+    if chars.len() < segment.units && reading.len() == segment.units {
+        let key_parts = if raw.is_empty() {
+            Vec::new()
+        } else {
+            split_kana_keys(raw, segment.units)
+        };
+        // 先按字數平均分，再用かな字元從右往左對齊讀音；`私は` 的 `は`
+        // 才不會拿到前一段的 `しわ`。漢字之間沒有かな錨點時維持平均分。
+        let mut bounds: Vec<usize> = (0..=chars.len())
+            .map(|index| index * segment.units / chars.len())
+            .collect();
+        bounds[chars.len()] = segment.units;
+        let mut read_end = segment.units;
+        for index in (0..chars.len()).rev() {
+            if !is_kana(chars[index]) {
+                continue;
+            }
+            let Some(at) = reading[..read_end]
+                .iter()
+                .rposition(|symbol| *symbol == chars[index])
+            else {
+                continue;
+            };
+            bounds[index] = at;
+            bounds[index + 1] = read_end;
+            read_end = at;
+        }
+        // 小書きかな不能當一個顯示字元的開頭；併回前一段。
+        for index in 1..chars.len() {
+            while bounds[index] > bounds[index - 1]
+                && reading
+                    .get(bounds[index])
+                    .is_some_and(|symbol| is_small_kana(*symbol))
+            {
+                bounds[index] -= 1;
+            }
+        }
+        return chars
+            .iter()
+            .enumerate()
+            .map(|(index, ch)| {
+                let start = bounds[index];
+                let end = bounds[index + 1].max(start + 1);
+                let reading: String = reading[start..end.min(reading.len())].iter().collect();
+                let keys: String = if key_parts.len() == segment.units {
+                    key_parts[start..end.min(key_parts.len())].concat()
+                } else {
+                    ch.to_string()
+                };
+                DisplayUnit::new(
+                    ch.to_string(),
+                    keys,
+                    (!reading.is_empty()).then_some(reading),
+                    Lang::Ja,
+                    segment.owner,
+                    if crate::zh::han::is_han(*ch) {
+                        DisplayUnitMeta::Han
+                    } else {
+                        DisplayUnitMeta::Kana
+                    },
+                )
+            })
+            .collect();
+    }
     chars
         .iter()
         .map(|ch| literal_unit(*ch, segment.owner))
@@ -802,7 +869,13 @@ fn split_kana_keys(raw: &str, count: usize) -> Vec<String> {
     }
     let mut chunks = vowel_chunks(raw);
     while chunks.len() < count {
-        let Some(index) = chunks.iter().position(|chunk| split_onset(chunk).is_some()) else {
+        // 先拆有 `y` 的長音（`kyo` → `k`＋`yo`）；它本來就代表兩個かな，
+        // 比把 `to` 硬拆成 `t`＋`o` 更接近實際讀音單位。
+        let index = chunks
+            .iter()
+            .position(|chunk| chunk.contains('y') && split_onset(chunk).is_some())
+            .or_else(|| chunks.iter().position(|chunk| split_onset(chunk).is_some()));
+        let Some(index) = index else {
             break;
         };
         let chunk = chunks.remove(index);
@@ -867,6 +940,43 @@ fn is_kana(ch: char) -> bool {
         | '\u{30a1}'..='\u{30fa}'
         | '\u{30fd}'..='\u{30ff}'
         | '\u{ff66}'..='\u{ff9d}'
+    )
+}
+
+/// 小書きかな（`ゃ`、`ょ`、`っ` 等）；不能當顯示字元讀音的起點。
+fn is_small_kana(ch: char) -> bool {
+    matches!(
+        ch,
+        'ぁ' | 'ぃ'
+            | 'ぅ'
+            | 'ぇ'
+            | 'ぉ'
+            | 'っ'
+            | 'ゃ'
+            | 'ゅ'
+            | 'ょ'
+            | 'ゎ'
+            | 'ァ'
+            | 'ィ'
+            | 'ゥ'
+            | 'ェ'
+            | 'ォ'
+            | 'ッ'
+            | 'ャ'
+            | 'ュ'
+            | 'ョ'
+            | 'ヮ'
+            | 'ｧ'
+            | 'ｨ'
+            | 'ｩ'
+            | 'ｪ'
+            | 'ｫ'
+            | 'ｯ'
+            | 'ｬ'
+            | 'ｭ'
+            | 'ｮ'
+            | 'ヵ'
+            | 'ヶ'
     )
 }
 
@@ -967,6 +1077,11 @@ mod tests {
         assert_eq!(split_kana_keys("kyo", 2), ["k", "yo"]);
         assert_eq!(split_kana_keys("kyou", 3), ["k", "yo", "u"]);
         assert_eq!(split_kana_keys("wata", 2), ["wa", "ta"]);
+        assert_eq!(
+            split_kana_keys("toukyou", 5),
+            ["to", "u", "k", "yo", "u"],
+            "長音以かな單位對齊，不要把 to 硬拆開"
+        );
     }
 
     #[test]

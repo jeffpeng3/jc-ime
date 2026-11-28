@@ -686,6 +686,14 @@ impl Engine {
                     let composing = before.composing();
                     let deleting = matches!(key.code, KeyCode::Backspace | KeyCode::Delete);
                     let snapshot = session.press(key);
+                    // 實機診斷：候選窗開著時記錄 target 的顯示字元範圍與 keys，
+                    // 才看得出 ↓ 是鎖在單一 unit 還是整段。只在 debug log 出現。
+                    if let Some((start, len, target_keys)) = session.candidate_target() {
+                        log::debug!(
+                            "候選 target rune={start} len={len} keys={target_keys} cursor_rune={}",
+                            snapshot.cursor_rune
+                        );
+                    }
                     if tab && !session.last_key_consumed() {
                         return Response::state_with_handled(snapshot, Some(false));
                     }

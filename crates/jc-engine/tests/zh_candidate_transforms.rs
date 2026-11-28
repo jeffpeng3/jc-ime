@@ -412,7 +412,7 @@ fn candidate_lists_survive_every_transform() {
         5,
     );
     add(
-        "ja 選文節",
+        "ja 選かな後只對下一個字元",
         Box::new(|data| {
             let mut s = base(data);
             press_all(&mut s, &chars("watashi"));
@@ -420,9 +420,9 @@ fn candidate_lists_survive_every_transform() {
             choose(&mut s, "わたし");
             s
         }),
-        "わたし",
-        Some("watashi"),
-        2,
+        "た",
+        Some("ta"),
+        5,
     );
     add(
         "ja Tab 換候選",
@@ -445,9 +445,9 @@ fn candidate_lists_survive_every_transform() {
             press_all(&mut s, &[key(KeyCode::Backspace)]);
             s
         }),
-        "わた",
-        None,
-        1,
+        "た",
+        Some("ta"),
+        5,
     );
 
     for (name, build, first, second, min) in cases {

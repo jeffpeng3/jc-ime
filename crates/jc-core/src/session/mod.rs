@@ -4307,9 +4307,9 @@ mod tests {
         assert_eq!(table.len(), 3);
     }
 
-    /// 日文的 ↓ 不移動游標，候選窗列出整段組字。
+    /// 日文的 ↓ 不移動游標，只鎖定游標右側的最後一個顯示字元。
     #[test]
-    fn test_ja_down_keeps_cursor_and_lists_composition() {
+    fn test_ja_down_targets_last_display_unit() {
         let Some(mut s) = real_ja_live_session() else {
             eprintln!("缺少測試資料：packs/ja-lexicon-mozc-v2.pack");
             return;
@@ -4318,25 +4318,32 @@ mod tests {
         assert_eq!(s.ja_live_idle().preedit, "私は");
         let before = s.snapshot();
         let snap = s.press(Key::new(KeyCode::Down, None, false));
-        assert_eq!(snap.cursor_rune, before.cursor_rune, "↓ 不移動游標");
+        assert_eq!(
+            snap.cursor_rune,
+            before.cursor_rune - 1,
+            "↓ 在結尾先把游標左移到最後一個字元"
+        );
         assert!(s.candidate_window, "↓ 要開候選窗");
         assert!(snap.navigating, "↓ 進入候選選取");
+        assert_eq!(
+            snap.candidates[0].surface, "は",
+            "target 是最後一個顯示字元"
+        );
+        // 使用者打的是 `watashiwa`；助詞 `は` 的 provenance 按鍵是 `wa`。
+        assert_eq!(snap.candidates[1].surface, "wa", "第二項是該字元的按鍵");
+        assert_eq!(
+            s.candidate_target(),
+            Some((1, 1, "wa".to_string())),
+            "候選 target 只有一個顯示字元"
+        );
         let surfaces: Vec<&str> = snap
             .candidates
             .iter()
             .map(|candidate| candidate.surface.as_str())
             .collect();
-        assert!(surfaces.len() > 5, "要列整段候選：{surfaces:?}");
-        for want in ["私は", "わたしわ", "ワタシワ", "ﾜﾀｼﾜ", "watashiwa"] {
-            assert!(surfaces.contains(&want), "{want} 不在 {surfaces:?}");
-        }
-        // 整段候選要換掉整段，不能只換游標所在文節。
-        let index = surfaces
-            .iter()
-            .position(|surface| *surface == "わたしわ")
-            .expect("わたしわ 候選");
-        let chosen = s.choose_candidate(index).expect("選整段假名");
-        assert_eq!(chosen.preedit, "わたしわ");
+        assert!(!surfaces.contains(&"私は"), "不能列整段組字：{surfaces:?}");
+        let chosen = s.choose_candidate(0).expect("選目前值");
+        assert_eq!(chosen.preedit, "私は", "只套用 は，前面的 私 不變");
         assert!(!chosen.navigating);
     }
 
@@ -4465,7 +4472,7 @@ mod tests {
         assert_eq!(again.preedit, "とうきょうに", "拆回讀音後又被重轉成漢字");
     }
 
-    /// 讀音 `とうきょう` 的候選含漢字、平假名、片假名與半角かな。
+    /// `東京` 的目標是游標右側的 `京`；候選只列這個 unit 的漢字與かな變體。
     #[test]
     fn test_ja_live_candidates_include_all_kana_scripts() {
         let source = LiveTestSource(vec![
@@ -4493,14 +4500,16 @@ mod tests {
             .iter()
             .map(|candidate| candidate.surface.as_str())
             .collect();
-        for want in ["東京", "とうきょう", "トウキョウ", "ﾄｳｷｮｳ"] {
+        assert_eq!(surfaces.first().copied(), Some("京"), "{surfaces:?}");
+        for want in ["京", "kyou", "きょう", "キョウ", "ｷｮｳ"] {
             assert!(surfaces.contains(&want), "缺少 {want}：{surfaces:?}");
         }
-        let kanji = surfaces.iter().position(|text| *text == "東京").unwrap();
-        let hira = surfaces
-            .iter()
-            .position(|text| *text == "とうきょう")
-            .unwrap();
+        assert!(
+            !surfaces.contains(&"東京"),
+            "不能回到整個文節：{surfaces:?}"
+        );
+        let kanji = surfaces.iter().position(|text| *text == "京").unwrap();
+        let hira = surfaces.iter().position(|text| *text == "きょう").unwrap();
         assert!(kanji < hira, "假名候選要排在漢字後面：{surfaces:?}");
     }
 
@@ -4559,10 +4568,10 @@ mod tests {
         assert_eq!(s.snapshot().preedit, "東京都", "讀音回到尾巴後可重新切分");
     }
 
-    /// 讀音本身就是平假名時，候選不重複同一字串。
+    /// 一個顯示字元的讀音對到多個かな時，平假名候選仍只出現一次。
     #[test]
     fn test_ja_live_candidates_dedup_hiragana() {
-        let source = LiveTestSource(vec![ja_entry("とうきょう", "とうきょう", 1_000)]);
+        let source = LiveTestSource(vec![ja_entry("京", "きょう", 1_000)]);
         let mut config = SessionConfig::new(Mode::Mixed);
         config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
         config.ja_only = true;
@@ -4574,12 +4583,12 @@ mod tests {
             ..live::Config::default()
         };
         let mut s = Session::new(config);
-        type_ja(&mut s, "toukyou");
+        type_ja(&mut s, "kyou");
         let shown = s.press(Key::new(KeyCode::Down, None, false));
         let count = shown
             .candidates
             .iter()
-            .filter(|candidate| candidate.surface == "とうきょう")
+            .filter(|candidate| candidate.surface == "きょう")
             .count();
         assert_eq!(count, 1, "平假名候選不得重複");
     }
@@ -4807,30 +4816,37 @@ mod tests {
         assert_eq!(s.commit(), "わたしあ", "不得疊成 わたしわたしあ");
     }
 
-    /// 逐字変換的片段游標、Space 開片段候選與 Enter 套用。
+    /// 逐字変換的顯示字元游標與 Enter 套用；只換被鎖定的那一個字元。
     #[test]
     fn test_ja_live_cursor_and_segment_candidates() {
         use crate::ja::live::{KanaTransform, Trigger};
 
-        let mut config = live::Config {
+        let source = LiveTestSource(vec![ja_entry("京", "きょう", 10), ja_entry("は", "は", 5)]);
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.ja = Some(Arc::new(JaDecoder::new(Arc::new(source))));
+        config.ja_only = true;
+        config.ja_live = live::Config {
             enabled: true,
             debounce: std::time::Duration::ZERO,
             trigger: Trigger::EveryKey,
             deferred_sentence: false,
+            neural: None,
             ..live::Config::default()
         };
-        config.neural = None;
-        let mut s = ja_live_session(config);
-        type_ja(&mut s, "kyou");
+        let mut s = Session::new(config);
+        type_ja(&mut s, "kyouha");
         s.ja_live_flush();
-        assert_eq!(s.snapshot().preedit, "今日");
+        assert_eq!(s.snapshot().preedit, "京は");
 
+        // 游標從結尾移到 `京` 前，再按 ↓ 只開 `京` 的候選。
+        s.press(Key::new(KeyCode::ArrowLeft, None, false));
         let left = s.press(Key::new(KeyCode::ArrowLeft, None, false));
-        assert_eq!(left.cursor_rune, 1, "← 移動日文組字游標");
-        assert_eq!(left.preedit, "今日", "移動游標不改組字");
+        assert_eq!(left.cursor_rune, 0, "← 移動日文組字游標");
+        assert_eq!(left.preedit, "京は", "移動游標不改組字");
 
         let shown = s.press(Key::new(KeyCode::Down, None, false));
-        assert!(shown.navigating, "第一次 ↓ 開片段候選並進入選取模式");
+        assert!(shown.navigating, "第一次 ↓ 開候選並進入選取模式");
+        assert_eq!(shown.candidates[0].surface, "京");
         assert!(shown
             .candidates
             .iter()
@@ -4843,38 +4859,22 @@ mod tests {
         // 再按 ↓ 移到「きょう」。
         highlight_surface(&mut s, "きょう");
         let picked = s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(picked.preedit, "きょう", "選字只換游標所在片段");
-        let right = s.press(Key::new(KeyCode::ArrowRight, None, false));
-        assert_eq!(right.preedit, "きょう", "游標移出後維持新結果");
+        assert_eq!(picked.preedit, "きょうは", "選字只換游標所在字元");
 
         let kata = s.ja_transform(KanaTransform::Katakana);
-        assert_eq!(kata.preedit, "キョウ", "F7 由片段讀音轉全角片假名");
-        let hira = s.ja_transform(KanaTransform::Hiragana);
-        assert_eq!(hira.preedit, "きょう", "F6 轉回平假名");
+        assert_eq!(kata.preedit, "キョウは", "F7 由該字讀音轉全角片假名");
     }
 
-    /// 日文候選窗的 Enter 行為不變：套用游標所在片段，不送出整段。
+    /// 日文候選窗的 Enter：只套用 target，不送出整段。
     #[test]
     fn test_enter_in_ja_candidate_window_keeps_existing_ja_semantics() {
-        use crate::ja::live::Trigger;
-
-        let mut config = live::Config {
-            enabled: true,
-            debounce: std::time::Duration::ZERO,
-            trigger: Trigger::EveryKey,
-            deferred_sentence: false,
-            ..live::Config::default()
-        };
-        config.neural = None;
-        let mut s = ja_live_session(config);
-        type_ja(&mut s, "kyou");
-        s.ja_live_flush();
-        s.press(Key::new(KeyCode::ArrowLeft, None, false));
+        let mut s = ja_romaji_session();
+        type_ja(&mut s, "su");
         s.press(Key::new(KeyCode::Down, None, false));
-        highlight_surface(&mut s, "きょう");
+        highlight_surface(&mut s, "ス");
 
         let picked = s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(picked.preedit, "きょう", "日文 Enter 只換片段");
+        assert_eq!(picked.preedit, "ス", "日文 Enter 只換 target");
         assert!(s.pending_commit.is_none(), "日文候選 Enter 不送出整段");
     }
 
@@ -4909,7 +4909,7 @@ mod tests {
     /// 同讀音、成本差距可被學習翻盤的日文 session。
     fn ja_learning_session(learning: bool) -> Session {
         let source = LiveTestSource(vec![
-            ja_entry("今日", "きょう", 1_000),
+            ja_entry("境", "きょう", 1_000),
             ja_entry("京", "きょう", 1_400),
             ja_entry("きょう", "きょう", 3_000),
         ]);
@@ -4929,7 +4929,7 @@ mod tests {
         type_ja(&mut s, "kyou");
         // 預設延遲整句：停頓後才轉換並產生候選。
         s.ja_live_idle();
-        assert_eq!(s.candidates()[0].surface, "今日");
+        assert_eq!(s.candidates()[0].surface, "境");
         // 第一次 ↓ 開候選窗，再移到「京」。
         s.press(Key::new(KeyCode::Down, None, false));
         highlight_surface(&mut s, "京");
@@ -4950,7 +4950,7 @@ mod tests {
         // 反悔後回到統計順序。
         assert!(s.undo_learning());
         s.ja_live_idle();
-        assert_eq!(s.candidates()[0].surface, "今日");
+        assert_eq!(s.candidates()[0].surface, "境");
     }
 
     /// 學習關閉時，手選「京」不會改變下一次的首選。
@@ -4965,7 +4965,7 @@ mod tests {
         assert_eq!(s.commit(), "京");
         type_ja(&mut s, "kyou");
         s.ja_live_idle();
-        assert_eq!(s.candidates()[0].surface, "今日");
+        assert_eq!(s.candidates()[0].surface, "境");
     }
 
     /// 單次被動接受不足以翻掉明顯的統計差距。
@@ -4975,10 +4975,10 @@ mod tests {
         type_ja(&mut s, "kyou");
         s.ja_live_idle();
         s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(s.commit(), "今日");
+        assert_eq!(s.commit(), "境");
         type_ja(&mut s, "kyou");
         s.ja_live_idle();
-        assert_eq!(s.candidates()[0].surface, "今日");
+        assert_eq!(s.candidates()[0].surface, "境");
     }
 
     /// 最短觸發長度：3 個假名不到 7 字元，被動接受只留證據、不改排序。
@@ -4990,22 +4990,22 @@ mod tests {
         type_ja(&mut s, "kyou");
         s.ja_live_idle();
         s.press(Key::new(KeyCode::Enter, None, false));
-        assert_eq!(s.commit(), "今日");
+        assert_eq!(s.commit(), "境");
         assert_eq!(
-            s.personal().language_surface_count(LanguageId::Ja, "今日"),
+            s.personal().language_surface_count(LanguageId::Ja, "境"),
             1,
             "證據要記錄"
         );
         assert_eq!(
             s.personal()
-                .language_reading_count(LanguageId::Ja, "き ょ う", "今日"),
+                .language_reading_count(LanguageId::Ja, "き ょ う", "境"),
             0,
             "短讀音不進讀音表"
         );
 
         type_ja(&mut s, "kyou");
         s.ja_live_idle();
-        assert_eq!(s.candidates()[0].surface, "今日", "排序不變");
+        assert_eq!(s.candidates()[0].surface, "境", "排序不變");
     }
 
     /// 沒有開啟逐字変換時，日文走原本的 nbest 流程，結果與先前相同。
