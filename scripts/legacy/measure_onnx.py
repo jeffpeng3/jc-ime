@@ -20,7 +20,7 @@ import numpy as np
 
 QUANT = Path("/mnt/work/jc/jc-ime-data/models/quant")
 INPUTS = Path("/tmp/opencode/quant-inputs")
-REPORT = Path("/mnt/work/jc/wt/quant-study/docs/reports/quant-study-2026-11-20.json")
+REPORT = Path("/tmp/opencode/quant-measure.json")
 
 MODELS = {
     "ja-rerank": {"kind": "rerank", "input": "rerank.json"},

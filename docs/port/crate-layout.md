@@ -579,7 +579,7 @@ zh-select 與 ja-rerank，改成 trait 注入會動到 `Session` 初始化與
 | 8 | B：`jc-tsf-smoke` 改名 `jc-tsf-doctor` | P2 | 動到 installer、CI 與簽章，排在安裝流程穩定時做 |
 | 9 | F：語言 crate 完整對稱化 | P3 | 先完成語言引擎 P2，再讓 core 移除對 `jc-zh`／`jc-ja` 的依賴；`jc-en` 最後 |
 | 10 | H：`jc-cli` 產品與開發 bin 分家 | P3 | 先確認 `jc-cli.exe` 是否為產品；不確定就維持現狀，只補文件 |
-| 11 | `jc-platform` 與文件同步 | P3 | 決定接上或標 experimental；順手修正 20 個成員、README 表與 `client-crates.md` 的 `NamedPipe` 描述 |
+| 11 | `jc-platform` 與文件同步 | P3 | 決定接上或標 experimental；順手修正 20 個成員與 README 表；client 型別是 `Client<S>` 加 `LocalSocket`，不是 `Client<NamedPipe>` |
 
 P1 的 1 到 4 可以分成三個 commit：量測紀錄、pipe 行為修正、改名加刪空殼。
 P2 的 5 到 8 各自獨立，不要同一個 PR。P3 的 9 到 11 可以等下一次文件整理，

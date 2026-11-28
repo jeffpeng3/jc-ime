@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path("/mnt/work/jc/jc-ime-data/models/quant/jinen-v2-xsmall")
 CORPUS = Path("/mnt/work/jc/jc-ime-data/0c-testdata/ja/ajimee_200.json")
-OUT = Path("/mnt/work/jc/wt/quant-study/docs/reports/quant-jinen-latency.json")
+OUT = Path("/tmp/opencode/jinen-latency.json")
 QUANTS = ("f16", "q8_0", "q5_k_m", "q4_k_m")
 ITEMS = 100
 
