@@ -1697,17 +1697,26 @@ impl TextService_Impl {
         lparam: isize,
         may_repost: bool,
     ) -> bool {
-        if !self.state.borrow().composing || self.state.borrow().session.english() {
+        let page = keys::is_page_key(vk);
+        if !self.state.borrow().composing {
             return false;
         }
-        if self.state.borrow_mut().convert_key(vk).is_some() {
+        if self.state.borrow().session.english() && !page {
+            return false;
+        }
+        if !page && self.state.borrow_mut().convert_key(vk).is_some() {
             return false;
         }
         if keys::modifier_down() && self.state.borrow_mut().ctrl_punct_key(vk, lparam).is_some() {
             return false;
         }
-        let protocol = keys::to_key(vk, lparam, false, true);
-        if keys::commits_before_host(vk, keys::modifier_down(), protocol.as_deref()) {
+        // PageUp／PageDown 不看協定 key：它們不再是換頁鍵，先送出組字。
+        let protocol = if page {
+            None
+        } else {
+            keys::to_key(vk, lparam, false, true)
+        };
+        if page || keys::commits_before_host(vk, keys::modifier_down(), protocol.as_deref()) {
             let flags = self.state.borrow().activate_flags;
             if ctx.is_some_and(|c| privacy::imm32_context(c, flags)) {
                 zdebug!("IMM32 程式：經相容層送出組字");
@@ -1782,6 +1791,10 @@ impl TextService_Impl {
             // 全域 chord 不是文字輸入：先判斷已註冊的快捷鍵，英文模式也一樣。
             if self.bound_chord(vk, lparam).is_some() {
                 return true;
+            }
+            // PageUp／PageDown 不屬於文字輸入：連候選窗／選單開著也交還宿主。
+            if keys::is_page_key(vk) {
+                return false;
             }
             // 英文模式沒有組字時是純 raw：一般按鍵一律交還宿主。chord 已在
             // 上面先判斷；這裡不能呼叫 available／idle_key 等會產生 IPC 的方法。
@@ -3558,6 +3571,27 @@ mod english_route_tests {
         hold_caps(false);
         plain_keyboard();
         assert_eq!(rig.preedit(), "台灣");
+    }
+
+    /// 組字中按 PgDn：不送 Key 給引擎、先送出組字，按鍵交還宿主。
+    #[test]
+    fn page_down_commits_then_passes_to_host() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("su3cl3");
+        assert!(rig.composing(), "先建立注音組字");
+        let scan = unsafe { MapVirtualKeyW(0x22, MAPVK_VK_TO_VSC) } as isize;
+        let before = rig.sent().len();
+        let tested = rig.press_vk(0x22, scan, None);
+        assert!(!tested, "PageDown 不得被輸入法吃掉");
+        assert_eq!(
+            rig.sent().last().map(String::as_str),
+            Some("commit"),
+            "先送出組字：{:?}",
+            rig.sent()
+        );
+        assert!(!rig.sent()[before..].contains(&"key".to_string()));
+        assert!(!rig.composing(), "送出後結束組字");
     }
 
     /// Caps 只改字母字面；Caps＋Shift 是小寫，數字與標點不受影響。

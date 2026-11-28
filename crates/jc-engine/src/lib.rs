@@ -1546,22 +1546,28 @@ mod tests {
         else {
             panic!("組字中 Delete 應回 State");
         };
-        assert_eq!(preedit, "ㄨㄛˇ");
+        // 一次只刪一個顯示字元：先刪掉下一個符號 ㄊ。
+        assert_eq!(preedit, "ㄨㄛˇㄞˊ");
         assert_eq!(handled, Some(true), "組字中按 Delete 要明確回 handled");
 
+        // 回到開頭，再按 Delete 逐符號刪到空；每一鍵仍是 handled。
         engine.handle(Request::Key {
-            key: Key::new(KeyCode::ArrowLeft, None, false),
+            key: Key::new(KeyCode::Home, None, false),
         });
-        let Response::State {
-            preedit, handled, ..
-        } = engine.handle(Request::Key {
-            key: Key::new(KeyCode::Delete, None, false),
-        })
-        else {
-            panic!("組字中 Delete 應回 State");
-        };
-        assert_eq!(preedit, "");
-        assert_eq!(handled, Some(true), "刪掉最後一個字元的那一鍵仍是 handled");
+        for _ in 0..8 {
+            let Response::State {
+                preedit, handled, ..
+            } = engine.handle(Request::Key {
+                key: Key::new(KeyCode::Delete, None, false),
+            })
+            else {
+                panic!("組字中 Delete 應回 State");
+            };
+            assert_eq!(handled, Some(true), "刪除顯示字元的每一鍵都是 handled");
+            if preedit.is_empty() {
+                break;
+            }
+        }
         assert_eq!(engine.composition(), "");
 
         let Response::State { handled, .. } = engine.handle(Request::Key {

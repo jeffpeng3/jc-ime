@@ -281,18 +281,6 @@ fn candidate_lists_survive_every_transform() {
         5,
     );
     add(
-        "zh Tab 補全",
-        Box::new(|data| {
-            let mut s = base(data);
-            press_all(&mut s, &chars("ji3"));
-            press_all(&mut s, &[key(KeyCode::Tab)]);
-            s
-        }),
-        "我",
-        Some("ji3"),
-        5,
-    );
-    add(
         "zh 游標進字面中間只對右側符號",
         Box::new(|data| {
             let mut s = base(data);
@@ -387,18 +375,6 @@ fn candidate_lists_survive_every_transform() {
         "婐",
         Some("ji3"),
         5,
-    );
-    add(
-        "en Tab 開候選窗",
-        Box::new(|data| {
-            let mut s = base(data);
-            press_all(&mut s, &chars("hellp"));
-            press_all(&mut s, &[key(KeyCode::Tab)]);
-            s
-        }),
-        "hellp",
-        Some("hello"),
-        2,
     );
     add(
         "ja 轉換",

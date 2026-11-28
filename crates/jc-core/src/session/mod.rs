@@ -1067,8 +1067,8 @@ impl Session {
     /// 翻到候選的第 `page` 頁；頁面大小由目前版面決定（直向十項、四欄四十項）。
     ///
     /// 目前候選清單保留全部候選，翻頁只是把高亮移到該頁第一項；頁碼超出
-    /// 範圍時不改變狀態。外殼不需要呼叫這個方法，`PageUp`／`PageDown` 會走
-    /// 同一套頁邊界。
+    /// 範圍時不改變狀態。`PageUp`／`PageDown` 不再由輸入法處理，外殼要換頁
+    /// 時直接呼叫這個方法。
     pub fn page(&mut self, page: usize) -> Snapshot {
         let index = page.saturating_mul(self.page_size());
         if index < self.candidates.len() {
@@ -2074,8 +2074,8 @@ mod tests {
         type_syllable(&mut s, "ㄕˋ");
         assert_eq!(s.candidates().len(), 19, "要剛好兩頁");
         s.press(Key::new(KeyCode::Down, None, false));
-        s.press(Key::new(KeyCode::PageDown, None, false));
-        assert_eq!(s.current_page(), 1, "PageDown 到第二頁");
+        s.page(1);
+        assert_eq!(s.current_page(), 1, "page(1) 到第二頁");
         assert_eq!(s.page_size(), 10);
 
         let want = s.candidates()[10].surface.clone();
@@ -2090,7 +2090,7 @@ mod tests {
         let mut s = two_page_candidates_session();
         type_syllable(&mut s, "ㄕˋ");
         s.press(Key::new(KeyCode::Down, None, false));
-        s.press(Key::new(KeyCode::PageDown, None, false));
+        s.page(1);
         assert_eq!(s.highlighted(), 10);
         s.press(Key::new(KeyCode::Down, None, false));
         assert_eq!(s.highlighted(), 11);
@@ -2233,17 +2233,17 @@ mod tests {
         );
     }
 
-    /// 換頁不改變目前欄數。
+    /// 換頁 API 不改變目前欄數。
     #[test]
-    fn test_page_down_keeps_column_count() {
+    fn test_page_api_keeps_column_count() {
         let mut s = many_candidates_session(50);
         type_syllable(&mut s, "ㄕˋ");
         s.press(Key::new(KeyCode::Down, None, false));
         s.press(Key::new(KeyCode::ArrowRight, None, false));
         assert_eq!(s.snapshot().columns, 4);
 
-        let page = s.press(Key::new(KeyCode::PageDown, None, false));
-        assert_eq!(page.columns, 4, "PageDown 維持四欄");
+        let page = s.page(1);
+        assert_eq!(page.columns, 4, "page(1) 維持四欄");
         assert_eq!(page.rows, 10);
         assert_eq!(page.highlighted, 40, "換到下一頁頁首");
     }
@@ -2305,15 +2305,11 @@ mod tests {
         );
         // 直向第 2 頁仍正常。
         s.press(Key::new(KeyCode::Down, None, false));
-        assert_eq!(
-            s.press(Key::new(KeyCode::PageDown, None, false))
-                .highlighted,
-            10
-        );
+        assert_eq!(s.page(1).highlighted, 10);
         // 四欄：從第一頁翻到第二頁（索引 40）。
         s.press(Key::new(KeyCode::ArrowRight, None, false));
         assert_eq!(s.snapshot().columns, 4);
-        let second = s.press(Key::new(KeyCode::PageDown, None, false));
+        let second = s.page(1);
         assert_eq!(second.highlighted, 40, "四欄第 2 頁頁首");
         assert_eq!(second.columns, 4);
     }
@@ -2326,11 +2322,7 @@ mod tests {
         s.press(Key::new(KeyCode::Down, None, false));
         assert_eq!(s.snapshot().columns, 1);
         assert_eq!(s.page_size(), 10);
-        assert_eq!(
-            s.press(Key::new(KeyCode::PageDown, None, false))
-                .highlighted,
-            10
-        );
+        assert_eq!(s.page(1).highlighted, 10);
     }
 
     /// 四欄時一頁四十項。
@@ -2345,9 +2337,9 @@ mod tests {
         assert_eq!(s.snapshot().rows, 10);
     }
 
-    /// 四欄時 PageDown 直接到第 41 項；↓ 仍可在頁內跨欄。
+    /// 四欄時 page(1) 直接到第 41 項；↓ 仍可在頁內跨欄。
     #[test]
-    fn test_page_down_after_forty() {
+    fn test_page_api_after_forty() {
         let mut s = default_cap_candidates_session(90);
         type_syllable(&mut s, "ㄕˋ");
         s.press(Key::new(KeyCode::Down, None, false));
@@ -2359,8 +2351,8 @@ mod tests {
             10
         );
         s.select(39);
-        let page = s.press(Key::new(KeyCode::PageDown, None, false));
-        assert_eq!(page.highlighted, 40, "PageDown 到第 41 項");
+        let page = s.page(1);
+        assert_eq!(page.highlighted, 40, "page(1) 到第 41 項");
         assert_eq!(page.columns, 4);
         s.select(39);
         let cross = s.press(Key::new(KeyCode::Down, None, false));

@@ -1245,21 +1245,18 @@ mod tests {
         Session::new(config)
     }
 
-    /// 翻頁鍵在候選窗還沒開時先開窗並進入選取模式。
+    /// 上鍵在候選窗還沒開時先開窗並進入選取模式；PageDown 已交給宿主。
     #[test]
-    fn test_page_keys_open_candidates_before_shown() {
+    fn test_up_opens_candidates_but_page_down_does_not() {
         let mut s = session();
         type_syllable(&mut s, "ㄨㄛˇ");
-        assert!(!s.snapshot().navigating);
         let snap = s.press(Key::new(KeyCode::PageDown, None, false));
-        assert!(!snap.candidates.is_empty(), "PageDown 開候選窗");
-        assert!(snap.navigating, "翻頁鍵進入選取模式");
-        assert_eq!(snap.highlighted, 0, "第一頁第一項");
+        assert!(!snap.navigating, "PageDown 不開候選窗也不進選取模式");
 
         let mut s = session();
         type_syllable(&mut s, "ㄨㄛˇ");
         let snap = s.press(Key::new(KeyCode::Up, None, false));
-        assert!(!snap.candidates.is_empty(), "上鍵也開候選窗");
+        assert!(!snap.candidates.is_empty(), "上鍵開候選窗");
         assert!(snap.navigating);
         assert_eq!(snap.highlighted, 0, "剛開窗不移動反白");
     }

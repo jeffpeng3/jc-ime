@@ -493,12 +493,8 @@ sequenceDiagram
     Engine-->>TSF: Response::State
 
     Host->>TSF: OnKeyDown PageUp 或 PageDown
-    TSF->>Engine: Request::Key
-    Engine->>Core: Session::press
-    Core->>Core: key_policy 與 Page
-    Core->>Core: page_step
-    Core-->>Engine: Snapshot
-    Engine-->>TSF: Response::State
+    TSF->>Engine: Request::commit（先送出組字）
+    TSF-->>Host: 交出原本的 PageUp／PageDown
 
     Host->>TSF: OnKeyDown 數字鍵
     TSF->>Engine: Request::Key
@@ -522,7 +518,7 @@ sequenceDiagram
 
 - `move_row` 用 `CandidateLayout::up`／`down`，上下鍵是線性移動，跨欄、跨頁自然接續。
 - `move_column` 用 `CandidateLayout::left`／`right`，左右鍵跳一整欄，同一個列號；單欄時不移動。
-- `page_step` 用 `page_size` 換頁，頁碼頭尾相接。
+- `PageUp`／`PageDown` 不再由核心換頁；外殼要換頁時直接呼叫 `page()`。
 - 注音的左右鍵在候選窗開著但尚未 `navigating` 時是移動組字游標；進入選取後才換候選。
 
 ### 3.9 選單
@@ -794,4 +790,4 @@ sequenceDiagram
 
 ## 6. 待確認
 
-1. 英文模式已無組字，舊 `key_with_flags` 的 `Up`／`Down`／`PageUp`／`PageDown` 本機快照特例已刪除；候選窗只存在於混合模式。
+1. 英文模式已無組字，舊 `key_with_flags` 的 `Up`／`Down` 本機快照特例已刪除；`PageUp`／`PageDown` 已交還宿主；候選窗只存在於混合模式。

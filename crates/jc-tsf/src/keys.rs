@@ -234,6 +234,11 @@ pub fn vocab_base(key: &str) -> Option<&'static str> {
     })
 }
 
+/// PageUp／PageDown：輸入法不再拿來換頁，組字中一律先送出組字再交給宿主。
+pub fn is_page_key(vk: u32) -> bool {
+    matches!(vk, x if x == VK_PRIOR.0 as u32 || x == VK_NEXT.0 as u32)
+}
+
 /// 鎖定鍵（NumLock、ScrollLock）與 IME 控制鍵（VK_KANA…VK_MODECHANGE、VK_PROCESSKEY）：組字中也直接交給宿主，不送出組字。
 pub fn is_lock_or_ime(vk: u32) -> bool {
     matches!(vk, 0x90 | 0x91 | 0x15..=0x1f | 0xe5)

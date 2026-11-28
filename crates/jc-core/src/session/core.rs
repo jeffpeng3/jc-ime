@@ -1303,24 +1303,6 @@ impl Session {
         self.move_row(-1);
     }
 
-    /// `PageDown`／`PageUp`：換頁，頁碼頭尾相接；還沒開窗時先開窗。
-    pub(super) fn page_step(&mut self, delta: isize) {
-        if self.candidates.is_empty() {
-            return;
-        }
-        if !self.candidate_window {
-            self.candidate_window = true;
-            self.navigating = true;
-            return;
-        }
-        let size = self.page_size().max(1);
-        let pages = self.candidates.len().div_ceil(size).max(1) as isize;
-        let page = (self.highlighted / size) as isize;
-        let page = (page + delta).rem_euclid(pages);
-        self.highlighted = page as usize * size;
-        self.navigating = true;
-    }
-
     /// 移動組字游標到指定音節格；回傳是否真的移動。
     ///
     /// 音節打到一半（暫存注音非空）時不動游標，對照上游 `moveTo`。游標移到
@@ -3210,23 +3192,20 @@ mod tests {
         assert_eq!(back.highlighted, 0, "上鍵換回上一項");
     }
 
-    /// 對照 `TestDownEntersSelectionModeThenArrowsPage` 的翻頁段落。
+    /// PageUp／PageDown 不再由核心換頁：組字中按下去只維持狀態，
+    /// 由外殼先送出組字再交給應用程式。
     #[test]
-    fn test_page_keys_switch_pages_and_wrap() {
+    fn test_page_keys_are_not_handled_by_core() {
         let mut s = session();
         type_syllable(&mut s, "ㄕˋ");
-        s.press(Key::new(KeyCode::Space, None, false));
-        s.press(Key::new(KeyCode::Down, None, false));
-
+        let before = s.snapshot();
         let down = s.press(Key::new(KeyCode::PageDown, None, false));
-        assert_eq!(down.highlighted, PAGE_SIZE, "PageDown 到第二頁第一項");
-        assert!(down.navigating);
-
-        let wrap = s.press(Key::new(KeyCode::PageDown, None, false));
-        assert_eq!(wrap.highlighted, 0, "最後一頁再往後回到第一頁");
-
-        let back = s.press(Key::new(KeyCode::PageUp, None, false));
-        assert_eq!(back.highlighted, PAGE_SIZE, "PageUp 從第一頁往前到最後一頁");
+        assert_eq!(down.highlighted, before.highlighted);
+        assert!(!down.navigating, "PageDown 不進入選取模式");
+        let up = s.press(Key::new(KeyCode::PageUp, None, false));
+        assert_eq!(up.highlighted, before.highlighted);
+        assert!(!up.navigating, "PageUp 不進入選取模式");
+        assert!(!s.candidate_window);
     }
 
     /// 對照 `TestHomeEndDependOnSelectionMode`：選取模式的 Home／End 是

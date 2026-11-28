@@ -28,6 +28,11 @@ GitHub Release。較舊的版本留在 git 歷史，`git log -- docs/CHANGELOG.m
 - 身分檔寫入失敗時先探 socket；有回應就等完整 `STOP_GRACE`（12 秒），
   不提早強制結束。3 秒 legacy 只在鎖被持有但 socket 已死時生效。
 
+### 變更
+
+- `PageUp`／`PageDown` 不再由輸入法換頁；組字中按鍵會先送出組字，再交給
+  應用程式。換頁只保留外殼直接呼叫的 `page()`。
+
 ## 0.1.32 - 2026-11-28
 
 ### 修正

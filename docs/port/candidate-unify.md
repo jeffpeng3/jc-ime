@@ -37,7 +37,7 @@
   - 直向時第 10 項按 `↓` 到下一頁第 1 項（索引 11）；下一頁第 1 項按 `↑`
     回到上一頁第 10 項。
 - 頭尾停住、不回捲：整份清單最後一項按 `↓` 停在原地，第一項按 `↑` 也
-  停在原地。`PageUp`／`PageDown` 仍可直接跳頁。
+  停在原地。`PageUp`／`PageDown` 已交還宿主，不再換頁。
 - `←`／`→` 跳一整欄：索引 `-10`／`+10`。直向單欄時是 no-op。四欄時在本頁
   第一欄按 `←` 接到上一頁最後一欄、在本頁最後一欄按 `→` 接到下一頁第一欄，
   都停在同一個列號。下一頁不滿一頁時，`→` 夾到該頁最後一項（列號可能因此
@@ -53,7 +53,7 @@
 - 四欄時每一欄都會畫自己的列號；這是列號，不是全頁唯一的流水號。
 
 頁尾不再頁內環繞：`↓` 會自然走到下一頁，`↑` 會回到上一頁。這樣 `↑`／`↓`
-在整份候選清單上是單一線性序列；`PageUp`／`PageDown` 只是跳頁的快捷鍵。
+在整份候選清單上是單一線性序列；換頁只由外殼呼叫 `page()` API，`PageUp`／`PageDown` 不再由輸入法處理。
 
 ## 候選上限與版面
 
@@ -148,7 +148,7 @@
 - `test_digit_selects_row_in_current_column`
 - `test_arrow_left_right_switches_column_same_row`
 - `test_digit_in_vertical_mode_selects_item`
-- `test_page_down_keeps_column_count`
+- `test_page_api_keeps_column_count`
 - `test_down_moves_into_next_column`
 - `test_up_moves_into_previous_column`
 - `test_down_crosses_column_boundary`
@@ -162,7 +162,7 @@
 - `test_many_candidates_exceed_forty_at_cap`
 - `test_vertical_page_size_is_ten`
 - `test_four_column_page_size_is_forty`
-- `test_page_down_after_forty`
+- `test_page_api_after_forty`
 - `test_vertical_mode_left_right_is_noop`
 - `test_enter_still_two_stage_when_selecting_variant`（前導變體窗選了不同字時）
 - `test_first_candidate_is_current_display`／`test_second_candidate_is_raw_input`
