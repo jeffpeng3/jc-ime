@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use jc_core::key::Key;
+use jc_core::mixed::{Dictionary, English, Word};
 use jc_core::session::{Session, SessionConfig};
 use jc_core::{KeyCode, Mode};
 
@@ -180,12 +181,26 @@ fn cross_syllable_cursor_targets_adjacent_zhuyin() {
     assert_eq!(s.candidates()[0].surface, "ㄨㄛˇ");
 }
 
+/// 固定英文詞表的 session；權重決定補完與拼字建議的順序。
+///
+/// 不可以走 `English::load_default()`：那會讀 `DEFAULT_DATA_ROOT`／
+/// `JC_TESTDATA`，有沒有 `english/` 詞表會讓同一條測試在 CI 與本機得到
+/// 不同清單。
+fn english_session() -> Session {
+    let words = [("hello", 3.0), ("help", 2.0), ("hell", 1.0)]
+        .into_iter()
+        .map(|(word, weight)| Word::new(word, weight))
+        .collect::<Vec<_>>();
+    let mut config = SessionConfig::new(Mode::Mixed);
+    config.english = Some(Arc::new(English::new(Some(Dictionary::new(words)))));
+    config.english_autocomplete = true;
+    Session::new(config)
+}
+
 /// 英文整詞補全是獨立的 run 補全動作；一般 ↓ 只對游標字母。
 #[test]
 fn english_tab_stays_whole_run_but_down_targets_letter() {
-    let mut config = SessionConfig::new(Mode::Mixed);
-    config.english_autocomplete = true;
-    let mut s = Session::new(config);
+    let mut s = english_session();
     type_keys(&mut s, "hellp");
     s.press(key(KeyCode::Tab));
     assert_eq!(
@@ -200,6 +215,38 @@ fn english_tab_stays_whole_run_but_down_targets_letter() {
     s.press(key(KeyCode::Down));
     assert_eq!(s.candidate_target().map(|t| (t.0, t.1)), Some((4, 1)));
     assert_eq!(s.candidates()[0].surface, "p", "↓ 只對最後一個字母");
+}
+
+/// `JC_TESTDATA` 指到不存在目錄時（等同 `DEFAULT_DATA_ROOT` 也不可用），
+/// 英文補全測試仍要通過。
+///
+/// 在子行程把 `JC_TESTDATA` 指到不存在的目錄並拿掉 `JC_IMEDATA`；
+/// `data_root()` 因此在看 `DEFAULT_DATA_ROOT` 之前就回 `None`，等同那個
+/// 常數指向不存在的目錄。只跑上面那條測試，不會遞迴。
+#[test]
+fn english_completion_is_hermetic_without_testdata() {
+    let missing =
+        std::env::temp_dir().join(format!("jc-hermetic-no-testdata-{}", std::process::id()));
+    assert!(!missing.exists(), "測試用的不存在路徑竟然存在：{missing:?}");
+
+    let exe = std::env::current_exe().expect("取得測試執行檔");
+    let output = std::process::Command::new(exe)
+        .args([
+            "--exact",
+            "english_tab_stays_whole_run_but_down_targets_letter",
+            "--nocapture",
+        ])
+        .env("JC_TESTDATA", &missing)
+        .env_remove("JC_IMEDATA")
+        .output()
+        .expect("啟動子行程");
+    assert!(
+        output.status.success(),
+        "沒有測試資料時英文補全測試失敗（status {}）\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// 未完成的注音也由 DisplayUnit target 決定：游標在 `ㄧ` 時 ↓ 只對 `ㄧ`。
