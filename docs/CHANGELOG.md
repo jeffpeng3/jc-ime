@@ -19,11 +19,14 @@ GitHub Release。較舊的版本留在 git 歷史，`git log -- docs/CHANGELOG.m
 - 反安裝同樣先 `--stop`，再移除檔案與註冊；提權身分對不到原使用者時仍以
   `taskkill` 收尾，最後一次 flush 可能沒有。
 - 引擎行程確認與強制結束改為只處理目前 session；取不到 session 才退回
-  machine-wide 並寫 log。
+  machine-wide 並寫 log。`--stop` 失敗時安裝直接中止，不只看目前 session
+  的行程清單；帳號範圍 socket 仍有回應也不回報停止成功。
+- PowerShell 的 `Get-Process`／`Stop-Process` 改用 `-ErrorAction Stop`，
+  權限或 CIM 錯誤一律視為「無法確認」並 fail-closed。
 - 停止要求檔以 60 秒判定殘骸：崩潰的 `--stop` 可能讓 60 秒內的引擎啟動
   直接退出，取捨已寫在文件。
-- 身分檔寫入失敗時先探 socket；有回應就等完整 `shutdown_grace`，不提早
-  強制結束。
+- 身分檔寫入失敗時先探 socket；有回應就等完整 `STOP_GRACE`（12 秒），
+  不提早強制結束。3 秒 legacy 只在鎖被持有但 socket 已死時生效。
 
 ## 0.1.32 - 2026-11-28
 

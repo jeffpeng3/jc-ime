@@ -537,16 +537,26 @@ fn reap_orphan_engine(socket: &Path) -> bool {
         return false;
     }
     log::warn!("單例鎖是空的，但 socket 仍有引擎；已送 Shutdown 讓它存檔");
-    let deadline = Instant::now() + ORPHAN_GRACE;
-    while Instant::now() < deadline {
-        if shutdown_engine(socket).is_err() {
+    if wait_socket_gone(socket, ORPHAN_GRACE) {
+        return true;
+    }
+    log::warn!("orphan 引擎沒有在 {ORPHAN_GRACE:?} 內結束，改用強制結束目前 session");
+    terminate_other_engines();
+    true
+}
+
+/// 等 socket 真的消失。`false` 代表期限內仍連得上。
+fn wait_socket_gone(socket: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !engine_socket_alive(socket) {
             return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
         }
         thread::sleep(Duration::from_millis(50));
     }
-    log::warn!("orphan 引擎沒有在 {ORPHAN_GRACE:?} 內結束，改用強制結束");
-    terminate_other_engines();
-    true
 }
 
 /// 停止目前的引擎，升級／反安裝前使用。
@@ -562,13 +572,25 @@ pub fn stop(lock_name: &str, socket: &Path) -> Result<(), Error> {
     let result = match acquire_with_timeout(lock_name, grace) {
         Ok(lock) => {
             let orphan = reap_orphan_engine(socket);
+            // 強制結束只涵蓋目前 session；其他 session 的 orphan 仍可能
+            // 監聽同一條帳號範圍 pipe。socket 還在就不算成功。
+            let gone = wait_socket_gone(socket, ORPHAN_GRACE);
             drop(lock);
-            if orphan {
-                log::info!("引擎已結束（清理了沒有 supervisor 的 orphan 引擎）");
+            if !gone {
+                log::warn!(
+                    "單例鎖已釋放，但帳號範圍的引擎 socket 仍有回應（可能是其他 session）；不視為成功"
+                );
+                Err(Error::StaleSupervisor {
+                    name: lock_name.to_string(),
+                })
             } else {
-                log::info!("引擎已結束（沒有殘留的監督者或 orphan 引擎）");
+                if orphan {
+                    log::info!("引擎已結束（清理了沒有 supervisor 的 orphan 引擎）");
+                } else {
+                    log::info!("引擎已結束（沒有殘留的監督者或 orphan 引擎）");
+                }
+                Ok(())
             }
-            Ok(())
         }
         Err(Error::StaleSupervisor { .. }) => {
             log::warn!("監督者在 {grace:?} 內沒有結束；先送 Shutdown 存檔，再強制結束");
@@ -576,9 +598,19 @@ pub fn stop(lock_name: &str, socket: &Path) -> Result<(), Error> {
             let forced = terminate_other_engines();
             match acquire_with_timeout(lock_name, FORCE_GRACE) {
                 Ok(lock) => {
+                    let gone = wait_socket_gone(socket, ORPHAN_GRACE);
                     drop(lock);
-                    log::warn!("已強制結束舊引擎（taskkill={forced}）");
-                    Ok(())
+                    if !gone {
+                        log::warn!(
+                            "已結束目前 session 的引擎，但帳號範圍的 socket 仍有回應（可能是其他 session）；不視為成功"
+                        );
+                        Err(Error::StaleSupervisor {
+                            name: lock_name.to_string(),
+                        })
+                    } else {
+                        log::warn!("已強制結束舊引擎（taskkill={forced}）");
+                        Ok(())
+                    }
                 }
                 Err(err) => Err(err),
             }
@@ -1909,6 +1941,31 @@ mod tests {
         assert!(
             text.contains("Shutdown"),
             "應先送 Shutdown 讓引擎存檔：{text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// socket 還有人聽時不能回「已消失」；listener 關閉後才回 true。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wait_socket_gone_tracks_listener_lifetime() {
+        use std::os::linux::net::SocketAddrExt;
+
+        let dir = temp_dir("socket-gone");
+        let path = dir.join("engine.sock");
+        let name = jc_windows::socket_name(&path).expect("socket 名稱");
+        let address =
+            std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes()).expect("abstract");
+        let listener = std::os::unix::net::UnixListener::bind_addr(&address).expect("綁定");
+
+        assert!(
+            !wait_socket_gone(&path, Duration::from_millis(100)),
+            "listener 還在時不應視為已消失"
+        );
+        drop(listener);
+        assert!(
+            wait_socket_gone(&path, Duration::from_secs(1)),
+            "listener 關閉後應視為已消失"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

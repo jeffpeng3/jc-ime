@@ -71,6 +71,10 @@ require_line 'TasklistShowsEngine'
 require_line 'WindowsPowerShell\v1.0\powershell.exe'
 # 行程確認與強制結束必須按目前 session 過濾，不能直接 machine-wide。
 require_line 'SessionId -eq $s'
+# --stop 失敗要讓安裝停下，不能只看目前 session 的行程清單。
+require_line 'if not StopEngine('
+# PowerShell 錯誤要 fail-closed，不能靜默回 exit 0。
+require_line '$ErrorActionPreference='
 require_line 'Name: "smoke"; Description: "{cm:RunSmoke}"; Flags: unchecked'
 require_line 'Tasks: smoke;'
 require_line 'Flags: runhidden waituntilterminated runasoriginaluser'

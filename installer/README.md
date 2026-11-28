@@ -165,7 +165,9 @@ fail-closed 處理並寫 log。
 - `PrepareToInstall`：先用 `jc-engine --stop` 優雅停掉舊引擎與啟動器（停止事件
   無效時才 `taskkill`），再移除舊 MSI，最後逐一讓開四個程式檔。先刪、刪不掉改名
   `.old-<yyyymmddhhnnss>`、再失敗才回錯誤訊息。時間戳命名是刻意的，固定名稱會在
-  上一輪殘骸仍被占用時卡住。停止後仍偵測得到引擎就不繼續安裝。
+  上一輪殘骸仍被占用時卡住。`--stop` 回非 0（例如別的 session 還握著引擎）
+  就直接回 `ErrEngineRunning`，不只看目前 session 的行程清單；停止後仍偵測得到
+  引擎同樣不繼續安裝。
 - `[Run]` 最後的 `jc-engine --verify-running` 比對執行中監督者的版本與 SHA-256；
   只靠單例鎖會把「舊引擎還在跑」誤判成成功。
 - `RemoveLegacyMsi`：掃 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`

@@ -377,6 +377,9 @@ SHA-256，發現舊版就送 `Shutdown` 存檔後強制結束，然後才啟動�
 `[Run]` 最後的 `jc-engine --verify-running` 會確認執行中的就是剛安裝的 binary。
 已經開著的程式仍載著舊 TSF DLL，重開該程式即可；新開的程式直接用新 DLL。
 
+`--stop` 回非 0 時安裝器直接失敗（`ErrEngineRunning`），不會只憑目前 session
+的行程清單就繼續覆蓋檔案；其他 session 還握著引擎時會停在這個檢查。
+
 停止與強制結束只針對目前 session：提權安裝器不會殺掉其他登入使用者的
 `jc-engine.exe`。只有在取不到目前 session（或 PowerShell 不可用而退回
 `tasklist`／`taskkill`）時才會用 machine-wide 判斷，log 會寫明。
@@ -390,7 +393,9 @@ SHA-256，發現舊版就送 `Shutdown` 存檔後強制結束，然後才啟動�
 啟動直接退出；等超過 60 秒或刪除
 `%LOCALAPPDATA%\jc-ime\Local-jc-ime-engine-supervisor-stop` 後即可恢復。
 身分檔寫入失敗時，`--stop` 會先探 socket；socket 有回應就仍等完整的
-`shutdown_grace`，不會因為缺少身分檔而提早強制結束。
+`STOP_GRACE`（12 秒），不會因為缺少身分檔而提早強制結束。舊版監督者只要
+socket 還活著（引擎還在跑）也會走完整 12 秒，不是 3 秒；3 秒 legacy 只在
+「單例鎖被持有但 socket 已死」時生效。
 
 ## 簽章
 

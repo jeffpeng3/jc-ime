@@ -516,12 +516,21 @@ var
 begin
   Result := True;
   // 只檢查目前 session：提權安裝器不該因為其他登入使用者有引擎而停下。
+  // -ErrorAction Stop：權限或 CIM 錯誤要讓 PowerShell 回非 0，不能靜默
+  // 當成「找不到行程」。ObjectNotFound 才是真的沒有這個名稱。
   if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
       '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ' +
-      '"$s=[System.Diagnostics.Process]::GetCurrentProcess().SessionId; ' +
-      'if (Get-Process jc-engine,jc-engine-launcher -ErrorAction SilentlyContinue | ' +
-      'Where-Object { $_.SessionId -eq $s }) { exit 1 } else { exit 0 }"',
+      '"$ErrorActionPreference=''Stop''; ' +
+      '$s=[System.Diagnostics.Process]::GetCurrentProcess().SessionId; ' +
+      '$found=$false; ' +
+      'foreach ($n in @(''jc-engine'',''jc-engine-launcher'')) { ' +
+      'try { $p=Get-Process -Name $n -ErrorAction Stop } ' +
+      'catch { if ($_.CategoryInfo.Category -eq ''ObjectNotFound'') { continue }; exit 2 }; ' +
+      'if ($p | Where-Object { $_.SessionId -eq $s }) { $found=$true } }; ' +
+      'if ($found) { exit 1 } else { exit 0 }"',
       '', SW_HIDE, ewWaitUntilTerminated, Code) then begin
+    if Code = 2 then
+      Log('PowerShell 無法確認引擎行程（權限或 CIM 錯誤），保守視為仍在執行');
     Result := Code <> 0;
     Exit;
   end;
@@ -584,17 +593,23 @@ begin
   Code := 1;
   if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
       '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ' +
-      '"$s=[System.Diagnostics.Process]::GetCurrentProcess().SessionId; ' +
-      'Get-Process jc-engine,jc-engine-launcher -ErrorAction SilentlyContinue | ' +
-      'Where-Object { $_.SessionId -eq $s } | Stop-Process -Force -ErrorAction SilentlyContinue"',
+      '"$ErrorActionPreference=''Stop''; ' +
+      '$s=[System.Diagnostics.Process]::GetCurrentProcess().SessionId; ' +
+      'foreach ($n in @(''jc-engine'',''jc-engine-launcher'')) { ' +
+      'try { Get-Process -Name $n -ErrorAction Stop | ' +
+      'Where-Object { $_.SessionId -eq $s } | ' +
+      'Stop-Process -Force -ErrorAction Stop } ' +
+      'catch { if ($_.CategoryInfo.Category -eq ''ObjectNotFound'') { continue }; exit 2 } }; ' +
+      'exit 0"',
       '', SW_HIDE, ewWaitUntilTerminated, Code) then begin
     if Code = 0 then begin
       Log('已用 PowerShell 結束目前 session 的引擎與 launcher');
       Sleep(500);
       Exit;
     end;
+    Log(Format('PowerShell 無法只停目前 session（exit %d）', [Code]));
   end;
-  Log('無法只停目前 session；改用 machine-wide taskkill（可能影響其他登入使用者）');
+  Log('改用 machine-wide taskkill（可能影響其他登入使用者）');
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM jc-engine-launcher.exe', '',
       SW_HIDE, ewWaitUntilTerminated, Code);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM jc-engine.exe', '',
@@ -603,17 +618,25 @@ begin
 end;
 
 // 先 graceful（--stop），再確認行程真的結束；不得已才 taskkill。
-procedure StopEngine(const Helper: String; const AllowOriginalUser: Boolean);
+//
+// 回傳 False 代表「不能繼續覆蓋檔案」。`--stop` 本身失敗就一定回 False：
+// 目前 session 的行程清單看不到其他 session 的引擎，不能只用它判斷成功。
+function StopEngine(const Helper: String; const AllowOriginalUser: Boolean): Boolean;
+var
+  Stopped: Boolean;
 begin
-  RunEngineStop(Helper, AllowOriginalUser);
+  Stopped := RunEngineStop(Helper, AllowOriginalUser);
+  if not Stopped then
+    Log('jc-engine --stop 失敗；安裝會停下來，不只用目前 session 的行程清單判斷');
   if EngineProcessesRunning then begin
     Log('--stop 之後仍有引擎行程；改用 taskkill（最後手段，可能損失最後一次 flush）');
     KillEngineProcesses;
   end;
-  if EngineProcessesRunning then
-    Log('警告：jc-engine 或 jc-engine-launcher 仍在執行；讓路可能失敗')
+  Result := Stopped and (not EngineProcessesRunning);
+  if Result then
+    Log('jc-engine 與 jc-engine-launcher 已結束，可以替換檔案')
   else
-    Log('jc-engine 與 jc-engine-launcher 已結束，可以替換檔案');
+    Log('警告：jc-engine 或 jc-engine-launcher 仍在執行；不覆蓋檔案');
 end;
 
 // 檔案複製之前唯一的動手時機。先停引擎、移除舊 MSI，再清 .old-* 殘骸，
@@ -629,9 +652,9 @@ begin
   Dir := ExpandConstant('{app}');
   // 舊版引擎不認得停止事件，所以用這次安裝帶來的新版執行 --stop。
   ExtractTemporaryFile('jc-engine-stop.exe');
-  StopEngine(ExpandConstant('{tmp}\jc-engine-stop.exe'), True);
-  if EngineProcessesRunning then begin
+  if not StopEngine(ExpandConstant('{tmp}\jc-engine-stop.exe'), True) then begin
     // 還沒動任何檔案就停下來，不要留下「引擎被刪、DLL 已讓路」的半套狀態。
+    // --stop 失敗或目前 session 看不到其他 session 的引擎都算失敗。
     Result := ExpandConstant('{cm:ErrEngineRunning}');
     Exit;
   end;
@@ -646,9 +669,13 @@ end;
 procedure CurUninstallStepChanged(CurStep: TUninstallStep);
 var
   Dir: String;
+  StopOk: Boolean;
 begin
-  if CurStep = usUninstall then
-    StopEngine(ExpandConstant('{app}\jc-engine.exe'), False);
+  if CurStep = usUninstall then begin
+    StopOk := StopEngine(ExpandConstant('{app}\jc-engine.exe'), False);
+    if not StopOk then
+      Log('反安裝時無法完全停止引擎；仍繼續反安裝，刪不掉的檔案排開機刪除');
+  end;
   if CurStep = usPostUninstall then begin
     Dir := ExpandConstant('{app}');
     SweepLeftovers(Dir);
