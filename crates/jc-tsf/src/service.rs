@@ -38,7 +38,7 @@ use windows::Win32::UI::TextServices::{
     ITfTextInputProcessor_Impl, ITfTextLayoutSink, ITfTextLayoutSink_Impl, ITfThreadMgr,
     ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, ITfUIElementMgr, TfLayoutCode,
     GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, TF_INVALID_COOKIE, TF_LC_DESTROY, TF_TMAE_COMLESS,
-    TF_TMAE_SECUREMODE, TF_TMAE_UIELEMENTENABLEDONLY,
+    TF_TMAE_CONSOLE, TF_TMAE_SECUREMODE, TF_TMAE_UIELEMENTENABLEDONLY, TF_TMF_IMMERSIVEMODE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, MB_OK,
@@ -2248,9 +2248,11 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                 st.activate_flags = flags;
             }
             zlog!(
-                "activate flags={:#x} comless={}",
+                "activate flags={:#x} comless={} console={} immersive={}",
                 flags,
-                flags & TF_TMAE_COMLESS != 0
+                flags & TF_TMAE_COMLESS != 0,
+                flags & TF_TMAE_CONSOLE != 0,
+                flags & TF_TMF_IMMERSIVEMODE != 0
             );
             self.Activate(ptim, tid)
         })

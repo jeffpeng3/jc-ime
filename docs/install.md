@@ -156,8 +156,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass ^
 
 `install-smoke` CI job 也執行同一支 `post-install-doctor.ps1`，加上 `-NoUi`
 與 `-ExitWithSmokeCode`，再從 `last.txt` 取 log 路徑、複製 `.log`／`.json`
-成 artifact。TSF 自己的 log 仍在 `%LOCALAPPDATA%\jc-ime\tsf.log`，只有設
-`JC_TSF_LOG=1` 才會寫。
+成 artifact。TSF 自己的 log 仍在 `%LOCALAPPDATA%\jc-ime\tsf.log`；只要
+`%LOCALAPPDATA%\jc-ime` 存在就會寫，不需要環境變數。要記按鍵細節時建立
+`%LOCALAPPDATA%\jc-ime\tsf-debug` 檔案再重開應用程式。
 
 ### 看不到「jc 注音」
 
@@ -211,7 +212,7 @@ CLSID，這是 32 位元程式能用同一個「jc 注音」的原因。
 | `%LOCALAPPDATA%\jc-ime\settings.json` | 使用者設定；第一次開啟設定程式就以預設值建立，可立即修改，安裝器不覆蓋既有檔 |
 | `%LOCALAPPDATA%\jc-ime\personal.json` | 個人化資料；引擎啟動時載入，學習後原子寫回 |
 | `%LOCALAPPDATA%\jc-ime\supervisor.log` | `--supervise` 的環狀 log；預設位置，可用 `--supervisor-log` 改 |
-| `%LOCALAPPDATA%\jc-ime\tsf.log` | TSF 診斷 log；只有 `JC_TSF_LOG=1` 時才寫 |
+| `%LOCALAPPDATA%\jc-ime\tsf.log` | TSF 診斷 log；`%LOCALAPPDATA%\jc-ime` 存在就會寫。建立 `tsf-debug` 檔案可加記按鍵細節 |
 | `%LOCALAPPDATA%\jc-ime\doctor\` | 安裝後（勾選 `smoke`）與手動 doctor 的 `<時間>.json`、`<時間>.log`、`last.txt`；反安裝會刪除這個子目錄 |
 
 注音產品只帶 bigram 語言模型：`build-zh-bigram\lm.bin` 是必要資料。舊的
@@ -288,6 +289,7 @@ copyright，符合 MIT 的散布條件。
 | `HKLM\SOFTWARE\Classes\CLSID\{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}\PipePrefix` | 安裝器（`jc.iss` 的 `[Registry]`） | `jc-ime`，啟動器用來推導引擎 pipe |
 | `HKLM\SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-...}` | `ITfInputProcessorProfileMgr::RegisterProfile` | TIP 註冊；兩個架構共用 |
 | `HKLM\SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-...}\LanguageProfile\0x0404\{C4E8D217-...}` | `RegisterProfile` | 顯示名稱「jc 注音」 |
+| `HKLM\SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-...}\Category` | `ITfCategoryMgr::RegisterCategory` | 六個分類；含 `{13A016DF-560B-46CD-947A-4C3AF1E0E35D}`（IMMERSIVESUPPORT），MSIX／Store 宿主才載入 TIP |
 | `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\jc-ime-engine` | 安裝器（`jc.iss` 的 `[Registry]`） | `REG_EXPAND_SZ`，每位使用者登入時各啟動一個引擎 |
 | `HKCU\Software\Microsoft\CTF`、`HKCU\Control Panel\International\User Profile`、`HKCU\Keyboard Layout` | `InstallLayoutOrTip` | 目前使用者的語言與輸入法清單 |
 
@@ -406,7 +408,8 @@ signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 ^
 | 安裝卡住或失敗 | 看 `/LOG=` 指定的 `install.log`；`PrepareToInstall` 的讓路與 `machine-register` 的結束碼都在裡面 |
 | 想確認 DLL 與類廠 | `cd "%ProgramFiles%\jc-ime"` 後執行 `.\jc-tsf-smoke.exe` |
 | 安裝後跳出「jc 注音 安裝診斷」訊息 | 看 `%LOCALAPPDATA%\jc-ime\doctor\last.txt`；最後一行是完整 `.log`。修正後可重跑 `post-install-doctor.ps1` |
-| 想知道 TSF 內部發生什麼 | 設 `JC_TSF_LOG=1` 後重開應用程式，看 `%LOCALAPPDATA%\jc-ime\tsf.log` 與 DebugView |
+| 想知道 TSF 內部發生什麼 | 重開應用程式後看 `%LOCALAPPDATA%\jc-ime\tsf.log`；需要按鍵細節時建立 `%LOCALAPPDATA%\jc-ime\tsf-debug` 再重開。沒有檔案就看 DebugView |
+| 語言清單有「jc 注音」，Windows Terminal 卻切不過去 | 先看 `tsf.log` 有沒有 `activate 開始 exe=WindowsTerminal.exe`。沒有就是 TIP 沒被載入：確認 `HKLM\SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-...}\Category` 底下有 `{13A016DF-560B-46CD-947A-4C3AF1E0E35D}`（IMMERSIVESUPPORT）；沒有就以管理員重跑 `jc-tip-register.exe machine-register`，關掉 Terminal 再開。有 activate 但失敗，看 `activate flags=` 的 `comless=`／`console=`／`immersive=` 與 `AdviseKeyEventSink 失敗` 那一行 |
 | 反安裝後還有機碼 | `reg query "HKLM\SOFTWARE\Microsoft\CTF\TIP\{2F6B41D8-...}" /reg:32`（兩個檢視都查）；用 `jc-tip-register.exe machine-unregister` 補清 profile 與分類 |
 | 找不到授權文件或捷徑打不開 | 看 `%ProgramFiles%\jc-ime\LICENSE`、`NOTICE` 與 `legal\`；缺檔就重跑 setup.exe |
 
@@ -424,8 +427,9 @@ Linux 只能做 `.iss`、payload 與 manifest 的靜態一致性檢查，下面�
    `supervisor.log` 仍寫在 `%LOCALAPPDATA%\jc-ime\`。
 5. 組字外觀、游標、Enter／Esc／Backspace 與應用程式（記事本、Word、Chromium、
    PowerShell）的相容性。
-6. UWP 應用程式（例如 Windows 設定或小算盤）能否載入 TIP；若不行，檢查安裝目錄上
-   `ALL APPLICATION PACKAGES` 的讀取權限。
+6. UWP 應用程式（例如 Windows 設定或小算盤）與 Windows Terminal（Store MSIX
+   版）能否載入 TIP 並切換到「jc 注音」；若不行，檢查 `Category` 底下是否有
+   `IMMERSIVESUPPORT`，以及安裝目錄上 `ALL APPLICATION PACKAGES` 的讀取權限。
 7. 升級：舊版反安裝、新版安裝後，語言清單只剩一項「jc 注音」、舊 CLSID 機碼與舊 DLL 檔案消失、個人資料與設定檔保留；Run 值只剩一條且指向啟動器。
 8. 反安裝後機碼、檔案是否清乾淨，`jc-engine-launcher.exe` 是否消失；反安裝只會刪除
    `%LOCALAPPDATA%\jc-ime\doctor`，其他 `%LOCALAPPDATA%\jc-ime` 內容要另外確認

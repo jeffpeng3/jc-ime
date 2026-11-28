@@ -45,8 +45,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, ITfCategoryMgr,
     ITfInputProcessorProfileMgr, ITfInputProcessorProfiles, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
-    GUID_TFCAT_TIPCAP_COMLESS, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
-    GUID_TFCAT_TIPCAP_UIELEMENTENABLED, GUID_TFCAT_TIP_KEYBOARD,
+    GUID_TFCAT_TIPCAP_COMLESS, GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
+    GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, GUID_TFCAT_TIPCAP_UIELEMENTENABLED, GUID_TFCAT_TIP_KEYBOARD,
 };
 
 use crate::guids::{
@@ -62,14 +62,21 @@ use crate::log;
 /// 有效可讀、長度 0，等於「沒有圖示」。
 static NO_ICON: [u16; 1] = [0];
 
-/// 註冊的五個分類；順序與日誌名稱一起固定在這裡。
-const CATEGORIES: [(&str, GUID); 5] = [
+/// 註冊的六個分類；順序與日誌名稱一起固定在這裡。
+const CATEGORIES: [(&str, GUID); 6] = [
     // 沒有這個分類，Windows 8 之後的輸入法設定頁不會列出「jc 注音」。
     ("GUID_TFCAT_TIP_KEYBOARD", GUID_TFCAT_TIP_KEYBOARD),
     // 沒有這個能力分類，Windows 不會接受 ITfUIElementMgr::BeginUIElement。
     (
         "GUID_TFCAT_TIPCAP_UIELEMENTENABLED",
         GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+    ),
+    // Windows Store／MSIX 等 immersive 宿主只載入宣告這個分類的 TIP。
+    // Windows Terminal 的 TSF client 會帶 TF_TMF_IMMERSIVEMODE；少了這項，
+    // 語言清單看得到「jc 注音」但切不過去。
+    (
+        "GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT",
+        GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
     ),
     // LangBar 托盤圖示：少了這個分類，工作列不會出現語言指示器。
     (
@@ -147,7 +154,7 @@ const IDENTITY_LEGACY: Identity = Identity {
     description: PROFILE_DESCRIPTION,
 };
 
-/// 註冊文字服務的 profile 與五個分類。
+/// 註冊文字服務的 profile 與六個分類。
 ///
 /// CLSID 的 `InprocServer32` 由安裝器寫好才呼叫這裡。`bEnabledByDefault` 傳
 /// `false`：不要讓 msctf 進入 quasi-installed（Loaded 但未 Installed for current
@@ -157,7 +164,7 @@ pub fn machine_register() -> Result<(), Error> {
     machine_register_impl(&IDENTITY_CURRENT)
 }
 
-/// 依指定身分註冊 profile 與五個分類。
+/// 依指定身分註冊 profile 與六個分類。
 fn machine_register_impl(identity: &Identity) -> Result<(), Error> {
     log::step("machine-register：開始");
     log::step(&format!(
@@ -292,7 +299,7 @@ fn log_hr<T>(label: &str, result: &windows::core::Result<T>) {
     }
 }
 
-/// 移除 TSF 的 profile 與五個分類。
+/// 移除 TSF 的 profile 與六個分類。
 ///
 /// 不刪 `HKCR\CLSID`：安裝器的 `[Registry]` 會把兩個檢視的 CLSID 機碼一起移除，
 /// 這裡若先刪就會跟安裝器搶，也會讓反安裝找不到目標。
@@ -303,7 +310,7 @@ pub fn machine_unregister() -> Result<(), Error> {
     machine_unregister_impl(&IDENTITY_CURRENT)
 }
 
-/// 依指定身分移除 profile 與五個分類。
+/// 依指定身分移除 profile 與六個分類。
 fn machine_unregister_impl(identity: &Identity) -> Result<(), Error> {
     log::step("machine-unregister：開始");
     log::step(&format!(
@@ -827,10 +834,10 @@ mod tests {
         assert!(profile_reg_path(&IDENTITY_LEGACY).contains(r"\0x00000404\{8F0A9B3C-"));
     }
 
-    /// 五個分類都要有，而且互不相同；少一個就少一項 Windows 功能。
+    /// 六個分類都要有，而且互不相同；少一個就少一項 Windows 功能。
     #[test]
-    fn categories_are_five_distinct_guids() {
-        assert_eq!(CATEGORIES.len(), 5);
+    fn categories_are_six_distinct_guids() {
+        assert_eq!(CATEGORIES.len(), 6);
         for (index, (label, category)) in CATEGORIES.iter().enumerate() {
             assert!(!label.is_empty());
             assert_ne!(*category, GUID::zeroed());
@@ -846,6 +853,7 @@ mod tests {
             [
                 GUID_TFCAT_TIP_KEYBOARD,
                 GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+                GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
                 GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
                 GUID_TFCAT_TIPCAP_COMLESS,
                 GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,

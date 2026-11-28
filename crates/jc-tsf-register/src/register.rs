@@ -26,7 +26,7 @@
 //! `HKLM\SOFTWARE\Microsoft\CTF`（profile 與分類）不是 WOW64 轉向機碼，兩個
 //! 架構讀寫的是同一份資料，所以 profile 只會有一組。
 //!
-//! 註冊七件事：
+//! 註冊八件事：
 //!
 //! 1. `HKCR\CLSID\{CLSID}\InprocServer32` 指到這個 DLL，`ThreadingModel`
 //!    為 `Apartment`。
@@ -36,10 +36,14 @@
 //!    設定頁才會把它列出來。
 //! 4. 註冊 `GUID_TFCAT_TIPCAP_UIELEMENTENABLED`，允許 TIP 使用
 //!    `ITfUIElementMgr`（候選窗就是靠它交給 Windows 畫）。
-//! 5. 註冊 `GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT`，LangBar 才能在通知區放托盤圖示。
-//! 6. 註冊 `GUID_TFCAT_TIPCAP_COMLESS`，COM-less 啟用的宿主才會載入這個 TIP，
+//! 5. 註冊 `GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT`，Windows Store／MSIX 等
+//!    immersive 宿主（Windows Terminal 的 TSF client 會帶
+//!    `TF_TMF_IMMERSIVEMODE`）才會載入這個 TIP；少了它，語言清單看得到
+//!    「jc 注音」但切不過去。
+//! 6. 註冊 `GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT`，LangBar 才能在通知區放托盤圖示。
+//! 7. 註冊 `GUID_TFCAT_TIPCAP_COMLESS`，COM-less 啟用的宿主才會載入這個 TIP，
 //!    否則工作列顯示「中」但按鍵直接以英文送出。
-//! 7. 註冊 `GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER`，Windows 才會用這個 CLSID
+//! 8. 註冊 `GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER`，Windows 才會用這個 CLSID
 //!    的 `ITfDisplayAttributeProvider` 解讀組字底線的顯示屬性 atom。
 //!
 //! **不啟用 profile**：讓使用者在系統設定裡自己選，不偷改使用者的預設輸入法。
@@ -63,7 +67,8 @@ use windows::Win32::System::Registry::{
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, ITfCategoryMgr,
     ITfInputProcessorProfiles, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, GUID_TFCAT_TIPCAP_COMLESS,
-    GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, GUID_TFCAT_TIPCAP_UIELEMENTENABLED, GUID_TFCAT_TIP_KEYBOARD,
+    GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+    GUID_TFCAT_TIPCAP_UIELEMENTENABLED, GUID_TFCAT_TIP_KEYBOARD,
 };
 
 use crate::guids::{
@@ -76,6 +81,31 @@ use crate::guids::{
 /// 會把它原樣交給 msctf，配上 `cchIconFile = 0`。msctf 若先讀指標再判斷長度就是
 /// 存取違規。這裡的指標有效可讀，長度 0，等於「沒有圖示」。
 static NO_ICON: [u16; 1] = [0];
+
+/// 這份 TIP 宣告的分類。註冊與反註冊共用同一份，避免只加一邊。
+///
+/// 順序與日誌名稱固定；`installer/jc-tip-register` 有一份同樣的清單，
+/// 兩邊的測試各自鎖住內容。
+const CATEGORIES: [(&str, GUID); 6] = [
+    ("GUID_TFCAT_TIP_KEYBOARD", GUID_TFCAT_TIP_KEYBOARD),
+    (
+        "GUID_TFCAT_TIPCAP_UIELEMENTENABLED",
+        GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+    ),
+    (
+        "GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT",
+        GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
+    ),
+    (
+        "GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT",
+        GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+    ),
+    ("GUID_TFCAT_TIPCAP_COMLESS", GUID_TFCAT_TIPCAP_COMLESS),
+    (
+        "GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER",
+        GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+    ),
+];
 
 /// 一組可註冊的 TSF 身分。
 ///
@@ -210,50 +240,12 @@ pub fn register_with(reg: &Registration) -> Result<()> {
             )?;
         install_log("CoCreateInstance(CLSID_TF_CategoryMgr)：成功（HRESULT 0x00000000）");
 
-        install_log("RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)：開始");
-        let result = categories.RegisterCategory(&reg.clsid, &GUID_TFCAT_TIP_KEYBOARD, &reg.clsid);
-        log_result("RegisterCategory(GUID_TFCAT_TIP_KEYBOARD)", &result);
-        result?;
-        // 沒有這個能力分類，Windows 不會接受 ITfUIElementMgr::BeginUIElement。
-        install_log("RegisterCategory(GUID_TFCAT_TIPCAP_UIELEMENTENABLED)：開始");
-        let result = categories.RegisterCategory(
-            &reg.clsid,
-            &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
-            &reg.clsid,
-        );
-        log_result(
-            "RegisterCategory(GUID_TFCAT_TIPCAP_UIELEMENTENABLED)",
-            &result,
-        );
-        result?;
-        // LangBar 托盤圖示：少了這個分類，工作列不會出現語言指示器。
-        install_log("RegisterCategory(GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT)：開始");
-        let result =
-            categories.RegisterCategory(&reg.clsid, &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, &reg.clsid);
-        log_result(
-            "RegisterCategory(GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT)",
-            &result,
-        );
-        result?;
-        // COM-less 宿主（GLFW／LWJGL 等）只載入宣告這個分類的輸入法；少了它，
-        // 宿主顯示「中」但按鍵直接以英文送出。
-        install_log("RegisterCategory(GUID_TFCAT_TIPCAP_COMLESS)：開始");
-        let result =
-            categories.RegisterCategory(&reg.clsid, &GUID_TFCAT_TIPCAP_COMLESS, &reg.clsid);
-        log_result("RegisterCategory(GUID_TFCAT_TIPCAP_COMLESS)", &result);
-        result?;
-        // 組字底線：這個 CLSID 同時是 ITfDisplayAttributeProvider 的實作。
-        install_log("RegisterCategory(GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER)：開始");
-        let result = categories.RegisterCategory(
-            &reg.clsid,
-            &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
-            &reg.clsid,
-        );
-        log_result(
-            "RegisterCategory(GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER)",
-            &result,
-        );
-        result?;
+        for (label, category) in CATEGORIES {
+            install_log(&format!("RegisterCategory({label})：開始"));
+            let result = categories.RegisterCategory(&reg.clsid, &category, &reg.clsid);
+            log_result(&format!("RegisterCategory({label})"), &result);
+            result?;
+        }
     }
 
     // 刻意不呼叫 ITfInputProcessorProfileMgr::ActivateProfile。
@@ -286,24 +278,9 @@ pub fn unregister_with(reg: &Registration) -> Result<()> {
         if let Ok(categories) =
             CoCreateInstance::<_, ITfCategoryMgr>(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER)
         {
-            let _ = categories.UnregisterCategory(&reg.clsid, &GUID_TFCAT_TIP_KEYBOARD, &reg.clsid);
-            let _ = categories.UnregisterCategory(
-                &reg.clsid,
-                &GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
-                &reg.clsid,
-            );
-            let _ = categories.UnregisterCategory(
-                &reg.clsid,
-                &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
-                &reg.clsid,
-            );
-            let _ =
-                categories.UnregisterCategory(&reg.clsid, &GUID_TFCAT_TIPCAP_COMLESS, &reg.clsid);
-            let _ = categories.UnregisterCategory(
-                &reg.clsid,
-                &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
-                &reg.clsid,
-            );
+            for (_, category) in CATEGORIES {
+                let _ = categories.UnregisterCategory(&reg.clsid, &category, &reg.clsid);
+            }
         }
     }
 
@@ -516,5 +493,32 @@ mod tests {
         assert_eq!(reg.langid, 0x0404);
         assert_eq!(reg.pipe_prefix, "jc-ime");
         assert_eq!(reg.engine_pipe_name("1001"), "jc-ime-1001");
+    }
+
+    /// Windows Terminal 等 immersive 宿主只載入宣告 IMMERSIVESUPPORT 的 TIP。
+    /// 少了這項，語言清單有「jc 注音」但切不過去。
+    #[test]
+    fn categories_include_immersive_support() {
+        assert!(
+            CATEGORIES
+                .iter()
+                .any(|(_, category)| *category == GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT),
+            "CATEGORIES 必須包含 GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT"
+        );
+    }
+
+    /// 六個分類都要有，而且互不相同；註冊與反註冊共用同一份清單。
+    #[test]
+    fn categories_are_six_distinct_guids() {
+        assert_eq!(CATEGORIES.len(), 6);
+        for (index, (label, category)) in CATEGORIES.iter().enumerate() {
+            assert!(!label.is_empty());
+            assert!(
+                !CATEGORIES[..index]
+                    .iter()
+                    .any(|(_, earlier)| earlier == category),
+                "{label} 重複"
+            );
+        }
     }
 }
