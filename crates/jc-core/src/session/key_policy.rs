@@ -194,6 +194,16 @@ impl Session {
                 return KeyOutcome::Changed;
             }
         }
+        // 注音的第一個 Tab 和 ↓ 走同一個開窗路徑：清單由共用 builder
+        // 產生，帶目前值、原始輸入與平行動作。開窗後仍照原本 Tab 語意換到
+        // 下一項；英文整詞補全與日文 Tab 由下面獨立處理。
+        if !self.navigating
+            && !self.candidate_window
+            && self.suggestion.is_none()
+            && self.in_zh_lane()
+        {
+            self.open_mixed_cursor_candidates();
+        }
         if !self.accept_suggestion() {
             self.move_highlight(1);
             self.navigating = true;

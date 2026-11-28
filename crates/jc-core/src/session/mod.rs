@@ -342,15 +342,25 @@ pub(super) struct MixedTarget {
     pub(super) zhuyin: bool,
 }
 
+/// 候選套用時，`span` 指向哪一份按鍵流。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum KeySource {
+    /// `AsciiInput::typed()`：混打與英文字面。
+    #[default]
+    AsciiTyped,
+    /// `compute_units()` 串接的 keys：純注音顯示字元。
+    DisplayUnits,
+}
+
 /// 一個候選套用後要怎麼改狀態。
 ///
 /// 這是「套用什麼」的唯一資料來源：`choose_candidate` 只找 action、交給
-/// [`Session::apply_candidate_action`] 執行、再收尾；`finish_composition`
-/// 也用同一份 action 判斷 Enter 要先套用還是直接送出。
+/// [`Session::apply`] 執行、再收尾；`finish_composition` 也用同一份 action
+/// 判斷 Enter 要先套用還是直接送出。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct CandidateAction {
-    /// 由哪一條 lane 執行套用。
-    pub(crate) lane: ActionLane,
+    /// 套用的語意種類；不是語言 lane。
+    pub(crate) kind: ApplyKind,
     /// 這個動作要交給哪個引擎更新內部狀態；`None` 表示沿用舊路徑。
     ///
     /// P1 的 adapter 還不接管 lane 狀態，所有既有建構子都沿用 `Default`
@@ -358,8 +368,11 @@ pub(crate) struct CandidateAction {
     pub(crate) engine: Option<LanguageId>,
     /// 候選在目前清單裡的索引；學習與片段套用要用。
     pub(crate) index: usize,
-    /// 要取代的原始按鍵範圍（`AsciiInput::typed()` 位元組）；沒有時為 `None`。
+    /// 要取代的原始按鍵範圍；搭配 [`Self::key_source`] 決定是 `typed()`
+    /// 還是顯示字元串接的 keys。
     pub(crate) typed_span: Option<(usize, usize)>,
+    /// `typed_span` 指向的按鍵流。
+    pub(crate) key_source: KeySource,
     /// 要取代的顯示範圍（rune 起點與長度）；沒有時為 `None`。
     pub(crate) rune_span: Option<(usize, usize)>,
     /// 這個動作鎖定的顯示字元 target；套用端不再回頭猜 lane 或游標。
@@ -385,17 +398,17 @@ pub(crate) struct CandidateAction {
     pub(crate) skip_when_current_literal: bool,
 }
 
-/// 候選套用要走哪一條 lane。
+/// 候選套用的語意種類；語言差異只留在產生清單與解碼器。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum ActionLane {
-    /// 重播按鍵流的混打候選。
+pub(crate) enum ApplyKind {
+    /// 依 action 的 target／span 取代按鍵流。
     #[default]
-    Mixed,
+    Replace,
     /// 符號／表情選單：插入即送出。
     Menu,
-    /// 混合模式英文 run 的整詞補全／拼字修正；獨立於單字母 target。
-    EnglishRun,
-    /// 直接插入字面並送出整段組字。
+    /// 整段英文 run 的補全／拼字修正。
+    Run,
+    /// 沒有 target，直接插入字面並送出整段組字。
     Insert,
 }
 
@@ -1993,7 +2006,11 @@ mod tests {
             .iter()
             .map(|candidate| candidate.surface.as_str())
             .collect();
-        assert_eq!(surfaces, ["宗", "中", "ㄗㄨㄥ"]);
+        assert_eq!(
+            surfaces,
+            ["宗", "yj/ ", "中", "ㄗㄨㄥ"],
+            "[0] 目前值、[1] 原始輸入，推薦與注音字面接在後面"
+        );
     }
 
     #[test]
@@ -2072,7 +2089,11 @@ mod tests {
     fn test_digit_on_second_page_selects_page_offset() {
         let mut s = two_page_candidates_session();
         type_syllable(&mut s, "ㄕˋ");
-        assert_eq!(s.candidates().len(), 19, "要剛好兩頁");
+        assert_eq!(
+            s.candidates().len(),
+            20,
+            "要剛好兩頁：19 個詞典候選＋原始按鍵（目前值已在詞典候選內）"
+        );
         s.press(Key::new(KeyCode::Down, None, false));
         s.page(1);
         assert_eq!(s.current_page(), 1, "page(1) 到第二頁");

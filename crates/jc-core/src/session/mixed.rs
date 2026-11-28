@@ -1895,6 +1895,11 @@ impl Session {
             ));
         }
         for candidate in self.zh_syllable_candidates(reading) {
+            // [0] 目前值與 [1] 原始輸入已經佔用前兩項；推薦段不再重複
+            // 這兩個字面，但其餘重複（包含中間位置）保持原樣。
+            if candidate.surface == current || candidate.surface == raw {
+                continue;
+            }
             out.push((
                 candidate.clone(),
                 CandidateAction {
@@ -1914,6 +1919,11 @@ impl Session {
         // 實機回報：尾端偶爾又出現一次與 [1] 相同的拆解候選。只移除最後
         // 那一項，不做全域去重；其他位置的重複仍由既有來源規則處理。
         trim_duplicate_tail(&mut candidates, &mut choices);
+        // 目前值與原始輸入一定保留；硬上限是 200，只砍尾端推薦。
+        // `max_candidates()` 決定解碼深度，較小的設定不改變「深度＋目前值＋
+        // 原始輸入」的既有清單長度。
+        candidates.truncate(super::DEFAULT_MAX_CANDIDATES);
+        choices.truncate(candidates.len());
         (candidates, choices)
     }
 
@@ -1954,8 +1964,8 @@ impl Session {
     }
 
     /// 把混打候選的套用動作寫進按鍵流；回傳是否真的套用。
-    pub(super) fn apply_mixed_action(&mut self, action: &CandidateAction) -> bool {
-        let Some(target) = self.mixed_target.clone() else {
+    pub(super) fn apply_typed_action(&mut self, action: &CandidateAction) -> bool {
+        let Some(target) = action.target.clone() else {
             return false;
         };
         // 整段英文補全（Tab）仍然學習拼字修正；單字母 target 不冒充整詞，
@@ -1969,20 +1979,8 @@ impl Session {
             target.rune_len == english_raw.chars().count() && !english_raw.is_empty();
         // 日文 lane 的狀態存在 romaji／live，不在 AsciiInput；候選內容仍由
         // 同一份 unit target 產生，套用時才由這裡改寫對應的讀音單位。
-        if self.in_ja_lane() && target.ja {
-            return self.apply_ja_unit_action(action, &target);
-        }
-        // 純注音 lane 的顯示字元 target：從同一份 unit keys 重建按鍵流，
-        // 只換 target 的 keys 範圍。套用範圍由 action 帶來的 span 決定，
-        // 不讀 syllables／zh_cell。
-        if self.in_zh_lane() && !target.ja && (target.reading.is_some() || target.zhuyin) {
-            return self.apply_zh_target_action(action, &target);
-        }
-        if let Some(index) = target.syllable {
-            self.mixed_target = None;
-            self.mixed_choices.clear();
-            self.candidate_expanded = false;
-            return self.materialize_zh_choice(index, action, target.reading.as_deref());
+        if target.ja {
+            return self.apply_unit_fix(action);
         }
         let typed = self.ascii.typed().to_string();
         let (start, end) = action.typed_span.unwrap_or(target.typed);
@@ -2059,7 +2057,11 @@ impl Session {
     ///
     /// 按鍵流由 `compute_units()` 的 `keys` 串接而成，因此套用範圍就是
     /// action 帶來的 `typed_span`；不再用 `syllables[index]` 或音節格換算。
-    fn apply_zh_target_action(&mut self, action: &CandidateAction, target: &MixedTarget) -> bool {
+    pub(super) fn apply_units_action(&mut self, action: &CandidateAction) -> bool {
+        let Some(target) = action.target.clone() else {
+            return false;
+        };
+        let target = &target;
         let (units, _) = self.compute_units();
         let keys: String = units.iter().map(|unit| unit.keys.as_str()).collect();
         let (start, end) = action.typed_span.unwrap_or(target.typed);
@@ -2136,7 +2138,11 @@ impl Session {
     ///
     /// 每當前顯示字元都變成固定的 `UserSegment`，只有 target 換成候選詞面；
     /// 這樣 `わた|し` 選 `死` 只會得到 `わた死`，前面的 `わた` 不會被重轉。
-    fn apply_ja_unit_action(&mut self, action: &CandidateAction, target: &MixedTarget) -> bool {
+    pub(super) fn apply_unit_fix(&mut self, action: &CandidateAction) -> bool {
+        let Some(target) = action.target.clone() else {
+            return false;
+        };
+        let target = &target;
         let chosen = self.candidates.get(action.index).cloned();
         // 候選窗開著時 `displayed_base()` 會換成高亮候選，不能拿它重算
         // units；開窗時同步好的 provenance 才是實際畫面。
@@ -2205,82 +2211,6 @@ impl Session {
             ChoiceCursor::TokenEnd => self.composed_text().chars().count(),
         };
         self.set_mixed_rune(cursor.min(self.composed_text().chars().count()));
-        true
-    }
-
-    /// 把純注音組字的一個音節換成字面並退出注音路徑。
-    fn materialize_zh_choice(
-        &mut self,
-        index: usize,
-        action: &CandidateAction,
-        reading: Option<&str>,
-    ) -> bool {
-        let mut keys = String::new();
-        let mut span = (0usize, 0usize);
-        for at in 0..self.syllables.len() {
-            if at == index {
-                span.0 = keys.len();
-                keys.push_str(&action.insert);
-                keys.push_str(&action.leftover);
-                span.1 = keys.len();
-                continue;
-            }
-            keys.push_str(&self.zh_syllable_key(at));
-        }
-        keys.push_str(&self.zh_pending_keys);
-        keys.push_str(&self.literal);
-        keys.push_str(&self.literal_tail);
-        let before: String = self
-            .syllables
-            .iter()
-            .take(index)
-            .map(|syllable| self.decode_syllable(syllable))
-            .collect();
-        let rune_start = before.chars().count();
-        self.zh.reset();
-        self.zh_lane = false;
-        self.zh_pending_keys.clear();
-        self.zh_pending_caps.clear();
-        self.syllables.clear();
-        self.zh_syllable_keys.clear();
-        self.locks.clear();
-        self.composition.clear();
-        self.edit = None;
-        self.keep_candidates = false;
-        self.highlighted = 0;
-        self.candidate_window = false;
-        self.candidate_expanded = false;
-        self.navigating = false;
-        self.segment_manual = None;
-        self.last_hypotheses.clear();
-        self.pending.clear();
-        self.base.clear();
-        self.segments.clear();
-        self.literal.clear();
-        self.literal_anchor = 0;
-        self.literal_offset = 0;
-        self.literal_tail.clear();
-        self.pending_tone = None;
-        self.ascii.replay(&keys, &self.lexicon);
-        self.literal_spans.clear();
-        if action.force_literal {
-            match reading {
-                Some(reading) => self
-                    .literal_spans
-                    .push(LiteralSpan::with_reading(span.0, span.1, reading)),
-                None => self.literal_spans.push(LiteralSpan::new(span.0, span.1)),
-            }
-        }
-        self.cursor_rune = Self::MIXED_CURSOR_END;
-        self.rebuild();
-        let len = self.composed_text().chars().count();
-        let cursor = match action.cursor {
-            ChoiceCursor::Start => rune_start,
-            ChoiceCursor::AfterFirst => rune_start + 1,
-            ChoiceCursor::AfterInsert => rune_start + action.insert.chars().count(),
-            ChoiceCursor::TokenEnd => self.composed_text().chars().count(),
-        };
-        self.set_mixed_rune(cursor.min(len));
         true
     }
 
@@ -2397,21 +2327,14 @@ impl Session {
             split.and_then(|(plans, text)| Self::planned_trailing_zh_reading(plans, text))
         {
             if self.mixed_rune().min(self.segments.len()) == self.segments.len() {
-                let mut set = self.zh_candidate_set(&reading);
-                if !set.contains(&raw) {
-                    set.push(Candidate::new(
-                        raw.clone(),
-                        raw.clone(),
-                        i32::MAX,
-                        CandidateSource::Literal,
-                    ));
-                }
-                self.candidates = set
-                    .assemble(AssemblyOptions {
-                        dedupe: false,
-                        display_first: false,
-                    })
-                    .into_candidates();
+                let current = self.decode_reading(&reading);
+                let (mut candidates, choices) =
+                    self.zh_choice_candidates(&reading, &raw, &current, None);
+                trim_candidate_tail(&mut candidates);
+                candidates.truncate(super::DEFAULT_MAX_CANDIDATES);
+                self.candidates = candidates;
+                self.mixed_choices = choices;
+                self.mixed_choices.truncate(self.candidates.len());
                 return;
             }
         }
@@ -2475,7 +2398,6 @@ impl Session {
         }
         self.candidates = set
             .assemble(AssemblyOptions {
-                dedupe: false,
                 display_first: false,
             })
             .into_candidates();
@@ -2528,46 +2450,18 @@ impl Session {
             .map(str::to_string)
     }
 
-    /// 用一個注音讀音建立候選：詞格＋解碼器取最佳解，字面也保留。
-    fn zh_candidate_set(&self, reading: &str) -> CandidateSet {
-        let units = [reading];
-        let Ok(lattice) = Lattice::build(&units, &self.lexicon, &self.ctx) else {
-            return CandidateSet::new(reading, self.max_candidates(), SurfaceMatch::Exact);
-        };
-        let scorer = super::core::zh_scorer(&self.ctx, self.zh_lm.as_deref());
-        let decoder = super::core::zh_decoder(&self.lexicon, &self.ctx, scorer.as_ref());
-        let (hypotheses, _) = decoder.nbest(&lattice, &Locks::new(), false, self.max_candidates());
-        let hypotheses = self.rank_zh_hypotheses(hypotheses, reading);
-        let literal = reading.to_string();
-        let candidates = hypotheses.into_iter().map(|hypothesis| {
-            let source = if hypothesis.text == literal {
-                CandidateSource::Literal
-            } else {
-                CandidateSource::Lexicon
-            };
-            Candidate::new(hypothesis.text, literal.clone(), hypothesis.cost, source)
-        });
-        CandidateSet::from_hypotheses(
-            reading,
-            self.max_candidates(),
-            SurfaceMatch::Exact,
-            candidates,
-        )
-    }
-
-    /// 用一個注音讀音重建候選：詞格＋解碼器取最佳解，字面也保留。
+    /// 用一個注音讀音重建候選：目前值、原始按鍵，再來才是詞典推薦。
     fn fill_zh_candidates(&mut self, reading: String) {
-        let mut candidates = self
-            .zh_candidate_set(&reading)
-            .assemble(AssemblyOptions {
-                dedupe: false,
-                display_first: false,
-            })
-            .into_candidates();
-        // 實機回報尾端偶爾又出現一次 `[1]` 的拆解；只砍最後一項，保持
-        // CandidateSet 的排序與截斷結果。
+        // 顯示值取同一段讀音的最佳解；原始按鍵由讀音反查，兩者都交給
+        // 共用的 `zh_choice_candidates()`，和其他注音候選走同一份順序。
+        let current = self.decode_reading(&reading);
+        let (mut candidates, choices) =
+            self.zh_choice_candidates(&reading, &reading, &current, None);
         trim_candidate_tail(&mut candidates);
+        candidates.truncate(super::DEFAULT_MAX_CANDIDATES);
         self.candidates = candidates;
+        self.mixed_choices = choices;
+        self.mixed_choices.truncate(self.candidates.len());
     }
 
     /// 已完成的注音音節轉成字面。
@@ -3198,7 +3092,7 @@ pub(super) fn english_candidates(
     learned
 }
 
-/// 把（候選, 動作）清單拆成候選與平行動作；同字面只留第一項。
+/// 把（候選, 動作）清單拆成候選與平行動作；不做全域去重。
 fn split_choices(
     out: Vec<(Candidate, CandidateAction)>,
 ) -> (Vec<Candidate>, Vec<Option<CandidateAction>>) {
@@ -3207,7 +3101,6 @@ fn split_choices(
         set.push_with_action(candidate, Some(action));
     }
     let assembled = set.assemble(AssemblyOptions {
-        dedupe: true,
         display_first: false,
     });
     (assembled.candidates, assembled.actions)

@@ -6,10 +6,11 @@
 //! 2. lane 專屬 extras：注音模糊音、英文拼字建議等。
 //! 3. 顯示字。
 //!
-//! 排序完之後的「插入 extras → 去重 → 截斷 → 顯示字排第一 → 產生候選與
+//! 排序完之後的「插入 extras → 顯示字排第一 → 截斷 → 產生候選與
 //! [`CandidateAction`] 的平行清單」都在這裡做一次。排序本身留在 lane 的
 //! rank hook：三種 hypotheses 的型別與學習資料不同，但交給 builder 時都已經
 //! 是 [`Candidate`] 的順序，builder 不再重排，名額與順序因此與改動前相同。
+//! 全域去重不在這裡做；尾端與 `[1]` 相同的重複由注音 builder 依規則移除。
 
 use crate::candidate::Candidate;
 
@@ -36,8 +37,6 @@ impl SurfaceMatch {
 /// 候選清單的組裝設定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct AssemblyOptions {
-    /// 最後是否再整份去重；只保留每個字面的第一項。
-    pub(super) dedupe: bool,
     /// 顯示字是否要移到第一項。混打的一般候選維持原本順序，不啟用。
     pub(super) display_first: bool,
 }
@@ -45,7 +44,6 @@ pub(super) struct AssemblyOptions {
 impl Default for AssemblyOptions {
     fn default() -> Self {
         Self {
-            dedupe: false,
             display_first: true,
         }
     }
@@ -147,16 +145,31 @@ impl CandidateSet {
         true
     }
 
-    /// 把 extras 插在 `anchor` 之前；有插入時整份清單去重。
+    /// 把 extras 插在 `anchor` 之前；只略過已經存在的字面。
     ///
-    /// 注音模糊音用這條路徑：原本插在字面讀音候選前面，重複字面保留先出現
-    /// 的那一項。回傳實際插入的候選數。
+    /// 注音模糊音用這條路徑：插在字面讀音候選前面。這裡不做整份去重，
+    /// 既有清單裡的重複（例如中間位置）保持原樣；尾端重複由呼叫端依
+    /// `[1]` 規則另外處理。回傳實際插入的候選數。
     pub(super) fn insert_before_unique(
         &mut self,
         anchor: &str,
         extras: impl IntoIterator<Item = Candidate>,
     ) -> usize {
-        let extras: Vec<Candidate> = extras.into_iter().collect();
+        let mut seen: Vec<String> = Vec::new();
+        let extras: Vec<Candidate> = extras
+            .into_iter()
+            .filter(|candidate| {
+                if self.contains(&candidate.surface) {
+                    return false;
+                }
+                let key = self.matching.key(&candidate.surface);
+                if seen.contains(&key) {
+                    return false;
+                }
+                seen.push(key);
+                true
+            })
+            .collect();
         if extras.is_empty() {
             return 0;
         }
@@ -168,6 +181,7 @@ impl CandidateSet {
         let inserted = extras.len();
         for (offset, candidate) in extras.into_iter().enumerate() {
             let index = (at + offset).min(self.entries.len());
+            self.seen.push(self.matching.key(&candidate.surface));
             self.entries.insert(
                 index,
                 CandidateEntry {
@@ -176,7 +190,6 @@ impl CandidateSet {
                 },
             );
         }
-        self.dedupe();
         inserted
     }
 
@@ -189,22 +202,6 @@ impl CandidateSet {
             }
         }
         added
-    }
-
-    /// 依 [`SurfaceMatch`] 去重，保留每個字面的第一項。
-    pub(super) fn dedupe(&mut self) {
-        let mut seen: Vec<String> = Vec::with_capacity(self.seen.len());
-        let mut entries = Vec::with_capacity(self.entries.len());
-        for entry in std::mem::take(&mut self.entries) {
-            let key = self.matching.key(&entry.candidate.surface);
-            if seen.contains(&key) {
-                continue;
-            }
-            seen.push(key);
-            entries.push(entry);
-        }
-        self.seen = seen;
-        self.entries = entries;
     }
 
     /// 只保留前 `limit` 項；截斷發生在尾端，不改變前面的順序。
@@ -236,15 +233,15 @@ impl CandidateSet {
         true
     }
 
-    /// 收尾：去重、截斷、顯示字排第一，最後拆成候選與平行動作。
+    /// 收尾：顯示字排第一、再截斷，最後拆成候選與平行動作。
+    ///
+    /// 先 `show_first()` 再 `truncate()`：目前值一定留在清單內，截斷只砍
+    /// 尾端，不會因為重排而把顯示字砍掉。這裡不做全域去重。
     pub(super) fn assemble(mut self, options: AssemblyOptions) -> AssembledCandidates {
-        if options.dedupe {
-            self.dedupe();
-        }
-        self.truncate();
         if options.display_first {
             self.show_first();
         }
+        self.truncate();
         let mut candidates = Vec::with_capacity(self.entries.len());
         let mut actions = Vec::with_capacity(self.entries.len());
         for entry in self.entries {
@@ -292,7 +289,6 @@ mod tests {
             set.insert_before_unique("顯示字", extras);
             set.append_unique([candidate("尾巴")]);
             let assembled = set.assemble(AssemblyOptions {
-                dedupe: false,
                 display_first: true,
             });
             assembled
@@ -314,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fuzzy_extras_stay_before_literal_and_keep_first_duplicate() {
+    fn test_fuzzy_extras_stay_before_literal_without_global_dedupe() {
         let mut set = CandidateSet::from_hypotheses(
             "字面",
             10,
@@ -323,7 +319,6 @@ mod tests {
         );
         let inserted = set.insert_before_unique("字面", [candidate("近音"), candidate("甲")]);
         let assembled = set.assemble(AssemblyOptions {
-            dedupe: false,
             display_first: false,
         });
         let surfaces: Vec<&str> = assembled
@@ -331,18 +326,18 @@ mod tests {
             .iter()
             .map(|candidate| candidate.surface.as_str())
             .collect();
-        assert_eq!(inserted, 2);
+        assert_eq!(inserted, 1);
         assert_eq!(
             surfaces,
-            ["近音", "甲", "字面"],
-            "模糊音插在字面前，重複留第一項"
+            ["近音", "字面", "甲"],
+            "模糊音插在字面前；已有的字面不重複插入"
         );
     }
 
     #[test]
-    fn test_actions_stay_parallel_after_dedupe() {
-        let mut set = CandidateSet::new("", usize::MAX, SurfaceMatch::Exact);
-        for surface in ["甲", "乙", "甲"] {
+    fn test_actions_stay_parallel_after_truncate_without_dedupe() {
+        let mut set = CandidateSet::new("", 3, SurfaceMatch::Exact);
+        for surface in ["甲", "乙", "甲", "丙"] {
             set.push_with_action(
                 candidate(surface),
                 Some(CandidateAction {
@@ -352,17 +347,35 @@ mod tests {
             );
         }
         let assembled = set.assemble(AssemblyOptions {
-            dedupe: true,
             display_first: false,
         });
-        assert_eq!(assembled.candidates.len(), 2);
-        assert_eq!(assembled.actions.len(), 2, "動作與候選逐一對齊");
+        // 中間重複保留；只在尾端截斷。動作與候選仍逐一對齊。
+        assert_eq!(assembled.candidates.len(), 3);
+        assert_eq!(assembled.actions.len(), 3, "動作與候選逐一對齊");
         for (candidate, action) in assembled.candidates.iter().zip(&assembled.actions) {
             assert_eq!(
                 Some(candidate.surface.as_str()),
                 action.as_ref().map(|action| action.insert.as_str())
             );
         }
+    }
+
+    /// 顯示字在 limit 之後時，先 `show_first()` 再截斷，顯示字一定留下。
+    #[test]
+    fn test_show_first_runs_before_truncate() {
+        let set = CandidateSet::from_hypotheses(
+            "顯示字",
+            2,
+            SurfaceMatch::Exact,
+            [candidate("甲"), candidate("乙"), candidate("顯示字")],
+        );
+        let assembled = set.assemble(AssemblyOptions::default());
+        let surfaces: Vec<&str> = assembled
+            .candidates
+            .iter()
+            .map(|candidate| candidate.surface.as_str())
+            .collect();
+        assert_eq!(surfaces, ["顯示字", "甲"], "顯示字先排第一再截斷");
     }
 
     #[test]

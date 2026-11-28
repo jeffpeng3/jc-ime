@@ -69,7 +69,9 @@ impl Session {
     }
 
     pub(super) fn max_candidates(&self) -> usize {
-        self.config.max_candidates.max(1)
+        self.config
+            .max_candidates
+            .clamp(1, super::DEFAULT_MAX_CANDIDATES)
     }
 
     /// 下一次輸入決定上一次提交的學習要留下還是補償。
@@ -913,7 +915,7 @@ impl Session {
     /// 關窗收尾。數字鍵選字與候選窗滑鼠點選共用這條路徑。
     pub fn choose_candidate(&mut self, index: usize) -> Option<Snapshot> {
         let action = self.candidate_action(index)?;
-        if !self.apply_candidate_action(&action) {
+        if !self.apply(&action) {
             return None;
         }
         Some(self.finish_choice())
@@ -930,7 +932,7 @@ impl Session {
         let insert = self.candidates[index].surface.clone();
         if self.menu.is_some() {
             return Some(CandidateAction {
-                lane: ActionLane::Menu,
+                kind: ApplyKind::Menu,
                 index,
                 insert,
                 commit_on_apply: true,
@@ -941,8 +943,13 @@ impl Session {
             // 逐字元候選窗有自己的套用動作（拆回原始輸入、換假名等）。
             // 動作直接帶著 target 的 span 與 keys，套用端不讀目前 lane。
             if let Some(Some(mut action)) = self.mixed_choices.get(index).cloned() {
-                action.lane = ActionLane::Mixed;
+                action.kind = ApplyKind::Replace;
                 action.index = index;
+                action.key_source = if self.in_zh_lane() {
+                    KeySource::DisplayUnits
+                } else {
+                    KeySource::AsciiTyped
+                };
                 action.learn = action.syllable_edit.is_some()
                     || self.mixed_target.as_ref().is_some_and(|target| {
                         target.ja
@@ -963,10 +970,31 @@ impl Session {
         // 外殼直接開的英文補全窗沒有字元 target：它是獨立的英文 run
         // 補全動作，只作用在整段待定英文，不冒充一般候選。
         if !self.in_zh_lane() && !self.in_ja_lane() && !self.ascii.pending().is_empty() {
+            let typed = self.ascii.typed().to_string();
+            let raw = self.ascii.pending().to_string();
+            let start = typed.len().saturating_sub(raw.len());
+            let rune_start = self
+                .composed_text()
+                .chars()
+                .count()
+                .saturating_sub(raw.chars().count());
             return Some(CandidateAction {
-                lane: ActionLane::EnglishRun,
+                kind: ApplyKind::Run,
                 index,
                 insert,
+                typed_span: Some((start, typed.len())),
+                target: Some(MixedTarget {
+                    typed: (start, typed.len()),
+                    raw: raw.clone(),
+                    raw_toneless: raw.clone(),
+                    tone_key: None,
+                    rune_start,
+                    rune_len: raw.chars().count(),
+                    syllable: None,
+                    reading: None,
+                    ja: false,
+                    zhuyin: false,
+                }),
                 cursor: ChoiceCursor::AfterInsert,
                 learn: true,
                 ..CandidateAction::default()
@@ -974,7 +1002,7 @@ impl Session {
         }
         // 沒有字元 target 的清單（例如外殼直接開窗）只做整段插入。
         Some(CandidateAction {
-            lane: ActionLane::Insert,
+            kind: ApplyKind::Insert,
             index,
             insert,
             cursor: ChoiceCursor::AfterInsert,
@@ -996,7 +1024,7 @@ impl Session {
             .map(|syllable| self.decode_syllable(syllable).chars().count())
             .sum();
         CandidateAction {
-            lane: ActionLane::Mixed,
+            kind: ApplyKind::Replace,
             index,
             rune_span: Some((rune_start, rune_len)),
             insert: self.candidates[index].surface.clone(),
@@ -1008,28 +1036,26 @@ impl Session {
 
     /// 執行一個候選動作；回傳是否真的套用成功。
     ///
-    /// 學習由 action 的 `learn` 控制，成功套用後才執行，且每次套用只執行一次。
-    fn apply_candidate_action(&mut self, action: &CandidateAction) -> bool {
-        // 選單候選代表立即插入；`commit_on_apply` 讓「一次送出」變成資料，
-        // 不在每個呼叫端各自判斷選單。
+    /// 這是唯一的套用入口：動作自己帶 span、keys 來源與要插入的值，語言只
+    /// 在產生清單時挑解碼器。這裡不再分派 per-lane 函式，也不回頭讀
+    /// `mixed_target` 或 lane 狀態來猜要做什麼。
+    pub(super) fn apply(&mut self, action: &CandidateAction) -> bool {
+        // 選單候選代表立即插入；`commit_on_apply` 讓「一次送出」變成資料。
         if action.commit_on_apply {
-            return self.apply_menu_action(action);
+            return self.apply_commit_action(action);
         }
-        // 片段編輯是 action 的欄位，不是語言 lane；有 edit window 就只換
-        // 那段，其他套用仍由 target 決定。
+        // 片段編輯是 action 的欄位，不是語言 lane；有 edit window 就只換那段。
         if action.syllable_edit.is_some() {
-            return self.apply_edit_window_action(action);
+            return self.apply_edit_action(action);
         }
-        match action.lane {
-            ActionLane::Menu => self.apply_menu_action(action),
-            ActionLane::Mixed => self.apply_mixed_action(action),
-            ActionLane::EnglishRun => self.apply_english_run_action(action),
-            ActionLane::Insert => self.apply_insert_action(action),
+        if action.target.is_none() {
+            return self.apply_insert(action);
         }
+        self.apply_key_action(action)
     }
 
     /// 選單候選：插入字面並一次送出。
-    fn apply_menu_action(&mut self, action: &CandidateAction) -> bool {
+    fn apply_commit_action(&mut self, action: &CandidateAction) -> bool {
         self.remember_text(&action.insert);
         let text = self.compose_literal(&action.insert);
         self.pending_commit = Some(self.finalize(text));
@@ -1044,14 +1070,14 @@ impl Session {
     pub(super) fn commit_menu_choice(&mut self) -> Option<String> {
         self.menu?;
         let action = self.candidate_action(self.highlighted)?;
-        if !self.apply_candidate_action(&action) {
+        if !self.apply(&action) {
             return None;
         }
         self.pending_commit.take()
     }
 
     /// 片段編輯：只換 action 指定的那段音節，整段組字留著。
-    fn apply_edit_window_action(&mut self, action: &CandidateAction) -> bool {
+    fn apply_edit_action(&mut self, action: &CandidateAction) -> bool {
         let Some(edit) = action.syllable_edit else {
             return false;
         };
@@ -1083,44 +1109,8 @@ impl Session {
         true
     }
 
-    /// 混合模式英文 run 的整詞補全／拼字修正。
-    ///
-    /// 這是獨立的 run 動作，不是「游標字元 target」；一般 ↓ 仍只對單一
-    /// 字母。選回原始按鍵時固定成字面，其他補全重播按鍵流並記錄學習。
-    fn apply_english_run_action(&mut self, action: &CandidateAction) -> bool {
-        let Some(candidate) = self.candidates.get(action.index).cloned() else {
-            return false;
-        };
-        let raw = self.ascii.pending().to_string();
-        if raw.is_empty() {
-            return self.apply_insert_action(action);
-        }
-        if candidate.surface == raw {
-            self.ascii.force_literal();
-        } else {
-            let typed = self.ascii.typed().to_string();
-            let keep = typed.len().saturating_sub(raw.len());
-            let mut next = String::with_capacity(keep + candidate.surface.len());
-            next.push_str(&typed[..keep]);
-            next.push_str(&candidate.surface);
-            self.ascii.replay(&next, &self.lexicon);
-        }
-        if action.learn {
-            self.learn_english_choice(&raw, &candidate.surface);
-        }
-        self.close_mixed_choice_window();
-        true
-    }
-
-    fn close_mixed_choice_window(&mut self) {
-        self.candidate_window = false;
-        self.navigating = false;
-        self.highlighted = 0;
-        self.cursor_rune = Self::MIXED_CURSOR_END;
-    }
-
     /// 一般插入：字面接到組字結果後送出整段。
-    fn apply_insert_action(&mut self, action: &CandidateAction) -> bool {
+    fn apply_insert(&mut self, action: &CandidateAction) -> bool {
         self.remember_text(&action.insert);
         if action.learn {
             self.learn_candidate(action.index);
@@ -1129,6 +1119,25 @@ impl Session {
         self.pending_commit = Some(self.finalize(text));
         self.clear_composition();
         true
+    }
+
+    /// 關閉混合候選窗，保留組字。
+    fn close_mixed_choice_window(&mut self) {
+        self.candidate_window = false;
+        self.navigating = false;
+        self.highlighted = 0;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
+    }
+
+    /// 有 target 的候選：依 action 的 keys 來源走同一條取代路徑。
+    fn apply_key_action(&mut self, action: &CandidateAction) -> bool {
+        if action.target.as_ref().is_some_and(|target| target.ja) {
+            return self.apply_unit_fix(action);
+        }
+        match action.key_source {
+            KeySource::DisplayUnits => self.apply_units_action(action),
+            KeySource::AsciiTyped => self.apply_typed_action(action),
+        }
     }
 
     /// 選字完成後與 `press` 相同的收尾：關掉候選窗並重建顯示。
@@ -1281,7 +1290,8 @@ impl Session {
         self.move_row(1);
     }
 
-    /// 上鍵：候選窗開著時往上換一項並進入選取模式；還沒開窗時先開窗。
+    /// 上鍵：候選窗開著時往上換一項並進入選取模式；還沒開窗時先走和 ↓
+    /// 相同的開窗路徑，清單才有目前值、原始輸入與平行套用動作。
     pub(super) fn up(&mut self) {
         if self.menu.is_some() {
             self.navigating = true;
@@ -1290,13 +1300,18 @@ impl Session {
             }
             return;
         }
-        if self.candidates.is_empty() {
-            return;
-        }
         if !self.candidate_window {
-            self.candidate_window = true;
-            self.navigating = true;
-            self.candidate_expanded = false;
+            // 不准只設 `candidate_window = true` 就開一個沒有動作的窗：
+            // 和 ↓ 共用同一個 lane open hook，清單與套用動作一起產生。
+            if self.open_mixed_cursor_candidates() {
+                // 第一次 ↑ 只開窗，停在第一項；再按才往上移動。
+                return;
+            }
+            if !self.candidate_window {
+                return;
+            }
+        }
+        if self.candidates.is_empty() {
             return;
         }
         self.navigating = true;
@@ -1468,19 +1483,21 @@ impl Session {
     pub(super) fn finish_composition(&mut self) {
         self.prepare_ja_conversion();
         if let Some(action) = self.enter_action() {
-            if self.apply_candidate_action(&action) {
+            // 唯一的兩段式判斷點：高亮就是組字現值時，第一次 Enter 只關窗、
+            // 保留組字；反引號前導變體由 action 的 `skip_when_current_literal`
+            // 決定，直接送出整段。其他動作一律交給同一個 `apply()`。
+            if action.kind == ApplyKind::Replace && self.highlighted_choice_is_current_literal() {
+                if action.skip_when_current_literal {
+                    self.finalize_lane();
+                } else {
+                    self.close_mixed_choice_window();
+                }
+                return;
+            }
+            if self.apply(&action) {
                 self.finish_choice();
                 return;
             }
-        } else if self.candidate_window
-            && self.highlighted_choice_is_current_literal()
-            && !self.highlighted_literal_skips_enter()
-        {
-            // 高亮就是組字現值：第一次 Enter 只關窗、保留組字，第二次才送出。
-            // 反引號前導變體由 action 的 `skip_when_current_literal` 決定，
-            // 維持原本一次送出的行為。
-            self.close_mixed_choice_window();
-            return;
         }
         self.finalize_lane();
     }
@@ -1501,20 +1518,15 @@ impl Session {
         self.clear_composition();
     }
 
-    /// 這次 Enter 要套用的候選動作；沒有候選窗或前導變體的高亮即現值時回 `None`。
+    /// 這次 Enter 要套用的候選動作；沒有候選窗時回 `None`。
+    ///
+    /// 「高亮即現值只關窗」的兩段式判斷留在 [`Self::finish_composition`]，
+    /// 這是唯一判斷點；這裡不提前把 action 變成 `None`。
     fn enter_action(&self) -> Option<CandidateAction> {
         if !self.candidate_window || self.candidates.is_empty() {
             return None;
         }
-        let action = self.candidate_action(self.highlighted)?;
-        // 反引號前導的多變體符號：高亮項就是組字已顯示的字面，套用等於
-        // 什麼都沒換，Enter 直接送出整段，不要讓使用者多按一次。
-        if matches!(action.lane, ActionLane::Mixed | ActionLane::Insert)
-            && self.highlighted_choice_is_current_literal()
-        {
-            return None;
-        }
-        Some(action)
+        self.candidate_action(self.highlighted)
     }
 
     /// 延遲整句模式：還在假名就同步轉換一次再提交，不默默送出假名。
@@ -1567,14 +1579,6 @@ impl Session {
             .take(target.rune_len)
             .collect();
         surface == choice.insert
-    }
-
-    /// 目前高亮是組字現值時，是否維持反引號前導的一次送出語意。
-    fn highlighted_literal_skips_enter(&self) -> bool {
-        self.mixed_choices
-            .get(self.highlighted)
-            .and_then(Option::as_ref)
-            .is_some_and(|choice| choice.skip_when_current_literal)
     }
 
     /// 送出前套用中英自動空格；簡體轉換留到 [`Session::commit`]。
@@ -2511,7 +2515,7 @@ impl Session {
             SurfaceMatch::Exact,
             hypotheses,
         );
-        // 模糊音插在字面讀音前；有插入時整份去重，重複字面保留先出現的一項。
+        // 模糊音插在字面讀音前；只跳過已存在的字面，不做整份去重。
         let near = self.fuzzy_candidates(&readings);
         set.insert_before_unique(&literal, near);
         // 尾端差一個符號的完整詞：一般候選只是顯示，選了才改字。
@@ -2532,10 +2536,33 @@ impl Session {
         // 第一項，兩條路徑才不會再各說各話。
         self.candidates = set
             .assemble(AssemblyOptions {
-                dedupe: false,
                 display_first: true,
             })
             .into_candidates();
+        // [1] 固定是原始輸入：同一串 keys 不論由 ↓、↑ 或未開窗的清單
+        // 都看得到它。目前值已由 `show_first()` 排在第一項。
+        let raw = self.zh_keys_for_range(0, syllables.len());
+        if !raw.is_empty() && raw != self.base {
+            let second = self
+                .candidates
+                .get(1)
+                .map(|candidate| candidate.surface.as_str());
+            if second != Some(raw.as_str()) {
+                self.candidates.insert(
+                    1,
+                    Candidate::new(raw, reading.clone(), 0, CandidateSource::Literal),
+                );
+            }
+        }
+        if self.candidates.len() > self.max_candidates() {
+            self.candidates.truncate(self.max_candidates());
+        }
+        // 尾端只移除與 `[1]` 相同的重複拆解；不做全域去重。
+        let last = self.candidates.len().saturating_sub(1);
+        if self.candidates.len() > 2 && self.candidates[last].surface == self.candidates[1].surface
+        {
+            self.candidates.pop();
+        }
         // 混打管線把一段連續注音當一個片段（`字字`），純注音模式則照詞切。
         // Mixed 的組字字串沿用前者：相鄰同字面、中間沒有空白打斷的片段合併。
         if mixed_lane && self.segments.len() == display_segments.len() {
@@ -2612,7 +2639,9 @@ impl Session {
         } else {
             raw
         };
-        let (candidates, _) = self.zh_choice_candidates(&reading, &raw, &current, Some(edit));
+        let (mut candidates, _) = self.zh_choice_candidates(&reading, &raw, &current, Some(edit));
+        // 所有對外路徑共用同一個 200 硬上限；片段窗也一樣，截斷只砍尾端。
+        candidates.truncate(super::DEFAULT_MAX_CANDIDATES);
         candidates
     }
 
@@ -2875,8 +2904,36 @@ impl Session {
         )
         .assemble(AssemblyOptions::default())
         .into_candidates();
+        self.insert_ja_raw_candidate(&reading);
         self.last_ja_results = results;
         self.sync_composition_ja();
+    }
+
+    /// 日文候選的 `[1]` 固定是原始羅馬字；`[0]` 已由 `show_first()` 排好。
+    ///
+    /// かな、漢字或変換結果都不影響這一項；原始輸入是同一組 keys 的唯一定義。
+    fn insert_ja_raw_candidate(&mut self, reading: &str) {
+        if reading.is_empty() || reading == self.base {
+            return;
+        }
+        let second = self
+            .candidates
+            .get(1)
+            .map(|candidate| candidate.surface.as_str());
+        if second != Some(reading) {
+            self.candidates.insert(
+                1,
+                Candidate::new(reading, reading, 0, CandidateSource::Literal),
+            );
+        }
+        if self.candidates.len() > self.max_candidates() {
+            self.candidates.truncate(self.max_candidates());
+        }
+        let last = self.candidates.len().saturating_sub(1);
+        if self.candidates.len() > 2 && self.candidates[last].surface == self.candidates[1].surface
+        {
+            self.candidates.pop();
+        }
     }
 
     /// 弱負向訊號：選了非學習候選時，對前面被跳過的學習詞記一次跳過。
@@ -3043,6 +3100,7 @@ impl Session {
                 );
             }
             self.candidates = candidates;
+            self.insert_ja_raw_candidate(reading);
         }
         self.sync_composition_ja();
     }
