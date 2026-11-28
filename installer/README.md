@@ -134,16 +134,27 @@ CLSID `{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}` 的兩個機碼檢視由 `[Regist
 1. `jc-tip-register.exe machine-register`：提升權限，寫 HKLM 的 profile 與分類。
 2. `jc-tip-register.exe user-install`：`runasoriginaluser`，寫實際使用者的語言清單。
 3. `jc-tip-register.exe user-cleanup-legacy`：`runasoriginaluser`，清舊 CLSID 殘留。
+4. `jc-engine-launcher.exe --supervise`：`runasoriginaluser`，啟動新引擎。
+5. `jc-engine.exe --verify-running`：`runasoriginaluser`，確認跑的是新 binary。
 
 `runasoriginaluser` 不能省：setup.exe 是管理員身分，直接跑會寫到 Administrator
-的語言清單，對實際使用者沒有作用。`user-install`／`user-cleanup-legacy` 失敗用
-`ignoreerrors` 不擋安裝；`machine-register` 失敗會讓安裝停下來，不留半套 TIP。
+的語言清單，對實際使用者沒有作用。這些 `[Run]` 都沒有 `ignoreerrors`：失敗會讓
+使用者看到錯誤，而不是安靜地留下半套 TIP。
 
 ### `[UninstallRun]` 與 `[Code]`
 
-反安裝先跑 `jc-tip-register.exe machine-unregister`（提升權限）。`user-uninstall`
-需要原使用者身分，但 `[UninstallRun]` 不支援 `runasoriginaluser`；profile 移除後
-語言清單的項目自然失效。
+反安裝先跑 `jc-engine.exe --stop`，再跑 `jc-tip-register.exe machine-unregister`
+（都是提升權限）。`[UninstallRun]` 不支援 `runasoriginaluser`，所以 `--stop` 的
+停止檔／事件可能對不到原使用者的監督者；`[Code]` 會再用 `taskkill` 收掉引擎與
+launcher，代價是最後一次尚未 flush 的個人學習資料可能沒有寫入。手動 `--stop`
+以當下執行身分為準；只有安裝器的 `ExecAsOriginalUser` 才是原使用者。
+`user-uninstall` 需要原使用者身分，同樣不能用 `runasoriginaluser`；profile
+移除後語言清單的項目自然失效。
+
+行程確認與強制結束預設只看目前 session（PowerShell 的 `SessionId` 或
+`taskkill /FI "SESSION eq <n>"`），提權安裝器不會殺到其他登入使用者的引擎。
+PowerShell 不可用時，`tasklist` 備援沒有 session 過濾，會以 machine-wide
+fail-closed 處理並寫 log。
 
 `[Code]` 的重點：
 
@@ -151,9 +162,12 @@ CLSID `{2F6B41D8-9E07-4C3A-B5F1-8D2C6A9E0473}` 的兩個機碼檢視由 `[Regist
 - `DeleteOrScheduleDelete`：能刪就刪，刪不掉登記 `MOVEFILE_DELAY_UNTIL_REBOOT`。
 - `SweepLeftovers`：清 `jc-tsf.dll`／`jc-tsf-x86.dll`／`jc-engine.exe`／
   `jc-engine-launcher.exe` 的 `.old-*`。
-- `PrepareToInstall`：先移除舊 MSI，再逐一讓開四個程式檔。先刪、刪不掉改名
+- `PrepareToInstall`：先用 `jc-engine --stop` 優雅停掉舊引擎與啟動器（停止事件
+  無效時才 `taskkill`），再移除舊 MSI，最後逐一讓開四個程式檔。先刪、刪不掉改名
   `.old-<yyyymmddhhnnss>`、再失敗才回錯誤訊息。時間戳命名是刻意的，固定名稱會在
-  上一輪殘骸仍被占用時卡住。
+  上一輪殘骸仍被占用時卡住。停止後仍偵測得到引擎就不繼續安裝。
+- `[Run]` 最後的 `jc-engine --verify-running` 比對執行中監督者的版本與 SHA-256；
+  只靠單例鎖會把「舊引擎還在跑」誤判成成功。
 - `RemoveLegacyMsi`：掃 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`
   與 `WOW6432Node`，找 `WindowsInstaller=1` 且 `DisplayName` 以「jc 注音」開頭
   的項目，從 `UninstallString` 取 ProductCode。找到就停掉 `jc-engine` 與載入

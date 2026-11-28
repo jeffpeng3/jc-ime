@@ -1109,6 +1109,20 @@ jobs:
           Get-Content "$env:RUNNER_TEMP\install.log" -Tail 40 -ErrorAction SilentlyContinue | Write-Host
           throw '安裝後 60 秒內引擎沒有建立 pipe；[Run] 的 jc-engine.exe 沒跑起來。'
 
+      # 安裝器最後一步會比對執行中監督者的版本與 SHA-256；這裡獨立再跑一次，
+      # 讓「單例鎖有人」與「跑的是這次安裝的 binary」在 CI 也分得開。
+      - name: 驗證引擎是剛安裝的 binary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:JC_INSTALL_DIR\jc-engine.exe" --verify-running
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content "$env:LOCALAPPDATA\jc-ime\supervisor.log" -Tail 40 -ErrorAction SilentlyContinue |
+              Write-Host
+            throw "jc-engine --verify-running 失敗（exit $LASTEXITCODE）"
+          }
+          Write-Host 'jc-engine --verify-running 通過'
+
       # 安裝後的 doctor 是 [Tasks] 的 smoke 選項，Flags: unchecked；/VERYSILENT
       # 不會選沒有預設勾選的工作。這裡在「自己跑 doctor」之前先證明安裝期沒有
       # 寫過任何紀錄，否則下面的斷言可能只是讀到安裝期留下的 last.txt。

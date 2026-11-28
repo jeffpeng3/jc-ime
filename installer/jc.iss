@@ -100,6 +100,8 @@ zh.OpenSettings=開啟 jc 注音設定
 en.OpenSettings=Open jc Bopomofo settings
 zh.ErrLocked=無法更新 jc 注音：舊的程式檔正在使用中，而且無法讓路。請重新開機後再安裝一次。
 en.ErrLocked=Cannot update jc Bopomofo: an old program file is in use and could not be moved aside. Please restart Windows and run the installer again.
+zh.ErrEngineRunning=無法停止舊的 jc 引擎，檔案可能還是舊版。請關閉所有使用 jc 注音的程式，或重新開機後再安裝一次。
+en.ErrEngineRunning=Cannot stop the old jc engine, so the new files may not take effect. Close all programs using jc Bopomofo, or restart Windows and run the installer again.
 
 [Tasks]
 Name: "enableime"; Description: "{cm:EnableIme}"
@@ -108,6 +110,15 @@ Name: "enableime"; Description: "{cm:EnableIme}"
 Name: "smoke"; Description: "{cm:RunSmoke}"; Flags: unchecked
 
 [Files]
+; 升級／反安裝前用來優雅停止舊引擎。這份不進 {app}，只由 [Code] 的
+; ExtractTemporaryFile 解到 {tmp} 執行；`--stop` 會先要求舊監督者收尾，
+; 真的不回應才送 Shutdown 存檔後強制結束。檔名加 -stop 是為了讓 log 與
+; 工作管理員看得出這是安裝器帶起來的輔助行程。
+;
+; 放在 [Files] 最前面：SolidCompression=yes 時，ExtractTemporaryFile 要先把
+; 前面的檔案解到記憶體；它又是 PrepareToInstall 最早用到的檔案。
+Source: "{#PayloadDir}\jc-engine.exe"; DestDir: "{tmp}"; DestName: "jc-engine-stop.exe"; Flags: dontcopy
+
 ; 程式。32 位元 DLL 與 x64 DLL 放在同一層，檔名分架構；CLSID 的機碼檢視由
 ; 下面 [Registry] 的 HKLM64／HKLM32 決定。ignoreversion：版本升級由 AppId／
 ; VersionInfoVersion 與 PrepareToInstall 讓路處理，不靠檔案版本比對。
@@ -216,8 +227,15 @@ Filename: "{app}\jc-tip-register.exe"; Parameters: "user-cleanup-legacy"; Status
 ; 裝完就喚起引擎，不等下次登入。
 ; 走啟動器，和登入自動啟動同一條路徑；runhidden 留著，就算啟動器未來改成
 ; 有 console 的版本也不會閃視窗。
-; 已經在跑的監督者會回 AlreadyRunning 並直接結束，不是錯誤。
-Filename: "{app}\jc-engine-launcher.exe"; Parameters: "--supervise --data ""{commonappdata}\jc-ime\data"" --settings ""{%LOCALAPPDATA}\jc-ime\settings.json"" --personal-dir ""{%LOCALAPPDATA}\jc-ime"" --personal-prefix personal"; Tasks: enableime; Flags: runhidden nowait runasoriginaluser
+; 啟動器只負責 CreateProcess，會立刻結束；等待它才能確保下面的驗證不會
+; 早於「新引擎被帶起來」。
+Filename: "{app}\jc-engine-launcher.exe"; Parameters: "--supervise --data ""{commonappdata}\jc-ime\data"" --settings ""{%LOCALAPPDATA}\jc-ime\settings.json"" --personal-dir ""{%LOCALAPPDATA}\jc-ime"" --personal-prefix personal"; Tasks: enableime; Flags: runhidden waituntilterminated runasoriginaluser
+
+; 驗證執行中的引擎就是剛安裝的這顆 binary（版本＋SHA-256），不只確認
+; 「單例鎖有人在」。
+; 舊版引擎不理會停止事件，新引擎接手時會先送 Shutdown 存檔再強制結束；
+; 這一步把接手結果變成安裝時就看得到的失敗，不會拖到下次登入。
+Filename: "{app}\jc-engine.exe"; Parameters: "--verify-running"; Tasks: enableime; Flags: runhidden waituntilterminated runasoriginaluser
 
 ; 安裝完成後跑一次 doctor；預設不跑，要使用者在 [Tasks] 勾選 smoke 才會執行。
 ; runasoriginaluser 不能省：診斷要讀原使用者的
@@ -233,7 +251,12 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Win
 Filename: "{app}\jc-settings-ui.exe"; Description: "{cm:OpenSettings}"; Flags: postinstall nowait skipifsilent unchecked
 
 [UninstallRun]
-; 只做 machine-unregister。user-uninstall 需要原使用者身分，但 [UninstallRun]
+; 先停引擎與啟動器。`--stop` 走和升級同一條路徑：先要求監督者優雅收尾，
+; 不回應就送 Shutdown 存檔後強制結束；`[Code]` 的 usUninstall 還會再確認一次，
+; 避免反安裝刪檔時還握著 jc-engine.exe。
+Filename: "{app}\jc-engine.exe"; Parameters: "--stop"; Flags: runhidden waituntilterminated; RunOnceId: "StopEngine"
+
+; 再做 machine-unregister。user-uninstall 需要原使用者身分，但 [UninstallRun]
 ; 不支援 runasoriginaluser；profile 移除後語言清單的項目自然失效。
 Filename: "{app}\jc-tip-register.exe"; Parameters: "machine-unregister"; Flags: runhidden waituntilterminated; RunOnceId: "UnregisterTip"
 
@@ -434,31 +457,184 @@ begin
   end;
 end;
 
-// 檔案複製之前唯一的動手時機。先移除舊 MSI，再清 .old-* 殘骸，最後把
-// 四個程式檔讓開（其中兩個 TSF DLL 可能被載入，引擎與啟動器可能被執行）。
-// 安裝／反安裝前先結束常駐的 jc-engine。
+// 用 tasklist 的輸出確認引擎行程。PowerShell 不可用時的備援。
+//
+// tasklist 沒有 session 過濾，這個備援是 machine-wide：其他登入使用者的
+// 引擎會讓結果變成「可能還在跑」。這是刻意的 fail-closed，呼叫端會停下
+// 安裝而不是冒險覆蓋檔案。
+//
+// 回傳 False 只代表 tasklist 明確列出「沒有這兩個行程」；工具本身失敗時
+// 呼叫端仍要當成「可能還在跑」。
+function TasklistShowsEngine(var Known: Boolean): Boolean;
+var
+  Code, I: Integer;
+  TempFile: String;
+  Lines: TArrayOfString;
+  Lower: String;
+begin
+  Result := False;
+  Known := False;
+  TempFile := ExpandConstant('{tmp}\jc-engine-processes.txt');
+  DeleteFile(TempFile);
+  if not Exec(ExpandConstant('{cmd}'),
+      '/C tasklist /NH /FO CSV > "' + TempFile + '" 2>NUL',
+      '', SW_HIDE, ewWaitUntilTerminated, Code) then begin
+    Log('tasklist 執行失敗，無法確認引擎行程');
+    Exit;
+  end;
+  if Code <> 0 then begin
+    Log(Format('tasklist 結束碼 %d，無法確認引擎行程', [Code]));
+    Exit;
+  end;
+  if not FileExists(TempFile) then begin
+    Log('tasklist 沒有產生輸出，無法確認引擎行程');
+    Exit;
+  end;
+  if not LoadStringsFromFile(TempFile, Lines) then begin
+    Log('讀取 tasklist 輸出失敗，無法確認引擎行程');
+    Exit;
+  end;
+  Known := True;
+  for I := 0 to GetArrayLength(Lines) - 1 do begin
+    Lower := Lowercase(Lines[I]);
+    if (Pos('jc-engine.exe', Lower) > 0) or
+        (Pos('jc-engine-launcher.exe', Lower) > 0) then begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+// 引擎／啟動器是否還在執行。
+//
+// 確認工具本身壞掉時要保守回 True（可能還在跑），不能把「不知道」當成
+// 「沒有在跑」而繼續覆蓋檔案。呼叫端會因此停下安裝，讓使用者看到訊息。
+function EngineProcessesRunning: Boolean;
+var
+  Code: Integer;
+  Known: Boolean;
+begin
+  Result := True;
+  // 只檢查目前 session：提權安裝器不該因為其他登入使用者有引擎而停下。
+  if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ' +
+      '"$s=[System.Diagnostics.Process]::GetCurrentProcess().SessionId; ' +
+      'if (Get-Process jc-engine,jc-engine-launcher -ErrorAction SilentlyContinue | ' +
+      'Where-Object { $_.SessionId -eq $s }) { exit 1 } else { exit 0 }"',
+      '', SW_HIDE, ewWaitUntilTerminated, Code) then begin
+    Result := Code <> 0;
+    Exit;
+  end;
+  Log('PowerShell 無法執行；改用 tasklist 確認引擎行程（machine-wide、fail-closed）');
+  Result := TasklistShowsEngine(Known);
+  if not Known then begin
+    Result := True;
+    Log('無法確認 jc-engine／jc-engine-launcher 是否結束，保守視為仍在執行');
+  end;
+end;
+
+// 用指定版本的 jc-engine 執行 --stop。安裝時傳 {tmp} 的新版（舊版引擎不認得
+// 停止事件，新版會送 Shutdown 存檔後強制結束）；反安裝時傳 {app} 的版本。
+//
+// AllowOriginalUser 只在安裝階段為 True：ExecAsOriginalUser 在反安裝模式不可用，
+// 反安裝直接走提權身分。
+function RunEngineStop(const Helper: String; const AllowOriginalUser: Boolean): Boolean;
+var
+  Code: Integer;
+  OriginalOk: Boolean;
+begin
+  Result := False;
+  if not FileExists(Helper) then begin
+    Log('找不到停止引擎的輔助程式：' + Helper);
+    Exit;
+  end;
+  Code := 0;
+  // Inno 的 Pascal 不保證 and 短路，先明確判斷再呼叫 ExecAsOriginalUser。
+  // 文件註明極端情況下它會丟例外，不能讓例外中斷 PrepareToInstall。
+  if AllowOriginalUser then begin
+    try
+      OriginalOk := ExecAsOriginalUser(Helper, '--stop', '', SW_HIDE,
+        ewWaitUntilTerminated, Code);
+    except
+      OriginalOk := False;
+      Log('ExecAsOriginalUser 失敗；改用提權身分執行 --stop');
+    end;
+  end else
+    OriginalOk := False;
+  if OriginalOk then
+    Log(Format('jc-engine --stop（原使用者）結束：exit=%d', [Code]))
+  else if Exec(Helper, '--stop', '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Log(Format('jc-engine --stop（提權）結束：exit=%d', [Code]))
+  else begin
+    Log('無法執行 jc-engine --stop');
+    Exit;
+  end;
+  Result := Code = 0;
+end;
+
+// 最後手段：--stop 無效時才直接結束行程。
+//
+// 先用 PowerShell 只停目前 session 的引擎與 launcher；PowerShell 不可用時
+// 才退回 machine-wide taskkill，並在 log 寫清楚影響範圍。先關 launcher，
+// 避免它又帶起引擎。
+procedure KillEngineProcesses;
+var
+  Code: Integer;
+begin
+  Code := 1;
+  if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ' +
+      '"$s=[System.Diagnostics.Process]::GetCurrentProcess().SessionId; ' +
+      'Get-Process jc-engine,jc-engine-launcher -ErrorAction SilentlyContinue | ' +
+      'Where-Object { $_.SessionId -eq $s } | Stop-Process -Force -ErrorAction SilentlyContinue"',
+      '', SW_HIDE, ewWaitUntilTerminated, Code) then begin
+    if Code = 0 then begin
+      Log('已用 PowerShell 結束目前 session 的引擎與 launcher');
+      Sleep(500);
+      Exit;
+    end;
+  end;
+  Log('無法只停目前 session；改用 machine-wide taskkill（可能影響其他登入使用者）');
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM jc-engine-launcher.exe', '',
+      SW_HIDE, ewWaitUntilTerminated, Code);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM jc-engine.exe', '',
+      SW_HIDE, ewWaitUntilTerminated, Code);
+  Sleep(500);
+end;
+
+// 先 graceful（--stop），再確認行程真的結束；不得已才 taskkill。
+procedure StopEngine(const Helper: String; const AllowOriginalUser: Boolean);
+begin
+  RunEngineStop(Helper, AllowOriginalUser);
+  if EngineProcessesRunning then begin
+    Log('--stop 之後仍有引擎行程；改用 taskkill（最後手段，可能損失最後一次 flush）');
+    KillEngineProcesses;
+  end;
+  if EngineProcessesRunning then
+    Log('警告：jc-engine 或 jc-engine-launcher 仍在執行；讓路可能失敗')
+  else
+    Log('jc-engine 與 jc-engine-launcher 已結束，可以替換檔案');
+end;
+
+// 檔案複製之前唯一的動手時機。先停引擎、移除舊 MSI，再清 .old-* 殘骸，
+// 最後把四個程式檔讓開（其中兩個 TSF DLL 可能被載入，引擎與啟動器可能被執行）。
 //
 // 它從 {app} 執行並握著 jc-engine.exe；不先收掉，Inno 只能把舊檔改名成
 // .old-<時間戳> 並排到重開機刪除，使用者會出現「DLL 是新的、引擎是舊的」
-// 這種半套升級。安裝程式此時是提權的，taskkill 一定殺得掉；失敗只記 log，
-// 後面 ParkProtectedFiles 仍會讓路。
-procedure StopEngine;
-var
-  ResultCode: Integer;
-begin
-  if Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM jc-engine.exe', '',
-      SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    Log(Format('停止 jc-engine：exit=%d', [ResultCode]))
-  else
-    Log('停止 jc-engine 失敗（可能沒在執行）');
-end;
-
+// 這種半套升級。新版引擎會用身分檔比對版本與 SHA-256，接手時再擋一次。
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Dir: String;
 begin
   Dir := ExpandConstant('{app}');
-  StopEngine;
+  // 舊版引擎不認得停止事件，所以用這次安裝帶來的新版執行 --stop。
+  ExtractTemporaryFile('jc-engine-stop.exe');
+  StopEngine(ExpandConstant('{tmp}\jc-engine-stop.exe'), True);
+  if EngineProcessesRunning then begin
+    // 還沒動任何檔案就停下來，不要留下「引擎被刪、DLL 已讓路」的半套狀態。
+    Result := ExpandConstant('{cm:ErrEngineRunning}');
+    Exit;
+  end;
   RemoveLegacyMsi;
   SweepLeftovers(Dir);
   Result := ParkProtectedFiles(Dir);
@@ -472,7 +648,7 @@ var
   Dir: String;
 begin
   if CurStep = usUninstall then
-    StopEngine;
+    StopEngine(ExpandConstant('{app}\jc-engine.exe'), False);
   if CurStep = usPostUninstall then begin
     Dir := ExpandConstant('{app}');
     SweepLeftovers(Dir);

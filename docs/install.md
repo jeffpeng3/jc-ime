@@ -82,8 +82,10 @@ jc-ime-0.1.0-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\
 
 1. 按 `Win+Space`，清單裡應該出現「jc 注音」。選它可以打注音。打字時單按左或
    右 Shift（不搭配其他鍵）會切到純英文，再按一次回到原本的中文或日文模式。
-2. 安裝器會在完成時先啟動引擎；之後每次登入由 Run 項目再啟動。不想重新登入
-   的人可以手動跑一次：
+2. 安裝器會在完成時先停掉舊引擎、啟動新引擎，再驗證執行中的版本與 SHA-256
+   和剛安裝的檔案一致；之後每次登入由 Run 項目再啟動。升級不需要登出登入。
+   只有已經開著的程式還載著舊 TSF DLL，重開那個程式即可。
+   需要手動啟動引擎時可以跑一次：
 
    ```bat
    "%ProgramFiles%\jc-ime\jc-engine.exe" --supervise ^
@@ -102,7 +104,7 @@ jc-ime-0.1.0-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\
    引擎沒跑時，`jc 注音` 仍然可以選取，TIP 的第一個按鍵會嘗試啟動引擎；真的
    起不來時按鍵會直接放行，看起來像「打了沒反應」。
 3. 設定程式在「開始功能表 → jc 注音 → jc 注音設定」。修改後要重新啟動引擎
-   （登出再登入，或從工作管理員結束 `jc-engine.exe` 後再跑上面的指令）才會生效；
+   （`jc-engine.exe --stop` 後再跑上面的啟動指令，或登出再登入）才會生效；
    引擎目前不監看 `settings.json`。
 
 ### 安裝診斷（doctor）
@@ -322,11 +324,18 @@ supervisor.log、tsf.log）。要清全部使用者資料，以該使用者身�
 
 順序：
 
-1. `[UninstallRun]` 先跑 `machine-unregister`：`UnregisterCategory` 三次與
+1. `[UninstallRun]` 先跑 `jc-engine.exe --stop`。反安裝不支援
+   `runasoriginaluser`，這一步以提權身分執行：停止檔／事件可能落在
+   Administrator 的設定檔，原使用者的監督者收不到 graceful stop；`[Code]`
+   會再確認並用 `taskkill` 收掉引擎與 launcher。**最後一次尚未 flush 的
+   個人學習資料可能因此沒有寫入**。手動 `--stop` 以當下執行身分為準：
+   從提權命令提示字元執行就是 Administrator；只有安裝器透過
+   `ExecAsOriginalUser` 執行的 `--stop` 才是原使用者。
+2. 接著跑 `machine-unregister`：`UnregisterCategory` 三次與
    `UnregisterProfile`。它不碰 DLL，被隔離也不影響。
-2. `[Registry]` 用 `uninsdeletekey` 移除兩個檢視（64 位元與 `Wow6432Node`）的
+3. `[Registry]` 用 `uninsdeletekey` 移除兩個檢視（64 位元與 `Wow6432Node`）的
    CLSID 子樹，再刪檔案與 `Run` 值。
-3. `CurUninstallStepChanged(usPostUninstall)` 清 `.old-*` 殘骸；仍在的
+4. `CurUninstallStepChanged(usPostUninstall)` 清 `.old-*` 殘骸；仍在的
    `jc-tsf.dll`、`jc-tsf-x86.dll`、`jc-engine.exe`、`jc-engine-launcher.exe`
    刪不掉就登記下次開機刪除，
    然後收掉 `legal\licenses` 與 `legal`。安裝目錄本身還留著反安裝程式檔案時交給
@@ -362,8 +371,26 @@ supervisor.log、tsf.log）。要清全部使用者資料，以該使用者身�
 舊「jc 注音」與「jc 注音（新版）」由 `user-cleanup-legacy` 移除，再由 `user-install`
 加回單一「jc 注音」。
 
-完成後請登出再登入，讓 explorer 與各行程重新載入 DLL，並確認只跑一個
-`jc-engine.exe`。
+升級不需要登出再登入。`PrepareToInstall` 會用這次安裝帶來的
+`jc-engine --stop` 要求舊監督者優雅收尾；新版引擎在接手時再比對身分檔的版本與
+SHA-256，發現舊版就送 `Shutdown` 存檔後強制結束，然後才啟動新引擎。
+`[Run]` 最後的 `jc-engine --verify-running` 會確認執行中的就是剛安裝的 binary。
+已經開著的程式仍載著舊 TSF DLL，重開該程式即可；新開的程式直接用新 DLL。
+
+停止與強制結束只針對目前 session：提權安裝器不會殺掉其他登入使用者的
+`jc-engine.exe`。只有在取不到目前 session（或 PowerShell 不可用而退回
+`tasklist`／`taskkill`）時才會用 machine-wide 判斷，log 會寫明。
+
+手動 `--stop` 會以當下執行身分決定 `%LOCALAPPDATA%` 與 session；從提權
+命令提示字元執行就是 Administrator，對不到原使用者的引擎。需要停掉原使用者的
+引擎時，以該使用者身分執行 `jc-engine.exe --stop`。
+
+停止要求檔以修改時間 60 秒判定新舊：這是為了不誤刪剛寫入的合法 `--stop`。
+取捨是 `--stop` 若在寫完要求檔後被強制殺掉，殘留檔會讓 60 秒內的下一次引擎
+啟動直接退出；等超過 60 秒或刪除
+`%LOCALAPPDATA%\jc-ime\Local-jc-ime-engine-supervisor-stop` 後即可恢復。
+身分檔寫入失敗時，`--stop` 會先探 socket；socket 有回應就仍等完整的
+`shutdown_grace`，不會因為缺少身分檔而提早強制結束。
 
 ## 簽章
 
@@ -430,7 +457,11 @@ Linux 只能做 `.iss`、payload 與 manifest 的靜態一致性檢查，下面�
 6. UWP 應用程式（例如 Windows 設定或小算盤）與 Windows Terminal（Store MSIX
    版）能否載入 TIP 並切換到「jc 注音」；若不行，檢查 `Category` 底下是否有
    `IMMERSIVESUPPORT`，以及安裝目錄上 `ALL APPLICATION PACKAGES` 的讀取權限。
-7. 升級：舊版反安裝、新版安裝後，語言清單只剩一項「jc 注音」、舊 CLSID 機碼與舊 DLL 檔案消失、個人資料與設定檔保留；Run 值只剩一條且指向啟動器。
+7. 升級（不登出）：舊版安裝後先啟動引擎，再直接安裝新版；新版安裝完
+   `jc-engine --verify-running` 應通過，工作管理員只剩一個新 `jc-engine.exe`，
+   `supervisor.log` 有舊版接手的紀錄；新開記事本可立即打字。語言清單只剩一項
+   「jc 注音」、舊 CLSID 機碼與舊 DLL 檔案消失、個人資料與設定檔保留；Run 值
+   只剩一條且指向啟動器。
 8. 反安裝後機碼、檔案是否清乾淨，`jc-engine-launcher.exe` 是否消失；反安裝只會刪除
    `%LOCALAPPDATA%\jc-ime\doctor`，其他 `%LOCALAPPDATA%\jc-ime` 內容要另外確認
    `user-uninstall 0` 是否清掉。
@@ -457,8 +488,10 @@ Linux 只能做 `.iss`、payload 與 manifest 的靜態一致性檢查，下面�
 - 只提供 x64 的引擎、CLI 與設定程式。TSF DLL 只有 x64 與 x86 兩份（共用同一個
   CLSID `{2F6B41D8-...}`，舊 CLSID 已移除），引擎本身是獨立行程，32 位元程式
   一樣連得到。
-- 引擎啟動靠 `HKLM\...\Run` 與安裝完成時的啟動，不是服務；`--supervise` 會用
-  Local mutex 保證單一實例並在子行程結束後重啟。多人同時登入時每個工作階段
+- 引擎啟動靠 `HKLM\...\Run` 與安裝完成時的啟動，不是服務；`--supervise` 用
+  帳號範圍的鎖檔保證單一實例、在子行程結束後重啟。`--stop` 會先送 `Shutdown`
+  讓引擎存檔；新引擎發現執行中的版本或 SHA-256 不同時會接手，不必登出。
+  多人同時登入時每個工作階段
   各有一個 `jc-engine.exe`；pipe 名稱含 SID 尾段，不同使用者各自連到自己的
   引擎。同一使用者開多個 RDP 工作階段仍共用同一個名稱，client 會連到其中一個
   實例。

@@ -59,6 +59,18 @@ require_line 'user-install'
 require_line 'user-cleanup-legacy'
 require_line 'machine-unregister'
 require_line 'post-install-doctor.ps1'
+# 升級／反安裝必須先停掉舊引擎，並在安裝後驗證跑的是新 binary。
+require_line "ExtractTemporaryFile('jc-engine-stop.exe')"
+require_line 'ExecAsOriginalUser'
+require_line '--stop'
+require_line '--verify-running'
+require_line 'ErrEngineRunning'
+require_line 'EngineProcessesRunning'
+# 行程確認不能 fail-open：PowerShell 不可用時要有 tasklist 備援。
+require_line 'TasklistShowsEngine'
+require_line 'WindowsPowerShell\v1.0\powershell.exe'
+# 行程確認與強制結束必須按目前 session 過濾，不能直接 machine-wide。
+require_line 'SessionId -eq $s'
 require_line 'Name: "smoke"; Description: "{cm:RunSmoke}"; Flags: unchecked'
 require_line 'Tasks: smoke;'
 require_line 'Flags: runhidden waituntilterminated runasoriginaluser'
@@ -99,6 +111,23 @@ fi
 # 只看 Run 機碼那一行，註解裡提到 --socket 不算。
 if sed -n 's/.*ValueName: "jc-ime-engine".*/&/p' "$iss" | grep -Fq -- '--socket'; then
     error 'jc.iss 的引擎 autostart 不該帶 --socket：pipe 名要由 resolve_pipe_name() 決定'
+fi
+
+# 安裝後先啟動引擎，再驗證執行中的 binary 與剛安裝的一致。
+run_section=$(sed -n '/^\[Run\]/,/^\[/p' "$iss")
+if ! grep -Fq -- '--verify-running' <<<"$run_section"; then
+    error 'jc.iss 的 [Run] 缺少 jc-engine --verify-running'
+fi
+if ! grep -Fq -- 'jc-engine-launcher.exe' <<<"$run_section"; then
+    error 'jc.iss 的 [Run] 缺少啟動器'
+fi
+launcher_line=$(grep -F -- 'jc-engine-launcher.exe' <<<"$run_section" | grep -v '^;' || true)
+if grep -Fq -- 'nowait' <<<"$launcher_line"; then
+    error 'jc.iss 的啟動器不該 nowait：後面的 --verify-running 會太早執行'
+fi
+uninstall_section=$(sed -n '/^\[UninstallRun\]/,/^\[/p' "$iss")
+if ! grep -Fq -- '--stop' <<<"$uninstall_section"; then
+    error 'jc.iss 的 [UninstallRun] 缺少 jc-engine --stop'
 fi
 
 # [Files] 的 Source 清單。Source 一律寫成 {#PayloadDir}\relative。

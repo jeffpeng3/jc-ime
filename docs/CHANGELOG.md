@@ -4,6 +4,27 @@
 `[workspace.package] version`；release workflow 會抓 `## <version>` 段落放進
 GitHub Release。較舊的版本留在 git 歷史，`git log -- docs/CHANGELOG.md` 可回溯。
 
+## 未發布
+
+### 修正
+
+- 升級後不必登出登入：安裝器先用 `jc-engine --stop` 要求舊引擎收尾，
+  新版引擎再比對版本與 SHA-256 接手；`[Run]` 最後用
+  `jc-engine --verify-running` 確認跑的是剛安裝的 binary。
+- 舊引擎無法優雅停止時，先送 `Shutdown` 讓個人學習資料存檔，才強制結束行程。
+- 安裝器的引擎行程確認改成 fail-closed：PowerShell 不可用時改用 `tasklist`，
+  兩者都無法確認就不覆蓋檔案。
+- `jc-engine --verify-running` 在接手期間看到舊身分會等到期限，不再提早失敗。
+- `--stop` 即使單例鎖是空的，也會探 socket 清掉沒有 supervisor 的 orphan 引擎。
+- 反安裝同樣先 `--stop`，再移除檔案與註冊；提權身分對不到原使用者時仍以
+  `taskkill` 收尾，最後一次 flush 可能沒有。
+- 引擎行程確認與強制結束改為只處理目前 session；取不到 session 才退回
+  machine-wide 並寫 log。
+- 停止要求檔以 60 秒判定殘骸：崩潰的 `--stop` 可能讓 60 秒內的引擎啟動
+  直接退出，取捨已寫在文件。
+- 身分檔寫入失敗時先探 socket；有回應就等完整 `shutdown_grace`，不提早
+  強制結束。
+
 ## 0.1.32 - 2026-11-28
 
 ### 修正
