@@ -541,11 +541,15 @@ pub struct Session {
     /// 空白本身是字面字元，不能當成音節分隔；但立即交回管線會讓注音的
     /// 候選清單消失，所以延到真的還有輸入時才處理。
     pub(super) zh_space_closed: bool,
+    /// 已完成的注音音節實際按下的按鍵；與 [`Session::syllables`] 平行。
+    ///
+    /// 候選與顯示 provenance 要用使用者真正按的順序（`ij3`），不能事後用
+    /// [`crate::zh::keyboard::Keyboard::keys`] 還原成正規順序（`ji3`）。
+    pub(super) zh_syllable_keys: Vec<String>,
     /// 注音路徑目前尚未完成音節的原始按鍵。
     ///
-    /// 由注音轉混打時要重播整段按鍵；已完成的音節用
-    /// [`crate::zh::keyboard::Keyboard::keys`] 還原按鍵，這一份只記最後一個
-    /// 還沒完成的音節。
+    /// 由注音轉混打時要和 [`Session::zh_syllable_keys`] 一起重播整段按鍵；
+    /// 這一份只記最後一個還沒完成的音節。
     pub(super) zh_pending_keys: String,
     /// 與 `zh_pending_keys` 等長；Caps Lock 位元，退回混打時才套用大小寫。
     pub(super) zh_pending_caps: String,
@@ -670,6 +674,7 @@ impl Session {
             legacy_routing: false,
             zh: ZhInput::standard(),
             syllables: Vec::new(),
+            zh_syllable_keys: Vec::new(),
             cursor_rune: Self::MIXED_CURSOR_END,
             units: Vec::new(),
             unit_spans: Vec::new(),

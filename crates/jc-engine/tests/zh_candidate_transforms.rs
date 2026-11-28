@@ -253,7 +253,7 @@ fn candidate_lists_survive_every_transform() {
             s
         }),
         "ㄛ",
-        Some("i "),
+        Some("i"),
         2,
     );
     add(

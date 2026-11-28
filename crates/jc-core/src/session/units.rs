@@ -11,7 +11,7 @@
 use crate::composition::{CompSegment, Owner};
 use crate::lang::Lang;
 use crate::zh::keyboard::Keyboard;
-use crate::zh::syllable::{class_of, parse_reading, Class};
+use crate::zh::syllable::{class_of, parse_reading, Class, TONE1, UNTONED_MARK};
 
 use super::Session;
 
@@ -255,6 +255,7 @@ impl Session {
         let typed = self.ascii.typed();
         let comp = self.composition.segments();
         let mut ja_unit_at = 0usize;
+        let mut zh_unit_at = 0usize;
         for (index, segment) in comp.iter().enumerate() {
             let surface = rune_slice(base, segment.span.start, segment.span.end);
             if surface.is_empty() {
@@ -265,7 +266,15 @@ impl Session {
                 .get(typed_span.0..typed_span.1)
                 .filter(|_| typed_span.0 < typed_span.1)
                 .unwrap_or_default();
-            let raw = if raw.is_empty() && self.in_ja_lane() {
+            let raw = if raw.is_empty() && self.in_zh_lane() {
+                // 純注音 lane 沒有 `AsciiInput::typed()`；已完成的音節要拿
+                // 實際按鍵（`ij3`），不能回頭用正規順序還原。
+                let end = zh_unit_at.saturating_add(segment.units);
+                self.zh_syllable_keys
+                    .get(zh_unit_at..end)
+                    .map(|items| items.concat())
+                    .unwrap_or_default()
+            } else if raw.is_empty() && self.in_ja_lane() {
                 // 讀音單位對到羅馬字：一個漢字可能吃掉多個かな（私 → わたし），
                 // 不能用顯示 rune span 切 raw_units。
                 let end = ja_unit_at.saturating_add(segment.units);
@@ -279,6 +288,9 @@ impl Session {
             };
             if segment.lang == crate::composition::Lang::Ja {
                 ja_unit_at = ja_unit_at.saturating_add(segment.units);
+            }
+            if segment.lang == crate::composition::Lang::Zh {
+                zh_unit_at = zh_unit_at.saturating_add(segment.units);
             }
             let units = split_segment_units(&surface, segment, &raw);
             for (offset, unit) in units.into_iter().enumerate() {
@@ -407,22 +419,26 @@ impl Session {
 
     fn pending_units(&self) -> Vec<Built> {
         let symbols: Vec<char> = self.pending.chars().collect();
-        let keys: Vec<char> = self.zh_pending_keys.chars().collect();
-        let keyboard = Keyboard::standard();
+        // 畫面是正規順序，按鍵流是實際按下順序；用類別對回各自的鍵
+        // （`ky` → `ㄗ`：`y`、`ㄜ`：`k`）。
+        let by_class = class_key_map(&self.zh_pending_keys);
         symbols
             .into_iter()
             .enumerate()
             .map(|(offset, symbol)| {
-                let key = keys
-                    .get(offset)
-                    .filter(|_| keys.len() == self.pending.chars().count())
-                    .and_then(|key| keyboard.symbol(*key).map(|_| *key))
-                    .unwrap_or(symbol);
+                let class = class_of(symbol);
+                let key = match class {
+                    Class::Initial | Class::Medial | Class::Final | Class::Tone => by_class
+                        [class as usize - 1]
+                        .map(|key| key.to_string())
+                        .unwrap_or_else(|| symbol.to_string()),
+                    Class::None => symbol.to_string(),
+                };
                 Built {
                     rune: offset,
                     unit: DisplayUnit::new(
                         symbol.to_string(),
-                        key.to_string(),
+                        key,
                         Some(symbol.to_string()),
                         Lang::Zh,
                         Owner::Auto,
@@ -576,45 +592,23 @@ fn literal_unit(ch: char, owner: Owner) -> DisplayUnit {
 fn split_zh_units(chars: &[char], segment: &CompSegment, raw: &str) -> Vec<DisplayUnit> {
     let readings: Vec<&str> = segment.reading.split_whitespace().collect();
     let surface_reading: String = chars.iter().collect();
-    let symbols: Vec<char> = if segment.reading.chars().count() == chars.len() {
-        segment.reading.chars().collect()
-    } else {
-        chars.to_vec()
-    };
-    let keys: String = if !raw.is_empty() && raw.is_ascii() && raw.chars().count() == chars.len() {
+    let canonical = zh_keys_for(&surface_reading)
+        .or_else(|| zh_keys_for(&segment.reading))
+        .unwrap_or_default();
+    // 有原始按鍵就用它，即使順序不是正規的（`ij3`）；沒有才退回正規按鍵。
+    let keys = if !raw.is_empty() && raw.is_ascii() {
         raw.to_string()
     } else {
-        zh_keys_for(&surface_reading)
-            .or_else(|| zh_keys_for(&segment.reading))
-            .unwrap_or_default()
+        canonical.clone()
     };
-    // 未轉換的注音符號：一個符號一個按鍵（`ㄨㄛˇ` → `j`、`i`、`3`）。
-    if !chars.is_empty()
-        && chars.iter().all(|ch| class_of(*ch) != Class::None)
-        && chars.len() == symbols.len()
-    {
-        let key_chars: Vec<char> = keys.chars().collect();
-        return chars
-            .iter()
-            .enumerate()
-            .map(|(index, ch)| {
-                let key = key_chars
-                    .get(index)
-                    .filter(|_| key_chars.len() == chars.len())
-                    .map(|key| key.to_string())
-                    .unwrap_or_else(|| ch.to_string());
-                DisplayUnit::new(
-                    ch.to_string(),
-                    key,
-                    Some(ch.to_string()),
-                    Lang::Zh,
-                    segment.owner,
-                    DisplayUnitMeta::Zhuyin,
-                )
-            })
-            .collect();
+    // 未轉換的注音符號：每個符號記住自己的按鍵（`ㄨㄛˇ` → `ㄨ:j`、
+    // `ㄛ:i`、`ˇ:3`）。畫面是正規順序，不能拿按鍵流逐位硬對。
+    if !chars.is_empty() && chars.iter().all(|ch| class_of(*ch) != Class::None) {
+        if let Some(units) = split_zhuyin_units(chars, &readings, raw, &keys, &canonical, segment) {
+            return units;
+        }
     }
-    // 一個音節一個字（`我` → `ji3`）。
+    // 一個音節一個字（`我` → `ij3`）。
     if readings.len() == chars.len() && !readings.is_empty() {
         let key_parts = split_zh_keys(raw, &keys, chars.len());
         return chars
@@ -649,7 +643,7 @@ fn split_zh_units(chars: &[char], segment: &CompSegment, raw: &str) -> Vec<Displ
         let keys = if segment.reading.is_empty() {
             ch.to_string()
         } else {
-            keys.clone()
+            keys
         };
         return vec![DisplayUnit::new(
             ch.to_string(),
@@ -671,11 +665,121 @@ fn split_zh_units(chars: &[char], segment: &CompSegment, raw: &str) -> Vec<Displ
         .collect()
 }
 
+/// 全注音字面的逐符號 provenance。
+///
+/// 每個音節先用自己的按鍵片段建立「類別 → 實際按鍵」對照，再把畫面符號
+/// 對回自己的鍵；畫面對不上讀音時回傳 `None` 讓呼叫端走原本的保守路徑。
+fn split_zhuyin_units(
+    chars: &[char],
+    readings: &[&str],
+    raw: &str,
+    keys: &str,
+    canonical: &str,
+    segment: &CompSegment,
+) -> Option<Vec<DisplayUnit>> {
+    let displays: Vec<String> = if readings.is_empty() {
+        vec![chars.iter().collect()]
+    } else {
+        readings
+            .iter()
+            .map(|reading| zh_reading_display(reading))
+            .collect()
+    };
+    if !displays
+        .iter()
+        .flat_map(|display| display.chars())
+        .eq(chars.iter().copied())
+    {
+        return None;
+    }
+    let key_parts: Vec<String> = if displays.len() == 1 {
+        vec![keys.to_string()]
+    } else if !raw.is_empty() {
+        let parts = split_zh_keys(raw, canonical, displays.len());
+        if parts.len() == displays.len() {
+            parts
+        } else {
+            readings
+                .iter()
+                .map(|reading| zh_keys_for(reading).unwrap_or_default())
+                .collect()
+        }
+    } else {
+        readings
+            .iter()
+            .map(|reading| zh_keys_for(reading).unwrap_or_default())
+            .collect()
+    };
+    let mut out = Vec::new();
+    for (display, part) in displays.iter().zip(key_parts) {
+        out.extend(zh_symbol_units(display, &part, segment.owner));
+    }
+    Some(out)
+}
+
+/// 一個注音音節的顯示符號，去掉不顯示的內部記號。
+fn zh_reading_display(reading: &str) -> String {
+    reading
+        .chars()
+        .filter(|ch| *ch != TONE1 && *ch != UNTONED_MARK)
+        .collect()
+}
+
+/// 逐符號建立 provenance：符號的類別決定它該拿哪一顆實際按鍵。
+fn zh_symbol_units(display: &str, keys: &str, owner: Owner) -> Vec<DisplayUnit> {
+    let by_class = class_key_map(keys);
+    display
+        .chars()
+        .map(|ch| {
+            let class = class_of(ch);
+            let key = match class {
+                Class::Initial | Class::Medial | Class::Final | Class::Tone => by_class
+                    [class as usize - 1]
+                    .map(|key| key.to_string())
+                    .unwrap_or_else(|| ch.to_string()),
+                Class::None => ch.to_string(),
+            };
+            DisplayUnit::new(
+                ch.to_string(),
+                key,
+                Some(ch.to_string()),
+                Lang::Zh,
+                owner,
+                DisplayUnitMeta::Zhuyin,
+            )
+        })
+        .collect()
+}
+
+/// 按鍵流中每個類別最後一次按下的鍵。
+///
+/// 組音器同類別後按的取代先按的，所以只有最後一顆是畫面上那個符號的來源。
+fn class_key_map(keys: &str) -> [Option<char>; 4] {
+    let keyboard = Keyboard::standard();
+    let mut map = [None; 4];
+    for key in keys.chars() {
+        let Some(symbol) = keyboard.symbol(key) else {
+            continue;
+        };
+        let class = class_of(symbol);
+        if class != Class::None {
+            map[class as usize - 1] = Some(key);
+        }
+    }
+    map
+}
+
 fn split_zh_keys(raw: &str, keys: &str, count: usize) -> Vec<String> {
     if count == 0 {
         return Vec::new();
     }
     if !raw.is_empty() {
+        // 音節以聲調鍵結束；同一個音節內符號可以照任意順序打（`ij3`），
+        // 所以不能用「類別倒退」當切點，只能看聲調。
+        let chunks = zh_key_chunks(raw);
+        if chunks.len() == count {
+            return chunks;
+        }
         let spans = zh_key_spans(raw);
         if spans.len() == count {
             return spans
@@ -689,6 +793,27 @@ fn split_zh_keys(raw: &str, keys: &str, count: usize) -> Vec<String> {
         return key_chars.into_iter().map(|ch| ch.to_string()).collect();
     }
     Vec::new()
+}
+
+/// 把按鍵流切成音節：每個聲調鍵都結束一個音節。
+fn zh_key_chunks(raw: &str) -> Vec<String> {
+    let keyboard = Keyboard::standard();
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for (index, ch) in raw.char_indices() {
+        let next = index + ch.len_utf8();
+        let is_tone = keyboard
+            .symbol(ch)
+            .is_some_and(|symbol| class_of(symbol) == Class::Tone);
+        if is_tone {
+            out.push(raw[start..next].to_string());
+            start = next;
+        }
+    }
+    if start < raw.len() {
+        out.push(raw[start..].to_string());
+    }
+    out
 }
 
 fn zh_keys_for(reading: &str) -> Option<String> {
@@ -1088,5 +1213,178 @@ mod tests {
     fn zh_key_spans_split_syllables() {
         assert_eq!(zh_key_spans("ji3"), [(0, 3)]);
         assert_eq!(zh_key_spans("su3ji3"), [(0, 3), (3, 6)]);
+    }
+
+    /// 從 golden 注音 baseline 載入真實詞庫。
+    fn real_zh_session() -> Option<Session> {
+        let path = jc_testdata::path("0c-testdata/golden/zh/data/lexicon.tsv")?;
+        let text = std::fs::read_to_string(path).expect("讀取注音詞庫");
+        let mut lex = InMemoryLexicon::new();
+        for line in text.lines() {
+            if line.trim().is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut fields = line.split('\t');
+            let Some(surface) = fields.next() else {
+                continue;
+            };
+            let Some(reading) = fields.next() else {
+                continue;
+            };
+            lex.push(LexEntry::new(surface, reading, 0, 0));
+        }
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(Arc::new(lex));
+        Some(Session::new(config))
+    }
+
+    fn real_ja_session() -> Option<Session> {
+        let path = jc_testdata::path("packs/ja-lexicon-mozc-v2.pack")?;
+        let decoder = crate::ja::decode::JaDecoder::open_with_context(&path)
+            .expect("載入日文 pack")
+            .with_particle_rewrite(true);
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.ja = Some(Arc::new(decoder));
+        config.ja_only = true;
+        Some(Session::new(config))
+    }
+
+    fn keys_of(session: &Session) -> Vec<String> {
+        session
+            .units()
+            .iter()
+            .map(|unit| unit.keys.clone())
+            .collect()
+    }
+
+    fn surfaces_of(session: &Session) -> Vec<String> {
+        session
+            .units()
+            .iter()
+            .map(|unit| unit.surface.clone())
+            .collect()
+    }
+
+    #[test]
+    fn pending_keys_follow_each_displayed_symbol_real_data() {
+        let Some(mut s) = real_zh_session() else {
+            return;
+        };
+        typed(&mut s, "ky");
+        assert_eq!(s.preedit(), "ㄗㄜ");
+        assert_eq!(surfaces_of(&s), ["ㄗ", "ㄜ"]);
+        assert_eq!(
+            keys_of(&s),
+            ["y", "k"],
+            "keys 要跟著各自符號：ㄗ 是 y、ㄜ 是 k"
+        );
+
+        s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(s.preedit(), "ㄗ", "Backspace 要刪最右邊的 ㄜ");
+        assert_eq!(keys_of(&s), ["y"], "剩下的 ㄗ 仍記 y");
+        assert_invariant(&s, "ky backspace");
+    }
+
+    #[test]
+    fn han_unit_keeps_typed_key_order_real_data() {
+        let Some(mut s) = real_zh_session() else {
+            return;
+        };
+        typed(&mut s, "ij3");
+        assert_eq!(s.preedit(), "我");
+        assert_eq!(keys_of(&s), ["ij3"], "我 的 keys 是實際順序 ij3");
+        s.press(Key::new(KeyCode::Down, None, false));
+        assert!(
+            s.candidates()
+                .iter()
+                .any(|candidate| candidate.surface == "ij3"),
+            "候選的原始輸入要用目標 unit 的 keys：{:?}",
+            s.candidates()
+                .iter()
+                .map(|candidate| candidate.surface.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        let mut s = real_zh_session().expect("真實詞庫");
+        typed(&mut s, "su3");
+        assert_eq!(s.preedit(), "你");
+        assert_eq!(keys_of(&s), ["su3"]);
+
+        // 一聲用空白完成時，按鍵流包含空白（與正規按鍵一致）。
+        let mut s = real_zh_session().expect("真實詞庫");
+        typed(&mut s, "su");
+        s.press(Key::new(KeyCode::Space, None, false));
+        assert_eq!(s.preedit(), "ㄋㄧ");
+        assert_eq!(
+            keys_of(&s),
+            ["s", "u"],
+            "一聲不顯示符號；空白只完成音節，不佔 unit"
+        );
+
+        // 一聲轉成漢字時，按鍵仍包含完成音節的空白。
+        let mut s = real_zh_session().expect("真實詞庫");
+        typed(&mut s, "gj");
+        s.press(Key::new(KeyCode::Space, None, false));
+        assert_eq!(s.preedit(), "書");
+        assert_eq!(keys_of(&s), ["gj "], "一聲的空白要留在實際按鍵裡");
+    }
+
+    #[test]
+    fn zhuyin_literal_units_use_symbol_own_key_real_data() {
+        let Some(mut s) = real_zh_session() else {
+            return;
+        };
+        typed(&mut s, "ij3");
+        s.press(Key::new(KeyCode::Down, None, false));
+        let index = s
+            .candidates()
+            .iter()
+            .position(|candidate| candidate.surface == "ㄨㄛˇ")
+            .expect("注音字面候選");
+        s.choose_candidate(index);
+        assert_eq!(s.preedit(), "ㄨㄛˇ");
+        assert_eq!(surfaces_of(&s), ["ㄨ", "ㄛ", "ˇ"]);
+        assert_eq!(
+            keys_of(&s),
+            ["j", "i", "3"],
+            "畫面是正規順序，keys 要跟著符號而不是輸入索引"
+        );
+        assert_invariant(&s, "注音字面");
+    }
+
+    #[test]
+    fn duplicate_class_keys_are_pruned_real_data() {
+        // 同類別的新鍵取代舊鍵：`kka` 的兩個 k 都是韻母，畫面只有 ㄇㄜ。
+        // 混打會把 `kka` 判成日文，所以注音路徑直接驗證逐符號 provenance。
+        let segment = CompSegment::new(
+            0..2,
+            "ㄇㄜ".to_string(),
+            1,
+            crate::composition::Lang::Zh,
+            Owner::Auto,
+        );
+        let units = split_zh_units(&['ㄇ', 'ㄜ'], &segment, "kka");
+        assert_eq!(
+            units
+                .iter()
+                .map(|unit| unit.keys.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "k"]
+        );
+    }
+
+    #[test]
+    fn japanese_sokuon_units_keep_real_keys_real_data() {
+        let Some(mut s) = real_ja_session() else {
+            return;
+        };
+        typed(&mut s, "kka");
+        assert_eq!(s.preedit(), "っか");
+        assert_eq!(surfaces_of(&s), ["っ", "か"]);
+        assert_eq!(
+            keys_of(&s),
+            ["k", "ka"],
+            "日文 lane 的 っ／か 要拿各自的羅馬字按鍵"
+        );
     }
 }

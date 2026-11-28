@@ -375,16 +375,46 @@ impl Session {
         }
     }
 
+    /// 未完成注音的第 `display_index` 個顯示符號是哪一個按鍵打出來的。
+    ///
+    /// 畫面是正規順序（`ㄗㄜ`），按鍵流是實際順序（`ky`）；不能用同一個
+    /// 索引硬對，否則 Backspace 會刪到另一個符號。
+    fn zh_pending_key_index(&self, display_index: usize) -> Option<usize> {
+        let symbol = self.pending.chars().nth(display_index)?;
+        let class = crate::zh::syllable::class_of(symbol);
+        if !matches!(
+            class,
+            crate::zh::syllable::Class::Initial
+                | crate::zh::syllable::Class::Medial
+                | crate::zh::syllable::Class::Final
+        ) {
+            return None;
+        }
+        let keyboard = self.zh.keyboard();
+        let mut found = None;
+        for (at, key) in self.zh_pending_keys.chars().enumerate() {
+            if keyboard
+                .symbol(key)
+                .map(crate::zh::syllable::class_of)
+                .is_some_and(|other| other == class)
+            {
+                found = Some(at);
+            }
+        }
+        found
+    }
+
     /// 從未完成注音刪一個按鍵，再用剩下的按鍵重建注音狀態。
     fn delete_zh_pending_at(&mut self, index: usize) -> bool {
+        let key_index = self.zh_pending_key_index(index).unwrap_or(index);
         let mut keys: Vec<char> = self.zh_pending_keys.chars().collect();
         let mut caps: Vec<char> = self.zh_pending_caps.chars().collect();
-        if index >= keys.len() {
+        if key_index >= keys.len() {
             return false;
         }
-        keys.remove(index);
-        if index < caps.len() {
-            caps.remove(index);
+        keys.remove(key_index);
+        if key_index < caps.len() {
+            caps.remove(key_index);
         }
         self.zh.reset();
         self.zh_pending_keys.clear();
@@ -392,8 +422,7 @@ impl Session {
         for (at, ch) in keys.into_iter().enumerate() {
             let cap = caps.get(at).copied().unwrap_or('0');
             self.zh.press(Key::char(ch, false));
-            self.zh_pending_keys.push(ch);
-            self.zh_pending_caps.push(cap);
+            self.record_zh_pending_key(ch, cap == '1');
         }
         // 刪除鍵本身就是「下一個按鍵」；重播剩下的按鍵不該讓上一個被擋的
         // 聲調旗標復活。

@@ -231,15 +231,19 @@ impl Session {
 
     /// 在音節索引 `at` 插入一個完成的音節，游標移到它後面。
     ///
-    /// 鎖定、字面插入點與手動片段一起依插入位置平移；被插入點切到的鎖定直接
-    /// 解除，因為它原本覆蓋的讀音已經被拆開。對照上游 `shiftLocks(at, +1)`。
-    pub(super) fn insert_syllable(&mut self, at: usize, syllable: Syllable) {
+    /// `keys` 是使用者實際按下的按鍵流（`ij3`），與音節平行保存，供顯示
+    /// provenance 與候選使用。鎖定、字面插入點與手動片段一起依插入位置平移；
+    /// 被插入點切到的鎖定直接解除，因為它原本覆蓋的讀音已經被拆開。對照上游
+    /// `shiftLocks(at, +1)`。
+    pub(super) fn insert_syllable(&mut self, at: usize, syllable: Syllable, keys: String) {
         let at = at.min(self.syllables.len());
         // 先取插入點在目前顯示字串的 rune 位置，再把新音節佔用的 rune 數加上去；
         // 游標 canonical 只有這一份，重建後不必再猜結尾。
         let start = self.zh_rune_at_cell(at);
         let advance = self.decode_syllable(&syllable).chars().count();
         self.syllables.insert(at, syllable);
+        let key_at = at.min(self.zh_syllable_keys.len());
+        self.zh_syllable_keys.insert(key_at, keys);
         self.shift_locks(at, 1);
         self.cursor_rune = start.saturating_add(advance);
         self.edit = None;
@@ -260,6 +264,9 @@ impl Session {
             .zh_cell_rune(at + 1)
             .saturating_sub(self.zh_cell_rune(at));
         self.syllables.remove(at);
+        if at < self.zh_syllable_keys.len() {
+            self.zh_syllable_keys.remove(at);
+        }
         self.shift_locks(at, -1);
         if before >= cells {
             // 原本在結尾：重建後仍留在結尾，字面與暫存注音都算在游標前面。
@@ -274,6 +281,25 @@ impl Session {
         self.keep_candidates = false;
         self.zh_window_last = false;
         true
+    }
+
+    /// 某個已完成音節的實際按鍵；沒有記錄時才退回正規按鍵。
+    pub(super) fn zh_syllable_key(&self, index: usize) -> String {
+        if let Some(keys) = self.zh_syllable_keys.get(index) {
+            return keys.clone();
+        }
+        self.syllables
+            .get(index)
+            .and_then(|syllable| self.zh.keyboard().keys(syllable).ok())
+            .unwrap_or_default()
+    }
+
+    /// 一段連續音節的實際按鍵，照使用者按下的順序串接。
+    pub(super) fn zh_keys_for_range(&self, start: usize, len: usize) -> String {
+        let end = start.saturating_add(len).min(self.syllables.len());
+        (start..end)
+            .map(|index| self.zh_syllable_key(index))
+            .collect()
     }
 
     /// 在 `at` 插入（`delta = +1`）或刪除（`delta = -1`）音節後平移鎖定。
@@ -302,9 +328,12 @@ impl Session {
         }
         match self.zh.press(Key::new(KeyCode::Space, None, false)) {
             crate::zh::input::ZhInputEvent::SyllableComplete(syllable) => {
+                // 空白就是一聲鍵；實際按鍵流要留著，候選與 provenance 才知道
+                // 使用者是按空白補聲調，而不是打了 `ˉ`。
+                let keys = format!("{} ", self.zh_pending_keys);
                 self.zh_pending_keys.clear();
                 self.zh_pending_caps.clear();
-                self.insert_syllable(self.zh_cell(), syllable);
+                self.insert_syllable(self.zh_cell(), syllable, keys);
                 self.zh.reset();
                 true
             }
@@ -572,14 +601,15 @@ impl Session {
     fn press_zh_char(&mut self, ch: char, caps: bool) {
         match self.zh.press(Key::char(ch, false)) {
             crate::zh::input::ZhInputEvent::Consumed => {
-                self.zh_pending_keys.push(ch);
-                self.zh_pending_caps.push(if caps { '1' } else { '0' });
+                self.record_zh_pending_key(ch, caps);
             }
             crate::zh::input::ZhInputEvent::SyllableComplete(syllable) => {
                 // 音節完成後搬進工作階段自己的音節清單，才能在中間插字。
+                // 聲調鍵也是實際按鍵的一部分（`ij3` 的 `3`）。
+                let keys = format!("{}{}", self.zh_pending_keys, ch);
                 self.zh_pending_keys.clear();
                 self.zh_pending_caps.clear();
-                self.insert_syllable(self.zh_cell(), syllable);
+                self.insert_syllable(self.zh_cell(), syllable, keys);
                 self.zh.reset();
             }
             crate::zh::input::ZhInputEvent::Commit(reading) => {
@@ -607,6 +637,50 @@ impl Session {
                 self.push_literal(&text.to_string());
             }
         }
+    }
+
+    /// 記下未完成音節的按鍵；同類別的新鍵取代舊鍵。
+    ///
+    /// 組音器每個類別只留最後一個符號（`ky` 的 `k`、`y` 各自佔一格），舊鍵
+    /// 已被覆蓋，不能留在按鍵流裡讓 Backspace 或重播復活。
+    pub(super) fn record_zh_pending_key(&mut self, ch: char, caps: bool) {
+        let keyboard = self.zh.keyboard();
+        let class = keyboard
+            .symbol(ch)
+            .map(crate::zh::syllable::class_of)
+            .filter(|class| {
+                matches!(
+                    class,
+                    crate::zh::syllable::Class::Initial
+                        | crate::zh::syllable::Class::Medial
+                        | crate::zh::syllable::Class::Final
+                )
+            });
+        if let Some(class) = class {
+            let mut keys = String::with_capacity(self.zh_pending_keys.len() + ch.len_utf8());
+            let mut caps_out = String::with_capacity(self.zh_pending_caps.len() + 1);
+            for (key, cap) in self
+                .zh_pending_keys
+                .chars()
+                .zip(self.zh_pending_caps.chars())
+            {
+                let same = keyboard
+                    .symbol(key)
+                    .map(crate::zh::syllable::class_of)
+                    .is_some_and(|other| other == class);
+                if !same {
+                    keys.push(key);
+                    caps_out.push(cap);
+                }
+            }
+            keys.push(ch);
+            caps_out.push(if caps { '1' } else { '0' });
+            self.zh_pending_keys = keys;
+            self.zh_pending_caps = caps_out;
+            return;
+        }
+        self.zh_pending_keys.push(ch);
+        self.zh_pending_caps.push(if caps { '1' } else { '0' });
     }
 
     /// Mixed 從空白開始打注音鍵時，這次組字走注音路徑。
@@ -667,14 +741,9 @@ impl Session {
     /// 而失去讀音與候選。
     pub(super) fn materialize_zh_lane(&mut self, extra: Option<(char, bool)>) {
         // 已完成的音節還原成原本的按鍵，才能讓混打管線重新判斷前後片段；
-        // 直接塞入漢字會讓前面的注音片段失去讀音與候選。
-        let keyboard = self.zh.keyboard();
-        let mut keys = String::new();
-        for syllable in &self.syllables {
-            if let Ok(syllable_keys) = keyboard.keys(syllable) {
-                keys.push_str(&syllable_keys);
-            }
-        }
+        // 直接塞入漢字會讓前面的注音片段失去讀音與候選。按鍵照實際輸入
+        // 順序（`ij3`），不是正規的 `ji3`。
+        let mut keys = self.zh_keys_for_range(0, self.syllables.len());
         keys.push_str(&self.zh_pending_keys);
         let caps = extra.map(|(_, caps)| caps).unwrap_or(false);
         if let Some((ch, _)) = extra {
@@ -688,6 +757,7 @@ impl Session {
         self.zh_pending_keys.clear();
         self.zh_pending_caps.clear();
         self.syllables.clear();
+        self.zh_syllable_keys.clear();
         self.locks.clear();
         self.composition.clear();
         self.edit = None;
@@ -717,13 +787,7 @@ impl Session {
     /// 把它讀成日文或英文；已完成的音節照常重播。回傳凍結前已完成音節的
     /// rune 數，讓呼叫端把游標放到待定尾巴的左緣。
     pub(super) fn freeze_pending_zhuyin_for_mixed(&mut self) -> usize {
-        let keyboard = self.zh.keyboard();
-        let mut keys = String::new();
-        for syllable in &self.syllables {
-            if let Ok(syllable_keys) = keyboard.keys(syllable) {
-                keys.push_str(&syllable_keys);
-            }
-        }
+        let mut keys = self.zh_keys_for_range(0, self.syllables.len());
         let completed_runes: usize = self
             .syllables
             .iter()
@@ -739,6 +803,7 @@ impl Session {
         self.zh_lane = false;
         self.zh_space_closed = false;
         self.syllables.clear();
+        self.zh_syllable_keys.clear();
         self.locks.clear();
         self.composition.clear();
         self.edit = None;
@@ -775,13 +840,7 @@ impl Session {
     /// 回傳字面段在重播按鍵流裡的位元組範圍；呼叫端可把它記進
     /// `literal_spans`，避免重建時被混打規劃當成片段之間的停頓吃掉。
     pub(super) fn flush_zh_lane_for_mixed(&mut self) -> Option<(usize, usize)> {
-        let keyboard = self.zh.keyboard();
-        let mut keys = String::new();
-        for syllable in &self.syllables {
-            if let Ok(syllable_keys) = keyboard.keys(syllable) {
-                keys.push_str(&syllable_keys);
-            }
-        }
+        let mut keys = self.zh_keys_for_range(0, self.syllables.len());
         keys.push_str(&self.zh_pending_keys);
         let literal_start = keys.len();
         keys.push_str(&self.literal);
@@ -793,6 +852,7 @@ impl Session {
         self.zh_pending_keys.clear();
         self.zh_pending_caps.clear();
         self.syllables.clear();
+        self.zh_syllable_keys.clear();
         self.locks.clear();
         self.composition.clear();
         self.edit = None;
@@ -2372,6 +2432,7 @@ impl Session {
         self.zh_window_last = false;
         self.zh_run_breaks.clear();
         self.syllables.clear();
+        self.zh_syllable_keys.clear();
         self.cursor_rune = Self::MIXED_CURSOR_END;
         self.edit = None;
         self.keep_candidates = false;
@@ -2790,9 +2851,15 @@ impl Session {
             _ => self.decode_reading(&reading),
         };
         // 原始輸入用讀音傳進去，由共用排序還原成按鍵（多音節時就是整段
-        // 按鍵）；第一項固定是目前值，第二項是原始輸入。
-        let (candidates, _) =
-            self.zh_choice_candidates(&reading, &readings.join(""), &current, Some(edit));
+        // 按鍵）；第一項固定是目前值，第二項是原始輸入。這裡要傳實際按鍵
+        // （`ij3`），不能先轉成正規順序，否則候選的原始輸入會錯。
+        let raw = self.zh_keys_for_range(edit.start, end - edit.start);
+        let raw = if raw.is_empty() {
+            readings.join("")
+        } else {
+            raw
+        };
+        let (candidates, _) = self.zh_choice_candidates(&reading, &raw, &current, Some(edit));
         candidates
     }
 

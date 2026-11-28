@@ -2168,11 +2168,7 @@ impl Session {
         let index = self.zh_cell().min(self.syllables.len().saturating_sub(1));
         let syllable = self.syllables[index].clone();
         let reading = syllable.as_str().to_string();
-        let raw = self
-            .zh
-            .keyboard()
-            .keys(&syllable)
-            .unwrap_or_else(|_| reading.clone());
+        let raw = self.zh_syllable_key(index);
         let (raw_toneless, tone_key) = split_tone_key(&raw);
         let rune_start: usize = self.syllables[..index]
             .iter()
@@ -2233,10 +2229,9 @@ impl Session {
         action: &CandidateAction,
         reading: Option<&str>,
     ) -> bool {
-        let keyboard = self.zh.keyboard();
         let mut keys = String::new();
         let mut span = (0usize, 0usize);
-        for (at, syllable) in self.syllables.iter().enumerate() {
+        for at in 0..self.syllables.len() {
             if at == index {
                 span.0 = keys.len();
                 keys.push_str(&action.insert);
@@ -2244,9 +2239,7 @@ impl Session {
                 span.1 = keys.len();
                 continue;
             }
-            if let Ok(syllable_keys) = keyboard.keys(syllable) {
-                keys.push_str(&syllable_keys);
-            }
+            keys.push_str(&self.zh_syllable_key(at));
         }
         keys.push_str(&self.zh_pending_keys);
         keys.push_str(&self.literal);
@@ -2263,6 +2256,7 @@ impl Session {
         self.zh_pending_keys.clear();
         self.zh_pending_caps.clear();
         self.syllables.clear();
+        self.zh_syllable_keys.clear();
         self.locks.clear();
         self.composition.clear();
         self.edit = None;
