@@ -285,6 +285,48 @@ impl Session {
         out
     }
 
+    /// 混打 lane 刪一個日文顯示字元：只移除這個 unit 的按鍵。
+    ///
+    /// `kyo` 的 `ょ` 只帶 `yo`，刪掉後留下 `き`。羅馬字重播若把剩下的
+    /// 按鍵退成待定前綴（`k`），改用畫面剩下的字面固定，避免使用者看到
+    /// 沒打過的字。
+    pub(super) fn delete_ja_unit_visible(&mut self, rune: usize) -> bool {
+        let (units, spans) = self.compute_units();
+        let Some(unit) = units.get(rune) else {
+            return false;
+        };
+        if unit.lang != Lang::Ja
+            || matches!(
+                unit.meta,
+                DisplayUnitMeta::Literal | DisplayUnitMeta::Unknown
+            )
+        {
+            return false;
+        }
+        let (start, end) = spans.get(rune).copied().unwrap_or((0, 0));
+        let typed = self.ascii.typed().to_string();
+        if start >= end || end > typed.len() || !typed.is_char_boundary(start) {
+            return false;
+        }
+        let expected: String = self
+            .composed_text()
+            .chars()
+            .enumerate()
+            .filter(|(index, _)| *index != rune)
+            .map(|(_, ch)| ch)
+            .collect();
+        let literal_spans = self.mixed_literal_spans_after(start, end);
+        let mut next = String::with_capacity(typed.len().saturating_sub(end - start));
+        next.push_str(&typed[..start]);
+        next.push_str(&typed[end..]);
+        self.ascii.replay(&next, &self.lexicon);
+        if self.composed_text() != expected {
+            self.ascii.replay(&expected, &self.lexicon);
+        }
+        self.literal_spans = literal_spans;
+        true
+    }
+
     fn pending_units(&self) -> Vec<Built> {
         let symbols: Vec<char> = self.pending.chars().collect();
         let keys: Vec<char> = self.zh_pending_keys.chars().collect();

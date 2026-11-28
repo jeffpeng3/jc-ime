@@ -497,8 +497,12 @@ impl Session {
         None
     }
 
-    /// 混合狀態下刪一個可見字元：字面先處理，其餘從按鍵流移除對應字元。
+    /// 混合狀態下刪一個可見字元：日文 unit 先依 provenance 刪，字面再處理，
+    /// 其餘從按鍵流移除對應字元。
     fn delete_mixed_visible(&mut self, rune: usize) -> bool {
+        if self.delete_ja_unit_visible(rune) {
+            return true;
+        }
         if self.delete_literal_rune(rune) {
             return true;
         }

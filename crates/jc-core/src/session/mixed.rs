@@ -4949,6 +4949,21 @@ mod tests {
         );
     }
 
+    /// `kyo` → `きょ`；結尾 Backspace 刪 `ょ`，留下 `き`。
+    #[test]
+    fn test_backspace_deletes_kana_unit_keeps_prefix() {
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+        mixed_type(&mut s, "kyo");
+        assert_eq!(s.snapshot().preedit, "きょ");
+        let surfaces: Vec<&str> = s.units().iter().map(|unit| unit.surface.as_str()).collect();
+        assert_eq!(surfaces, ["き", "ょ"]);
+        let keys: Vec<&str> = s.units().iter().map(|unit| unit.keys.as_str()).collect();
+        assert_eq!(keys, ["k", "yo"], "小書きかな只帶自己的按鍵");
+
+        let snap = s.press(Key::new(KeyCode::Backspace, None, false));
+        assert_eq!(snap.preedit, "き", "只刪 ょ 與它的 keys");
+    }
+
     /// 尾端重複的拆解候選只移除最後一項，不做全域去重。
     #[test]
     fn test_trailing_decomposition_duplicate_is_removed() {
