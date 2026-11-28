@@ -362,6 +362,8 @@ pub(crate) struct CandidateAction {
     pub(crate) typed_span: Option<(usize, usize)>,
     /// 要取代的顯示範圍（rune 起點與長度）；沒有時為 `None`。
     pub(crate) rune_span: Option<(usize, usize)>,
+    /// 這個動作鎖定的顯示字元 target；套用端不再回頭猜 lane 或游標。
+    pub(crate) target: Option<MixedTarget>,
     /// 插進按鍵流的字面。
     pub(crate) insert: String,
     /// 插在字面後面、仍屬於原本音節的尾巴（例如 `ji3` 的 `3`）。
@@ -391,14 +393,8 @@ pub(crate) enum ActionLane {
     Mixed,
     /// 符號／表情選單：插入即送出。
     Menu,
-    /// 注音片段或 `zh_window_last` 的音節替換。
-    ZhSyllable,
-    /// 日文游標所在文節。
-    JaClause,
-    /// 日文整段組字。
-    JaWhole,
-    /// 混打游標候選的英文補完、拼字建議與注音替換。
-    MixedGeneral,
+    /// 混合模式英文 run 的整詞補全／拼字修正；獨立於單字母 target。
+    EnglishRun,
     /// 直接插入字面並送出整段組字。
     Insert,
 }
@@ -492,9 +488,7 @@ pub struct Session {
     ///
     /// Tab 也可能用自動產生的目前轉換打開候選窗；那種清單不是片段候選，
     /// Enter 不能拿它去替換游標所在片段。
-    pub(super) ja_candidates_whole: bool,
-    /// 目前日文片段候選對應的讀音範圍（單位索引）。
-    pub(super) ja_candidates_span: Option<(usize, usize)>,
+
     /// 使用者是否已進入明確的候選選取模式。
     ///
     /// 對照上游 `navigating`：候選窗顯示中不代表要選字；方向鍵、翻頁鍵或
@@ -556,7 +550,6 @@ pub struct Session {
     /// Mixed 的純注音候選窗是否只列最後一個音節。
     ///
     /// 按 ↓／空白開窗時成立；候選只顯示游標那一格，但 Enter 仍送出整段。
-    pub(super) zh_window_last: bool,
     /// Mixed 純注音組字中按過空白的位置（音節索引）。
     ///
     /// 空白在混打管線裡切開拉丁 run；顯示片段合併時不能跨過它。
@@ -699,8 +692,6 @@ impl Session {
             candidates: Vec::new(),
             highlighted: 0,
             candidate_window: false,
-            ja_candidates_whole: false,
-            ja_candidates_span: None,
             navigating: false,
             segments: Vec::new(),
             composition: Composition::new(),
@@ -720,7 +711,6 @@ impl Session {
             zh_space_closed: false,
             zh_pending_keys: String::new(),
             zh_pending_caps: String::new(),
-            zh_window_last: false,
             zh_run_breaks: Vec::new(),
             ja_run: false,
             ja_run_keys: String::new(),
@@ -1128,10 +1118,6 @@ impl Session {
             self.clear_composition();
             self.remember_committed(&text);
             return text;
-        }
-        if self.in_zh_lane() && self.zh_window_last {
-            self.zh_window_last = false;
-            self.rebuild();
         }
         if !private {
             self.remember_selection();
@@ -1787,7 +1773,7 @@ mod tests {
 
     /// Mixed 的候選只涵蓋游標右側的字；兩條路徑結果要相同。
     #[test]
-    fn test_choose_candidate_matches_digit_for_zh_window_last() {
+    fn test_choose_candidate_matches_digit_for_cursor_target() {
         let mut digit = two_syllable_session();
         digit.press(Key::new(KeyCode::Down, None, false));
         assert!(digit.candidate_window, "↓ 開候選窗");
@@ -2240,7 +2226,11 @@ mod tests {
         assert_eq!(s.current_page(), 2, "page 2");
         let start = s.current_page() * s.page_size();
         assert_eq!(start, 20);
-        assert_eq!(s.candidates().len() - start, 5, "最後一頁顯示 21–25 項");
+        assert_eq!(
+            s.candidates().len() - start,
+            7,
+            "最後一頁顯示 21–27 項（25 個詞典候選＋目前值＋原始按鍵）"
+        );
     }
 
     /// 換頁不改變目前欄數。
@@ -2293,20 +2283,14 @@ mod tests {
             )
             .expect("音節有按鍵");
         assert_eq!(s.candidates()[1].surface, raw, "第二項是原始按鍵");
-        let start = s
-            .candidates()
-            .iter()
-            .position(|candidate| candidate.surface == "字0")
-            .expect("字0 應在推薦段");
-        assert!(start >= 2, "字0 要在 [2..] 的推薦段，實際 {start}");
-        // 推薦段仍照解碼順序：字0 之後連續 40 項是字1..字40。
-        let ranked: Vec<String> = s.candidates()[start..]
+        // 推薦段要精確是 40 個單字詞典候選，順序照解碼。
+        let ranked: Vec<String> = s.candidates()[2..]
             .iter()
             .take(40)
             .map(|candidate| candidate.surface.clone())
             .collect();
-        let want: Vec<String> = (0..40).map(|index| format!("字{index}")).collect();
-        assert_eq!(ranked, want, "前 40 個詞典候選仍照解碼順序");
+        let want: Vec<String> = (1..41).map(candidate_surface).collect();
+        assert_eq!(ranked, want, "推薦段內容與順序");
     }
 
     /// `ㄧˋ` 這種多候選音節在 k=200 時候選數 > 40，四欄第一頁仍能翻到第二頁。
@@ -2424,10 +2408,22 @@ mod tests {
     }
 
     /// 指定數量的同音候選；測四欄與換頁時需要超過一頁 40 項。
+    /// 測試用的單字候選；從「字」開始遞增，確保一個顯示字元就是一個 unit。
+    fn candidate_surface(index: usize) -> String {
+        char::from_u32(0x5b57 + index as u32)
+            .expect("單字候選")
+            .to_string()
+    }
+
     fn many_candidates_session(count: usize) -> Session {
         let mut lex = InMemoryLexicon::new();
         for index in 0..count {
-            lex.push(LexEntry::new(format!("字{index}"), "ㄕˋ", index as i32, 0));
+            lex.push(LexEntry::new(
+                candidate_surface(index),
+                "ㄕˋ",
+                index as i32,
+                0,
+            ));
         }
         let mut config = SessionConfig::new(Mode::Mixed);
         config.zh_lexicon = Some(std::sync::Arc::new(lex));
@@ -2445,7 +2441,7 @@ mod tests {
         let mut lex = InMemoryLexicon::new();
         for index in 0..count {
             lex.push(LexEntry::new(
-                format!("字{index}"),
+                candidate_surface(index),
                 reading.to_string(),
                 index as i32,
                 0,
@@ -2767,7 +2763,8 @@ mod tests {
     fn test_sug_digit_selects_english_candidate() {
         let mut s = mixed_zhuyin_session();
         type_keys(&mut s, "sug");
-        s.press(Key::new(KeyCode::Down, None, false));
+        // 整段英文補全由 Tab 明確開啟；↓ 只對游標字母，不再冒充整詞。
+        s.press(Key::new(KeyCode::Tab, None, false));
         // 補全候選來自英文詞表；詞表是不是完整取決於資料包，CI 上可能只有
         // 內建原型詞。這裡不假設固定索引，挑第一個比 `sug` 長的英文補全。
         let candidates = s.candidates();

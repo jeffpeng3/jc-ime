@@ -819,29 +819,6 @@ impl AsciiInput {
         dict.corrections(raw, 1).into_iter().next().map(|c| c.text)
     }
 
-    /// 用候選字面取代待定按鍵；只接受英文詞。
-    ///
-    /// 混合模式選了前綴補完或拼字建議後，待定按鍵就是那個詞，送出與繼續
-    /// 輸入都照一般英文片段處理。
-    pub fn accept(&mut self, text: &str) -> bool {
-        if text.is_empty() || !ascii_letters(text) {
-            return false;
-        }
-        let keep = self.typed.len().saturating_sub(self.pending.len());
-        let keep_chars = self
-            .typed
-            .get(..keep)
-            .map_or(0, |head| head.chars().count());
-        self.typed.truncate(keep);
-        self.typed_caps.truncate(keep_chars);
-        self.typed.push_str(text);
-        self.typed_caps
-            .extend(std::iter::repeat_n('0', text.chars().count()));
-        self.pending = text.to_string();
-        self.pending_caps = "0".repeat(text.chars().count());
-        true
-    }
-
     /// 找統一管線判定的英→中切點：回傳（前段字元數, 尾巴的注音音節）。
     ///
     /// 只接受最後一個輸出片段是注音、且尾巴只剩空白的情況；前段是 `text`
@@ -1314,31 +1291,6 @@ impl Session {
         None
     }
 
-    /// 把選到的中文候選換進按鍵流，取代游標所在的那一個注音音節。
-    ///
-    /// 候選字面不是按鍵，放進按鍵流後由管線當固定字面保留；後續打字不會再
-    /// 把它重新解碼掉。其他片段（前面的中文、英文、日文與游標後的內容）原樣
-    /// 保留。沒有注音音節或範圍不對時回傳 `false`。
-    pub(super) fn select_mixed_zh_candidate(&mut self, surface: &str) -> bool {
-        let Some((start, end, _)) = self.mixed_zh_syllable() else {
-            return false;
-        };
-        let typed = self.ascii.typed().to_string();
-        if start > end || end > typed.len() || !typed.is_char_boundary(start) {
-            return false;
-        }
-        let mut next = String::with_capacity(typed.len() + surface.len());
-        next.push_str(&typed[..start]);
-        next.push_str(surface);
-        // 開候選窗的尾端空白不算內容；選字後不要一起送出。
-        if !typed[end..].chars().all(char::is_whitespace) {
-            next.push_str(&typed[end..]);
-        }
-        self.ascii.replay(&next, &self.lexicon);
-        self.cursor_rune = Self::MIXED_CURSOR_END;
-        true
-    }
-
     /// 游標右側 rune 所屬的片段索引。
     /// 字串中第 `rune` 個字元的位元組位移；超出長度時夾在結尾。
     fn rune_byte(text: &str, rune: usize) -> usize {
@@ -1356,10 +1308,12 @@ impl Session {
     pub(super) fn mixed_target_at_cursor(&self) -> Option<MixedTarget> {
         let (units, spans) = self.compute_units();
         let runes = units.len();
-        let rune_start = self.mixed_rune().min(runes);
-        if rune_start >= runes {
+        if runes == 0 {
             return None;
         }
+        // 結尾（含注音 pending 時 lane 游標仍回結尾）一律落回最後一個
+        // 顯示字元；target 只由 units 決定，不靠 lane 游標換算。
+        let rune_start = self.mixed_rune().min(runes.saturating_sub(1));
         let mut end = rune_start + 1;
         // 注音只往右組合相鄰的注音符号（`ㄛ|ˇ`）；漢字、かな與英數
         // 都只作用在自己那一個字元。
@@ -1435,11 +1389,10 @@ impl Session {
         // 只有純英文 run 才整段開窗。
         let typed = self.ascii.typed().to_string();
         let pending = self.ascii.pending().to_string();
-        let whole = if whole_pending {
-            !pending.is_empty() && typed.ends_with(&pending)
-        } else {
-            pending == typed
-        };
+        // 整段英文補全只由 Tab 明確開啟，而且是一個獨立的「英文 run 補全」
+        // 動作，不是一般候選 target。↓ 一律只對游標所在的那一個字母，
+        // 不因為待定詞剛好等於整串 typed 就換掉整段。
+        let whole = whole_pending && !pending.is_empty() && typed.ends_with(&pending);
         // 只有已經有英文補全／拼字建議時才走整串英文候選。注音與かな
         // 符號本身沒有這種清單，候選要留在游標右側的那一個字元。
         let english_pending = self.candidates.len() > 1
@@ -1493,7 +1446,18 @@ impl Session {
             return true;
         }
         if self.mixed_rune().min(runes) >= runes {
-            self.set_mixed_rune(runes - 1);
+            // 結尾取最後一個顯示字元；尾巴是字面空白時往回找，空格不是
+            // 可轉換的 target。
+            let (units, _) = self.compute_units();
+            let mut at = runes.saturating_sub(1);
+            while at > 0
+                && units
+                    .get(at)
+                    .is_some_and(|unit| unit.surface.chars().all(char::is_whitespace))
+            {
+                at -= 1;
+            }
+            self.set_mixed_rune(at);
         }
         let Some(target) = self.mixed_target_at_cursor() else {
             return false;
@@ -1552,6 +1516,43 @@ impl Session {
             reading.push(keyboard.symbol(key)?);
         }
         (!reading.is_empty() && !parse_reading(&reading).is_empty()).then_some(reading)
+    }
+
+    /// target 若是純注音 lane 的一般單字元音節，回傳它在 `syllables` 的索引。
+    ///
+    /// 這個索引只拿來套用既有的片段選字（保留 User 標記），範圍仍由
+    /// target 的 rune 決定；多字音節或注音符号 target 不回傳。
+    fn target_edit_window(&self, target: &MixedTarget) -> Option<usize> {
+        if !self.in_zh_lane()
+            || target.rune_len != 1
+            || self.zh_segment_is_multi_char(target.rune_start)
+        {
+            return None;
+        }
+        let (units, _) = self.compute_units();
+        let unit = units.get(target.rune_start)?;
+        if unit.lang != Lang::Zh
+            || matches!(
+                unit.meta,
+                DisplayUnitMeta::Literal | DisplayUnitMeta::Unknown | DisplayUnitMeta::Zhuyin
+            )
+        {
+            return None;
+        }
+        let index = units
+            .iter()
+            .take(target.rune_start)
+            .filter(|unit| {
+                unit.lang == Lang::Zh
+                    && !matches!(
+                        unit.meta,
+                        DisplayUnitMeta::Literal
+                            | DisplayUnitMeta::Unknown
+                            | DisplayUnitMeta::Zhuyin
+                    )
+            })
+            .count();
+        (index < self.syllables.len()).then_some(index)
     }
 
     /// 為一個字元目標產生候選與套用動作。
@@ -1789,11 +1790,12 @@ impl Session {
             let reading = Self::zh_reading_from_keys(&target.raw)
                 .filter(|derived| derived == reading)
                 .unwrap_or_else(|| reading.to_string());
+            let syllable = target.syllable.or_else(|| self.target_edit_window(target));
             return self.zh_choice_candidates(
                 &reading,
                 &target.raw,
                 &surface,
-                target.syllable.map(|start| EditWindow { start, len: 1 }),
+                syllable.map(|start| EditWindow { start, len: 1 }),
             );
         }
         split_choices(out)
@@ -1956,32 +1958,25 @@ impl Session {
         let Some(target) = self.mixed_target.clone() else {
             return false;
         };
+        // 整段英文補全（Tab）仍然學習拼字修正；單字母 target 不冒充整詞，
+        // 所以只有 target 長度等於整段待定詞時才記一次。
+        let english_raw = if !target.ja && !target.zhuyin && target.reading.is_none() {
+            self.ascii.pending().to_string()
+        } else {
+            String::new()
+        };
+        let learn_whole_english =
+            target.rune_len == english_raw.chars().count() && !english_raw.is_empty();
         // 日文 lane 的狀態存在 romaji／live，不在 AsciiInput；候選內容仍由
         // 同一份 unit target 產生，套用時才由這裡改寫對應的讀音單位。
         if self.in_ja_lane() && target.ja {
             return self.apply_ja_unit_action(action, &target);
         }
-        if let Some(edit) = action.syllable_edit {
-            let candidate = self.candidates.get(action.index).cloned();
-            self.edit = Some(edit);
-            self.mixed_target = None;
-            self.mixed_choices.clear();
-            let applied = self.select_window_candidate(action.index);
-            self.candidate_window = false;
-            self.candidate_expanded = false;
-            self.navigating = false;
-            self.keep_candidates = false;
-            self.edit = None;
-            if applied {
-                // 選字後游標往右一格；比一個 rune 長的替換放到第一個字元之後。
-                self.set_zh_cell((edit.start + 1).min(self.syllables.len()));
-                if action.learn {
-                    if let Some(candidate) = candidate {
-                        self.learn_window_candidate(edit, &candidate);
-                    }
-                }
-            }
-            return applied;
+        // 純注音 lane 的顯示字元 target：從同一份 unit keys 重建按鍵流，
+        // 只換 target 的 keys 範圍。套用範圍由 action 帶來的 span 決定，
+        // 不讀 syllables／zh_cell。
+        if self.in_zh_lane() && !target.ja && (target.reading.is_some() || target.zhuyin) {
+            return self.apply_zh_target_action(action, &target);
         }
         if let Some(index) = target.syllable {
             self.mixed_target = None;
@@ -2054,6 +2049,86 @@ impl Session {
             ChoiceCursor::TokenEnd => self.composed_text().chars().count(),
         };
         self.set_mixed_rune(cursor.min(self.composed_text().chars().count()));
+        if action.learn && learn_whole_english {
+            self.learn_english_choice(&english_raw, &action.insert);
+        }
+        true
+    }
+
+    /// 純注音 lane 的顯示字元 target：只換 target 的 keys 範圍。
+    ///
+    /// 按鍵流由 `compute_units()` 的 `keys` 串接而成，因此套用範圍就是
+    /// action 帶來的 `typed_span`；不再用 `syllables[index]` 或音節格換算。
+    fn apply_zh_target_action(&mut self, action: &CandidateAction, target: &MixedTarget) -> bool {
+        let (units, _) = self.compute_units();
+        let keys: String = units.iter().map(|unit| unit.keys.as_str()).collect();
+        let (start, end) = action.typed_span.unwrap_or(target.typed);
+        if start > end
+            || end > keys.len()
+            || !keys.is_char_boundary(start)
+            || !keys.is_char_boundary(end)
+        {
+            return false;
+        }
+        // target 的 span 必須真的指向這組 keys；對不上代表 provenance 已
+        // 變動，寧可拒絕也不要換錯字。
+        if keys.get(start..end) != Some(target.raw.as_str()) {
+            return false;
+        }
+        let mut next = String::with_capacity(keys.len() + action.insert.len());
+        next.push_str(&keys[..start]);
+        next.push_str(&action.insert);
+        next.push_str(&action.leftover);
+        next.push_str(&keys[end..]);
+        let rune_start = target.rune_start;
+        let reading = target.reading.clone();
+        let insert_end = start + action.insert.len() + action.leftover.len();
+
+        self.zh.reset();
+        self.zh_lane = false;
+        self.zh_space_closed = false;
+        self.zh_pending_keys.clear();
+        self.zh_pending_caps.clear();
+        self.syllables.clear();
+        self.zh_syllable_keys.clear();
+        self.locks.clear();
+        self.composition.clear();
+        self.edit = None;
+        self.keep_candidates = false;
+        self.highlighted = 0;
+        self.candidate_window = false;
+        self.candidate_expanded = false;
+        self.navigating = false;
+        self.segment_manual = None;
+        self.last_hypotheses.clear();
+        self.pending.clear();
+        self.base.clear();
+        self.segments.clear();
+        self.literal.clear();
+        self.literal_anchor = 0;
+        self.literal_offset = 0;
+        self.literal_tail.clear();
+        self.pending_tone = None;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
+        self.ascii.replay(&next, &self.lexicon);
+        self.literal_spans.clear();
+        if action.force_literal {
+            match reading {
+                Some(reading) => self
+                    .literal_spans
+                    .push(LiteralSpan::with_reading(start, insert_end, reading)),
+                None => self.literal_spans.push(LiteralSpan::new(start, insert_end)),
+            }
+        }
+        self.rebuild();
+        let len = self.composed_text().chars().count();
+        let cursor = match action.cursor {
+            ChoiceCursor::Start => rune_start,
+            ChoiceCursor::AfterFirst => rune_start + 1,
+            ChoiceCursor::AfterInsert => rune_start + action.insert.chars().count(),
+            ChoiceCursor::TokenEnd => len,
+        };
+        self.set_mixed_rune(cursor.min(self.composed_text().chars().count()));
         true
     }
 
@@ -2122,8 +2197,6 @@ impl Session {
         self.candidate_expanded = false;
         self.navigating = false;
         self.keep_candidates = false;
-        self.ja_candidates_whole = false;
-        self.ja_candidates_span = None;
         let rune_start = target.rune_start.min(self.composed_text().chars().count());
         let cursor = match action.cursor {
             ChoiceCursor::Start => rune_start,
@@ -2132,93 +2205,6 @@ impl Session {
             ChoiceCursor::TokenEnd => self.composed_text().chars().count(),
         };
         self.set_mixed_rune(cursor.min(self.composed_text().chars().count()));
-        true
-    }
-
-    /// ↓ 在純注音組字上開候選：只列游標右側那一個音節。
-    pub(super) fn open_zh_cursor_candidates(&mut self) -> bool {
-        if !self.zh_pending_keys.is_empty() || !self.zh.pending().is_empty() {
-            // 未完成的音節退化成原始字母，交給混打管線；下一次 ↓ 再開。
-            if !self.zh_pending_keys.is_empty() {
-                let ch = self.zh_pending_keys.chars().next().unwrap_or(' ');
-                let caps = self.zh_pending_caps.starts_with('1');
-                self.leave_zh_lane_for_mixed(ch, caps);
-            }
-            return false;
-        }
-        if self.syllables.is_empty() {
-            return false;
-        }
-        // 畫面上是未轉換的注音符號時，候選要以游標右側那一個符號為單位，
-        // 不能拿整個音節；先把按鍵流交回混打，再走統一的字元目標。
-        let (units, _) = self.compute_units();
-        let at = self.mixed_rune().min(units.len().saturating_sub(1));
-        if units
-            .get(at)
-            .is_some_and(|unit| unit.meta == DisplayUnitMeta::Zhuyin)
-        {
-            let rune = self.mixed_rune().min(units.len().saturating_sub(1));
-            self.materialize_zh_lane(None);
-            self.set_mixed_rune(rune);
-            return self.open_mixed_cursor_candidates();
-        }
-        if self.zh_cell() >= self.syllables.len() {
-            self.set_zh_cell(self.syllables.len() - 1);
-        }
-        let index = self.zh_cell().min(self.syllables.len().saturating_sub(1));
-        let syllable = self.syllables[index].clone();
-        let reading = syllable.as_str().to_string();
-        let raw = self.zh_syllable_key(index);
-        let (raw_toneless, tone_key) = split_tone_key(&raw);
-        let rune_start: usize = self.syllables[..index]
-            .iter()
-            .map(|syllable| self.decode_syllable(syllable).chars().count())
-            .sum();
-        let target = MixedTarget {
-            typed: (0, 0),
-            raw: raw.clone(),
-            raw_toneless: raw_toneless.clone(),
-            tone_key,
-            rune_start,
-            rune_len: 1,
-            syllable: Some(index),
-            reading: Some(reading.clone()),
-            ja: false,
-            zhuyin: false,
-        };
-        let shown: String = self.base.chars().skip(rune_start).take(1).collect();
-        let current = if shown.is_empty() {
-            self.decode_syllable(&syllable)
-        } else {
-            shown
-        };
-        let (mut candidates, mut choices) = self.zh_choice_candidates(
-            &reading,
-            &raw,
-            &current,
-            Some(EditWindow {
-                start: index,
-                len: 1,
-            }),
-        );
-        if candidates.is_empty() {
-            return false;
-        }
-        // 字典候選走片段選字，拆回字面的選項重播整段按鍵。
-        candidates.truncate(self.max_candidates().max(1));
-        choices.truncate(candidates.len());
-        self.candidates = candidates;
-        self.mixed_choices = choices;
-        self.mixed_target = Some(target);
-        self.edit = Some(EditWindow {
-            start: index,
-            len: 1,
-        });
-        self.highlighted = 0;
-        self.candidate_window = true;
-        self.candidate_expanded = false;
-        self.navigating = true;
-        self.keep_candidates = true;
         true
     }
 
@@ -5560,11 +5546,9 @@ mod tests {
     fn test_enter_in_candidate_window_applies_without_committing() {
         let mut s = cursor_session();
         mixed_type(&mut s, "ji3");
-        // UI 用 select 開候選窗、↓ 進入選取模式，再指定第二項；這條路
-        // 沒有 mixed_choices 快取，Enter 以前會直接送出整段。
-        s.select(0);
-        s.press(Key::new(KeyCode::Down, None, false));
-        assert!(s.zh_window_last, "↓ 把候選窗縮到游標那一格");
+        // ↓ 先用顯示字元 target 建好清單與套用動作，再由 UI 指定高亮項。
+        let opened = s.press(Key::new(KeyCode::Down, None, false));
+        assert!(opened.navigating, "↓ 開候選窗並進入選取模式");
         let at = s
             .candidates()
             .iter()
@@ -5586,9 +5570,8 @@ mod tests {
     fn test_enter_twice_in_candidate_window_commits_second_time() {
         let mut s = cursor_session();
         mixed_type(&mut s, "ji3");
-        s.select(0);
-        s.press(Key::new(KeyCode::Down, None, false));
-        assert!(s.zh_window_last);
+        let opened = s.press(Key::new(KeyCode::Down, None, false));
+        assert!(opened.navigating, "↓ 開候選窗並進入選取模式");
         let at = s
             .candidates()
             .iter()

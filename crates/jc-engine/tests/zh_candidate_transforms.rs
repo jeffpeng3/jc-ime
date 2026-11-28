@@ -472,3 +472,44 @@ fn candidate_lists_survive_every_transform() {
     assert_eq!(s.snapshot().highlighted, 0, "回頭回到第一項");
     assert_eq!(surfaces(&s.snapshot()), first, "回頭清單不變");
 }
+
+/// zh Tab 補全：接受整詞補全後，開著的候選清單仍要有目前值、原始輸入與推薦。
+#[test]
+fn zh_tab_completion_keeps_full_candidate_list() {
+    let Some(root) = jc_testdata::root() else {
+        eprintln!("缺少測試資料：JC_TESTDATA");
+        return;
+    };
+    let data = jc_engine::loader::load_engine_data(&root).unwrap();
+    let mut s = base(&data);
+    press_all(&mut s, &chars("ji3"));
+    let snap = s.press(key(KeyCode::Tab));
+    assert_eq!(snap.preedit, "我們", "Tab 接受整詞補全");
+    assert!(
+        snap.candidates.len() >= 5,
+        "補全後清單不能只剩一項：{:?}",
+        surfaces(&snap)
+    );
+    assert_eq!(
+        snap.candidates[0].surface,
+        "我",
+        "第一項是目前值：{:?}",
+        surfaces(&snap)
+    );
+    assert!(
+        surfaces(&snap).contains(&"ㄨㄛˇ"),
+        "補全後仍要有注音字面：{:?}",
+        surfaces(&snap)
+    );
+    // 新 target 模型：完成後的顯示字元各自是 unit；游標在結尾時 ↓
+    // 只對最後一個字元 們，不再回頭列整個補全詞。
+    let down = s.press(down());
+    assert_eq!(
+        down.candidates[0].surface,
+        "們",
+        "↓ 只對最後一個顯示字元：{:?}",
+        surfaces(&down)
+    );
+    let target = s.candidate_target().expect("有 target");
+    assert_eq!((target.0, target.1), (1, 1), "target 是最後一個字元");
+}

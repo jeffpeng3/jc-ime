@@ -304,8 +304,9 @@ fn test_english_completion_candidate_has_no_preview() {
     assert_eq!(s.display_text(), "hell", "補全前只顯示已輸入的字母");
     assert_eq!(s.snapshot().suggestion.as_deref(), Some("o"));
 
-    down(&mut s);
-    assert!(s.snapshot().navigating, "英文候選 ↓ 要進入選取模式");
+    // 整段英文補全只由 Tab 開啟；↓ 只對游標字母。
+    press(&mut s, Key::new(KeyCode::Tab, None, false));
+    assert!(s.snapshot().navigating, "英文候選 Tab 要進入選取模式");
     let at = select_surface(&mut s, "hello");
     assert_eq!(s.snapshot().preedit, "hell", "英文補全候選套用前不預覽");
     assert_consistent(&s, "英文補全候選高亮");

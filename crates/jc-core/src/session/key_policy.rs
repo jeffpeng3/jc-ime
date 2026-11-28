@@ -235,7 +235,6 @@ impl Session {
         self.candidate_expanded = false;
         self.navigating = false;
         self.keep_candidates = false;
-        self.zh_window_last = false;
         // 空白是字面空格：留在注音組字區，不開候選、不選字。
         if self.syllables.is_empty() {
             self.ascii.space(&self.lexicon);
@@ -311,16 +310,27 @@ impl Session {
         let target = if forward { at } else { at - 1 };
         let after = if forward { at } else { at - 1 };
 
-        let deleted = if self.in_zh_lane() {
-            self.delete_zh_visible(target)
-        } else if self.in_ja_lane() {
-            self.delete_ja_unit_visible(target) || self.delete_ja_visible(target)
-        } else {
-            self.delete_mixed_visible(target)
-        };
+        let deleted = self.delete_unit_visible(target);
         if deleted {
             self.cursor_rune = after.min(self.rune_count());
         }
+    }
+
+    /// 刪一個顯示字元；目標 rune 已經由游標決定，lane 只負責套用。
+    ///
+    /// 注音、日文與混打都在這裡收斂：先看字面尾巴，再交給該狀態的 unit
+    /// 刪除。沒有任何「整段／文節／音節」的範圍計算。
+    fn delete_unit_visible(&mut self, rune: usize) -> bool {
+        if self.delete_literal_tail_rune(rune) {
+            return true;
+        }
+        if self.in_zh_lane() {
+            return self.delete_zh_visible(rune);
+        }
+        if self.in_ja_lane() {
+            return self.delete_ja_unit_visible(rune) || self.delete_ja_visible(rune);
+        }
+        self.delete_mixed_visible(rune)
     }
 
     /// 目標 rune 落在字面尾巴時，只從尾巴移除那一個字元。
@@ -354,8 +364,131 @@ impl Session {
         if self.delete_literal_rune(rune) {
             return true;
         }
-        self.zh_units_at_rune(rune)
-            .is_some_and(|(start, count)| self.remove_syllable_range(start, count))
+        self.delete_zh_decoded_unit(rune)
+    }
+
+    /// 已轉換的注音顯示字元：只刪這一個 unit。
+    ///
+    /// 按鍵流由 units 的 keys 串接，刪掉 target 的 keys 後重播；一般一音節
+    /// 一字時就等於換掉那一格。一音節多字（`台灣/ㄊㄞˊ`）無法用單一音節
+    /// 按鍵表示其中一個字，改成直接移除顯示字元並固定剩下的 provenance。
+    fn delete_zh_decoded_unit(&mut self, rune: usize) -> bool {
+        let (units, spans) = self.compute_units();
+        let Some(unit) = units.get(rune) else {
+            return false;
+        };
+        if unit.lang != Lang::Zh
+            || matches!(
+                unit.meta,
+                DisplayUnitMeta::Literal | DisplayUnitMeta::Unknown
+            )
+        {
+            return false;
+        }
+        if self.zh_segment_is_multi_char(rune) {
+            return self.delete_display_unit_direct(rune, &units);
+        }
+        // 一般一個顯示字元就是一個已完成音節；用 unit 的 rune 找到它在
+        // `syllables` 的位置，只移除那一格，保留注音 lane 的後續輸入狀態。
+        let syllable = units
+            .iter()
+            .take(rune)
+            .filter(|unit| {
+                unit.lang == Lang::Zh
+                    && !matches!(
+                        unit.meta,
+                        DisplayUnitMeta::Literal
+                            | DisplayUnitMeta::Unknown
+                            | DisplayUnitMeta::Zhuyin
+                    )
+            })
+            .count();
+        if syllable < self.syllables.len() && self.remove_syllable(syllable) {
+            return true;
+        }
+        let keys: String = units.iter().map(|unit| unit.keys.as_str()).collect();
+        let (start, end) = spans.get(rune).copied().unwrap_or((0, 0));
+        if start >= end || end > keys.len() || !keys.is_char_boundary(start) {
+            return false;
+        }
+        let mut next = String::with_capacity(keys.len().saturating_sub(end - start));
+        next.push_str(&keys[..start]);
+        next.push_str(&keys[end..]);
+        self.zh.reset();
+        self.zh_lane = false;
+        self.zh_space_closed = false;
+        self.zh_pending_keys.clear();
+        self.zh_pending_caps.clear();
+        self.syllables.clear();
+        self.zh_syllable_keys.clear();
+        self.locks.clear();
+        self.composition.clear();
+        self.edit = None;
+        self.keep_candidates = false;
+        self.highlighted = 0;
+        self.segment_manual = None;
+        self.last_hypotheses.clear();
+        self.pending.clear();
+        self.base.clear();
+        self.segments.clear();
+        self.literal.clear();
+        self.literal_anchor = 0;
+        self.literal_offset = 0;
+        self.literal_tail.clear();
+        self.pending_tone = None;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
+        self.ascii.replay(&next, &self.lexicon);
+        self.literal_spans.clear();
+        self.rebuild();
+        true
+    }
+
+    /// 目標 rune 所屬的注音片段是否一個音節對多個顯示字元。
+    pub(super) fn zh_segment_is_multi_char(&self, rune: usize) -> bool {
+        self.composition.segments().iter().any(|segment| {
+            segment.lang == crate::composition::Lang::Zh
+                && rune >= segment.span.start
+                && rune < segment.span.start + segment.chars()
+                && segment.chars() > segment.units
+        })
+    }
+
+    /// 一音節多字時，按鍵流無法單獨表示其中一個字；直接把剩下的顯示文字
+    /// 凍結成字面，其他狀態清乾淨。呼叫端已用 units 選好要刪的 rune，不涉
+    /// 音節範圍。
+    fn delete_display_unit_direct(&mut self, rune: usize, _units: &[DisplayUnit]) -> bool {
+        let mut chars: Vec<char> = self.composed_text().chars().collect();
+        if rune >= chars.len() {
+            return false;
+        }
+        chars.remove(rune);
+        let remaining: String = chars.into_iter().collect();
+
+        self.zh.reset();
+        self.zh_lane = false;
+        self.zh_space_closed = false;
+        self.zh_pending_keys.clear();
+        self.zh_pending_caps.clear();
+        self.syllables.clear();
+        self.zh_syllable_keys.clear();
+        self.locks.clear();
+        self.composition.clear();
+        self.keep_candidates = false;
+        self.segment_manual = None;
+        self.last_hypotheses.clear();
+        self.pending.clear();
+        self.base.clear();
+        self.segments.clear();
+        self.literal.clear();
+        self.literal_anchor = 0;
+        self.literal_offset = 0;
+        self.literal_tail.clear();
+        self.pending_tone = None;
+        self.cursor_rune = Self::MIXED_CURSOR_END;
+        self.ascii.replay("", &self.lexicon);
+        self.literal_spans.clear();
+        self.literal = remaining;
+        true
     }
 
     /// 未完成注音在顯示字串中的起點。
@@ -430,98 +563,56 @@ impl Session {
         true
     }
 
-    /// 注音顯示字元對應的全部音節範圍。
+    /// 日文未完成前綴刪一個可見字元。
     ///
-    /// 一般漢字一個字對應一個音節；若一個可見字元涵蓋多個讀音單位，整個
-    /// 範圍一起刪除，不能留下隱藏音節。
-    fn zh_units_at_rune(&self, rune: usize) -> Option<(usize, usize)> {
-        let mut units = 0usize;
-        for segment in self.composition.segments() {
-            let chars = segment.chars();
-            if rune < segment.span.start + chars {
-                if segment.lang != crate::composition::Lang::Zh || segment.units == 0 {
-                    return None;
-                }
-                let offset = rune.saturating_sub(segment.span.start);
-                if chars >= segment.units {
-                    return Some((units + offset.min(segment.units - 1), 1));
-                }
-                let start = units + offset * segment.units / chars;
-                let end = units + (offset + 1) * segment.units / chars;
-                return Some((start, (end - start).max(1)));
-            }
-            units += segment.units;
-        }
-        None
-    }
-
-    /// 刪除一段連續音節；游標位置由呼叫端設定。
-    fn remove_syllable_range(&mut self, start: usize, count: usize) -> bool {
-        let mut removed = false;
-        for _ in 0..count {
-            if !self.remove_syllable(start) {
-                break;
-            }
-            removed = true;
-        }
-        removed
-    }
-
-    /// 日文狀態下刪一個可見字元：讀音單位與未完成前綴都各算一格。
+    /// 已完成的讀音單位由 [`Session::delete_ja_unit_visible`] 依 unit 刪除；
+    /// 這裡只處理尾巴還沒轉成かな的羅馬字，不再用 `offset * units / chars`
+    /// 把顯示字元比例切給讀音單位。
     fn delete_ja_visible(&mut self, rune: usize) -> bool {
         let base_runes = self.base.chars().count();
-        let surface = (rune < base_runes).then(|| {
-            let mut chars: Vec<char> = self.base.chars().collect();
-            chars.remove(rune);
-            chars.into_iter().collect::<String>()
-        });
-        let deleted = if rune < base_runes {
-            self.ja_units_at_rune(rune)
-                .is_some_and(|(start, count)| self.romaji.delete_units(start, count))
-        } else {
-            self.romaji.delete_pending_at(rune - base_runes)
-        };
+        if rune < base_runes {
+            return false;
+        }
+        let deleted = self.romaji.delete_pending_at(rune - base_runes);
         if deleted {
-            self.ja_delete_surface = surface;
+            self.ja_delete_surface = None;
             self.ja_run_keys = self.romaji.raw_keys();
             if let Some(live) = self.live.as_mut() {
                 live.invalidate_for_edit();
             }
             self.leave_empty_japanese_run();
-            // 先重建一次，逐字変換才不會在游標已定位後又把游標推到結尾。
             self.rebuild();
         }
         deleted
     }
 
-    /// 可見字元對應的全部讀音單位範圍。
+    /// 可見字元對應的讀音單位範圍。
     ///
-    /// かな組字時字元與單位一對一。轉換後的漢字可能一個字對應多個讀音
-    /// 單位（`私` → `わたし`），必須整段刪掉，不能留下隱藏單位。
+    /// 由 `compute_units()` 的 provenance 決定：每個顯示字元帶著自己的
+    /// reading（`私` → `わたし`、`今` → `きょ`），把前面的 reading 長度相加
+    /// 就是它在 `romaji.units()` 的起點。不再用字數比例 `offset * units /
+    /// chars` 猜。
     pub(super) fn ja_units_at_rune(&self, rune: usize) -> Option<(usize, usize)> {
-        let reading: String = self.romaji.units().iter().map(Unit::as_str).collect();
-        let base = self.base.as_str();
-        if base == reading {
-            return (rune < base.chars().count()).then_some((rune, 1));
-        }
-        let mut units = 0usize;
-        for segment in self.composition.segments() {
-            let chars = segment.chars();
-            if rune < segment.span.start + chars {
-                if segment.lang != crate::composition::Lang::Ja || segment.units == 0 {
-                    return None;
-                }
-                let offset = rune.saturating_sub(segment.span.start);
-                if chars >= segment.units {
-                    return Some((units + offset.min(segment.units - 1), 1));
-                }
-                // 字元比讀音單位少時，把該字元涵蓋的單位平均切給它；
-                // 一個字元對多個單位時取完整範圍。
-                let start = units + offset * segment.units / chars;
-                let end = units + (offset + 1) * segment.units / chars;
-                return Some((start, (end - start).max(1)));
+        // 候選窗開著時 `displayed_base()` 會換成高亮候選，不能用它重算
+        // units；`self.units` 是開窗時同步好的實際畫面 provenance。
+        let computed;
+        let units = if self.units.is_empty() {
+            computed = self.compute_units().0;
+            &computed
+        } else {
+            &self.units
+        };
+        let mut at = 0usize;
+        for (index, unit) in units.iter().enumerate() {
+            let count = unit
+                .reading
+                .as_deref()
+                .map(|reading| reading.chars().count())
+                .unwrap_or(0);
+            if index == rune {
+                return (count > 0).then_some((at, count));
             }
-            units += segment.units;
+            at = at.saturating_add(count);
         }
         None
     }
