@@ -592,16 +592,23 @@ pub(crate) struct Scripted {
     english: bool,
     /// 上次要求的「輸出簡體字」設定。
     pub(crate) simplified: bool,
+    /// literal 是否回 handled=true；false 模擬引擎拒收字面。
+    literal_handled: bool,
 }
 
 impl Scripted {
     fn new() -> Self {
+        Self::with_literal_handled(true)
+    }
+
+    fn with_literal_handled(literal_handled: bool) -> Self {
         Scripted {
             connected: false,
             keys: Vec::new(),
             literal: String::new(),
             english: false,
             simplified: false,
+            literal_handled,
         }
     }
 
@@ -720,7 +727,11 @@ impl Transport for Scripted {
             "literal" => {
                 self.literal
                     .push_str(request["text"].as_str().unwrap_or(""));
-                Some(self.snapshot(String::new()))
+                let mut value = self.snapshot(String::new());
+                if !self.literal_handled {
+                    value["snapshot"]["handled"] = json!(false);
+                }
+                Some(value)
             }
             "commit" => {
                 let commit = self.preedit();
@@ -759,6 +770,13 @@ impl Transport for Scripted {
 /// 注入假引擎的 Session；注音模式、緩衝區是空的。
 pub(crate) fn session() -> Session {
     Session::with_client(Client::with_transport(Box::new(Scripted::new())))
+}
+
+/// literal 回 handled=false 的假引擎：驗證英文 Literal 失敗時不會再送 Key。
+pub(crate) fn failing_literal_session() -> Session {
+    Session::with_client(Client::with_transport(Box::new(
+        Scripted::with_literal_handled(false),
+    )))
 }
 
 /// 沒有引擎的 client：模擬「引擎沒有回應」（#66 的 dead engine 案例）。

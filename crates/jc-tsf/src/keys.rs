@@ -146,7 +146,7 @@ pub fn is_space_key(vk: u32) -> bool {
     vk as u16 == VK_SPACE.0
 }
 
-/// 依目前鍵盤狀態把虛擬鍵轉成字元；只接受可見 ASCII（0x21–0x7e）。
+/// 依目前鍵盤狀態把虛擬鍵轉成字元；接受空白到可見 ASCII（0x20–0x7e）。
 ///
 /// Caps Lock 一律照鍵盤狀態（#168 反轉）：開著時字母是大寫字面，中文／混合模式也一樣，
 /// 不因模式消掉鎖定位元。標點、數字與 Shift 符號不受 Caps Lock 影響。
@@ -188,11 +188,9 @@ pub fn printable_with(
             return None;
         }
         let c = buf[0];
-        if (0x21..=0x7e).contains(&c) {
-            Some(char::from(c as u8).to_string())
-        } else {
-            None
-        }
+        // 空白也算：英文組字中的 Space／Shift+Space 要送 Literal，不能落到
+        // 注音的聲調／音節完成。keypad 數字也在同一個範圍。
+        crate::route::english_printable_char(c).map(|ch| ch.to_string())
     }
 }
 

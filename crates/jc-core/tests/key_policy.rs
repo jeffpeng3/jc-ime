@@ -103,6 +103,27 @@ fn test_zh_pending_space_backspace_escape() {
     assert_eq!(cleared.preedit, "", "Esc 先清未完成的注音");
 }
 
+/// 英文組字中的空白由外殼送 Literal：引擎要原樣追加，不能當成注音的
+/// 聲調／音節完成。
+#[test]
+fn test_literal_space_appends_to_english_composition() {
+    let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+    s.literal("hellp");
+    let spaced = s.literal(" ");
+    assert_eq!(spaced.preedit, "hellp ", "空白要原樣接在組字後面");
+    let appended = s.literal("a");
+    assert_eq!(appended.preedit, "hellp a", "空白後的字母仍接在後面");
+}
+
+/// Shift+Space 對引擎而言也是同一個字面空白。
+#[test]
+fn test_literal_shift_space_is_the_same_space() {
+    let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+    s.literal("hellp");
+    let spaced = s.literal(" ");
+    assert_eq!(spaced.preedit, "hellp ");
+}
+
 /// 字面尾巴的 Backspace 只刪一個 rune；Esc 丟掉整段。
 #[test]
 fn test_literal_tail_backspace_and_escape() {

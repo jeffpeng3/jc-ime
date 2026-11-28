@@ -306,6 +306,9 @@ struct State {
     composing: bool,
     /// 目前顯示的快照是否開著符號／表情選單；按鍵路由用。
     menu_open: bool,
+    /// 候選窗或選單開著（`Snapshot::navigating` 或 `menu`）。英文 printable
+    /// 在這個狀態要走 Key，數字選字、字母選項才進得了 engine。
+    navigating: bool,
     attr_atoms: [u32; KINDS.len()],
     eaten: HashSet<u32>,
     right_shift: keys::ShiftTap,
@@ -433,6 +436,7 @@ impl TextService {
                 pending_repost: None,
                 composing: false,
                 menu_open: false,
+                navigating: false,
                 attr_atoms: [0; KINDS.len()],
                 eaten: HashSet::new(),
                 right_shift: keys::ShiftTap::default(),
@@ -545,6 +549,7 @@ impl TextService_Impl {
         st.composition = None;
         st.composing = false;
         st.menu_open = false;
+        st.navigating = false;
         st.left_from = None;
         st.selection = None;
         st.eaten.clear();
@@ -881,6 +886,9 @@ impl TextService_Impl {
             // 核心已經是快照的狀態；文件端沒套用成功時保留原組字物件，下一鍵再同步。
             st.composing = snapshot.composing();
             st.menu_open = snapshot.menu.is_some();
+            // 候選窗（navigating）與選單都要讓英文 printable 走 Key；兩者
+            // 都可能在 composing 之外被打開，不能只看 menu_open。
+            st.navigating = snapshot.navigating || snapshot.menu.is_some();
             st.composition = applied.composition;
             st.ui.present(&message, owner, document.clone());
             if !st.composing {
@@ -1270,6 +1278,11 @@ impl TextService_Impl {
             log::log(&format!("hotkey：狀態忙碌，忽略 {}", hotkey.chord));
             return;
         }
+        // 熱鍵由系統送進背景行程的訊息佇列；前景不是自己時不能對舊文件開選單。
+        if !candidate::foreground_belongs_to(std::process::id()) {
+            log::log(&format!("hotkey：前景不屬於本行程，忽略 {}", hotkey.chord));
+            return;
+        }
         zlog!(
             "hotkey 觸發 {} {} vk={:#04x}",
             hotkey.action,
@@ -1321,6 +1334,21 @@ impl TextService_Impl {
         );
         let eaten = self.present(ctx, &snapshot);
         self.schedule_ja_live_idle(&snapshot);
+        if !eaten && english {
+            // 英文 printable 只有 Literal 一條路徑：引擎沒回應或回 handled=false
+            // 也吃掉這一鍵，不能掉到 handle_key 變成注音鍵，也不能讓宿主再打一次。
+            let reason = if snapshot.ok {
+                "引擎回 handled=false"
+            } else {
+                "引擎沒有回應"
+            };
+            zlog!(
+                "handle_literal 失敗：literal={:?} reason={} -> 吃掉這一鍵，不回落 handle_key",
+                text,
+                reason
+            );
+            return true;
+        }
         eaten
     }
 
@@ -1596,6 +1624,7 @@ impl TextService_Impl {
         st.eaten.clear();
         st.composing = false;
         st.menu_open = false;
+        st.navigating = false;
         st.composition = None;
         st.left_from = None;
         false
@@ -1635,7 +1664,8 @@ impl TextService_Impl {
             if keys::modifier_down() {
                 return Some(EnglishKey::Pass);
             }
-            // 沒有插入點的 IMM32 程式無法組字：字面直接交給程式。
+            // IMM32 例外：沒有插入點的相容層程式無法組字，字面直接交給程式
+            // （IMM32 例外，保留原路徑，需實機確認）。
             let flags = self.state.borrow().activate_flags;
             if ctx.is_some_and(|c| privacy::english_passthrough(c, flags)) {
                 if let Some(text) = keys::literal(vk, lparam, keys::caps_lock_on()) {
@@ -1758,7 +1788,9 @@ impl TextService_Impl {
             // 有組字時 printable 要走 Literal，不能在這裡一起擋掉。
             {
                 let st = self.state.borrow();
-                if english_route(st.session.english(), st.composing, false) == EnglishRoute::Host {
+                if english_route(st.session.english(), st.composing, false, st.navigating)
+                    == EnglishRoute::Host
+                {
                     return false;
                 }
             }
@@ -1787,9 +1819,11 @@ impl TextService_Impl {
             // 英文模式沒有組字時一般按鍵一律交還宿主（chord 已在上方處理）；
             // 組字中的 printable 進引擎走 Literal，具名鍵仍走下面的 Key 路徑。
             if english {
-                let printable =
-                    keys::printable(vk, lparam, false).is_some() && !keys::is_keypad(vk);
-                match english_route(english, st.composing, printable) {
+                // 空白與 keypad 字元都算 printable：`literal` 會把 Space 轉成
+                // `" "`，keypad 的 ToUnicode 結果也在同一段 ASCII。不能再額外
+                // 排除 keypad，否則 OnTestKeyDown 放行、OnKeyDown 卻送 Literal。
+                let printable = keys::literal(vk, lparam, false).is_some();
+                match english_route(english, st.composing, printable, st.navigating) {
                     EnglishRoute::Literal => return true,
                     EnglishRoute::Host => return false,
                     EnglishRoute::Key => {}
@@ -1938,6 +1972,9 @@ impl TextService_Impl {
     }
 
     /// 不經引擎、直接把文字送進文件。
+    ///
+    /// IMM32 例外：只有 `english_key_policy` 判定「沒有插入點的相容層程式」
+    /// 才走這裡。這條路徑不經 engine Literal，保留原行為，需實機確認。
     fn type_text(&self, ctx: Option<&ITfContext>, vk: u32, text: String) -> bool {
         let literal = Snapshot {
             ok: true,
@@ -2166,6 +2203,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                 st.pending_repost = None;
                 st.composition = None;
                 st.composing = false;
+                st.menu_open = false;
+                st.navigating = false;
                 st.left_from = None;
                 st.eaten.clear();
                 st.right_shift = keys::ShiftTap::default();
@@ -2241,16 +2280,28 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 let _ = self.state.borrow_mut().session.refresh_bindings();
             } else {
                 self.release_hotkeys();
-            }
-            if !foreground.as_bool() {
+                // 先記住舊文件：清掉 thread focus 之後 focused_context 就回 None。
+                let previous = self.focused_context();
+                if let Some(ctx) = previous.as_ref() {
+                    privacy::forget_context(ctx);
+                }
                 {
                     let mut st = self.state.borrow_mut();
                     st.right_shift = keys::ShiftTap::default();
                     st.left_shift = keys::ShiftTap::default();
                     st.selection = None;
+                    st.navigating = false;
                 }
-                if let Some(ctx) = self.focused_context() {
-                    privacy::forget_context(&ctx);
+                // 失焦時清掉 thread focus：熱鍵與下一次按鍵都拿不到舊文件，
+                // 不會對已離開的文件開選單。
+                let thread_mgr = self.state.borrow().thread_mgr.clone();
+                if let Some(thread_mgr) = thread_mgr {
+                    if let Err(error) = unsafe { thread_mgr.SetFocus(None::<&ITfDocumentMgr>) } {
+                        zdebug!(
+                            "失焦：清除 thread focus 失敗：{error}（HRESULT {:#010x}）",
+                            error.code().0 as u32
+                        );
+                    }
                 }
                 self.forget_candidates();
             }
@@ -2457,18 +2508,24 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             // 英文模式且還有組字：可列印字元送 engine 的 literal（跟中文的 @
             // 一樣接在既有組字後面），不走 Key、也不 type_literal 到宿主。
             // 具名鍵（Enter、Backspace、方向鍵）仍走下面的原本 Key 路徑。
-            let (english, composing) = {
+            let (english, composing, navigating) = {
                 let st = self.state.borrow();
-                (st.session.english(), st.composing)
+                (st.session.english(), st.composing, st.navigating)
             };
             if english && composing {
                 let text = if keys::modifier_down() || keys::is_modifier(vk) {
                     None
                 } else {
-                    keys::printable(vk, lparam.0, false)
+                    // 空白（含 Shift+Space）與 keypad 字元都走 Literal；`literal`
+                    // 會把 Space 轉成 `" "`。`printable` 只看可見 ASCII，會漏掉空白。
+                    keys::literal(vk, lparam.0, false)
                 };
                 if let Some(text) = text {
-                    if english_route(english, composing, true) == EnglishRoute::Literal {
+                    // 候選窗／選單開著時改走 Key：數字選字、字母選項要進 engine。
+                    let route = english_route(english, composing, true, navigating);
+                    if route == EnglishRoute::Literal {
+                        // handle_literal 失敗時自己吃掉這一鍵；英文 printable
+                        // 只有 Literal 一條路徑，不能回落到 handle_key。
                         let eaten = self.handle_literal(pic.as_ref(), &text);
                         if eaten {
                             self.state.borrow_mut().eaten.insert(vk);
@@ -2482,6 +2539,13 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                         );
                         return Ok(eaten.into());
                     }
+                    zlog!(
+                        "OnKeyDown vk={}({}) 英文 printable={:?} navigating={} -> Key",
+                        vk,
+                        vk_label(vk),
+                        text,
+                        navigating
+                    );
                 }
             }
             // Shift＋字母／數字先走 literal：先於快捷鍵與 commit_before_host_key，
@@ -2668,6 +2732,8 @@ impl ITfCompositionSink_Impl for TextService_Impl {
                 let mut st = self.state.borrow_mut();
                 st.composition = None;
                 st.composing = false;
+                st.menu_open = false;
+                st.navigating = false;
                 st.left_from = None;
                 if by_cuas {
                     if let Some(state) = st.completing.as_mut() {
@@ -3091,11 +3157,15 @@ mod english_route_tests {
 
     impl Rig {
         fn new(english: bool) -> Rig {
+            Self::with_session(support::session(), english)
+        }
+
+        fn with_session(session: crate::session::Session, english: bool) -> Rig {
             let (doc, ctx) = support::host(support::Sync::Run);
             let service = ComObject::new(TextService::new());
             {
                 let mut st = service.state.borrow_mut();
-                st.session = support::session();
+                st.session = session;
                 if english {
                     assert!(st.session.toggle().english, "切到英文模式");
                 }
@@ -3108,6 +3178,13 @@ mod english_route_tests {
                 doc,
                 host: String::new(),
             }
+        }
+
+        /// 模擬引擎回報選單／候選窗開著；下一次 present 會再依快照覆寫。
+        fn set_navigation(&self, menu_open: bool, navigating: bool) {
+            let mut st = self.service.state.borrow_mut();
+            st.menu_open = menu_open;
+            st.navigating = navigating;
         }
 
         fn sent(&self) -> Vec<String> {
@@ -3274,6 +3351,86 @@ mod english_route_tests {
         assert!(rig.press_char('a'));
         assert_eq!(rig.sent().last().map(String::as_str), Some("literal"));
         assert_eq!(rig.preedit(), "ㄨㄛa");
+    }
+
+    /// 組字 `hellp`、英文、Space → Literal " "，preedit 追加空白。
+    #[test]
+    fn english_composing_space_sends_literal_space() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("hellp");
+        rig.tap_right_shift();
+        assert!(rig.english());
+        let before = rig.sent().len();
+        assert!(rig.press_vk(0x20, 0x39, Some(' ')), "空白要進引擎");
+        assert_eq!(rig.sent().last().map(String::as_str), Some("literal"));
+        assert_eq!(rig.sent().len(), before + 1, "只送一個 Literal");
+        assert_eq!(rig.preedit(), "hellp ", "preedit 要追加空白");
+    }
+
+    /// 組字 `hellp`、英文、Shift+Space → 同一個 Literal " "。
+    #[test]
+    fn english_composing_shift_space_sends_literal_space() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("hellp");
+        rig.tap_right_shift();
+        hold_shift(true);
+        assert!(rig.press_vk(0x20, 0x39, Some(' ')), "Shift+Space 要進引擎");
+        hold_shift(false);
+        assert_eq!(rig.sent().last().map(String::as_str), Some("literal"));
+        assert_eq!(rig.preedit(), "hellp ", "Shift+Space 也是字面空白");
+    }
+
+    /// 英文沒有組字：Space 也要交還宿主，0 請求。
+    #[test]
+    fn english_idle_space_passes_to_host() {
+        plain_keyboard();
+        let mut rig = Rig::new(true);
+        assert!(!rig.press_vk(0x20, 0x39, Some(' ')), "沒有組字要交還宿主");
+        assert_eq!(rig.host, " ");
+        assert!(rig.sent().is_empty(), "不得送引擎");
+    }
+
+    /// Literal 回 handled=false：只送一筆 literal，不再送 Key，且吃掉這一鍵。
+    #[test]
+    fn english_composing_literal_failure_has_no_second_key() {
+        plain_keyboard();
+        let mut rig = Rig::with_session(support::failing_literal_session(), false);
+        rig.type_chars("hellp");
+        rig.tap_right_shift();
+        let before = rig.sent().len();
+        assert!(rig.press_char('a'), "Literal 失敗也要吃掉這一鍵");
+        assert_eq!(rig.sent().len(), before + 1, "不能再送第二筆 Key");
+        assert_eq!(rig.sent().last().map(String::as_str), Some("literal"));
+    }
+
+    /// 選單開著按 `1`：走 Key 讓 engine 選第一項，不是字面 `1`。
+    #[test]
+    fn english_menu_open_digit_selects_via_key() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("hellp");
+        rig.tap_right_shift();
+        rig.set_navigation(true, true);
+        let before = rig.sent().len();
+        assert!(rig.press_char('1'), "選單選字要進引擎");
+        assert_eq!(rig.sent().last().map(String::as_str), Some("key"));
+        assert_eq!(rig.sent().len(), before + 1, "只送一個 Key");
+    }
+
+    /// 候選窗開著（navigating）按 `1`：同樣走 Key 選字。
+    #[test]
+    fn english_candidate_window_digit_selects_via_key() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("hellp");
+        rig.tap_right_shift();
+        rig.set_navigation(false, true);
+        let before = rig.sent().len();
+        assert!(rig.press_char('1'), "候選窗選字要進引擎");
+        assert_eq!(rig.sent().last().map(String::as_str), Some("key"));
+        assert_eq!(rig.sent().len(), before + 1, "只送一個 Key");
     }
 
     /// 8. 組字中 Shift → english=true，preedit／游標不動，0 請求。
