@@ -43,7 +43,7 @@ inherits = "release"
 panic = "unwind"
 
 [workspace.package]
-version = "0.1.31"
+version = "0.1.32"
 edition = "2021"
 license = "AGPL-3.0-only"
 rust-version = "1.90"
