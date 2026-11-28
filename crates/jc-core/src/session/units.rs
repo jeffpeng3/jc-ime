@@ -70,6 +70,9 @@ impl DisplayUnit {
     }
 }
 
+/// 固定下來的 provenance：units 與平行的按鍵範圍。
+pub(super) type UnitSnapshot = (Vec<DisplayUnit>, Vec<(usize, usize)>);
+
 /// 建立 unit 時暫存的顯示位置與按鍵範圍。
 struct Built {
     rune: usize,
@@ -81,6 +84,15 @@ struct Built {
 impl Session {
     /// 重新計算顯示字元 provenance。
     pub(super) fn sync_units(&mut self) {
+        if let Some((units, spans)) = self.unit_override.clone() {
+            let joined: String = units.iter().map(|unit| unit.surface.as_str()).collect();
+            if joined == self.composed_text() {
+                self.units = units;
+                self.unit_spans = spans;
+                return;
+            }
+            self.unit_override = None;
+        }
         let (units, spans) = self.compute_units();
         self.units = units;
         self.unit_spans = spans;
@@ -106,6 +118,12 @@ impl Session {
 
     pub(super) fn compute_units(&self) -> (Vec<DisplayUnit>, Vec<(usize, usize)>) {
         let text = self.composed_text();
+        if let Some((units, spans)) = &self.unit_override {
+            let joined: String = units.iter().map(|unit| unit.surface.as_str()).collect();
+            if joined == text {
+                return (units.clone(), spans.clone());
+            }
+        }
         let expected: Vec<char> = text.chars().collect();
         if expected.is_empty() {
             return (Vec::new(), Vec::new());
@@ -236,6 +254,7 @@ impl Session {
         };
         let typed = self.ascii.typed();
         let comp = self.composition.segments();
+        let mut ja_unit_at = 0usize;
         for (index, segment) in comp.iter().enumerate() {
             let surface = rune_slice(base, segment.span.start, segment.span.end);
             if surface.is_empty() {
@@ -247,10 +266,20 @@ impl Session {
                 .filter(|_| typed_span.0 < typed_span.1)
                 .unwrap_or_default();
             let raw = if raw.is_empty() && self.in_ja_lane() {
-                self.ja_segment_keys(segment)
+                // 讀音單位對到羅馬字：一個漢字可能吃掉多個かな（私 → わたし），
+                // 不能用顯示 rune span 切 raw_units。
+                let end = ja_unit_at.saturating_add(segment.units);
+                self.romaji
+                    .raw_units()
+                    .get(ja_unit_at..end)
+                    .map(|items| items.concat())
+                    .unwrap_or_default()
             } else {
                 raw.to_string()
             };
+            if segment.lang == crate::composition::Lang::Ja {
+                ja_unit_at = ja_unit_at.saturating_add(segment.units);
+            }
             let units = split_segment_units(&surface, segment, &raw);
             for (offset, unit) in units.into_iter().enumerate() {
                 out.push(Built {
@@ -282,14 +311,24 @@ impl Session {
                 });
             }
         }
+        // 日文 lane 沒有 `AsciiInput::typed()`；span 改成按鍵流（raw keys）
+        // 的位元組範圍，刪除與候選才有正確的 provenance 座標。
+        if self.in_ja_lane() {
+            let mut at = 0usize;
+            for item in &mut out {
+                let len = item.unit.keys.len();
+                item.typed = (at, at + len);
+                at += len;
+            }
+        }
         out
     }
 
-    /// 混打 lane 刪一個日文顯示字元：只移除這個 unit 的按鍵。
+    /// 刪一個日文顯示字元，只移除這個 unit 的按鍵。
     ///
-    /// `kyo` 的 `ょ` 只帶 `yo`，刪掉後留下 `き`。羅馬字重播若把剩下的
-    /// 按鍵退成待定前綴（`k`），改用畫面剩下的字面固定，避免使用者看到
-    /// 沒打過的字。
+    /// 日文 lane 用羅馬字單位刪；混打 lane 用 `AsciiInput::typed()` 的
+    /// unit span。重播若把剩下的按鍵退成待定前綴（`k`），改用畫面字面固定，
+    /// 但保留原本記下的 keys（`き` 仍是 `k`）。
     pub(super) fn delete_ja_unit_visible(&mut self, rune: usize) -> bool {
         let (units, spans) = self.compute_units();
         let Some(unit) = units.get(rune) else {
@@ -303,11 +342,6 @@ impl Session {
         {
             return false;
         }
-        let (start, end) = spans.get(rune).copied().unwrap_or((0, 0));
-        let typed = self.ascii.typed().to_string();
-        if start >= end || end > typed.len() || !typed.is_char_boundary(start) {
-            return false;
-        }
         let expected: String = self
             .composed_text()
             .chars()
@@ -315,16 +349,60 @@ impl Session {
             .filter(|(index, _)| *index != rune)
             .map(|(_, ch)| ch)
             .collect();
+        let desired: Vec<DisplayUnit> = units
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != rune)
+            .map(|(_, unit)| unit.clone())
+            .collect();
+
+        if self.in_ja_lane() {
+            let Some((start, count)) = self.ja_units_at_rune(rune) else {
+                return false;
+            };
+            if !self.romaji.delete_units(start, count) {
+                return false;
+            }
+            self.ja_delete_surface = (!expected.is_empty()).then(|| expected.clone());
+            self.ja_run_keys = self.romaji.raw_keys();
+            if let Some(live) = self.live.as_mut() {
+                live.invalidate_for_edit();
+            }
+            self.leave_empty_japanese_run();
+            self.rebuild();
+            if self.composed_text() != expected {
+                return false;
+            }
+            if !units_match(&self.units, &desired) {
+                let spans = key_spans(&desired);
+                self.set_unit_override(desired, spans);
+            }
+            return true;
+        }
+
+        let (start, end) = spans.get(rune).copied().unwrap_or((0, 0));
+        let typed = self.ascii.typed().to_string();
+        if start >= end || end > typed.len() || !typed.is_char_boundary(start) {
+            return false;
+        }
         let literal_spans = self.mixed_literal_spans_after(start, end);
         let mut next = String::with_capacity(typed.len().saturating_sub(end - start));
         next.push_str(&typed[..start]);
         next.push_str(&typed[end..]);
         self.ascii.replay(&next, &self.lexicon);
+        self.literal_spans = literal_spans;
         if self.composed_text() != expected {
             self.ascii.replay(&expected, &self.lexicon);
+            let spans = char_spans(&expected);
+            if !units_match(&self.units, &desired) {
+                self.set_unit_override(desired, spans);
+            }
         }
-        self.literal_spans = literal_spans;
         true
+    }
+
+    fn set_unit_override(&mut self, units: Vec<DisplayUnit>, spans: Vec<(usize, usize)>) {
+        self.unit_override = Some((units, spans));
     }
 
     fn pending_units(&self) -> Vec<Built> {
@@ -355,18 +433,37 @@ impl Session {
             })
             .collect()
     }
+}
 
-    fn ja_segment_keys(&self, segment: &CompSegment) -> String {
-        let raw = self.romaji.raw_units();
-        segment
-            .span
-            .clone()
-            .filter_map(|index| raw.get(index))
-            .fold(String::new(), |mut keys, raw| {
-                keys.push_str(raw);
-                keys
-            })
+fn units_match(current: &[DisplayUnit], desired: &[DisplayUnit]) -> bool {
+    current.len() == desired.len()
+        && current.iter().zip(desired).all(|(left, right)| {
+            left.surface == right.surface
+                && left.keys == right.keys
+                && left.reading == right.reading
+                && left.lang == right.lang
+                && left.meta == right.meta
+        })
+}
+
+fn key_spans(units: &[DisplayUnit]) -> Vec<(usize, usize)> {
+    let mut at = 0usize;
+    units
+        .iter()
+        .map(|unit| {
+            let start = at;
+            at += unit.keys.len();
+            (start, at)
+        })
+        .collect()
+}
+
+fn char_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    for (byte, ch) in text.char_indices() {
+        spans.push((byte, byte + ch.len_utf8()));
     }
+    spans
 }
 
 fn fallback_units(chars: &[char]) -> (Vec<DisplayUnit>, Vec<(usize, usize)>) {

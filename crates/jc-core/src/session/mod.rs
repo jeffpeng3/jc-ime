@@ -440,6 +440,8 @@ pub struct Session {
     pub(super) units: Vec<DisplayUnit>,
     /// 與 [`Session::units`] 平行：每個字元在 `AsciiInput::typed()` 的位元組範圍。
     pub(super) unit_spans: Vec<(usize, usize)>,
+    /// 刪除後固定下來的 provenance；畫面變了才清掉。
+    pub(super) unit_override: Option<units::UnitSnapshot>,
     /// 候選窗是否已展開成四欄；第一次按 → 展開，Esc 或重新開窗時重設。
     pub(super) candidate_expanded: bool,
     /// 這一次開啟的候選窗要作用在哪裡；`None` 時沿用舊的片段／音節路徑。
@@ -665,6 +667,7 @@ impl Session {
             cursor_rune: Self::MIXED_CURSOR_END,
             units: Vec::new(),
             unit_spans: Vec::new(),
+            unit_override: None,
             candidate_expanded: false,
             mixed_target: None,
             mixed_choices: Vec::new(),

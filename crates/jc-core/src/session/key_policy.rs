@@ -314,7 +314,7 @@ impl Session {
         let deleted = if self.in_zh_lane() {
             self.delete_zh_visible(target)
         } else if self.in_ja_lane() {
-            self.delete_ja_visible(target)
+            self.delete_ja_unit_visible(target) || self.delete_ja_visible(target)
         } else {
             self.delete_mixed_visible(target)
         };
@@ -469,7 +469,7 @@ impl Session {
     ///
     /// かな組字時字元與單位一對一。轉換後的漢字可能一個字對應多個讀音
     /// 單位（`私` → `わたし`），必須整段刪掉，不能留下隱藏單位。
-    fn ja_units_at_rune(&self, rune: usize) -> Option<(usize, usize)> {
+    pub(super) fn ja_units_at_rune(&self, rune: usize) -> Option<(usize, usize)> {
         let reading: String = self.romaji.units().iter().map(Unit::as_str).collect();
         let base = self.base.as_str();
         if base == reading {
