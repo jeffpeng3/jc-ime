@@ -658,6 +658,14 @@ impl Session {
 
     /// 結束這次的注音路徑，把整段按鍵重播進混打管線。
     pub(super) fn leave_zh_lane_for_mixed(&mut self, ch: char, caps: bool) {
+        self.materialize_zh_lane(Some((ch, caps)));
+    }
+
+    /// 把注音 lane 的按鍵流原樣交回混打管線；`extra` 是最後再補的一個鍵。
+    ///
+    /// 候選要作用在顯示字元時，先保住原始按鍵再走混打，才不會用漢字重播
+    /// 而失去讀音與候選。
+    pub(super) fn materialize_zh_lane(&mut self, extra: Option<(char, bool)>) {
         // 已完成的音節還原成原本的按鍵，才能讓混打管線重新判斷前後片段；
         // 直接塞入漢字會讓前面的注音片段失去讀音與候選。
         let keyboard = self.zh.keyboard();
@@ -668,7 +676,10 @@ impl Session {
             }
         }
         keys.push_str(&self.zh_pending_keys);
-        keys.push(ch);
+        let caps = extra.map(|(_, caps)| caps).unwrap_or(false);
+        if let Some((ch, _)) = extra {
+            keys.push(ch);
+        }
         keys.push_str(&self.literal);
         keys.push_str(&self.literal_tail);
         self.zh.reset();
@@ -684,6 +695,7 @@ impl Session {
         self.highlighted = 0;
         self.candidate_window = false;
         self.navigating = false;
+        self.candidates.clear();
         self.segment_manual = None;
         self.last_hypotheses.clear();
         self.pending.clear();
@@ -1231,6 +1243,7 @@ impl Session {
             syllable: None,
             reading: None,
             ja: true,
+            zhuyin: false,
         });
         true
     }

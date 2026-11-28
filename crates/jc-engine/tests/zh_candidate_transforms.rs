@@ -164,7 +164,7 @@ fn candidate_lists_survive_every_transform() {
         5,
     );
     add(
-        "zh 選原始輸入",
+        "zh 選原始輸入後只對聲調鍵",
         Box::new(|data| {
             let mut s = base(data);
             press_all(&mut s, &chars("ji3"));
@@ -172,12 +172,12 @@ fn candidate_lists_survive_every_transform() {
             choose(&mut s, "ji3");
             s
         }),
-        "ji3",
-        None,
-        5,
+        "3",
+        Some("３"),
+        2,
     );
     add(
-        "zh 選注音字面",
+        "zh 選注音字面後只對聲調符號",
         Box::new(|data| {
             let mut s = base(data);
             press_all(&mut s, &chars("ji3"));
@@ -185,12 +185,27 @@ fn candidate_lists_survive_every_transform() {
             choose(&mut s, "ㄨㄛˇ");
             s
         }),
-        "ㄨㄛˇ",
-        Some("ji3"),
-        5,
+        "ˇ",
+        Some("3"),
+        2,
     );
     add(
-        "zh 選無聲調按鍵",
+        "zh 把聲調拆成按鍵",
+        Box::new(|data| {
+            let mut s = base(data);
+            press_all(&mut s, &chars("ji3"));
+            press_all(&mut s, &[down()]);
+            choose(&mut s, "ㄨㄛˇ");
+            press_all(&mut s, &[down()]);
+            choose(&mut s, "3");
+            s
+        }),
+        "3",
+        Some("３"),
+        2,
+    );
+    add(
+        "zh 選無聲調按鍵後只對聲調鍵",
         Box::new(|data| {
             let mut s = base(data);
             press_all(&mut s, &chars("ji3"));
@@ -198,12 +213,12 @@ fn candidate_lists_survive_every_transform() {
             choose(&mut s, "ji");
             s
         }),
-        "ji3",
-        Some("我"),
-        5,
+        "3",
+        Some("３"),
+        2,
     );
     add(
-        "zh 選かな拆解",
+        "zh 選かな拆解後只對聲調鍵",
         Box::new(|data| {
             let mut s = base(data);
             press_all(&mut s, &chars("ji3"));
@@ -211,9 +226,9 @@ fn candidate_lists_survive_every_transform() {
             choose(&mut s, "じ3");
             s
         }),
-        "じ3",
-        Some("ji3"),
-        5,
+        "3",
+        Some("３"),
+        2,
     );
     add(
         "zh 數字鍵選推薦",
@@ -228,7 +243,7 @@ fn candidate_lists_survive_every_transform() {
         5,
     );
     add(
-        "zh 字面刪聲調",
+        "zh 字面刪聲調後只對韻母",
         Box::new(|data| {
             let mut s = base(data);
             press_all(&mut s, &chars("ji3"));
@@ -237,8 +252,8 @@ fn candidate_lists_survive_every_transform() {
             press_all(&mut s, &[key(KeyCode::Backspace)]);
             s
         }),
-        "ㄨㄛ",
-        Some("ji "),
+        "ㄛ",
+        Some("i "),
         2,
     );
     add(
@@ -278,7 +293,7 @@ fn candidate_lists_survive_every_transform() {
         5,
     );
     add(
-        "zh 游標進字面中間",
+        "zh 游標進字面中間只對右側符號",
         Box::new(|data| {
             let mut s = base(data);
             press_all(&mut s, &chars("ji3"));
@@ -287,9 +302,9 @@ fn candidate_lists_survive_every_transform() {
             press_all(&mut s, &[key(KeyCode::ArrowLeft), key(KeyCode::ArrowLeft)]);
             s
         }),
-        "ㄨㄛˇ",
-        Some("ji3"),
-        5,
+        "ㄛˇ",
+        Some("i3"),
+        2,
     );
     add(
         "zh 下一個音節",

@@ -553,7 +553,7 @@ impl Session {
     }
 
     /// 混合字面片段在刪除後仍要留成字面，避免剩下的字母被重新判成注音。
-    fn mixed_literal_spans_after(&self, start: usize, end: usize) -> Vec<LiteralSpan> {
+    pub(super) fn mixed_literal_spans_after(&self, start: usize, end: usize) -> Vec<LiteralSpan> {
         let removed = end.saturating_sub(start);
         let mut spans: Vec<(usize, usize)> = self
             .literal_spans

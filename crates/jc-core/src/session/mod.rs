@@ -314,11 +314,6 @@ impl LiteralSpan {
             reading: Some(reading.into()),
         }
     }
-
-    /// 這個按鍵流範圍是否完整落在字面內。
-    pub(super) fn contains(&self, start: usize, end: usize) -> bool {
-        self.start <= start && end <= self.end
-    }
 }
 
 /// 候選窗目前鎖定的字元目標。
@@ -342,6 +337,8 @@ pub(super) struct MixedTarget {
     pub(super) reading: Option<String>,
     /// 這個目標是日文片段；候選要接かな漢字変換。
     pub(super) ja: bool,
+    /// 目標是未轉換的注音符號（`ㄨ`、`ㄛ`、`ˇ`）；套用時前段照畫面保留。
+    pub(super) zhuyin: bool,
 }
 
 /// 一個候選套用後要怎麼改狀態。
