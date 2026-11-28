@@ -42,7 +42,6 @@ GitHub Release。較舊的版本留在 git 歷史，`git log -- docs/CHANGELOG.m
 
 ### 修正
 
-- `caps_lock_english` 設定現在真的生效，Caps Lock 開著會切英文。
 - 重播連線記錄時不再重複寫入學習統計。
 
 ### 內部

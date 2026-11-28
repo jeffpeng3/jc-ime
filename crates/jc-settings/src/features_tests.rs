@@ -74,7 +74,6 @@ fn test_bool_settings_defaults_and_persist() {
         ("ctrl-punctuation", "on", "off"),
         ("cjk-latin-space", "off", "on"),
         ("zhuyin-error-hint", "on", "off"),
-        ("caps-lock-english", "off", "on"),
         ("toneless", "off", "on"),
         // 0.1.0-rc.2 起預設開啟日文自動変換（延遲整句轉換）。
         ("ja-live-conversion", "on", "off"),

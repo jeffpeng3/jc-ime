@@ -149,9 +149,6 @@ pub struct Behavior {
     /// 啟動時的模式。
     #[serde(default)]
     pub start_mode: String,
-    /// Caps Lock 是否直接輸入英文。
-    #[serde(default)]
-    pub caps_lock_english: bool,
     /// Esc 是否清空組字。
     #[serde(default)]
     pub esc_clear: bool,
@@ -284,7 +281,6 @@ pub fn get_for_platform(id: &str, goos: &str) -> Option<Preset> {
             preset.name = "小麥注音".to_string();
             preset.behavior.toggle_key = "none".to_string();
             preset.behavior.candidate_cursor = "before".to_string();
-            preset.behavior.caps_lock_english = true;
             preset.behavior.esc_clear = false;
             preset.behavior.emoji_shortcut = "off".to_string();
             preset.rules.punctuation = "standard".to_string();
@@ -297,7 +293,6 @@ pub fn get_for_platform(id: &str, goos: &str) -> Option<Preset> {
             preset.name = "macOS 內建注音".to_string();
             preset.behavior.toggle_key = "none".to_string();
             preset.behavior.candidate_cursor = "before".to_string();
-            preset.behavior.caps_lock_english = true;
             preset.behavior.emoji_shortcut = "off".to_string();
             preset.rules.shift_delete = "tone".to_string();
         }

@@ -3214,7 +3214,7 @@ mod tests {
 
     /// Caps Lock 的英文 run 最後留下字面時才轉大寫。
     #[test]
-    fn test_caps_lock_english_run_becomes_uppercase() {
+    fn test_caps_lock_latin_run_becomes_uppercase() {
         let mut caps = session();
         type_caps_keys(&mut caps, "hello");
         assert_eq!(caps.snapshot().preedit, "HELLO");

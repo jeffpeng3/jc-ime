@@ -17,11 +17,11 @@ use crate::settings::{on_off, SetError, Settings, SettingsError, LAYOUT_STANDARD
 
 /// 由輸入習慣管理的設定鍵。
 ///
-/// `mixed-input` 已從 JSON 契約移除：舊檔的 `input_profile.values` 若還有它，
-/// 讀取時直接丟棄，不進快照也不寫回。引擎一律對中文使用者用混打模式。
-pub(crate) const PROFILE_KEYS: [&str; 13] = [
+/// `mixed-input` 與 `caps-lock-english` 已從 JSON 契約移除：舊檔的
+/// `input_profile.values` 若還有它們，讀取時直接丟棄，不進快照也不寫回。
+/// 引擎一律對中文使用者用混打模式；Caps Lock 只改字面大小寫，不切換模式。
+pub(crate) const PROFILE_KEYS: [&str; 12] = [
     "toggle-key",
-    "caps-lock-english",
     "esc-clear",
     "space-selects",
     "advance-after-select",
@@ -138,7 +138,6 @@ fn builtin_profile(preset: &Preset) -> Profile {
     let behavior = &preset.behavior;
     let values = BTreeMap::from([
         ("toggle-key", behavior.toggle_key.clone()),
-        ("caps-lock-english", on_off(behavior.caps_lock_english)),
         ("esc-clear", on_off(behavior.esc_clear)),
         ("space-selects", on_off(behavior.space_selects)),
         (
@@ -246,10 +245,6 @@ impl Settings {
                 values.insert(key.to_string(), value);
             }
         }
-        values.insert(
-            "caps-lock-english".to_string(),
-            on_off(self.caps_lock_english),
-        );
         values
     }
 
@@ -345,14 +340,6 @@ impl Settings {
             let Some(value) = profile.values.get(key) else {
                 return Err(profile_error(format!("風格缺少設定：{key}")).into());
             };
-            if key == "caps-lock-english" {
-                if value != "on" && value != "off" {
-                    return Err(profile_error("Caps Lock 設定無效").into());
-                }
-                next.caps_lock_english = value == "on";
-                next.forget("caps_lock_english");
-                continue;
-            }
             next.apply_set(key, value, goos)?;
         }
         next.profiles = self.profiles.clone();
@@ -468,9 +455,11 @@ impl Settings {
             self.read_only = true;
             return;
         };
-        // mixed_input 已從契約移除；舊快照的值直接丟棄，不進記憶體也不寫回。
+        // mixed_input 與 caps-lock-english 已從契約移除；舊快照的值直接丟棄，
+        // 不進記憶體也不寫回，更不能因此把風格判成無效。
         for profile in &mut store.items {
             profile.values.remove("mixed-input");
+            profile.values.remove("caps-lock-english");
         }
         if store.active.is_empty() || store.items.is_empty() || store.items.len() > 64 {
             self.read_only = true;
@@ -597,6 +586,34 @@ pub(crate) fn fresh_settings(goos: &str) -> Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 舊版 store 的 `values` 一定有 `caps-lock-english`；欄位已退休，讀取時
+    /// 丟棄，不能讓整個風格變成 invalid／唯讀。
+    #[test]
+    fn old_store_with_caps_lock_english_stays_readable() {
+        let mut settings = fresh_settings("linux");
+        let mut raw = serde_json::to_value(settings.profile_store()).expect("序列化風格");
+        let items = raw["items"].as_array_mut().expect("items 陣列");
+        assert!(!items.is_empty(), "預設 store 要有風格");
+        for item in items {
+            item["values"]["caps-lock-english"] = serde_json::json!("on");
+        }
+        settings.load_profiles(raw);
+        assert!(
+            !settings.read_only(),
+            "舊 store 的 caps-lock-english 只能被忽略，不能鎖成唯讀"
+        );
+        assert!(
+            !settings.profile_invalid,
+            "讀得懂舊 store 時不能標成 invalid"
+        );
+        for profile in settings.profile_store().items {
+            assert!(
+                !profile.values.contains_key("caps-lock-english"),
+                "退休欄位不能留在風格快照"
+            );
+        }
+    }
 
     /// 舊版 store 的 rules 一定有 `caps_letter`；欄位已退休，但不能讓整個
     /// 風格變成 invalid／唯讀。

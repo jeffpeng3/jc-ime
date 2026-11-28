@@ -812,9 +812,51 @@ fn test_fresh_settings_have_no_mixed_input() {
     for goos in ["linux", "windows", "darwin"] {
         let settings = fresh_settings(goos);
         assert_eq!(settings.value("mixed-input"), None, "{goos}");
+        assert_eq!(settings.value("caps-lock-english"), None, "{goos}");
+        assert!(
+            !crate::keys().contains_key("caps-lock-english"),
+            "{goos}：退休設定不該出現在可設定清單"
+        );
         let active = settings.active_profile(goos);
         assert!(!active.values.contains_key("mixed-input"), "{goos}");
+        assert!(!active.values.contains_key("caps-lock-english"), "{goos}");
     }
+}
+
+#[test]
+fn test_legacy_caps_lock_english_is_ignored() {
+    // 舊檔的 caps_lock_english 直接忽略：能讀、不進 extra、不產生警示、不寫回。
+    let dir = tmpdir("legacy-caps");
+    let path = dir.join("settings.json");
+    write_settings(
+        &path,
+        r#"{"schema":2,"caps_lock_english":true,"punctuation":true}"#,
+    );
+    let report = read(&path, "linux");
+    assert!(report.error.is_none(), "{:?}", report.error);
+    let mut expected = Settings::default_for_platform("linux");
+    expected.punctuation = true;
+    assert_eq!(
+        report.settings, expected,
+        "舊檔行為與不含 caps_lock_english 的新檔相同"
+    );
+    assert_eq!(report.settings.value("caps-lock-english"), None);
+    assert!(
+        !report
+            .notes
+            .iter()
+            .any(|note| note.contains("caps_lock_english")),
+        "退休欄位不該產生警示：{:?}",
+        report.notes
+    );
+
+    save(&path, &report.settings).expect("存檔");
+    let saved = read_text(&path);
+    assert!(
+        !saved.contains("caps_lock_english"),
+        "退休欄位不寫回：{saved}"
+    );
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]

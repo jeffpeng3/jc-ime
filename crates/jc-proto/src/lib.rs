@@ -1122,7 +1122,7 @@ mod tests {
             output_simplified: true,
             personal_reset: true,
             start_mode: Some("english".to_string()),
-            capabilities: BTreeMap::from([("caps_lock_english".into(), true)]),
+            capabilities: BTreeMap::from([("japanese".into(), true)]),
             ..HealthInfo::default()
         };
         let info_map = info.as_info();
@@ -1141,10 +1141,7 @@ mod tests {
             Some("80000")
         );
         assert_eq!(info_map.get("pid").map(String::as_str), Some("42"));
-        assert_eq!(
-            info_map.get("caps_lock_english").map(String::as_str),
-            Some("true")
-        );
+        assert_eq!(info_map.get("japanese").map(String::as_str), Some("true"));
         assert_eq!(
             info_map.get("settings_deferred_apply").map(String::as_str),
             Some("false")

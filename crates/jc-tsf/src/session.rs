@@ -325,10 +325,6 @@ pub struct Snapshot {
     pub english: bool,
     /// jc 尚無對應；false。
     pub full_width: bool,
-    /// jc 尚無對應；false。
-    pub caps_lock: bool,
-    /// jc 尚無對應；false。
-    pub caps_english: bool,
     /// 由 session 的 generation 變化計算，不來自 jc。
     pub reconnected: bool,
     /// jc 尚無對應；空陣列。
@@ -986,8 +982,6 @@ fn parse(reply: &Value) -> Snapshot {
     s.clause_index = j["clause_index"].as_i64().unwrap_or(0);
     s.clause_count = j["clause_count"].as_i64().unwrap_or(0);
     s.full_width = j["full_width"].as_bool().unwrap_or(false);
-    s.caps_lock = j["caps_lock"].as_bool().unwrap_or(false);
-    s.caps_english = j["caps_english"].as_bool().unwrap_or(false);
     s.reading_hint = j["reading_hint"]["text"].as_str().unwrap_or("").to_string();
     s.output_simplified = j["output_simplified"].as_bool().unwrap_or(false);
     s.bell = j["bell"].as_bool().unwrap_or(false);
@@ -1074,9 +1068,6 @@ pub struct Session {
     id: u64,
     generation: u32,
     english: bool,
-    /// 不含 Caps Lock 暫時英文的程式模式；關掉 Caps Lock 要回到這裡。
-    /// jc 的 snapshot 沒有 caps_english，外殼必須自己記住這層。
-    base_english: bool,
     pub english_state: Snapshot,
     down: bool,
     log: Vec<Value>,
@@ -1086,9 +1077,6 @@ pub struct Session {
     vocab_keys: bool,
     mode_known: bool,
     shared: bool,
-    caps_lock_english: bool,
-    caps_generation: u32,
-    caps_english: bool,
     japanese_cap: bool,
     convert_keys_cap: bool,
     clause_display_cap: bool,
@@ -1139,7 +1127,6 @@ impl Session {
             id: 0,
             generation: 0,
             english: false,
-            base_english: false,
             english_state: Snapshot::default(),
             down: false,
             log: Vec::new(),
@@ -1148,9 +1135,6 @@ impl Session {
             vocab_keys: false,
             mode_known: false,
             shared: false,
-            caps_lock_english: false,
-            caps_generation: 0,
-            caps_english: false,
             japanese_cap: false,
             convert_keys_cap: false,
             clause_display_cap: false,
@@ -1176,18 +1160,10 @@ impl Session {
     }
 
     /// 從 health／open 的 info 記下日文能力旗標。
-    fn learn_capabilities(&mut self, info: &Value, generation: u32) {
-        self.caps_lock_english = info["caps_lock_english"] == "true";
+    fn learn_capabilities(&mut self, info: &Value) {
         self.japanese_cap = info["japanese"] == "true";
         self.convert_keys_cap = info["convert_keys"] == "true";
         self.clause_display_cap = info["clause_display"] == "true";
-        self.caps_generation = generation;
-        // 引擎說沒有 Caps Lock 英文能力時，暫時英文要退回程式模式，
-        // 不讓重連後停在英文。
-        if !self.caps_lock_english {
-            self.caps_english = false;
-            self.english = self.base_english;
-        }
         self.learn_shift_config(info);
     }
 
@@ -1345,7 +1321,6 @@ impl Session {
             self.client.connected(),
             probe
         );
-        let generation = self.client.generation();
         if probe && self.id == 0 {
             self.client.release();
         }
@@ -1355,13 +1330,11 @@ impl Session {
         };
         self.mode_known = true;
         self.shared = reply["info"]["mode_memory"] == "shared";
-        self.learn_capabilities(&reply["info"], generation);
+        self.learn_capabilities(&reply["info"]);
         let simplified = self.learn_simplified(&reply["info"]);
         let before = self.english;
         if let Some(mode) = initial_mode(&reply["info"]) {
             self.english = mode == Mode::English;
-            self.base_english = self.english;
-            self.caps_english = false;
         }
         let changed = before != self.english || simplified;
         zlog!(
@@ -1410,58 +1383,6 @@ impl Session {
     /// 目前是否英文模式。
     pub fn english(&self) -> bool {
         self.english
-    }
-
-    /// 按鍵當下的 Caps Lock 鎖定狀態要不要更新外殼的暫時英文模式。
-    pub fn caps_needs_sync(&self, on: bool) -> bool {
-        self.caps_lock_english && (self.english_state.caps_lock || self.caps_english) != on
-    }
-
-    /// Caps Lock 鍵本身：確認 caps_lock_english 的快取還是新的。
-    pub fn refresh_caps_lock_english(&mut self) {
-        if self.client.connected()
-            && self.caps_generation == self.client.generation()
-            && self.client.alive()
-        {
-            return;
-        }
-        let probe = !self.client.connected();
-        if probe && !self.client.connect_existing() {
-            return;
-        }
-        let reply = self.client.call(&json!({"op": "health"}));
-        let generation = self.client.generation();
-        if probe && self.id == 0 {
-            self.client.release();
-        }
-        if let Some(reply) = reply.filter(|r| r["ok"] == true) {
-            self.learn_capabilities(&reply["info"], generation);
-        }
-    }
-
-    /// 回報 Caps Lock 狀態：能力開啟時只切換外殼的暫時英文模式，不送引擎。
-    ///
-    /// 引擎不再處理 Caps Lock 請求；`caps_lock_english` 由 health／open 學到，
-    /// 之後的模式切換純粹發生在外殼，重連時沿用 `english`／`caps_english`。
-    pub fn caps_lock(&mut self, on: bool) -> Snapshot {
-        if !self.caps_lock_english {
-            return self.english_state.clone();
-        }
-        self.mode_known = true;
-        self.caps_english = on && !self.base_english;
-        self.english = on || self.base_english;
-        let mut snapshot = self.english_state.clone();
-        snapshot.ok = true;
-        snapshot.handled = true;
-        snapshot.english = self.english;
-        snapshot.caps_english = self.caps_english;
-        snapshot.caps_lock = self.caps_english;
-        // 上一次快照可能帶著已送出的 commit；模式切換不能再送一次。
-        snapshot.commit.clear();
-        snapshot.notices.clear();
-        snapshot.bell = false;
-        self.english_state = snapshot.clone();
-        snapshot
     }
 
     /// 用快捷鍵切換簡體字是否可用。
@@ -1580,7 +1501,7 @@ impl Session {
         self.generation = self.client.generation();
         self.vocab_keys = reply["info"]["vocab_keys"] == "true";
         self.shared = reply["info"]["mode_memory"] == "shared";
-        self.learn_capabilities(&reply["info"], self.generation);
+        self.learn_capabilities(&reply["info"]);
         self.learn_bindings(&reply);
         let _ = self.learn_simplified(&reply["info"]);
         let start_english = reply["info"]["start_mode"] == "english";
@@ -1588,7 +1509,6 @@ impl Session {
         // 使用者自己切換的狀態。
         if start_english && !self.mode_known {
             self.english = true;
-            self.base_english = true;
         }
         if let Some(info) = reply["info"].as_object() {
             zlog!(
@@ -1671,8 +1591,8 @@ impl Session {
         }
         let generation_before = self.client.generation();
         let kind = request["type"].as_str().unwrap_or("").to_string();
-        // jc 的 State 只有組字片段帶模式，Committed 完全不帶；0c 快照的
-        // mode／caps_english 得由外殼自己記住，成功後補回快照。
+        // jc 的 State 只有組字片段帶模式，Committed 完全不帶；外殼的中英
+        // 模式得自己記住，成功後補回快照。
         #[cfg(test)]
         self.sent.push(kind.clone());
         let mut attempts = 0;
@@ -1703,11 +1623,9 @@ impl Session {
                 }
                 continue;
             }
-            // 重開 session 可能剛學到新的能力（例如 Caps Lock 英文被關掉），
-            // 按鍵請求要用重連後的模式，而不是進迴圈前的快照。
-            let base = self.base_english;
+            // 重開 session 可能剛學到新的能力，按鍵請求要用重連後的模式，
+            // 而不是進迴圈前的快照。
             let want_english = self.english;
-            let want_caps = self.caps_english;
             if !self.vocab_keys {
                 downgrade_vocab_key(&mut request);
             }
@@ -1744,8 +1662,6 @@ impl Session {
             // 引擎的片段模式只描述組字語言，不是外殼的中英模式。外殼模式
             // 一律由自己保存；片段語言留在 `preedit` 樣式與 suggestion 來源。
             s.english = want_english;
-            s.caps_english = want_caps;
-            s.caps_lock = want_caps;
             s.output_simplified = self.simplified;
             if kind == "output_simplified" {
                 s.handled = true;
@@ -1756,8 +1672,6 @@ impl Session {
                 self.log.push(request);
             }
             self.english = s.english;
-            self.base_english = base;
-            self.caps_english = s.caps_english;
             if self.simplified_live {
                 self.simplified = s.output_simplified;
                 self.simplified_at = Some(Instant::now());
@@ -1842,16 +1756,12 @@ impl Session {
     /// 本機狀態，不送 IPC、不提交組字：Shift 是修飾鍵，不該讓引擎慢或暫時
     /// 連不上時把整個 session 判成掛掉，也不該讓進行中的組字消失。
     pub fn toggle(&mut self) -> Snapshot {
-        self.base_english = !self.base_english;
-        self.english = self.base_english;
-        self.caps_english = false;
+        self.english = !self.english;
         self.mode_known = true;
         let mut snapshot = self.english_state.clone();
         snapshot.ok = true;
         snapshot.handled = true;
         snapshot.english = self.english;
-        snapshot.caps_english = false;
-        snapshot.caps_lock = false;
         // 上一次快照可能帶著已送出的 commit；切換模式不能再送一次。
         snapshot.commit.clear();
         snapshot.notices.clear();
@@ -2151,18 +2061,17 @@ mod parse_tests {
     #[test]
     fn japanese_capabilities_gate_the_new_keys() {
         let mut s = Session::new();
-        s.learn_capabilities(&json!({}), 0);
+        s.learn_capabilities(&json!({}));
         assert!(!s.japanese_supported() && !s.convert_keys() && !s.clause_display());
         s.learn_capabilities(
             &json!({"japanese": "true", "convert_keys": "true", "clause_display": "true"}),
-            0,
         );
         assert!(s.japanese_supported() && s.convert_keys() && s.clause_display());
         s.set_japanese_for_test(true);
         assert!(s.japanese_supported());
-        s.learn_capabilities(&json!({}), 0);
+        s.learn_capabilities(&json!({}));
         assert!(!s.japanese_supported() && !s.convert_keys() && !s.clause_display());
-        s.learn_capabilities(&json!({"japanese": "true"}), 0);
+        s.learn_capabilities(&json!({"japanese": "true"}));
         s.set_japanese_for_test(false);
         assert!(!s.convert_keys() && !s.clause_display());
     }
@@ -3036,7 +2945,7 @@ mod tests {
             .collect();
         let joined = seq.concat();
         let last = st.keys.last().map(String::as_str).unwrap_or("");
-        // Caps Lock 帶來的暫時英文：大寫字母直接交給應用程式（不進自動補全）。
+        // 英文模式的大寫字面：直接交給應用程式（不進自動補全）。
         let passthrough = st.english && last.len() == 1 && last.as_bytes()[0].is_ascii_uppercase();
         let mut preedit = if passthrough {
             String::new()
@@ -3143,15 +3052,6 @@ mod tests {
         (Session::with_client(client), state)
     }
 
-    /// 多個 session 共用同一個假引擎（模擬同一個程式開在不同欄位）。
-    fn toy_session_with_state(state: &Arc<Mutex<MockState>>) -> Session {
-        let transport = MockTransport {
-            state: state.clone(),
-            respond: Box::new(toy_response),
-        };
-        Session::with_client(Client::with_transport(Box::new(transport)))
-    }
-
     #[test]
     fn engine_session_id_is_remembered_and_sent_on_close() {
         let (mut s, st) = toy_session();
@@ -3230,9 +3130,7 @@ mod tests {
     fn reopen_sends_no_mode_or_caps_lock_restore() {
         let (mut s, st) = toy_session();
         st.lock().unwrap().start_english = true;
-        st.lock().unwrap().info = json!({"caps_lock_english": "true"});
         assert!(s.learn_mode(false) && s.english());
-        s.caps_lock(true);
         s.key("t");
         s.client.disconnect_for_test();
         s.key("e");
@@ -3417,73 +3315,6 @@ mod tests {
     }
 
     #[test]
-    fn caps_lock_english_switches_locally_without_ipc() {
-        let (mut s, st) = toy_session();
-        st.lock().unwrap().info = json!({"caps_lock_english": "true", "initial_mode": "zhuyin"});
-        assert!(!s.learn_mode(true));
-        assert!(s.mode_known);
-        let before = st.lock().unwrap().requests.len();
-        assert!(s.caps_needs_sync(true));
-        let snap = s.caps_lock(true);
-        assert!(snap.ok && snap.english && snap.caps_english, "{snap:?}");
-        assert_eq!(
-            st.lock().unwrap().requests.len(),
-            before,
-            "Caps Lock 只在 TSF 內切換模式，不送引擎"
-        );
-        let snap = s.caps_lock(false);
-        assert!(snap.ok && !snap.english && !snap.caps_english, "{snap:?}");
-    }
-
-    #[test]
-    fn caps_lock_english_survives_focus_and_reconnect() {
-        let (mut s, st) = toy_session();
-        s.learn_mode(true);
-        assert!(
-            s.mode_known && !s.caps_needs_sync(true),
-            "設定關閉時不送 caps_lock"
-        );
-        st.lock().unwrap().info = json!({"caps_lock_english": "true", "initial_mode": "zhuyin"});
-        let mut other = toy_session_with_state(&st);
-        other.learn_mode(true);
-        assert!(other.mode_known && !other.english());
-        assert!(other.caps_needs_sync(true) && !other.caps_needs_sync(false));
-        let snap = other.caps_lock(true);
-        assert!(snap.ok && snap.english, "暫時英文：{snap:?}");
-        assert!(!other.caps_needs_sync(true));
-        other.reset();
-        assert!(other.english() && !other.caps_needs_sync(true) && other.caps_needs_sync(false));
-        let snap = other.caps_lock(false);
-        assert!(
-            snap.ok && !snap.english && !snap.caps_english,
-            "關 Caps Lock 回到注音：{snap:?}"
-        );
-        let _ = s;
-    }
-
-    #[test]
-    fn caps_english_stays_temporary_after_engine_restart() {
-        let (mut s, st) = toy_session();
-        st.lock().unwrap().info = json!({"caps_lock_english": "true", "initial_mode": "english"});
-        s.learn_mode(true);
-        assert!(s.english(), "開始時英文");
-        assert!(!s.toggle().english, "這個程式切到注音");
-        let snap = s.caps_lock(true);
-        assert!(snap.english);
-        s.client.disconnect_for_test();
-        let snap = s.key("A");
-        assert!(
-            snap.ok && snap.english && !snap.handled,
-            "重開後仍是暫時的英文：{snap:?}"
-        );
-        let snap = s.caps_lock(false);
-        assert!(
-            snap.ok && !snap.english,
-            "關掉 Caps Lock 回到這個程式的注音：{snap:?}"
-        );
-    }
-
-    #[test]
     fn mode_and_mixed_composition_survive_reconnect() {
         let (mut s, _) = toy_session();
         for k in ["s", "u", "3"] {
@@ -3508,8 +3339,8 @@ mod tests {
     /// 打英文單字不該把整個輸入法切成英文模式。
     ///
     /// mixed 模式的 `Snapshot.mode` 是「這一段組字是什麼語言」；打完一句英文
-    /// 它會是 english，但中英模式只由 toggle／mode／caps_lock 改變。實機症狀：
-    /// 打到一半變全英文，要按兩下 Shift 才回來。
+    /// 它會是 english，但中英模式只由 toggle 改變，Caps Lock 不會切換模式。
+    /// 實機症狀：打到一半變全英文，要按兩下 Shift 才回來。
     #[test]
     fn english_word_does_not_flip_the_input_mode() {
         let (mut s, st) = toy_session();
@@ -3953,118 +3784,5 @@ mod tests {
                 "first shift after handoff"
             );
         }
-    }
-
-    #[test]
-    fn caps_lock_key_checks_the_setting_without_holding_or_repeating() {
-        let (mut s, st) = toy_session();
-        s.refresh_caps_lock_english();
-        assert_eq!(
-            st.lock()
-                .unwrap()
-                .requests
-                .iter()
-                .filter(|r| r["op"] == "health")
-                .count(),
-            1
-        );
-        assert!(
-            !s.client.connected(),
-            "只按過 Caps Lock、沒打過字的程式不留連線"
-        );
-        assert!(!s.caps_needs_sync(true), "設定關閉");
-        s.refresh_caps_lock_english();
-        assert_eq!(
-            st.lock()
-                .unwrap()
-                .requests
-                .iter()
-                .filter(|r| r["op"] == "health")
-                .count(),
-            2
-        );
-        s.key("j");
-        let before = st
-            .lock()
-            .unwrap()
-            .requests
-            .iter()
-            .filter(|r| r["op"] == "health")
-            .count();
-        for _ in 0..3 {
-            s.refresh_caps_lock_english();
-        }
-        assert_eq!(
-            st.lock()
-                .unwrap()
-                .requests
-                .iter()
-                .filter(|r| r["op"] == "health")
-                .count(),
-            before,
-            "連線還在時沿用 open 的值"
-        );
-        assert!(s.client.connected());
-        {
-            let mut state = st.lock().unwrap();
-            state.connected = false;
-            state.down = true;
-        }
-        {
-            let mut state = st.lock().unwrap();
-            state.down = false;
-            state.info = json!({"caps_lock_english": "true"});
-        }
-        s.refresh_caps_lock_english();
-        assert!(
-            s.caps_needs_sync(true),
-            "設定剛打開：這次 Caps Lock 就送 caps_lock"
-        );
-        let after = st
-            .lock()
-            .unwrap()
-            .requests
-            .iter()
-            .filter(|r| r["op"] == "health")
-            .count();
-        s.refresh_caps_lock_english();
-        assert_eq!(
-            st.lock()
-                .unwrap()
-                .requests
-                .iter()
-                .filter(|r| r["op"] == "health")
-                .count(),
-            after,
-            "新連線上問到的值沿用"
-        );
-    }
-
-    #[test]
-    fn reopened_session_keeps_caps_english_temporary() {
-        let (mut s, st) = toy_session();
-        st.lock().unwrap().info = json!({"caps_lock_english": "true", "initial_mode": "zhuyin"});
-        s.key("j");
-        let caps = s.caps_lock(true);
-        assert!(caps.english);
-        {
-            let mut state = st.lock().unwrap();
-            state.connected = false;
-            state.down = true;
-            state.info = json!({"caps_lock_english": "false", "initial_mode": "zhuyin"});
-        }
-        {
-            let mut state = st.lock().unwrap();
-            state.down = false;
-        }
-        let from = st.lock().unwrap().requests.len();
-        let snap = s.key("a");
-        assert!(snap.ok && !snap.english, "設定關掉後照注音：{snap:?}");
-        let guard = st.lock().unwrap();
-        let modes: Vec<&Value> = guard.requests[from..]
-            .iter()
-            .filter(|r| r["op"] == "mode" || r["op"] == "caps_lock")
-            .collect();
-        assert!(modes.is_empty(), "設定關掉後照注音開始");
     }
 }

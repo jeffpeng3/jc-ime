@@ -135,14 +135,16 @@ pub const START_ENGLISH: &str = "english";
 
 /// 已拿掉的設定檔欄位：讀檔時忽略，存檔時不寫回。
 ///
-/// `mixed_input` 已從 JSON 契約移除；舊檔保留這個欄位時直接丟棄，不進
-/// `extra`、不產生警示、也不寫回。引擎對中文使用者一律用混打模式。
-const RETIRED_KEYS: [&str; 5] = [
+/// `mixed_input` 與 `caps_lock_english` 已從 JSON 契約移除；舊檔保留這些
+/// 欄位時直接丟棄，不進 `extra`、不產生警示、也不寫回。引擎對中文使用者一律
+/// 用混打模式；Caps Lock 只改字面大小寫，不切換模式。
+const RETIRED_KEYS: [&str; 6] = [
     "preview_0_2",
     "language_memory",
     "language_hotkey",
     "english_profile",
     "mixed_input",
+    "caps_lock_english",
 ];
 
 /// 讀取結果的檔案狀態。
@@ -442,8 +444,6 @@ pub struct Settings {
     pub cjk_latin_space: bool,
     /// 打錯注音時提示。
     pub zhuyin_error_hint: bool,
-    /// Caps Lock 開著時直接打英文。
-    pub caps_lock_english: bool,
     /// 不打聲調也能選字。
     pub toneless: bool,
     /// 各組模糊音。
@@ -499,7 +499,7 @@ impl Default for Settings {
 type BoolSetter = fn(&mut Settings, bool);
 type StringSetter = fn(&mut Settings, &str);
 
-const BOOL_FIELDS: [(&str, BoolSetter); 22] = [
+const BOOL_FIELDS: [(&str, BoolSetter); 21] = [
     ("punctuation", |s, v| s.punctuation = v),
     ("document_context", |s, v| s.document_context = v),
     ("english_autocomplete", |s, v| s.english_autocomplete = v),
@@ -516,7 +516,6 @@ const BOOL_FIELDS: [(&str, BoolSetter); 22] = [
     ("all_symbols_halfwidth", |s, v| s.all_symbols_halfwidth = v),
     ("cjk_latin_space", |s, v| s.cjk_latin_space = v),
     ("zhuyin_error_hint", |s, v| s.zhuyin_error_hint = v),
-    ("caps_lock_english", |s, v| s.caps_lock_english = v),
     ("toneless", |s, v| s.toneless = v),
     ("ja_live_conversion", |s, v| {
         s.ja_live_conversion = v;
@@ -673,7 +672,6 @@ impl Settings {
             all_symbols_halfwidth: false,
             cjk_latin_space: false,
             zhuyin_error_hint: true,
-            caps_lock_english: false,
             toneless: false,
             fuzzy: Fuzzy::default(),
             ja_input_method: JA_INPUT_ROMAJI.to_string(),
@@ -1085,7 +1083,7 @@ impl Settings {
 }
 
 /// 存檔時的固定欄位順序。
-const SAVE_ORDER: [&str; 41] = [
+const SAVE_ORDER: [&str; 40] = [
     "selection",
     "punctuation",
     "document_context",
@@ -1110,7 +1108,6 @@ const SAVE_ORDER: [&str; 41] = [
     "all_symbols_halfwidth",
     "cjk_latin_space",
     "zhuyin_error_hint",
-    "caps_lock_english",
     "toneless",
     "ja_input_method",
     "ja_ambiguous",
@@ -1279,12 +1276,6 @@ impl Serialize for Settings {
             &mut kept,
             "zhuyin_error_hint",
             Value::Bool(self.zhuyin_error_hint),
-        )?;
-        put_known(
-            &mut map,
-            &mut kept,
-            "caps_lock_english",
-            Value::Bool(self.caps_lock_english),
         )?;
         put_known(&mut map, &mut kept, "toneless", Value::Bool(self.toneless))?;
         put_known(
@@ -1736,9 +1727,6 @@ pub(crate) fn specs() -> Vec<Spec> {
         spec("ctrl-punctuation", &["on", "off"], |s| {
             on_off(s.ctrl_punctuation)
         }),
-        spec("caps-lock-english", &["on", "off"], |s| {
-            on_off(s.caps_lock_english)
-        }),
         spec("toneless", &["on", "off"], |s| on_off(s.toneless)),
         spec("shift-symbol-halfwidth", &["off", "on", "all"], |s| {
             s.symbol_width().to_string()
@@ -2048,10 +2036,6 @@ impl Settings {
             "zhuyin-error-hint" => {
                 self.zhuyin_error_hint = value == "on";
                 self.forget("zhuyin_error_hint");
-            }
-            "caps-lock-english" => {
-                self.caps_lock_english = value == "on";
-                self.forget("caps_lock_english");
             }
             "toneless" => {
                 self.toneless = value == "on";

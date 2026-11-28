@@ -75,7 +75,7 @@ flowchart LR
 | `Commit` | TSF `finish`、`complete_via_cuas` | engine `handle` | 明確送出目前組字。Enter 的一般路徑由 engine 直接呼叫 `Session::commit` |
 | `Select { index }` | TSF 候選窗滑鼠點選 `select_in_edit` | engine `handle` | 直接套用第 `index` 個候選，和數字鍵共用 `choose_candidate` |
 | `Idle { session }` | TSF 停頓計時器 `ja_live_idle` | engine `handle` | 日文逐字変換的停頓觸發；沒有日文組字時是 no-op |
-| `Health` | TSF `refresh_bindings`、`learn_mode`、`sync_caps`、`simplified_hotkey` | engine `handle` | 查 bindings、能力旗標、簡體開關、慢請求診斷 |
+| `Health` | TSF `refresh_bindings`、`learn_mode`、`simplified_hotkey` | engine `handle` | 查 bindings、能力旗標、簡體開關、慢請求診斷 |
 | `Close { session }` | TSF `Session::reset`、`Drop` | engine `close_session` | 關閉這條連線的 session，會 flush 個人學習 |
 | `OutputSimplified { on }` | TSF `set_output_simplified`、`output_simplified` | engine `handle` | 狀態列切換簡體輸出。只改提交，不改組字預覽 |
 | `Ping` | 測試、smoke 或外部 client | engine `handle` | 存活檢查，回 `Acknowledged` |
@@ -340,13 +340,6 @@ sequenceDiagram
     participant Engine
     participant Core
 
-    Host->>TSF: Caps Lock 狀態改變
-    TSF->>TSF: sync_caps
-    TSF->>TSession: refresh_caps_lock_english
-    TSession->>Engine: Request::Health
-    Engine-->>TSession: caps_lock_english 能力旗標
-    TSF->>TSession: caps_lock(on) 只切換外殼的暫時英文
-
     Host->>TSF: OnKeyDown A 且 Caps Lock 開
     TSF->>TSF: keys::printable 依鍵盤狀態轉出 A
     TSF->>TSF: handle_key caps true
@@ -361,7 +354,7 @@ sequenceDiagram
     TSession-->>TSF: Snapshot
 ```
 
-Caps Lock 不改變按鍵路由。注音模式仍把字母當注音鍵，`Key.caps` 只影響最後的字面大小寫；英文與混打的 Latin 字面由 `press_caps` 決定輸出。engine 在 health／Ready 回報 `caps_lock_english`；能力為真時，TSF 的 `sync_caps` 只在本機切換暫時英文模式，不送 `Request`。Caps Lock 關閉時回到程式的 `base_english`，按鍵仍只帶 `Key.caps`。
+Caps Lock 不改變按鍵路由，也不切換中英模式。注音模式仍把字母當注音鍵，`Key.caps` 只影響最後的字面大小寫；英文與混打的 Latin 字面由 `press_caps` 決定輸出。Caps Lock 狀態本身不會為了同步模式而送出 health 或任何 `Request`。
 
 ### 3.6 日文
 
@@ -698,7 +691,7 @@ sequenceDiagram
         Host->>TSF: OnKeyUp Shift
         TSF->>TSF: shift_released
         TSF->>TSession: Session::toggle
-        TSession->>TSession: base_english 與 english 反轉
+        TSession->>TSession: english 反轉
         TSession-->>TSF: 本機 Snapshot
         TSF->>TSF: sync_langbar
     else 狀態列按鈕
@@ -726,7 +719,7 @@ sequenceDiagram
 ```
 
 - `Session::toggle` 不送 IPC，也不提交組字。英文待選字在切回中文時丟掉，中文組字保留。
-- `Request::Mode` 已從協定與 engine 刪除；TSF 不送。`caps_lock_english` 開啟時，外殼會把 Caps Lock 當暫時英文模式，engine 在 health／Ready 廣告這個能力。
+- `Request::Mode` 已從協定與 engine 刪除；TSF 不送。Caps Lock 只影響字面大小寫，不切換中英模式，也不送模式請求。
 - 日文不是外殼模式。core 依片段推斷日文，F6–F10／Convert 只看 capability，不看 `english`。
 
 ## 4. 決策歸屬表
@@ -741,7 +734,7 @@ sequenceDiagram
 | 候選排序 | 不改順序 | 不改順序 | lane 的 nbest、個人學習、rerank 先排；`CandidateSet` 負責插 extras、去重、截斷、顯示字排第一 | `session/candidate_set.rs:96` `from_hypotheses`、`mixed.rs:1821` `zh_choice_candidates`、`core.rs:3043` `rebuild_ja` |
 | 補全來源 | 不再推導來源；`parse` 只保存 `suggestion` 字串 | 只帶 `suggestion` 字串，沒有來源欄位 | `snapshot_suggestion` 決定 suggestion 內容；混合英文補全同時進候選清單 | `session.rs` `state_to_snapshot_value`／`parse`、`core.rs:1681` `snapshot_suggestion`、`session/key_policy.rs` `tab` |
 | Enter 語意 | 只送 `Key` 或 `Commit`，不自行判斷 | `Key Enter` 先 `press`；還在組字回 `State`，否則 `commit` 回 `Committed` | `finish_composition` 先 `enter_action`；注音片段與日文文節保留組字，選單與直接插入候選清掉組字 | `engine/lib.rs:655` `enters` 分支、`core.rs:1750` `finish_composition`、`core.rs:902` `apply_menu_action`、`core.rs:1005` `apply_insert_action` |
-| 模式 | `english`／`base_english` 與 Caps Lock 暫時英文只在外殼；`toggle` 不送 IPC | 沒有 toggle 或 mode op；只回報 `caps_lock_english` 能力 | 只依字元與片段選 lane，沒有中英模式旗標 | `session.rs` `toggle`、`session.rs` `caps_lock`、`service.rs` `toggle_mode` |
+| 模式 | `english` 只在外殼；`toggle` 不送 IPC。Caps Lock 只改字面大小寫，不切換模式 | 沒有 toggle 或 mode op | 只依字元與片段選 lane，沒有中英模式旗標 | `session.rs` `toggle` |
 | 刪除單位 | 只送 Backspace／Delete | 只回 `handled` | `delete_visible` 一次刪一個可見 rune；字元涵蓋多個讀音單位時整個範圍一起刪 | `key_policy.rs:279` `delete_visible`、`key_policy.rs:331` `delete_zh_visible`、`key_policy.rs:427` `delete_ja_visible` |
 | 候選窗何時顯示 | `wants_candidate_window` 與 `show` 條件 | 只帶 `navigating`、`menu`、`candidates` | `down`／`up` 設定 `navigating`；`open_menu` 設定 `menu` | `session.rs:423` `wants_candidate_window`、`service.rs:752` `show`、`core.rs:1891` `open_menu` |
 | 候選編號 | 不產生 | `Response::state` 把 `selection_key` 放進 `CandidateDetail.key` | `selection_key` 只回傳頁內位置 `1` 到 `0` | `jc-proto/lib.rs:589`、`jc-core/src/candidate.rs:133` `selection_key` |

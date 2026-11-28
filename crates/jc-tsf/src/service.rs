@@ -700,34 +700,6 @@ impl TextService_Impl {
         }
     }
 
-    fn sync_caps(&self, ctx: Option<&ITfContext>, vk: u32) {
-        // Shift／Ctrl／Alt／Win 本身不該為了 Caps Lock 同步去問引擎。
-        if keys::is_modifier(vk) && vk != keys::VK_CAPS_LOCK {
-            return;
-        }
-        let on = keys::caps_lock_on();
-        let snapshot = {
-            let mut st = self.state.borrow_mut();
-            if st.session.english() {
-                // 英文模式是純 raw：Caps Lock 交給系統與應用程式，外殼只在
-                // 已學到能力時本機切回中文，不送任何請求、也不動文件組字。
-                if st.session.caps_needs_sync(on) {
-                    let _ = st.session.caps_lock(on);
-                }
-                return;
-            }
-            if vk == keys::VK_CAPS_LOCK {
-                st.session.refresh_caps_lock_english();
-            }
-            if !st.session.caps_needs_sync(on) || !st.session.available() {
-                return;
-            }
-            st.session.caps_lock(on)
-        };
-        zdebug!("Caps Lock {} -> english={}", on, snapshot.english);
-        self.present(ctx, &snapshot);
-    }
-
     fn sync_langbar(&self) {
         let st = self.state.borrow();
         if let Some((_, button)) = st.langbar.as_ref() {
@@ -2376,7 +2348,6 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 return Ok(true.into());
             }
             self.learn_mode(vk);
-            self.sync_caps(pic.as_ref(), vk);
             let wants = match self.english_key_policy(pic.as_ref(), vk, lparam.0) {
                 // 這幾條路徑都會由輸入法自己處理或直接寫入文件。
                 Some(EnglishKey::Literal(_)) => true,
@@ -2412,9 +2383,6 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 return Ok(false.into());
             }
             let vk = wparam.0 as u32;
-            if vk == keys::VK_CAPS_LOCK {
-                self.sync_caps(pic.as_ref(), 0);
-            }
             if let Some(side) = keys::shift_side(vk, lparam.0) {
                 self.shift_released(side);
                 return Ok(false.into());
@@ -2549,7 +2517,6 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             }
             self.commit_before_host_key(pic.as_ref(), vk, lparam.0, false);
             self.learn_mode(vk);
-            self.sync_caps(pic.as_ref(), vk);
             let literal_fallback = key_tested == Some(true) && {
                 let st = self.state.borrow();
                 !st.composing && !st.session.english()

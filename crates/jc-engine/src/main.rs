@@ -152,7 +152,6 @@ fn main() {
 /// `has_bigram` 一律回報，安裝 smoke 用它確認載入的是 bigram 資料包。
 fn build_shell_caps(
     toggle_key: &str,
-    caps_lock_english: bool,
     has_zhconv: bool,
     has_bigram: bool,
 ) -> std::collections::BTreeMap<String, bool> {
@@ -165,7 +164,6 @@ fn build_shell_caps(
         "right_shift".to_string(),
         toggle_key == "both" || toggle_key == "right",
     );
-    caps.insert("caps_lock_english".to_string(), caps_lock_english);
     caps.insert("has_bigram".to_string(), has_bigram);
     // 日文能力：資料包一律含日文解碼器。外殼據此送 F6–F10／Convert，
     // 不必先有 legacy 的 `japanese` 輸入模式。
@@ -228,12 +226,7 @@ fn run(options: Options) -> anyhow::Result<()> {
     // 保守預設：左 Shift 不切換（預設 left_shift=false）、狀態列的「輸出簡體字」
     // 按了沒反應（simplified_live=false）。`effective` 之後會被 factory 的
     // closure 移走，所以先在這裡算好。
-    let mut shell_caps = build_shell_caps(
-        &effective.toggle_key,
-        effective.caps_lock_english,
-        false,
-        false,
-    );
+    let mut shell_caps = build_shell_caps(&effective.toggle_key, false, false);
     let mut default_simplified = false;
     let start_mode = effective.start_mode.clone();
     let factory: SessionFactory = if let Some(dir) = &data_root {
@@ -243,12 +236,7 @@ fn run(options: Options) -> anyhow::Result<()> {
         );
         let has_bigram = data.zh.lm.as_ref().is_some_and(|lm| lm.bigrams() > 0);
         // 只有真的載入 tw2s 轉換器才宣告能力；否則狀態列會出現一顆假開關。
-        shell_caps = build_shell_caps(
-            &effective.toggle_key,
-            effective.caps_lock_english,
-            data.zhconv.is_some(),
-            has_bigram,
-        );
+        shell_caps = build_shell_caps(&effective.toggle_key, data.zhconv.is_some(), has_bigram);
         if data.zhconv.is_some() {
             default_simplified = effective.output_simplified;
         }
@@ -745,20 +733,18 @@ mod tests {
     /// 只有載入 OpenCC 轉換器時才宣告 `output_simplified_live`。
     #[test]
     fn shell_caps_only_advertise_simplified_with_converter() {
-        let without = build_shell_caps("both", false, false, false);
+        let without = build_shell_caps("both", false, false);
         assert_eq!(without.get("left_shift"), Some(&true));
         assert_eq!(without.get("right_shift"), Some(&true));
-        assert_eq!(without.get("caps_lock_english"), Some(&false));
         assert_eq!(without.get("has_bigram"), Some(&false));
         assert!(
             !without.contains_key("output_simplified_live"),
             "沒有轉換器時不得宣告能力旗標"
         );
 
-        let with = build_shell_caps("left", true, true, true);
+        let with = build_shell_caps("left", true, true);
         assert_eq!(with.get("left_shift"), Some(&true));
         assert_eq!(with.get("right_shift"), Some(&false));
-        assert_eq!(with.get("caps_lock_english"), Some(&true));
         assert_eq!(with.get("has_bigram"), Some(&true));
         assert_eq!(with.get("output_simplified_live"), Some(&true));
         // 日文能力只由 capability 宣告；外殼不再需要 legacy `japanese` 模式。

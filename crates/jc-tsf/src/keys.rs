@@ -6,9 +6,8 @@
 //! 排列由核心解讀：只把可見的 ASCII 交給核心；具名鍵用協定名稱；帶 Ctrl／Alt 的組合鍵交還應用程式，
 //! 只有中文模式的 Ctrl＋標點（#168，見 [`ctrl_punct`]）例外。
 //!
-//! Caps Lock 只改最後字面的大小寫，不改變路由：中文／混合模式送給引擎的字母
-//! 用基礎小寫，Caps 由 `Key.caps` 帶過去；數字、標點與注音鍵不受影響。
-//! `caps_lock_english=true` 仍由外殼先切英文模式。
+//! Caps Lock 只改最後字面的大小寫，不改變路由也不切換模式：中文／混合模式送給
+//! 引擎的字母用基礎小寫，Caps 由 `Key.caps` 帶過去；數字、標點與注音鍵不受影響。
 use crate::log::zlog;
 use jc_proto::{Key, KeyCode};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -27,8 +26,6 @@ pub fn shift_down() -> bool {
 pub fn caps_lock_on() -> bool {
     unsafe { GetKeyState(VK_CAPITAL.0 as i32) & 1 != 0 }
 }
-
-pub const VK_CAPS_LOCK: u32 = VK_CAPITAL.0 as u32;
 
 /// 系統的輸入法開關熱鍵（Ctrl＋Space）是否按著：鍵盤開關 compartment 改變時用來分辨使用者按的熱鍵，
 /// 與 TIP 啟用、換程式時系統的重設（#117）。Ctrl 看這個執行緒的按鍵狀態（只有前景、收到按鍵的執行緒才是按著），
@@ -153,8 +150,7 @@ pub fn is_space_key(vk: u32) -> bool {
 ///
 /// Caps Lock 一律照鍵盤狀態（#168 反轉）：開著時字母是大寫字面，中文／混合模式也一樣，
 /// 不因模式消掉鎖定位元。標點、數字與 Shift 符號不受 Caps Lock 影響。
-/// `caps_lock` 只保留呼叫端的模式語意（英文模式傳 true、中文傳 false），不再改變大小寫；
-/// `caps_lock_english=true` 由外殼先切英文模式，與這裡無關。
+/// `caps_lock` 只保留呼叫端的模式語意，不再改變大小寫。
 pub fn printable(vk: u32, lparam: isize, _caps_lock: bool) -> Option<String> {
     let mut state = [0u8; 256];
     unsafe {
@@ -303,9 +299,6 @@ pub fn composing_wants(protocol: Option<&str>) -> bool {
     protocol.is_some()
 }
 
-/// 協定的 Key；不該交給輸入法的按鍵回傳 None。數字鍵盤送 "KP" 加上產生的字元，核心不當注音鍵（#75）。
-/// `vocab` 見 [`named_with`]；只有 Shift（沒有 Ctrl／Alt／Win，組合鍵在這裡已回 None）時才換成新鍵名。
-/// `caps_lock` 見 [`printable`]：大小寫一律照實際 Caps Lock；參數只是呼叫端的模式語意，不改變字母。
 pub fn style_key(key: String, shift: bool, shift_space: bool) -> String {
     if key == " " && shift && shift_space {
         return "ShiftSpace".into();
@@ -313,6 +306,9 @@ pub fn style_key(key: String, shift: bool, shift_space: bool) -> String {
     key
 }
 
+/// 協定的 Key；不該交給輸入法的按鍵回傳 None。數字鍵盤送 "KP" 加上產生的字元，核心不當注音鍵（#75）。
+/// `vocab` 見 [`named_with`]；只有 Shift（沒有 Ctrl／Alt／Win，組合鍵在這裡已回 None）時才換成新鍵名。
+/// `caps_lock` 只是呼叫端的模式語意，不改變字母；大小寫一律照實際 Caps Lock。
 pub fn to_key(vk: u32, lparam: isize, vocab: bool, caps_lock: bool) -> Option<String> {
     if modifier_down() || is_modifier(vk) {
         return None;
