@@ -1,15 +1,23 @@
 //! 設定檔的快捷鍵改用 Win32 `RegisterHotKey` 攔截。
 //!
 //! TSF 的 key sink 收不到部分 Alt 組合（AltGr 會被當成 Ctrl＋Alt，部分宿主
-//! 直接把 Alt 組合交給選單）。這裡在 TSF 行程內開一個 message-only window，
-//! 依 `settings.json` 的 `[keybinds]` 註冊全域快捷鍵；收到 `WM_HOTKEY` 後把
-//! 對應的 [`Hotkey`] 交給 engine，由 keymap 執行 command。
+//! 直接把 Alt 組合交給選單）。這裡依 `settings.json` 的 `[keybinds]` 註冊
+//! 全域快捷鍵；收到 `WM_HOTKEY` 後把對應的 [`Hotkey`] 交給 engine，由 keymap
+//! 執行 command。
 //!
-//! 只有已設定的組合會被系統攔下，其餘按鍵照舊走 key sink。註冊失敗（被其他
-//! 程式占用、F12 等保留鍵）一定寫日誌，並保留原本的 key sink 路徑當 fallback。
+//! TSF 的 UI 執行緒不保證跑 GetMessage 迴圈：在那條執行緒註冊會成功，但
+//! `WM_HOTKEY` 只會被塞進佇列而不派送。因此視窗與所有 `RegisterHotKey`／
+//! `UnregisterHotKey` 都放在專用執行緒，該執行緒自己跑 GetMessage／
+//! DispatchMessage。熱鍵執行緒不直接碰 TSF；它把 chord 放進共用佇列，再
+//! PostMessage 到 UI 執行緒的轉送視窗。UI 執行緒沒有訊息迴圈時，下一顆
+//! 按鍵的入口也會 drain 同一個佇列。
 //!
-//! 解析、註冊清單與去重是純資料，Linux 也編、也測；Win32 的視窗與
-//! `RegisterHotKey` 只在 Windows 編譯。
+//! 只有已設定的組合會被系統攔下，其餘按鍵照舊走 key sink。註冊成功與失敗、
+//! 收到 `WM_HOTKEY` 都寫 `tsf.log`（chord、VK、錯誤碼）。註冊失敗（被其他
+//! 程式占用、F12 等保留鍵）保留原本的 key sink 路徑當 fallback。
+//!
+//! 解析、註冊清單、去重與「何時註冊／反註冊」的決策是純資料，Linux 也編、
+//! 也測；Win32 的執行緒、視窗與 `RegisterHotKey` 只在 Windows 編譯。
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -354,6 +362,132 @@ where
     (plan, skipped)
 }
 
+/// `RegisterHotKey` 的 id 起點；同一條執行緒的其他程式各自用自己的 hwnd。
+const ID_BASE: i32 = 0x4a00;
+
+/// 熱鍵執行緒的指令。Windows 由視窗訊息轉成這些指令；Linux 測試直接餵。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Command {
+    /// 取得前景：依目前設定註冊。
+    Enable,
+    /// 失去前景：全部反註冊。
+    Disable,
+    /// 設定檔可能變了；呼叫端先比對戳記再決定要不要 reload。
+    Tick,
+    /// 收到 `WM_HOTKEY`。
+    Hotkey { id: i32 },
+}
+
+/// 熱鍵執行緒的副作用出口；Windows 接到 Win32，測試用記錄用的假 sink。
+pub trait Sink {
+    /// 註冊一組組合；失敗回可讀原因，呼叫端下一次 tick 會重試。
+    fn register(&mut self, id: i32, hotkey: &Hotkey) -> Result<(), String>;
+    /// 反註冊一個 id。
+    fn unregister(&mut self, id: i32);
+    /// 把已註冊的組合送回 TSF。
+    fn press(&mut self, hotkey: &Hotkey);
+}
+
+/// 註冊決策：哪些 id 已註冊、何時補註冊或全部反註冊。
+///
+/// 不碰 Win32 也不讀檔，只維護「計畫」與「已註冊」。Windows 的熱鍵執行緒
+/// 與 Linux 測試走同一段決策，差別只在 [`Sink`] 的實作。
+#[derive(Debug, Default)]
+pub struct Machine {
+    enabled: bool,
+    plan: Vec<Hotkey>,
+    /// (id, plan 索引)。
+    registered: Vec<(i32, usize)>,
+}
+
+impl Machine {
+    /// 空的決策器：尚未啟用、沒有計畫。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 是否處於前景（只有前景才註冊）。
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// 目前的註冊計畫。
+    pub fn plan(&self) -> &[Hotkey] {
+        &self.plan
+    }
+
+    /// 目前已註冊的 id。
+    pub fn registered(&self) -> Vec<i32> {
+        self.registered.iter().map(|(id, _)| *id).collect()
+    }
+
+    /// 設定前景狀態但先不註冊；`enable` 會補上。
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    /// 取得前景：標記啟用並補齊尚未註冊的組合。
+    pub fn enable(&mut self, sink: &mut dyn Sink) {
+        self.enabled = true;
+        self.register_missing(sink);
+    }
+
+    /// 失去前景：標記停用並全部反註冊。
+    pub fn disable(&mut self, sink: &mut dyn Sink) {
+        self.enabled = false;
+        self.unregister_all(sink);
+    }
+
+    /// 換一份計畫：先反註冊舊的，再依前景狀態註冊新的。
+    pub fn apply(&mut self, sink: &mut dyn Sink, plan: Vec<Hotkey>) {
+        self.unregister_all(sink);
+        self.plan = plan;
+        self.register_missing(sink);
+    }
+
+    /// 補註冊還沒成功的 id；失敗的不進 `registered`，下一次 tick 再試。
+    pub fn register_missing(&mut self, sink: &mut dyn Sink) {
+        if !self.enabled {
+            return;
+        }
+        let Self {
+            plan, registered, ..
+        } = self;
+        for (index, hotkey) in plan.iter().enumerate() {
+            let id = ID_BASE + index as i32;
+            if registered.iter().any(|(entry, _)| *entry == id) {
+                continue;
+            }
+            if sink.register(id, hotkey).is_ok() {
+                registered.push((id, index));
+            }
+        }
+    }
+
+    /// 全部反註冊，清空已註冊清單。
+    pub fn unregister_all(&mut self, sink: &mut dyn Sink) {
+        let Self { registered, .. } = self;
+        for (id, _) in registered.drain(..) {
+            sink.unregister(id);
+        }
+    }
+
+    /// 分派一個 `WM_HOTKEY`；只有目前註冊中的 id 會送到 sink。
+    pub fn hotkey(&mut self, sink: &mut dyn Sink, id: i32) -> bool {
+        let Self {
+            plan, registered, ..
+        } = self;
+        let Some((_, index)) = registered.iter().find(|(entry, _)| *entry == id) else {
+            return false;
+        };
+        let Some(hotkey) = plan.get(*index) else {
+            return false;
+        };
+        sink.press(hotkey);
+        true
+    }
+}
+
 /// 安裝後的設定檔路徑：`%LOCALAPPDATA%\jc-ime\settings.json`（與 installer 相同）。
 pub fn settings_path() -> Option<PathBuf> {
     let base = std::env::var_os("LOCALAPPDATA")?;
@@ -393,139 +527,176 @@ pub fn read_keybinds(path: &Path) -> Result<Keybinds, String> {
 
 #[cfg(windows)]
 mod win {
-    //! Win32 message-only window 與 `RegisterHotKey`。
+    //! 專用執行緒上的 message-only window 與 `RegisterHotKey`。
+    //!
+    //! TSF 的 UI 執行緒不保證跑 GetMessage 迴圈：在那裡 `RegisterHotKey` 會
+    //! 成功，但 `WM_HOTKEY` 只會被塞進佇列而不派送。這裡把視窗、註冊與
+    //! 設定熱重載都搬到自建執行緒，該執行緒自己跑 GetMessage／DispatchMessage。
+    //!
+    //! `WM_HOTKEY` 不能直接在熱鍵執行緒呼叫 service：TSF 狀態綁在 UI 執行緒。
+    //! 熱鍵執行緒把 chord 放進共用佇列，再 PostMessage 到位於 UI 執行緒的轉送
+    //! 視窗；轉送視窗的 wndproc 呼叫 service。UI 執行緒沒有訊息迴圈時，
+    //! 下一顆按鍵的入口也會 drain 同一個佇列。
 
-    use std::cell::{Cell, RefCell};
+    use std::collections::{BTreeSet, VecDeque};
+    use std::ffi::c_void;
+    use std::sync::mpsc::{self, Sender};
+    use std::sync::{Arc, Mutex};
+    use std::thread::JoinHandle;
 
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, KillTimer,
-        RegisterClassW, SetTimer, SetWindowLongPtrW, UnregisterClassW, GWLP_USERDATA, HWND_MESSAGE,
-        WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_HOTKEY, WM_NCDESTROY, WM_TIMER, WNDCLASSW,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+        GetWindowLongPtrW, KillTimer, PostMessageW, PostThreadMessageW, RegisterClassW, SetTimer,
+        SetWindowLongPtrW, TranslateMessage, UnregisterClassW, GWLP_USERDATA, HWND_MESSAGE, MSG,
+        WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY, WM_HOTKEY, WM_NCDESTROY, WM_QUIT,
+        WM_TIMER, WNDCLASSW,
     };
     use windows_core::{w, PCWSTR};
 
     use super::{
-        plan, read_keybinds, settings_path, settings_stamp, Hotkey, Keybinds, Skipped, Stamp,
+        plan, read_keybinds, settings_path, settings_stamp, Hotkey, Keybinds, Machine, Sink,
+        Skipped, Stamp,
     };
     use crate::log;
 
-    const CLASS: PCWSTR = w!("jcHotkeyWindow");
-    /// 設定檔重載與註冊重試的 timer。
+    const THREAD_CLASS: PCWSTR = w!("jcHotkeyThread");
+    const TARGET_CLASS: PCWSTR = w!("jcHotkeyTarget");
+    /// 熱鍵執行緒 → UI 執行緒：處理佇列裡的 `WM_HOTKEY`。
+    const WM_FORWARD_HOTKEY: u32 = WM_APP + 0x51a;
+    /// UI 執行緒 → 熱鍵執行緒：取得／失去前景。
+    const WM_ENABLE: u32 = WM_APP + 0x51b;
+    const WM_DISABLE: u32 = WM_APP + 0x51c;
+    /// 設定檔重載與註冊重試的 timer；在熱鍵執行緒上。
     const TIMER_ID: usize = 0x0c1a;
     const TIMER_MS: u32 = 2_000;
-    /// `RegisterHotKey` 的 id 起點；同一條執行緒的其他程式各自用自己的 hwnd。
-    const ID_BASE: i32 = 0x4a00;
 
-    #[derive(Clone)]
-    struct Registered {
-        id: i32,
-        hotkey: Hotkey,
-    }
-
-    /// 一個服務的全域快捷鍵視窗。
-    ///
-    /// 視窗由 [`crate::service::TextService`] 的 `State` 持有；`service` 指標
-    /// 只在同一條 TSF 執行緒上使用，且視窗一定比服務先銷毀。
-    pub struct HotkeyWindow {
+    /// 熱鍵執行緒的 Win32 出口：每一筆都寫 log。
+    struct WinSink {
         hwnd: HWND,
-        instance: HINSTANCE,
-        service: *const crate::service::TextService_Impl,
-        enabled: Cell<bool>,
-        plan: RefCell<Vec<Hotkey>>,
-        registered: RefCell<Vec<Registered>>,
-        stamp: Cell<Option<Stamp>>,
-        last_failure: RefCell<Option<String>>,
+        target: HWND,
+        queue: Arc<Mutex<VecDeque<Hotkey>>>,
+        /// 已記過失敗的 chord；避免每 2 秒重試時洗版。
+        failures: BTreeSet<String>,
     }
 
-    impl HotkeyWindow {
-        /// 建立 message-only window 並依設定註冊；不在前景時先不註冊。
-        pub fn new(service: &crate::service::TextService_Impl) -> windows_core::Result<Box<Self>> {
-            unsafe {
-                let instance: HINSTANCE = GetModuleHandleW(None)?.into();
-                // 類別是行程內的；重複註冊由系統忽略錯誤。
-                let _ = RegisterClassW(&WNDCLASSW {
-                    lpfnWndProc: Some(window_proc),
-                    hInstance: instance,
-                    lpszClassName: CLASS,
-                    ..Default::default()
-                });
-                let hwnd = CreateWindowExW(
-                    WINDOW_EX_STYLE(0),
-                    CLASS,
-                    w!(""),
-                    WINDOW_STYLE(0),
-                    0,
-                    0,
-                    0,
-                    0,
-                    Some(HWND_MESSAGE),
-                    None,
-                    Some(instance),
-                    None,
-                )?;
-                let window = Box::new(Self {
-                    hwnd,
-                    instance,
-                    service,
-                    enabled: Cell::new(false),
-                    plan: RefCell::new(Vec::new()),
-                    registered: RefCell::new(Vec::new()),
-                    stamp: Cell::new(None),
-                    last_failure: RefCell::new(None),
-                });
-                set_userdata(hwnd, &*window as *const Self as isize);
-                let _ = SetTimer(Some(hwnd), TIMER_ID, TIMER_MS, None);
-                // 只有前景行程能持有全域組合；背景行程先註冊會占住組合，
-                // 前景的 TSF 反而收不到 WM_HOTKEY。
-                let foreground = crate::candidate::foreground_belongs_to(std::process::id());
+    impl Sink for WinSink {
+        fn register(&mut self, id: i32, hotkey: &Hotkey) -> Result<(), String> {
+            let result =
+                unsafe { RegisterHotKey(Some(self.hwnd), id, hotkey.win_modifiers(), hotkey.vk) };
+            match result {
+                Ok(()) => {
+                    if self.failures.remove(&hotkey.chord) && self.failures.is_empty() {
+                        log::log("hotkey：之前失敗的組合都註冊成功了");
+                    }
+                    log::log(&format!(
+                        "hotkey：註冊成功 {}（{} vk={:#04x} id={id}）",
+                        hotkey.chord, hotkey.action, hotkey.vk
+                    ));
+                    Ok(())
+                }
+                Err(error) => {
+                    let reason = format!(
+                        "{}（{} vk={:#04x}）：{error}（HRESULT {:#010x}）",
+                        hotkey.chord,
+                        hotkey.action,
+                        hotkey.vk,
+                        error.code().0 as u32
+                    );
+                    if self.failures.insert(hotkey.chord.clone()) {
+                        log::log(&format!(
+                            "hotkey 註冊失敗（可能被其他程式占用或系統保留）：{reason}"
+                        ));
+                    }
+                    Err(reason)
+                }
+            }
+        }
+
+        fn unregister(&mut self, id: i32) {
+            if let Err(error) = unsafe { UnregisterHotKey(Some(self.hwnd), id) } {
                 log::log(&format!(
-                    "hotkey：建立訊息視窗 hwnd={:#x} foreground={foreground}",
-                    hwnd.0 as usize
+                    "hotkey：反註冊 id={id} 失敗：{error}（HRESULT {:#010x}）",
+                    error.code().0 as u32
                 ));
-                window.enabled.set(foreground);
-                window.reload(true);
-                Ok(window)
             }
         }
 
-        /// 這個 TSF 取得前景：重新載入設定並註冊。
-        pub fn enable(&self) {
-            self.enabled.set(true);
+        fn press(&mut self, hotkey: &Hotkey) {
+            log::log(&format!(
+                "hotkey：收到 WM_HOTKEY {}（{} vk={:#04x}）",
+                hotkey.chord, hotkey.action, hotkey.vk
+            ));
+            self.queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push_back(hotkey.clone());
+            if let Err(error) =
+                unsafe { PostMessageW(Some(self.target), WM_FORWARD_HOTKEY, WPARAM(0), LPARAM(0)) }
+            {
+                log::log(&format!("hotkey：轉送到 TSF 執行緒失敗：{error}"));
+            }
+        }
+    }
+
+    /// 熱鍵執行緒自己的狀態；只被該執行緒存取。
+    struct ThreadState {
+        machine: Machine,
+        sink: WinSink,
+        stamp: Option<Stamp>,
+    }
+
+    impl ThreadState {
+        /// 熱鍵執行緒的指令入口；Windows 訊息與 Linux 測試都走這裡的決策。
+        fn handle(&mut self, command: super::Command) {
+            match command {
+                super::Command::Enable => self.enable(),
+                super::Command::Disable => self.disable(),
+                super::Command::Tick => self.tick(),
+                super::Command::Hotkey { id } => {
+                    let Self { machine, sink, .. } = self;
+                    machine.hotkey(sink, id);
+                }
+            }
+        }
+
+        fn enable(&mut self) {
+            self.machine.set_enabled(true);
             if !self.reload_if_changed() {
-                self.register_missing();
+                let Self { machine, sink, .. } = self;
+                machine.register_missing(sink);
             }
         }
 
-        /// 失去前景：反註冊，避免霸占其他行程的快捷鍵。
-        pub fn disable(&self) {
-            self.enabled.set(false);
-            self.unregister_all();
+        fn disable(&mut self) {
+            let Self { machine, sink, .. } = self;
+            machine.disable(sink);
         }
 
         /// 設定檔變了才重讀，並重新註冊。
-        fn reload_if_changed(&self) -> bool {
+        fn reload_if_changed(&mut self) -> bool {
             let stamp = settings_path().as_deref().and_then(settings_stamp);
-            if stamp == self.stamp.get() {
+            if stamp == self.stamp {
                 return false;
             }
             self.reload(false);
             true
         }
 
-        fn reload(&self, startup: bool) {
+        fn reload(&mut self, startup: bool) {
             let Some(path) = settings_path() else {
                 if startup {
                     log::log("hotkey：找不到 LOCALAPPDATA，只能使用預設綁定");
                     self.apply_defaults();
                 }
-                self.stamp.set(None);
+                self.stamp = None;
                 return;
             };
             let stamp = settings_stamp(&path);
-            self.stamp.set(stamp);
+            self.stamp = stamp;
             if stamp.is_none() && startup {
                 log::log(&format!(
                     "hotkey：沒有設定檔 {}，使用預設綁定",
@@ -550,130 +721,148 @@ mod win {
             }
         }
 
-        fn apply_defaults(&self) {
+        fn apply_defaults(&mut self) {
             let (plan, skipped) = plan(&Keybinds::default()).expect("預設 keybinds 一定合法");
             self.apply(plan, skipped);
         }
 
-        fn apply(&self, plan: Vec<Hotkey>, skipped: Vec<Skipped>) {
-            for skip in skipped {
+        fn apply(&mut self, plan: Vec<Hotkey>, skipped: Vec<Skipped>) {
+            for skip in &skipped {
                 log::log(&format!(
                     "hotkey 略過 {}（{}）：{}",
                     skip.action, skip.chord, skip.reason
                 ));
             }
-            self.unregister_all();
-            *self.plan.borrow_mut() = plan;
-            self.register_missing();
-        }
-
-        /// 註冊還沒成功的項目；失敗會留下可讀的原因，同一組失敗不重複洗版。
-        fn register_missing(&self) {
-            if !self.enabled.get() {
-                return;
-            }
-            let plan = self.plan.borrow().clone();
-            let mut registered = self.registered.borrow_mut();
-            let mut failures = Vec::new();
-            for (index, hotkey) in plan.iter().enumerate() {
-                let id = ID_BASE + index as i32;
-                if registered.iter().any(|entry| entry.id == id) {
-                    continue;
-                }
-                let result = unsafe {
-                    RegisterHotKey(Some(self.hwnd), id, hotkey.win_modifiers(), hotkey.vk)
-                };
-                match result {
-                    Ok(()) => registered.push(Registered {
-                        id,
-                        hotkey: hotkey.clone(),
-                    }),
-                    Err(error) => failures.push(format!(
-                        "{}（{} vk={:#04x}）：{error}",
-                        hotkey.chord, hotkey.action, hotkey.vk
-                    )),
-                }
-            }
-            drop(registered);
-            self.report(&failures);
-        }
-
-        fn report(&self, failures: &[String]) {
-            if failures.is_empty() {
-                if self.last_failure.borrow_mut().take().is_some() {
-                    log::log("hotkey：所有設定的快捷鍵都註冊成功");
-                }
-                return;
-            }
-            let summary = failures.join("；");
-            let mut last = self.last_failure.borrow_mut();
-            if last.as_deref() == Some(summary.as_str()) {
-                return;
-            }
             log::log(&format!(
-                "hotkey 註冊失敗（可能被其他程式占用或系統保留）：{summary}"
+                "hotkey：載入 {} 組快捷鍵（略過 {} 組）",
+                plan.len(),
+                skipped.len()
             ));
-            *last = Some(summary);
+            let Self { machine, sink, .. } = self;
+            machine.apply(sink, plan);
         }
 
-        fn unregister_all(&self) {
-            let registered = std::mem::take(&mut *self.registered.borrow_mut());
-            for entry in registered {
-                if let Err(error) = unsafe { UnregisterHotKey(Some(self.hwnd), entry.id) } {
-                    log::log(&format!(
-                        "hotkey：反註冊 {} 失敗：{error}",
-                        entry.hotkey.chord
-                    ));
-                }
-            }
-        }
-
-        /// `WM_HOTKEY`：只處理目前註冊表裡的 id，過期的佇列訊息直接忽略。
-        fn press(&self, id: i32) {
-            let hotkey = self
-                .registered
-                .borrow()
-                .iter()
-                .find(|entry| entry.id == id)
-                .map(|entry| entry.hotkey.clone());
-            let Some(hotkey) = hotkey else {
-                log::log(&format!("hotkey：收到未註冊的 id={id}，忽略"));
-                return;
-            };
-            // SAFETY: 視窗由 service 的 State 持有，不可能活得比 service 久；
-            // 訊息由同一條 TSF 執行緒送出。
-            if let Some(service) = unsafe { self.service.as_ref() } {
-                service.hotkey_pressed(&hotkey);
-            }
-        }
-
-        fn tick(&self) {
-            if !self.enabled.get() {
+        fn tick(&mut self) {
+            if !self.machine.is_enabled() {
                 return;
             }
             if !self.reload_if_changed() {
-                // 上一次被其他程式占用時，每秒重試一次；失敗訊息已去重。
-                self.register_missing();
+                // 上一次被其他程式占用時，每 2 秒重試一次；失敗訊息已去重。
+                let Self { machine, sink, .. } = self;
+                machine.register_missing(sink);
             }
         }
     }
 
-    impl Drop for HotkeyWindow {
-        fn drop(&mut self) {
-            unsafe {
-                let _ = KillTimer(Some(self.hwnd), TIMER_ID);
+    /// 熱鍵執行緒主體：建視窗、跑訊息迴圈，直到收到 `WM_QUIT`。
+    fn run(
+        target: usize,
+        queue: Arc<Mutex<VecDeque<Hotkey>>>,
+        ready: Sender<Result<(u32, usize), String>>,
+    ) {
+        unsafe {
+            let instance: HINSTANCE = match GetModuleHandleW(None) {
+                Ok(module) => module.into(),
+                Err(error) => {
+                    let _ = ready.send(Err(format!("取得 HINSTANCE 失敗：{error}")));
+                    return;
+                }
+            };
+            // 類別是行程內的；重複註冊由系統忽略錯誤。
+            let _ = RegisterClassW(&WNDCLASSW {
+                lpfnWndProc: Some(thread_proc),
+                hInstance: instance,
+                lpszClassName: THREAD_CLASS,
+                ..Default::default()
+            });
+            let hwnd = match CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                THREAD_CLASS,
+                w!(""),
+                WINDOW_STYLE(0),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                Some(instance),
+                None,
+            ) {
+                Ok(hwnd) => hwnd,
+                Err(error) => {
+                    let _ = ready.send(Err(format!("建立熱鍵視窗失敗：{error}")));
+                    return;
+                }
+            };
+            let state = Box::new(ThreadState {
+                machine: Machine::new(),
+                sink: WinSink {
+                    hwnd,
+                    target: HWND(target as *mut c_void),
+                    queue,
+                    failures: BTreeSet::new(),
+                },
+                stamp: None,
+            });
+            let pointer = Box::into_raw(state);
+            set_userdata(hwnd, pointer as isize);
+            let _ = SetTimer(Some(hwnd), TIMER_ID, TIMER_MS, None);
+            let thread_id = GetCurrentThreadId();
+            if ready.send(Ok((thread_id, hwnd.0 as usize))).is_err() {
+                // 呼叫端已經放棄：不要留下視窗與執行緒。
+                cleanup(hwnd, instance);
+                return;
             }
-            self.disable();
-            unsafe {
-                set_userdata(self.hwnd, 0);
-                let _ = DestroyWindow(self.hwnd);
-                // 同一行程還有多個 service 時會失敗，留給最後一個離開才移除。
-                let _ = UnregisterClassW(CLASS, Some(self.instance));
+            log::log(&format!(
+                "hotkey：專用執行緒啟動 tid={thread_id} hwnd={:#x}",
+                hwnd.0 as usize
+            ));
+            // 只有前景行程能持有全域組合；背景行程先註冊會占住組合，
+            // 前景的 TSF 反而收不到 WM_HOTKEY。Activate 當下先問一次，
+            // 之後由 OnSetFocus 的 enable／disable 接手。
+            let foreground = crate::candidate::foreground_belongs_to(std::process::id());
+            log::log(&format!(
+                "hotkey：啟動時前景={foreground}（背景時等 OnSetFocus 再註冊）"
+            ));
+            if let Some(state) = state_at(hwnd) {
+                state.machine.set_enabled(foreground);
+                state.reload(true);
             }
+            let mut message = MSG::default();
+            loop {
+                let result = GetMessageW(&mut message, None, 0, 0);
+                if result.0 == -1 {
+                    log::log("hotkey：GetMessage 失敗，熱鍵執行緒結束");
+                    break;
+                }
+                if result.0 == 0 {
+                    break;
+                }
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            cleanup(hwnd, instance);
+            log::log("hotkey：專用執行緒結束");
         }
     }
 
-    unsafe extern "system" fn window_proc(
+    /// 收尾：先在同一條執行緒反註冊，再銷毀視窗與類別。
+    unsafe fn cleanup(hwnd: HWND, instance: HINSTANCE) {
+        let _ = KillTimer(Some(hwnd), TIMER_ID);
+        let pointer = userdata(hwnd) as *mut ThreadState;
+        if !pointer.is_null() {
+            set_userdata(hwnd, 0);
+            let mut state = Box::from_raw(pointer);
+            state.machine.disable(&mut state.sink);
+            drop(state);
+        }
+        let _ = DestroyWindow(hwnd);
+        // 同一行程還有多個 service 時會失敗，留給最後一個離開才移除。
+        let _ = UnregisterClassW(THREAD_CLASS, Some(instance));
+    }
+
+    unsafe extern "system" fn thread_proc(
         hwnd: HWND,
         message: u32,
         wparam: WPARAM,
@@ -682,24 +871,250 @@ mod win {
         match message {
             WM_HOTKEY => {
                 let _ = crate::guarded("Hotkey", || {
-                    if let Some(window) = window_at(hwnd) {
-                        window.press(wparam.0 as i32);
+                    if let Some(state) = state_at(hwnd) {
+                        state.handle(super::Command::Hotkey {
+                            id: wparam.0 as i32,
+                        });
+                    }
+                    Ok(())
+                });
+                LRESULT(0)
+            }
+            WM_ENABLE => {
+                let _ = crate::guarded("HotkeyEnable", || {
+                    if let Some(state) = state_at(hwnd) {
+                        state.handle(super::Command::Enable);
+                    }
+                    Ok(())
+                });
+                LRESULT(0)
+            }
+            WM_DISABLE => {
+                let _ = crate::guarded("HotkeyDisable", || {
+                    if let Some(state) = state_at(hwnd) {
+                        state.handle(super::Command::Disable);
                     }
                     Ok(())
                 });
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == TIMER_ID => {
-                if let Some(window) = window_at(hwnd) {
-                    window.tick();
+                let _ = crate::guarded("HotkeyTimer", || {
+                    if let Some(state) = state_at(hwnd) {
+                        state.handle(super::Command::Tick);
+                    }
+                    Ok(())
+                });
+                LRESULT(0)
+            }
+            // 不要讓 DefWindowProc 的 WM_DESTROY 預設處理影響執行緒的 WM_QUIT。
+            WM_DESTROY => LRESULT(0),
+            WM_NCDESTROY => {
+                let pointer = userdata(hwnd) as *mut ThreadState;
+                if !pointer.is_null() {
+                    set_userdata(hwnd, 0);
+                    drop(Box::from_raw(pointer));
                 }
                 LRESULT(0)
             }
-            // 這是宿主的訊息迴圈：不要讓 DefWindowProc 的 WM_DESTROY 預設處理
-            // 影響宿主的 WM_QUIT 或視窗鏈。
+            _ => DefWindowProcW(hwnd, message, wparam, lparam),
+        }
+    }
+
+    /// 轉送視窗的內容：service 指標與共用佇列，兩者都比視窗長壽。
+    struct TargetCtx {
+        service: *const crate::service::TextService_Impl,
+        queue: Arc<Mutex<VecDeque<Hotkey>>>,
+    }
+
+    /// 一個服務的全域快捷鍵：UI 執行緒的轉送視窗＋專用執行緒。
+    ///
+    /// 由 [`crate::service::TextService`] 的 `State` 持有；`new`／`Drop` 都在
+    /// TSF 的 UI 執行緒，`Drop` 會送 `WM_QUIT` 並 join，卸載不留執行緒。
+    pub struct HotkeyWindow {
+        target: HWND,
+        instance: HINSTANCE,
+        /// 熱鍵執行緒的 message-only window；只拿來 PostMessage 指令。
+        hwnd: HWND,
+        thread_id: u32,
+        thread: Option<JoinHandle<()>>,
+        ctx: *mut TargetCtx,
+        queue: Arc<Mutex<VecDeque<Hotkey>>>,
+    }
+
+    impl HotkeyWindow {
+        /// 建立轉送視窗並啟動專用執行緒；等到執行緒回報 hwnd/tid 才返回。
+        pub fn new(service: &crate::service::TextService_Impl) -> Result<Box<Self>, String> {
+            unsafe {
+                let instance: HINSTANCE = GetModuleHandleW(None)
+                    .map(Into::into)
+                    .map_err(|error| format!("取得 HINSTANCE 失敗：{error}"))?;
+                let _ = RegisterClassW(&WNDCLASSW {
+                    lpfnWndProc: Some(target_proc),
+                    hInstance: instance,
+                    lpszClassName: TARGET_CLASS,
+                    ..Default::default()
+                });
+                let target = CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    TARGET_CLASS,
+                    w!(""),
+                    WINDOW_STYLE(0),
+                    0,
+                    0,
+                    0,
+                    0,
+                    Some(HWND_MESSAGE),
+                    None,
+                    Some(instance),
+                    None,
+                )
+                .map_err(|error| format!("建立轉送視窗失敗：{error}"))?;
+                let queue = Arc::new(Mutex::new(VecDeque::new()));
+                let ctx = Box::into_raw(Box::new(TargetCtx {
+                    service,
+                    queue: Arc::clone(&queue),
+                }));
+                set_userdata(target, ctx as isize);
+                let target_raw = target.0 as usize;
+                let (ready_tx, ready_rx) = mpsc::channel::<Result<(u32, usize), String>>();
+                let thread_queue = Arc::clone(&queue);
+                let spawned = std::thread::Builder::new()
+                    .name("jc-hotkey".to_string())
+                    .spawn(move || run(target_raw, thread_queue, ready_tx));
+                let handle = match spawned {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        discard_target(target, instance, ctx);
+                        return Err(format!("建立熱鍵執行緒失敗：{error}"));
+                    }
+                };
+                match ready_rx.recv() {
+                    Ok(Ok((thread_id, hwnd))) => Ok(Box::new(Self {
+                        target,
+                        instance,
+                        hwnd: HWND(hwnd as *mut c_void),
+                        thread_id,
+                        thread: Some(handle),
+                        ctx,
+                        queue,
+                    })),
+                    Ok(Err(error)) => {
+                        let _ = handle.join();
+                        discard_target(target, instance, ctx);
+                        Err(error)
+                    }
+                    Err(_) => {
+                        let _ = handle.join();
+                        discard_target(target, instance, ctx);
+                        Err("熱鍵執行緒沒有回報（可能 panic）".to_string())
+                    }
+                }
+            }
+        }
+
+        /// 取得前景：請熱鍵執行緒重載設定並註冊。
+        pub fn enable(&self) {
+            self.post(WM_ENABLE, "enable");
+        }
+
+        /// 失去前景：請熱鍵執行緒全部反註冊。
+        pub fn disable(&self) {
+            self.post(WM_DISABLE, "disable");
+        }
+
+        /// 取出待處理的 `WM_HOTKEY`；轉送視窗與按鍵入口共用。
+        pub fn take_pending(&self) -> Vec<Hotkey> {
+            let mut queue = self
+                .queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            queue.drain(..).collect()
+        }
+
+        fn post(&self, message: u32, what: &str) {
+            if let Err(error) =
+                unsafe { PostMessageW(Some(self.hwnd), message, WPARAM(0), LPARAM(0)) }
+            {
+                log::log(&format!("hotkey：送出 {what} 失敗：{error}"));
+            }
+        }
+    }
+
+    impl Drop for HotkeyWindow {
+        fn drop(&mut self) {
+            if let Some(handle) = self.thread.take() {
+                match unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) } {
+                    Ok(()) => log::log("hotkey：送出 WM_QUIT"),
+                    Err(error) => log::log(&format!("hotkey：送出 WM_QUIT 失敗：{error}")),
+                }
+                match handle.join() {
+                    Ok(()) => log::log("hotkey：專用執行緒已 join"),
+                    Err(_) => log::log("hotkey：專用執行緒 panic，已結束"),
+                }
+            }
+            if !self.target.0.is_null() {
+                unsafe {
+                    set_userdata(self.target, 0);
+                    let pointer = std::mem::replace(&mut self.ctx, std::ptr::null_mut());
+                    if !pointer.is_null() {
+                        drop(Box::from_raw(pointer));
+                    }
+                    let _ = DestroyWindow(self.target);
+                    let _ = UnregisterClassW(TARGET_CLASS, Some(self.instance));
+                }
+                self.target = HWND::default();
+            }
+        }
+    }
+
+    unsafe extern "system" fn target_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match message {
+            WM_FORWARD_HOTKEY => {
+                let _ = crate::guarded("HotkeyForward", || {
+                    let pointer = userdata(hwnd) as *const TargetCtx;
+                    if let Some(ctx) = pointer.as_ref() {
+                        loop {
+                            let next = ctx
+                                .queue
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .pop_front();
+                            let Some(hotkey) = next else { break };
+                            if let Some(service) = ctx.service.as_ref() {
+                                service.hotkey_pressed(&hotkey);
+                            }
+                        }
+                    }
+                    Ok(())
+                });
+                LRESULT(0)
+            }
+            // 這是宿主的訊息迴圈：不要讓 DefWindowProc 影響宿主的 WM_QUIT 或視窗鏈。
             WM_DESTROY | WM_NCDESTROY => LRESULT(0),
             _ => DefWindowProcW(hwnd, message, wparam, lparam),
         }
+    }
+
+    /// 建立失敗時的收尾：轉送視窗、ctx、類別。
+    unsafe fn discard_target(target: HWND, instance: HINSTANCE, ctx: *mut TargetCtx) {
+        set_userdata(target, 0);
+        if !ctx.is_null() {
+            drop(Box::from_raw(ctx));
+        }
+        let _ = DestroyWindow(target);
+        let _ = UnregisterClassW(TARGET_CLASS, Some(instance));
+    }
+
+    /// 熱鍵執行緒目前的狀態指標；只在該執行緒（含 wndproc）使用。
+    unsafe fn state_at(hwnd: HWND) -> Option<&'static mut ThreadState> {
+        let pointer = userdata(hwnd) as *mut ThreadState;
+        pointer.as_mut()
     }
 
     /// `SetWindowLongPtrW`／`GetWindowLongPtrW` 在 32-bit target 收 `i32`。
@@ -721,11 +1136,6 @@ mod win {
     #[cfg(target_pointer_width = "32")]
     unsafe fn userdata(hwnd: HWND) -> isize {
         GetWindowLongPtrW(hwnd, GWLP_USERDATA) as isize
-    }
-
-    unsafe fn window_at(hwnd: HWND) -> Option<&'static HotkeyWindow> {
-        let pointer = userdata(hwnd) as *const HotkeyWindow;
-        pointer.as_ref()
     }
 }
 
@@ -880,5 +1290,130 @@ mod tests {
         let keybinds = read_keybinds(&path).unwrap();
         assert_eq!(keybinds.symbol_menu, "ctrl+shift+s");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 熱鍵執行緒指令介面的假 sink：記錄順序，可指定失敗的 id。
+    #[derive(Default)]
+    struct FakeSink {
+        attempts: usize,
+        registered: Vec<(i32, String)>,
+        unregistered: Vec<i32>,
+        pressed: Vec<String>,
+        fail: Vec<i32>,
+    }
+
+    impl Sink for FakeSink {
+        fn register(&mut self, id: i32, hotkey: &Hotkey) -> Result<(), String> {
+            self.attempts += 1;
+            if self.fail.contains(&id) {
+                return Err("fake 失敗".to_string());
+            }
+            self.registered.push((id, hotkey.chord.clone()));
+            Ok(())
+        }
+
+        fn unregister(&mut self, id: i32) {
+            self.unregistered.push(id);
+        }
+
+        fn press(&mut self, hotkey: &Hotkey) {
+            self.pressed.push(hotkey.chord.clone());
+        }
+    }
+
+    fn default_plan() -> Vec<Hotkey> {
+        plan(&Keybinds::default()).unwrap().0
+    }
+
+    #[test]
+    fn machine_only_registers_while_foreground() {
+        let mut machine = Machine::new();
+        let mut sink = FakeSink::default();
+        machine.apply(&mut sink, default_plan());
+        assert_eq!(sink.attempts, 0, "背景時只記計畫，不註冊");
+        assert!(machine.registered().is_empty());
+
+        machine.enable(&mut sink);
+        assert_eq!(
+            sink.registered,
+            vec![
+                (ID_BASE, "ctrl+alt+,".to_string()),
+                (ID_BASE + 1, "ctrl+alt+.".to_string()),
+            ]
+        );
+
+        machine.enable(&mut sink);
+        assert_eq!(sink.attempts, 2, "已註冊的不重複註冊");
+        assert_eq!(machine.registered(), vec![ID_BASE, ID_BASE + 1]);
+    }
+
+    #[test]
+    fn disable_unregisters_all_and_enable_registers_again() {
+        let mut machine = Machine::new();
+        let mut sink = FakeSink::default();
+        machine.apply(&mut sink, default_plan());
+        machine.enable(&mut sink);
+        machine.disable(&mut sink);
+        assert_eq!(sink.unregistered, vec![ID_BASE, ID_BASE + 1]);
+        assert!(machine.registered().is_empty());
+        assert!(!machine.is_enabled());
+
+        machine.enable(&mut sink);
+        assert_eq!(machine.registered(), vec![ID_BASE, ID_BASE + 1]);
+    }
+
+    #[test]
+    fn applying_a_new_plan_replaces_registrations() {
+        let mut machine = Machine::new();
+        let mut sink = FakeSink::default();
+        machine.apply(&mut sink, default_plan());
+        machine.enable(&mut sink);
+        sink.registered.clear();
+        let next = plan_pairs(vec![(
+            "emoji_palette".to_string(),
+            "ctrl+alt+.".to_string(),
+        )])
+        .0;
+        machine.apply(&mut sink, next);
+        assert_eq!(sink.unregistered, vec![ID_BASE, ID_BASE + 1]);
+        assert_eq!(
+            sink.registered,
+            vec![(ID_BASE, "ctrl+alt+.".to_string())],
+            "新計畫從 id 起點重新編號"
+        );
+    }
+
+    #[test]
+    fn only_registered_ids_are_dispatched() {
+        let mut machine = Machine::new();
+        let mut sink = FakeSink::default();
+        machine.apply(&mut sink, default_plan());
+        assert!(!machine.hotkey(&mut sink, ID_BASE), "尚未註冊時忽略");
+
+        machine.enable(&mut sink);
+        assert!(machine.hotkey(&mut sink, ID_BASE + 1));
+        assert_eq!(sink.pressed, vec!["ctrl+alt+.".to_string()]);
+        assert!(!machine.hotkey(&mut sink, ID_BASE + 9));
+        assert_eq!(sink.pressed.len(), 1);
+    }
+
+    #[test]
+    fn failed_registration_is_retried_on_the_next_tick() {
+        let mut machine = Machine::new();
+        let mut sink = FakeSink {
+            fail: vec![ID_BASE],
+            ..Default::default()
+        };
+        machine.apply(&mut sink, default_plan());
+        machine.enable(&mut sink);
+        assert_eq!(sink.attempts, 2);
+        assert_eq!(machine.registered(), vec![ID_BASE + 1]);
+
+        sink.fail.clear();
+        machine.register_missing(&mut sink);
+        assert_eq!(sink.attempts, 3);
+        let mut ids = machine.registered();
+        ids.sort();
+        assert_eq!(ids, vec![ID_BASE, ID_BASE + 1]);
     }
 }

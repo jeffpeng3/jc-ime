@@ -486,7 +486,16 @@ impl TextService_Impl {
         F: FnOnce() -> windows_core::Result<BOOL>,
     {
         self.consume_needs_reset(ctx);
-        log::guarded_bool_with(what, || self.reset_after_panic(ctx), f)
+        log::guarded_bool_with(
+            what,
+            || self.reset_after_panic(ctx),
+            || {
+                // 熱鍵執行緒可能已經把 chord 排進佇列，但轉送訊息還在等這條
+                // UI 執行緒的訊息迴圈；每次按鍵入口先補處理。
+                self.drain_hotkeys();
+                f()
+            },
+        )
     }
 
     /// 上一次 panic 沒能把狀態重設完（`state` 被借用）時，下一次按鍵先補做。
@@ -1221,7 +1230,7 @@ impl TextService_Impl {
         eaten
     }
 
-    /// 建立快捷鍵訊息視窗（已存在就不做事）；失敗只留 key sink 路徑。
+    /// 建立熱鍵執行緒與轉送視窗（已存在就不做事）；失敗只留 key sink 路徑。
     fn create_hotkey_window(&self) -> bool {
         if self.state.borrow().hotkey.is_some() {
             return true;
@@ -1233,7 +1242,7 @@ impl TextService_Impl {
             }
             Err(error) => {
                 log::log(&format!(
-                    "hotkey：建立訊息視窗失敗（{error}），保留 key sink 路徑"
+                    "hotkey：建立熱鍵執行緒失敗（{error}），保留 key sink 路徑"
                 ));
                 false
             }
@@ -1257,6 +1266,25 @@ impl TextService_Impl {
     fn release_hotkeys(&self) {
         if let Some(window) = self.state.borrow().hotkey.as_ref() {
             window.disable();
+        }
+    }
+
+    /// 補處理熱鍵執行緒排進佇列的 chord。
+    ///
+    /// 正常路徑是轉送視窗收到 `WM_FORWARD_HOTKEY` 就呼叫 [`Self::hotkey_pressed`]；
+    /// 宿主沒有在 UI 執行緒跑訊息迴圈時，轉送訊息不會派送，這裡在每次按鍵與
+    /// 焦點入口補上，讓熱鍵至少在下一個 TSF 事件生效。
+    fn drain_hotkeys(&self) {
+        let pending = match self.state.try_borrow() {
+            Ok(st) => st
+                .hotkey
+                .as_ref()
+                .map(|window| window.take_pending())
+                .unwrap_or_default(),
+            Err(_) => return,
+        };
+        for hotkey in pending {
+            self.hotkey_pressed(&hotkey);
         }
     }
 
@@ -2106,7 +2134,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                 let english = st.session.english();
                 let simplified = st.session.simplified();
                 drop(st);
-                // 全域快捷鍵：message-only window 必須和 key sink 在同一條 UI 執行緒。
+                // 全域快捷鍵：專用執行緒負責 RegisterHotKey 與訊息迴圈；轉送視窗
+                // 留在這條 UI 執行緒，熱鍵執行緒只把 chord 排進共用佇列。
                 self.create_hotkey_window();
                 // 輸入指示器的中／英按鈕與選單；按鈕持有本服務的參考，Deactivate 時移除以解開循環。
                 let tm = self.state.borrow().thread_mgr.clone();
@@ -2137,6 +2166,9 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
         crate::guarded("Deactivate", || {
             if !self.activated.get() {
                 log::log("Deactivate：沒有已啟用的服務");
+                // 保險：Activate 中途失敗留下快捷鍵執行緒時也要收掉（join），
+                // 不讓 DLL 卸載時還有執行緒。
+                self.state.borrow_mut().hotkey = None;
                 return Ok(());
             }
             self.activated.set(false);
@@ -2151,7 +2183,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             let (tm, tid, cookie) = {
                 let mut st = self.state.borrow_mut();
                 st.callback = None;
-                // 先反註冊再銷毀訊息視窗；Drop 也會做一次，這裡讓卸載前的狀態明確。
+                // 先停熱鍵執行緒（送 WM_QUIT 並 join），再銷毀轉送視窗；
+                // Drop 也會做一次，這裡讓卸載前的狀態明確。
                 st.hotkey = None;
                 st.ui.hide();
                 st.ui.set_elements(None);
@@ -2229,6 +2262,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         crate::guarded("OnSetFocus", || {
             if foreground.as_bool() {
                 // 只有前景行程保留全域組合；背景行程占住會讓前景的 TSF 收不到。
+                self.drain_hotkeys();
                 self.enable_hotkeys();
                 let _ = self.state.borrow_mut().session.refresh_bindings();
             } else {
