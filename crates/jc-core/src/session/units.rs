@@ -9,6 +9,8 @@
 //! 後續規則不必再从字面猜。
 
 use crate::composition::{CompSegment, Owner};
+use crate::ja::input::RomajiInput;
+use crate::key::Key;
 use crate::lang::Lang;
 use crate::zh::keyboard::Keyboard;
 use crate::zh::syllable::{class_of, parse_reading, Class, TONE1, UNTONED_MARK};
@@ -158,8 +160,11 @@ impl Session {
         let mut spans = Vec::with_capacity(expected.len());
         let mut ok = built.len() == expected.len();
         if ok {
+            // `Built.rune` 只負責排序；字面插入點的起點可能被上游算成
+            // 音節格而不是 rune，但輸出順序仍等於畫面。這裡用 surface
+            // 序列驗證，避免一個偏移就讓整段退成 Unknown。
             for (index, item) in built.iter().enumerate() {
-                if item.rune != index || item.unit.surface.chars().count() != 1 {
+                if item.unit.surface.chars().count() != 1 {
                     ok = false;
                     break;
                 }
@@ -323,9 +328,10 @@ impl Session {
                 });
             }
         }
-        // 日文 lane 沒有 `AsciiInput::typed()`；span 改成按鍵流（raw keys）
-        // 的位元組範圍，刪除與候選才有正確的 provenance 座標。
-        if self.in_ja_lane() {
+        // 日文與純注音 lane 沒有可用的 `AsciiInput::typed()`；span 改成
+        // 按鍵流（unit keys）的位元組範圍，候選套用才有正確的 provenance
+        // 座標。混打 lane 仍用 `AsciiInput::typed()` 的實際位置。
+        if self.in_ja_lane() || self.in_zh_lane() {
             let mut at = 0usize;
             for item in &mut out {
                 let len = item.unit.keys.len();
@@ -565,17 +571,46 @@ fn split_segment_units(surface: &str, segment: &CompSegment, raw: &str) -> Vec<D
     let chars: Vec<char> = surface.chars().collect();
     // 直接選回注音字面時，管線可能把它記成 Literal；畫面全是注音符號
     // 仍要保留 j／i／3 的按鍵 provenance。
-    if !chars.is_empty() && chars.iter().all(|ch| class_of(*ch) != Class::None) {
-        return split_zh_units(&chars, segment, raw);
-    }
-    match segment.lang {
-        crate::composition::Lang::Zh => split_zh_units(&chars, segment, raw),
-        crate::composition::Lang::Ja => split_ja_units(&chars, segment, raw),
-        crate::composition::Lang::Literal => chars
+    let units = if !chars.is_empty() && chars.iter().all(|ch| class_of(*ch) != Class::None) {
+        split_zh_units(&chars, segment, raw)
+    } else if chars.iter().all(|ch| is_kana_surface(*ch)) {
+        // 混打 lane 沒有 decoder 時，`ko-` 這種かな＋長音會被判成字面。
+        // 畫面只要全是かな（含長音符），來源就是日文；按鍵照羅馬字還原，
+        // 不要因為 segment 語言標成 Literal 就丟掉 `ko`／`-`。
+        split_ja_units(&chars, segment, raw)
+    } else {
+        match segment.lang {
+            crate::composition::Lang::Zh => split_zh_units(&chars, segment, raw),
+            crate::composition::Lang::Ja => split_ja_units(&chars, segment, raw),
+            crate::composition::Lang::Literal => chars
+                .iter()
+                .map(|ch| literal_unit(*ch, segment.owner))
+                .collect(),
+        }
+    };
+    // fallback 只套在對不上的這一個 segment；其他 segment 的 provenance
+    // 原樣保留。`compute_units` 只在整個結構壞掉時才退成整段字面。
+    let joined: String = units.iter().map(|unit| unit.surface.as_str()).collect();
+    if joined != surface || units.iter().any(|unit| unit.surface.chars().count() != 1) {
+        // 這一段的 provenance 對不上：只讓這一段失去來源（Unknown），
+        // 不能退成 Literal 假裝 keys = surface。
+        return chars
             .iter()
-            .map(|ch| literal_unit(*ch, segment.owner))
-            .collect(),
+            .map(|ch| unknown_unit(*ch, segment.owner))
+            .collect();
     }
+    units
+}
+
+fn unknown_unit(ch: char, owner: Owner) -> DisplayUnit {
+    DisplayUnit::new(
+        ch.to_string(),
+        ch.to_string(),
+        None,
+        Lang::Mixed,
+        owner,
+        DisplayUnitMeta::Unknown,
+    )
 }
 
 fn literal_unit(ch: char, owner: Owner) -> DisplayUnit {
@@ -658,10 +693,55 @@ fn split_zh_units(chars: &[char], segment: &CompSegment, raw: &str) -> Vec<Displ
             },
         )];
     }
-    // 對不上單位數：保留字面，不硬猜。
+    // 一個音節解出多個顯示字元（`台灣/ㄊㄞˊ`）：把音節的顯示符號與按鍵
+    // 由左往右分給各字元。每個字元都拿到自己那一段可刪除、可當 target 的
+    // keys；分不出來時才退回字面，不讓 display 與 keys 脫節。
+    if readings.len() == 1 && chars.len() > 1 {
+        let display: Vec<char> = zh_reading_display(readings[0]).chars().collect();
+        if display.len() >= chars.len() {
+            let mut bounds: Vec<usize> = (0..=chars.len())
+                .map(|index| (index * display.len()).div_ceil(chars.len()))
+                .collect();
+            bounds[chars.len()] = display.len();
+            let by_class = class_key_map(&keys);
+            let mut out = Vec::with_capacity(chars.len());
+            for (index, ch) in chars.iter().enumerate() {
+                let start = bounds[index];
+                let end = bounds[index + 1].max(start + 1).min(display.len());
+                let symbols = &display[start..end];
+                let part_reading: String = symbols.iter().collect();
+                let mut part_keys = String::new();
+                for symbol in symbols {
+                    let class = class_of(*symbol);
+                    let key = match class {
+                        Class::Initial | Class::Medial | Class::Final | Class::Tone => by_class
+                            [class as usize - 1]
+                            .map(|key| key.to_string())
+                            .unwrap_or_else(|| symbol.to_string()),
+                        Class::None => symbol.to_string(),
+                    };
+                    part_keys.push_str(&key);
+                }
+                out.push(DisplayUnit::new(
+                    ch.to_string(),
+                    part_keys,
+                    Some(part_reading),
+                    Lang::Zh,
+                    segment.owner,
+                    if crate::zh::han::is_han(*ch) {
+                        DisplayUnitMeta::Han
+                    } else {
+                        DisplayUnitMeta::Zh
+                    },
+                ));
+            }
+            return out;
+        }
+    }
+    // 對不上單位數：這一段失去 provenance（Unknown），不假裝 keys = surface。
     chars
         .iter()
-        .map(|ch| literal_unit(*ch, segment.owner))
+        .map(|ch| unknown_unit(*ch, segment.owner))
         .collect()
 }
 
@@ -864,7 +944,13 @@ fn zh_key_spans(raw: &str) -> Vec<(usize, usize)> {
 }
 
 fn split_ja_units(chars: &[char], segment: &CompSegment, raw: &str) -> Vec<DisplayUnit> {
-    let reading: Vec<char> = segment.reading.chars().collect();
+    // 混打 lane 的かな segment 可能沒有 reading（`ko-` 被判成字面）；畫面
+    // 就是讀音，用畫面補上，才不會讓整段退回字面。
+    let reading: Vec<char> = if segment.reading.is_empty() {
+        chars.to_vec()
+    } else {
+        segment.reading.chars().collect()
+    };
     if chars.len() == 1 {
         let ch = chars[0];
         return vec![DisplayUnit::new(
@@ -874,7 +960,7 @@ fn split_ja_units(chars: &[char], segment: &CompSegment, raw: &str) -> Vec<Displ
             } else {
                 raw.to_string()
             },
-            (!segment.reading.is_empty()).then(|| segment.reading.clone()),
+            (!reading.is_empty()).then(|| reading.iter().collect()),
             Lang::Ja,
             segment.owner,
             if crate::zh::han::is_han(ch) {
@@ -884,7 +970,7 @@ fn split_ja_units(chars: &[char], segment: &CompSegment, raw: &str) -> Vec<Displ
             },
         )];
     }
-    if chars.iter().all(|ch| is_kana(*ch)) && reading.len() == chars.len() {
+    if chars.iter().all(|ch| is_kana_surface(*ch)) && reading.len() == chars.len() {
         let parts = split_kana_keys(raw, chars.len());
         return chars
             .iter()
@@ -916,10 +1002,31 @@ fn split_ja_units(chars: &[char], segment: &CompSegment, raw: &str) -> Vec<Displ
         };
         // 先按字數平均分，再用かな字元從右往左對齊讀音；`私は` 的 `は`
         // 才不會拿到前一段的 `しわ`。漢字之間沒有かな錨點時維持平均分。
-        let mut bounds: Vec<usize> = (0..=chars.len())
-            .map(|index| index * segment.units / chars.len())
-            .collect();
-        bounds[chars.len()] = segment.units;
+        // 讀音單位比字元多時，依平均分配找切點，但切點要落在 mora 邊界
+        // （下一個單位不是小書きかな）。`今日/きょう` 因此切成
+        // `今:きょ`＋`日:う`；`東京/とうきょう` 切成 `東:とう`＋`京:きょう`。
+        let mut bounds = vec![0usize];
+        for index in 1..chars.len() {
+            let lo = bounds[index - 1] + 1;
+            let hi = segment.units.saturating_sub(chars.len() - index).max(lo);
+            let ideal = (index * segment.units + chars.len() / 2) / chars.len();
+            let mut at = ideal.clamp(lo, hi);
+            let valid = |at: usize| at == segment.units || !is_small_kana(reading[at]);
+            if !valid(at) {
+                for delta in 1..=segment.units {
+                    if at >= lo + delta && valid(at - delta) {
+                        at -= delta;
+                        break;
+                    }
+                    if at + delta <= hi && valid(at + delta) {
+                        at += delta;
+                        break;
+                    }
+                }
+            }
+            bounds.push(at);
+        }
+        bounds.push(segment.units);
         let mut read_end = segment.units;
         for index in (0..chars.len()).rev() {
             if !is_kana(chars[index]) {
@@ -935,9 +1042,11 @@ fn split_ja_units(chars: &[char], segment: &CompSegment, raw: &str) -> Vec<Displ
             bounds[index + 1] = read_end;
             read_end = at;
         }
-        // 小書きかな不能當一個顯示字元的開頭；併回前一段。
+        // 小書きかな不能當一個顯示字元的開頭；併回前一段。前一個顯示字元
+        // 是漢字時不併，否則 `今日` 的 `ょ` 會被拉進 `日`，`今` 只剩 `k`。
         for index in 1..chars.len() {
-            while bounds[index] > bounds[index - 1]
+            while is_kana(chars[index - 1])
+                && bounds[index] > bounds[index - 1]
                 && reading
                     .get(bounds[index])
                     .is_some_and(|symbol| is_small_kana(*symbol))
@@ -974,20 +1083,26 @@ fn split_ja_units(chars: &[char], segment: &CompSegment, raw: &str) -> Vec<Displ
     }
     chars
         .iter()
-        .map(|ch| literal_unit(*ch, segment.owner))
+        .map(|ch| unknown_unit(*ch, segment.owner))
         .collect()
 }
 
 /// 把一段羅馬字切成かな數量相符的按鍵片段。
 ///
-/// 例：`kyo` → `k`、`yo`；`kyou` → `k`、`yo`、`u`。一組對照表項產生多個
-/// かな時，後面的小寫かな分到母音段，第一個かな只留子音。
+/// 先讓 [`RomajiInput`] 依實際對照表產生讀音單位，再把它記下的原始按鍵分配
+/// 給各かな。促音（`kka` → `っ:k`、`か:ka`）、拗音（`kyou` → `き:k`、
+/// `ょ:yo`、`う:u`）與長音（`ko-` → `こ:ko`、`ー:-`）因此都跟實際按鍵
+/// 一致；一組表項產生多個かな時，第一個かな拿 onset、其餘拿剩下的部分
+/// （`kyo` → `k`＋`yo`，`sha` → `sh`＋`a`）。
 fn split_kana_keys(raw: &str, count: usize) -> Vec<String> {
     if count == 0 {
         return Vec::new();
     }
     if raw.is_empty() {
         return vec![String::new(); count];
+    }
+    if let Some(parts) = romaji_key_parts(raw, count) {
+        return parts;
     }
     if raw.chars().count() == count {
         return raw.chars().map(|ch| ch.to_string()).collect();
@@ -1015,6 +1130,51 @@ fn split_kana_keys(raw: &str, count: usize) -> Vec<String> {
         }
     }
     chunks
+}
+
+/// 用 [`RomajiInput`] 的實際單位切出每個かな的原始按鍵。
+///
+/// `raw` 必須是完整的已轉換按鍵流；未完成前綴或單位數對不上時回 `None`，
+/// 由呼叫端退回舊的母音切法。
+fn romaji_key_parts(raw: &str, count: usize) -> Option<Vec<String>> {
+    let mut input = RomajiInput::new();
+    for ch in raw.chars() {
+        input.press(Key::char(ch, false));
+    }
+    if !input.pending().is_empty() || input.units().len() != count {
+        return None;
+    }
+    let raws = input.raw_units();
+    if raws.len() != count {
+        return None;
+    }
+    let mut parts = Vec::with_capacity(count);
+    let mut index = 0usize;
+    while index < count {
+        let group_raw = raws[index].as_str();
+        if group_raw.is_empty() {
+            return None;
+        }
+        let mut end = index + 1;
+        while end < count && raws[end].is_empty() {
+            end += 1;
+        }
+        let mut group = split_raw_group(group_raw, end - index)?;
+        parts.append(&mut group);
+        index = end;
+    }
+    (parts.len() == count).then_some(parts)
+}
+
+/// 一個對照表項的 raw 依かな數量分配：第一個拿 onset，其餘遞迴拿剩下的。
+fn split_raw_group(raw: &str, count: usize) -> Option<Vec<String>> {
+    if count == 1 {
+        return Some(vec![raw.to_string()]);
+    }
+    let (head, tail) = split_onset(raw)?;
+    let mut parts = vec![head];
+    parts.extend(split_raw_group(&tail, count - 1)?);
+    Some(parts)
 }
 
 fn vowel_chunks(raw: &str) -> Vec<String> {
@@ -1066,6 +1226,11 @@ fn is_kana(ch: char) -> bool {
         | '\u{30fd}'..='\u{30ff}'
         | '\u{ff66}'..='\u{ff9d}'
     )
+}
+
+/// 可以直接視為日文讀音的顯示字元：かな與長音符。
+fn is_kana_surface(ch: char) -> bool {
+    is_kana(ch) || ch == 'ー' || ch == 'ｰ'
 }
 
 /// 小書きかな（`ゃ`、`ょ`、`っ` 等）；不能當顯示字元讀音的起點。
@@ -1385,6 +1550,110 @@ mod tests {
             keys_of(&s),
             ["k", "ka"],
             "日文 lane 的 っ／か 要拿各自的羅馬字按鍵"
+        );
+    }
+
+    /// 促音在混打 lane 也要用同一個羅馬字單位：`kka` → `っ:k`、`か:ka`。
+    #[test]
+    fn mixed_sokuon_units_use_romaji_units() {
+        for (input, surfaces, keys) in [
+            ("kka", ["っ", "か"], ["k", "ka"]),
+            ("tta", ["っ", "た"], ["t", "ta"]),
+            ("sshi", ["っ", "し"], ["s", "shi"]),
+        ] {
+            let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+            typed(&mut s, input);
+            assert_eq!(surfaces_of(&s), surfaces, "{input}");
+            assert_eq!(keys_of(&s), keys, "{input}");
+            assert_invariant(&s, input);
+        }
+    }
+
+    /// `ko-` 在混打 lane 仍是日文：`こ:ko`、`ー:-`，不因沒有 decoder 退成字面。
+    #[test]
+    fn mixed_long_vowel_keeps_japanese_provenance() {
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+        typed(&mut s, "ko-");
+        assert_eq!(s.preedit(), "こー");
+        assert_eq!(surfaces_of(&s), ["こ", "ー"]);
+        assert_eq!(keys_of(&s), ["ko", "-"]);
+        assert!(s.units().iter().all(|unit| unit.lang == Lang::Ja));
+    }
+
+    /// 多字漢字把讀音單位分給各字：`今日/きょう` → `今:きょ(kyo)`、`日:う(u)`。
+    #[test]
+    fn japanese_multi_han_split_reading_units_real_data() {
+        let Some(mut s) = real_ja_session() else {
+            return;
+        };
+        typed(&mut s, "kyou");
+        s.ja_live_idle();
+        assert_eq!(s.preedit(), "今日");
+        assert_eq!(surfaces_of(&s), ["今", "日"]);
+        assert_eq!(
+            keys_of(&s),
+            ["kyo", "u"],
+            "讀音單位比字多時，多出來的單位分給前面的字"
+        );
+    }
+
+    /// 刪掉中間的 `ょ` 後，剩餘單位重算按鍵：`き` 仍是 `k`，不會留 `yo`。
+    #[test]
+    fn deleting_middle_kana_recomputes_remaining_keys() {
+        let mut s = Session::new(SessionConfig::new(Mode::Mixed));
+        typed(&mut s, "kyou");
+        assert_eq!(keys_of(&s), ["k", "yo", "u"]);
+        s.press(Key::new(KeyCode::Home, None, false));
+        s.press(Key::new(KeyCode::ArrowRight, None, false));
+        let snap = s.press(Key::new(KeyCode::Delete, None, false));
+        assert_eq!(snap.preedit, "きう");
+        assert_eq!(keys_of(&s), ["k", "u"]);
+        assert_invariant(&s, "刪中間かな");
+    }
+
+    /// 一音節多字：`台灣/ㄊㄞˊ` 的 `台`、`灣` 各有自己的 keys。
+    #[test]
+    fn zh_multi_char_syllable_units_are_addressable() {
+        let mut lex = InMemoryLexicon::new();
+        lex.push(LexEntry::new("台灣", "ㄊㄞˊ", 0, 0));
+        let mut config = SessionConfig::new(Mode::Mixed);
+        config.zh_lexicon = Some(Arc::new(lex));
+        let mut s = Session::new(config);
+        typed(&mut s, "w96");
+        assert_eq!(s.preedit(), "台灣");
+        assert_eq!(surfaces_of(&s), ["台", "灣"]);
+        assert!(
+            s.units().iter().all(|unit| !unit.keys.is_empty()),
+            "每個字元都要有 keys：{:?}",
+            keys_of(&s)
+        );
+        assert_eq!(keys_of(&s), ["w9", "6"], "音節符號由左往右分配");
+    }
+
+    /// 壞掉的 segment 只退自己，不動其他 segment 的 provenance。
+    #[test]
+    fn bad_segment_falls_back_without_touching_neighbors() {
+        let good = CompSegment::new(
+            0..1,
+            "我".to_string(),
+            1,
+            crate::composition::Lang::Zh,
+            Owner::Auto,
+        );
+        let bad = CompSegment::new(
+            1..3,
+            "今日".to_string(),
+            9,
+            crate::composition::Lang::Ja,
+            Owner::Auto,
+        );
+        let good_units = split_segment_units("我", &good, "ji3");
+        let bad_units = split_segment_units("今日", &bad, "kyou");
+        assert_eq!(good_units[0].keys, "ji3");
+        assert_eq!(
+            bad_units.iter().map(|unit| unit.meta).collect::<Vec<_>>(),
+            [DisplayUnitMeta::Unknown, DisplayUnitMeta::Unknown],
+            "對不上的 segment 只失去 provenance"
         );
     }
 }
