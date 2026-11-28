@@ -18,6 +18,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 /// 監督者的單一實例名稱。
@@ -26,6 +28,31 @@ use thiserror::Error;
 /// 當成 `Local\` 具名 mutex，那是 session 範圍，同一使用者的兩個 RDP session
 /// 會各自拿到一把鎖；改成帳號範圍的鎖檔才與 pipe 名稱（帶使用者 SID）一致。
 pub const SUPERVISOR_MUTEX_NAME: &str = r"Local\jc-ime-engine-supervisor";
+
+/// 要求舊監督者結束的寬限時間。
+///
+/// 新版監督者收到停止要求後，最多會用 `shutdown_grace`（預設 5 秒）等子行程
+/// flush，再花一個短的強制結束窗口；這裡取 12 秒，大於兩個 grace，避免
+/// `--stop` 比監督者自己的收尾更早動手。
+pub const STOP_GRACE: Duration = Duration::from_secs(12);
+
+/// 舊版監督者沒有停止事件，不必等滿 [`STOP_GRACE`]；等一小段就送
+/// `Shutdown` 存檔並強制結束，升級才不會多卡十幾秒。
+pub const STOP_GRACE_LEGACY: Duration = Duration::from_secs(3);
+
+/// 停止訊號無效、改走強制結束後，等待舊監督者真的放手的時間。
+pub const FORCE_GRACE: Duration = Duration::from_secs(5);
+
+/// 單例鎖是空的、但 socket 還有引擎時，等它 flush 後自行結束的時間。
+pub const ORPHAN_GRACE: Duration = Duration::from_secs(2);
+
+/// 停止要求檔超過這個時間就視為上一輪留下的殘骸。
+///
+/// 剛寫入的要求（例如啟動瞬間的合法 `--stop`）不能在 `run_locked` 被清掉。
+pub const STALE_STOP_AGE: Duration = Duration::from_secs(60);
+
+/// 身分檔格式版本；格式不相容時直接視為舊版。
+const IDENTITY_SCHEMA: u32 = 1;
 
 /// log 檔案上限，超過就丟掉最舊的一半。
 pub const LOG_LIMIT: u64 = 1 << 20;
@@ -79,6 +106,12 @@ pub struct SupervisorConfig {
     pub poll_interval: Duration,
     /// 收到停止訊號時，等子行程自己結束的寬限時間。
     pub shutdown_grace: Duration,
+    /// 升級／反安裝用的停止要求檔。檔案出現就和非 console 的停止訊號一樣，
+    /// 監督者會先送 `Shutdown` 讓子行程存檔，再結束。
+    ///
+    /// `None` 時由 [`stop_request_path`] 依 `lock_name` 推導；測試指定固定路徑，
+    /// 才不會碰到真正的使用者狀態目錄。
+    pub stop_path: Option<PathBuf>,
 }
 
 impl SupervisorConfig {
@@ -103,6 +136,7 @@ impl SupervisorConfig {
             stable_after: STABLE_AFTER,
             poll_interval: Duration::from_millis(100),
             shutdown_grace: Duration::from_secs(5),
+            stop_path: None,
         }
     }
 }
@@ -134,6 +168,15 @@ pub enum Error {
     /// 啟動子行程失敗。
     #[error("啟動子行程失敗：{0}")]
     Spawn(#[source] io::Error),
+    /// 舊監督者在停止要求與強制結束後仍持有單例鎖。
+    #[error("舊引擎沒有在期限內結束（{name}）；請重新開機後再試")]
+    StaleSupervisor {
+        /// 鎖的名稱。
+        name: String,
+    },
+    /// 寫入停止要求或身分檔失敗。
+    #[error("監督者狀態檔操作失敗：{0}")]
+    State(#[source] io::Error),
 }
 
 /// 共用 log。主執行緒與讀取子行程輸出的執行緒都往這裡寫。
@@ -152,16 +195,505 @@ fn shutdown_requested() -> bool {
     SHUTDOWN.load(Ordering::SeqCst)
 }
 
+/// 監督者狀態目錄：`%LOCALAPPDATA%\jc-ime` 或平台對應位置。
+///
+/// 與單例鎖、`supervisor.log` 使用同一個帳號範圍目錄；同一使用者的兩個 RDP
+/// session 會看到同一份狀態。
+pub fn state_dir() -> PathBuf {
+    if let Some(base) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+        return PathBuf::from(base).join("jc-ime");
+    }
+    if let Some(base) = std::env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(base).join("jc-ime");
+    }
+    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(home)
+            .join(".local")
+            .join("state")
+            .join("jc-ime");
+    }
+    std::env::temp_dir().join("jc-ime")
+}
+
+/// 鎖名轉成安全的檔名片段。
+fn safe_name(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn stop_path_in(dir: &Path, lock_name: &str) -> PathBuf {
+    dir.join(format!("{}-stop", safe_name(lock_name)))
+}
+
+fn identity_path_in(dir: &Path, lock_name: &str) -> PathBuf {
+    dir.join(format!("{}-identity.json", safe_name(lock_name)))
+}
+
+/// 停止要求檔路徑。`jc-engine --stop` 寫入，監督者看到就收尾。
+pub fn stop_request_path(lock_name: &str) -> PathBuf {
+    stop_path_in(&state_dir(), lock_name)
+}
+
+/// 監督者身分檔路徑。內容是 pid、版本與執行檔 SHA-256。
+pub fn identity_path(lock_name: &str) -> PathBuf {
+    identity_path_in(&state_dir(), lock_name)
+}
+
+/// 執行中的監督者身分。
+///
+/// 單例鎖只能回答「有沒有人在跑」，不能回答「跑的是不是這次安裝的 binary」。
+/// 升級後新引擎看到鎖被持有時，先比對這份資料：同一個 binary 才直接結束，
+/// 版本或 SHA 不同就要求舊監督者換掉。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorIdentity {
+    /// 身分檔格式版本。
+    #[serde(default)]
+    pub schema: u32,
+    /// 監督者 pid。
+    pub pid: u32,
+    /// `CARGO_PKG_VERSION`。
+    pub version: String,
+    /// 執行檔路徑。
+    pub exe: PathBuf,
+    /// 執行檔 SHA-256（小寫十六進位）。
+    pub exe_sha256: String,
+}
+
+impl SupervisorIdentity {
+    /// 目前這個行程的身分；會讀取並雜湊自己的執行檔。
+    pub fn current() -> io::Result<Self> {
+        let exe = std::env::current_exe()?;
+        let exe_sha256 = sha256_file(&exe)?;
+        Ok(Self {
+            schema: IDENTITY_SCHEMA,
+            pid: std::process::id(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            exe,
+            exe_sha256,
+        })
+    }
+
+    /// 是否是同一顆 binary。
+    ///
+    /// 版本與 SHA-256 都要相同。任一側沒有 SHA（舊版或讀檔失敗）時退回只比
+    /// 版本，避免把「無法證明不同」誤判成需要重啟。
+    pub fn matches_build(&self, other: &Self) -> bool {
+        self.version == other.version
+            && (self.exe_sha256.is_empty()
+                || other.exe_sha256.is_empty()
+                || self.exe_sha256 == other.exe_sha256)
+    }
+}
+
+/// 計算檔案的 SHA-256；監督者啟動時只算一次自己的執行檔。
+fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn read_identity_at(path: &Path) -> Option<SupervisorIdentity> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let identity: SupervisorIdentity = serde_json::from_str(&text).ok()?;
+    (identity.schema == IDENTITY_SCHEMA).then_some(identity)
+}
+
+fn write_identity_at(path: &Path, identity: &SupervisorIdentity) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let text = serde_json::to_vec(identity).map_err(io::Error::other)?;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, text)?;
+    let _ = std::fs::remove_file(path);
+    std::fs::rename(&temporary, path)
+}
+
+/// 讀取監督者留下的身分；沒有或格式不合都回 `None`（視為舊版）。
+pub fn read_identity(lock_name: &str) -> Option<SupervisorIdentity> {
+    read_identity_at(&identity_path(lock_name))
+}
+
+/// 一次停止要求。必須持有到舊監督者真的結束。
+///
+/// Windows 的具名事件沒有長駐 handle 時會隨最後一個 handle 關閉而消失；
+/// 若 `request_stop` 設完事件就立刻關閉，監督者下一次 poll 只會看到「沒有
+/// 事件」。因此這裡保留 handle，drop 時才重設、關閉。
+pub struct StopRequest {
+    path: PathBuf,
+    /// 事件 handle 要在等待期間保持開啟；drop 時重設再關閉。
+    #[cfg(windows)]
+    _event: Option<platform::StopEvent>,
+}
+
+impl StopRequest {
+    /// 停止要求檔路徑。
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for StopRequest {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// 要求監督者結束。Windows 另外設定 session 範圍的具名事件。
+pub fn request_stop(lock_name: &str) -> Result<StopRequest, Error> {
+    let path = stop_request_path(lock_name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(Error::State)?;
+    }
+    std::fs::write(&path, b"stop\n").map_err(Error::State)?;
+    #[cfg(windows)]
+    let event = match platform::signal_stop_event(lock_name) {
+        Ok(event) => Some(event),
+        Err(err) => {
+            let _ = std::fs::remove_file(&path);
+            return Err(Error::State(err));
+        }
+    };
+    Ok(StopRequest {
+        path,
+        #[cfg(windows)]
+        _event: event,
+    })
+}
+
+/// 移除上一輪中斷留下的停止要求檔，但保留剛寫入的合法要求。
+///
+/// 停止事件沒有殘留問題：發起者關閉 handle 後物件就消失。停止檔是普通檔案，
+/// 行程被殺掉時會留下來，所以只刪超過 [`STALE_STOP_AGE`] 的檔案。
+fn remove_stale_stop_file(config: &SupervisorConfig) -> bool {
+    let path = effective_stop_path(config);
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return false;
+    };
+    let stale = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .map(|age| age >= STALE_STOP_AGE)
+        .unwrap_or(true);
+    if stale {
+        let _ = std::fs::remove_file(&path);
+        log::info!("移除過期的停止要求檔：{}", path.display());
+    }
+    stale
+}
+
+fn effective_stop_path(config: &SupervisorConfig) -> PathBuf {
+    config
+        .stop_path
+        .clone()
+        .unwrap_or_else(|| stop_request_path(&config.lock_name))
+}
+
+/// 這個監督者是否收到停止要求；回傳給 log 的原因。
+fn stop_reason(config: &SupervisorConfig) -> Option<&'static str> {
+    if shutdown_requested() {
+        return Some("收到登出／關機或 console 控制事件");
+    }
+    #[cfg(windows)]
+    if platform::stop_event_signaled(&config.lock_name) {
+        return Some("收到升級／反安裝的停止事件");
+    }
+    if effective_stop_path(config).exists() {
+        return Some("收到升級／反安裝的停止要求檔");
+    }
+    None
+}
+
+/// 取得鎖，期限內拿不到就回 [`Error::StaleSupervisor`]。
+fn acquire_with_timeout(name: &str, timeout: Duration) -> Result<InstanceLock, Error> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match InstanceLock::acquire(name) {
+            Ok(lock) => return Ok(lock),
+            Err(Error::AlreadyRunning { .. }) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(Error::AlreadyRunning { .. }) => {
+                return Err(Error::StaleSupervisor {
+                    name: name.to_string(),
+                })
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// 連上引擎 pipe，送 `Shutdown` 讓它 flush 個人學習資料後離開。
+pub fn shutdown_engine(socket: &Path) -> Result<(), Error> {
+    let name = jc_windows::socket_name(socket).map_err(Error::State)?;
+    let mut stream =
+        jc_windows::LocalSocket::connect(&name, Duration::from_millis(500)).map_err(|error| {
+            Error::State(io::Error::other(format!("連線引擎 {name} 失敗：{error}")))
+        })?;
+    jc_proto::write_message(
+        &mut stream,
+        &jc_proto::Request::Shutdown,
+        jc_proto::DEFAULT_MAX_FRAME,
+    )
+    .map_err(|error| Error::State(io::Error::other(format!("送出 Shutdown 失敗：{error}"))))?;
+    // Shutdown 會先 flush 再回快照；讀不讀得到回應都不影響已送出的停止要求。
+    let _ =
+        jc_proto::read_message::<_, jc_proto::Response>(&mut stream, jc_proto::DEFAULT_MAX_FRAME);
+    Ok(())
+}
+
+/// 不送任何請求，只確認 socket 上有引擎在聽。
+///
+/// 身分檔可能因為權限或磁碟問題沒寫成；這時不能只看身分檔就當成舊版。
+fn engine_socket_alive(socket: &Path) -> bool {
+    let Ok(name) = jc_windows::socket_name(socket) else {
+        return false;
+    };
+    jc_windows::LocalSocket::connect(&name, Duration::from_millis(200)).is_ok()
+}
+
+/// 停止要求要等多久。
+///
+/// 有身分檔就是新版；沒有身分檔時再看 socket：socket 有回應代表可能是
+/// 「新版但身分檔寫入失敗」，仍等完整的 [`STOP_GRACE`]；socket 也沒回應才是
+/// 真的舊版，用 [`STOP_GRACE_LEGACY`] 早點轉強制結束。
+fn stop_grace(lock_name: &str, socket: &Path) -> Duration {
+    if read_identity(lock_name).is_some() {
+        return STOP_GRACE;
+    }
+    if engine_socket_alive(socket) {
+        log::warn!("沒有身分檔，但 socket 有回應；仍等完整停止寬限，避免提前強制結束");
+        return STOP_GRACE;
+    }
+    STOP_GRACE_LEGACY
+}
+
+/// 強制結束目前 session 的其他 `jc-engine.exe`（不含自己）。
+///
+/// 只在停止要求無效時使用。提權安裝器可能同時看到其他登入使用者的引擎；
+/// 這裡用 `taskkill /FI "SESSION eq <目前 session>"` 過濾，避免殺到別的
+/// session。取不到 session 時才退回 machine-wide，並在 log 寫明。
+///
+/// 呼叫前已先送過 `Shutdown`，所以這裡是「無法優雅收尾」的最後手段；回傳
+/// 是否真的執行過強制結束，讓呼叫端寫進 log。
+pub fn terminate_other_engines() -> bool {
+    #[cfg(windows)]
+    {
+        let own = std::process::id().to_string();
+        let mut filters = vec![format!("PID ne {own}")];
+        match platform::current_session_id() {
+            Some(session) => {
+                filters.push(format!("SESSION eq {session}"));
+                log::warn!("只結束目前 session {session} 的引擎與 launcher");
+            }
+            None => {
+                log::warn!(
+                    "取不到目前 session；退回 machine-wide taskkill，可能影響其他登入使用者"
+                );
+            }
+        }
+        for image in ["jc-engine.exe", "jc-engine-launcher.exe"] {
+            let mut command = Command::new("taskkill");
+            command.args(["/F", "/IM", image]);
+            for filter in &filters {
+                command.args(["/FI", filter]);
+            }
+            let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).status();
+        }
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// 單例鎖是空的，但 socket 還有引擎（supervisor 被殺後留下的子行程）。
+///
+/// 只看到鎖會誤判成「引擎已結束」。這裡送一次 `Shutdown` 讓它 flush，
+/// 等它關掉 socket；真的不結束才強制結束。回傳是否真的有 orphan。
+fn reap_orphan_engine(socket: &Path) -> bool {
+    if shutdown_engine(socket).is_err() {
+        return false;
+    }
+    log::warn!("單例鎖是空的，但 socket 仍有引擎；已送 Shutdown 讓它存檔");
+    let deadline = Instant::now() + ORPHAN_GRACE;
+    while Instant::now() < deadline {
+        if shutdown_engine(socket).is_err() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    log::warn!("orphan 引擎沒有在 {ORPHAN_GRACE:?} 內結束，改用強制結束");
+    terminate_other_engines();
+    true
+}
+
+/// 停止目前的引擎，升級／反安裝前使用。
+///
+/// 先要求 graceful：新版監督者會送 `Shutdown` 給子行程、flush 後才結束。
+/// 舊版沒有停止訊號，等 [`STOP_GRACE_LEGACY`] 就送 `Shutdown` 存檔再強制結束。
+/// 即使單例鎖立刻拿得到，也會探一次 socket，避免漏掉 supervisor 死後留下的
+/// 引擎子行程。回傳 `Ok` 代表沒有殘留的引擎，可以安全替換檔案。
+pub fn stop(lock_name: &str, socket: &Path) -> Result<(), Error> {
+    let request = request_stop(lock_name)?;
+    // 沒有身分檔時先探 socket：可能是新版身分檔寫入失敗，也可能是真的舊版。
+    let grace = stop_grace(lock_name, socket);
+    let result = match acquire_with_timeout(lock_name, grace) {
+        Ok(lock) => {
+            let orphan = reap_orphan_engine(socket);
+            drop(lock);
+            if orphan {
+                log::info!("引擎已結束（清理了沒有 supervisor 的 orphan 引擎）");
+            } else {
+                log::info!("引擎已結束（沒有殘留的監督者或 orphan 引擎）");
+            }
+            Ok(())
+        }
+        Err(Error::StaleSupervisor { .. }) => {
+            log::warn!("監督者在 {grace:?} 內沒有結束；先送 Shutdown 存檔，再強制結束");
+            let _ = shutdown_engine(socket);
+            let forced = terminate_other_engines();
+            match acquire_with_timeout(lock_name, FORCE_GRACE) {
+                Ok(lock) => {
+                    drop(lock);
+                    log::warn!("已強制結束舊引擎（taskkill={forced}）");
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err),
+    };
+    drop(request);
+    result
+}
+
 /// 啟動監督者，直到收到停止訊號。
 ///
-/// 同一個 `lock_name` 只允許一個行程。第二次啟動會回
-/// [`Error::AlreadyRunning`]，呼叫端可視為正常結束。
+/// 同一個 `lock_name` 只允許一個行程。第二次啟動時先比對身分檔：
+///
+/// * 同一個 binary：直接結束，行為與舊版相同。
+/// * 版本或 SHA 不同、或根本沒有身分檔（舊版）：要求舊監督者停止，等它
+///   放手後接手。安裝後不必登出，新引擎就會取代舊引擎。
 pub fn run(config: &SupervisorConfig) -> Result<(), Error> {
-    let _lock = InstanceLock::acquire(&config.lock_name)?;
+    match InstanceLock::acquire(&config.lock_name) {
+        Ok(lock) => run_locked(config, lock),
+        Err(Error::AlreadyRunning { name }) => take_over(config, &name),
+        Err(err) => Err(err),
+    }
+}
+
+fn run_locked(config: &SupervisorConfig, _lock: InstanceLock) -> Result<(), Error> {
     platform::install_shutdown_handlers();
     #[cfg(windows)]
     platform::watch_session_end();
-    run_with(config, &shutdown_requested)
+    // 只清上一輪中斷留下的舊檔；剛寫入的合法 --stop 不能被這裡吃掉。
+    remove_stale_stop_file(config);
+    if let Some(reason) = stop_reason(config) {
+        log::info!("啟動前已收到停止要求（{reason}），這次不建立引擎");
+        return Ok(());
+    }
+
+    let identity = match SupervisorIdentity::current() {
+        Ok(identity) => {
+            if let Err(err) = write_identity_at(&identity_path(&config.lock_name), &identity) {
+                log::warn!("寫入監督者身分檔失敗（升級時會退回舊版判斷）：{err}");
+                None
+            } else {
+                Some(identity)
+            }
+        }
+        Err(err) => {
+            log::warn!("讀取執行檔 SHA-256 失敗（升級時會退回舊版判斷）：{err}");
+            None
+        }
+    };
+
+    let stop_path = effective_stop_path(config);
+    let result = run_with(config, &|| stop_reason(config).is_some());
+    let _ = std::fs::remove_file(stop_path);
+    if identity.is_some() {
+        let _ = std::fs::remove_file(identity_path(&config.lock_name));
+    }
+    result
+}
+
+fn take_over(config: &SupervisorConfig, name: &str) -> Result<(), Error> {
+    let current = SupervisorIdentity::current().ok();
+    let running = read_identity(name);
+    if let (Some(running), Some(current)) = (running.as_ref(), current.as_ref()) {
+        if running.matches_build(current) {
+            log::info!(
+                "監督者已是同一個 binary（pid {}，版本 {}），這次啟動直接結束",
+                running.pid,
+                running.version
+            );
+            return Ok(());
+        }
+        log::warn!(
+            "偵測到不同版本的監督者（pid {}，版本 {}，sha {}…）；要求它結束",
+            running.pid,
+            running.version,
+            short_sha(&running.exe_sha256)
+        );
+    } else {
+        log::warn!("監督者沒有留下版本資訊（可能是舊版）；要求它結束");
+    }
+
+    let request = request_stop(name)?;
+    // 身分檔可能寫入失敗；socket 還有回應就等完整寬限，不要提前強制結束。
+    let grace = stop_grace(name, &config.socket);
+    match acquire_with_timeout(name, grace) {
+        Ok(lock) => {
+            log::info!("舊監督者已結束，接手新版本");
+            drop(request);
+            return run_locked(config, lock);
+        }
+        Err(Error::StaleSupervisor { .. }) => {}
+        Err(err) => {
+            drop(request);
+            return Err(err);
+        }
+    }
+
+    log::warn!("舊監督者沒有回應停止訊號；先送 Shutdown 存檔，再強制結束");
+    let _ = shutdown_engine(&config.socket);
+    let forced = terminate_other_engines();
+    let lock = match acquire_with_timeout(name, FORCE_GRACE) {
+        Ok(lock) => lock,
+        Err(err) => {
+            drop(request);
+            return Err(err);
+        }
+    };
+    drop(request);
+    log::warn!("已強制結束舊引擎並接手（taskkill={forced}）");
+    run_locked(config, lock)
+}
+
+fn short_sha(sha: &str) -> &str {
+    sha.get(..12).unwrap_or(sha)
 }
 
 /// 監督迴圈。`stop` 是額外的停止條件，測試用它控制何時結束。
@@ -193,9 +725,15 @@ fn run_with(config: &SupervisorConfig, stop: &dyn Fn() -> bool) -> Result<(), Er
         }
     };
 
+    let requested = || stop() || stop_reason(config).is_some();
     let mut failures: u32 = 0;
     loop {
+        if let Some(reason) = stop_reason(config) {
+            log_line(&log, format!("收到停止要求：{reason}"));
+            break;
+        }
         if stop() {
+            log_line(&log, "外部停止條件成立");
             break;
         }
 
@@ -203,7 +741,7 @@ fn run_with(config: &SupervisorConfig, stop: &dyn Fn() -> bool) -> Result<(), Er
             Ok(child) => child,
             Err(err) => {
                 log_line(&log, format!("{err}"));
-                if plan_retry(&mut failures, config, stop, &log) {
+                if plan_retry(&mut failures, config, &requested, &log) {
                     break;
                 }
                 continue;
@@ -232,7 +770,7 @@ fn run_with(config: &SupervisorConfig, stop: &dyn Fn() -> bool) -> Result<(), Er
                 .copied()
                 .unwrap_or(Duration::from_secs(1));
             log_line(&log, format!("正常結束，{}ms 後重啟", delay.as_millis()));
-            if wait_or_stop(delay, stop) {
+            if wait_or_stop(delay, &requested) {
                 break;
             }
             continue;
@@ -242,11 +780,12 @@ fn run_with(config: &SupervisorConfig, stop: &dyn Fn() -> bool) -> Result<(), Er
             log_line(&log, "子行程曾穩定存活，失敗次數歸零");
             failures = 0;
         }
-        if plan_retry(&mut failures, config, stop, &log) {
+        if plan_retry(&mut failures, config, &requested, &log) {
             break;
         }
     }
 
+    let _ = std::fs::remove_file(effective_stop_path(config));
     log_line(&log, "監督者結束");
     Ok(())
 }
@@ -270,9 +809,14 @@ fn wait_child(
     let mut last_healthy: Option<bool> = None;
 
     loop {
-        if stop() {
-            log_line(log, "收到停止訊號，結束子行程");
-            terminate(child, config.shutdown_grace, log);
+        let reason = stop_reason(config);
+        if reason.is_some() || stop() {
+            if let Some(reason) = reason {
+                log_line(log, format!("收到停止要求：{reason}"));
+            } else {
+                log_line(log, "外部停止條件成立，結束子行程");
+            }
+            stop_child(child, config, log);
             return WaitResult::Stopped;
         }
 
@@ -307,6 +851,44 @@ fn wait_child(
 
         thread::sleep(config.poll_interval);
     }
+}
+
+/// 停止子行程：先送 `Shutdown` 讓它 flush 個人學習資料，寬限期過了才強制結束。
+///
+/// 整個收尾只用一個 `shutdown_grace`：等待自己結束與最後的強制結束共用同一個
+/// 期限，外面的 `--stop` 才不必再猜「一個 grace 還是兩個」。
+fn stop_child(child: &mut Child, config: &SupervisorConfig, log: &SharedLog) {
+    log_line(log, "停止子行程：先送 Shutdown 讓引擎存檔");
+    let started = Instant::now();
+    if let Err(err) = shutdown_engine(&config.socket) {
+        log_line(log, format!("送 Shutdown 失敗（繼續等它自己結束）：{err}"));
+    }
+    let deadline = started + config.shutdown_grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                log_line(log, format!("子行程已收尾（{status}）"));
+                return;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                log_line(log, format!("等待子行程收尾失敗：{err}"));
+                break;
+            }
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        thread::sleep(
+            config
+                .poll_interval
+                .min((deadline - now).min(Duration::from_millis(50))),
+        );
+    }
+    let remaining = config.shutdown_grace.saturating_sub(started.elapsed());
+    log_line(log, "子行程沒有在寬限期內結束，改用強制結束");
+    terminate(child, remaining.max(Duration::from_millis(200)), log);
 }
 
 /// 記錄一次失敗，並依退避曲線等待。回傳 `true` 表示等待期間收到停止訊號。
@@ -758,8 +1340,8 @@ mod platform {
     use std::ptr;
 
     use windows_sys::Win32::Foundation::{
-        GetLastError, ERROR_SEM_TIMEOUT, ERROR_SHARING_VIOLATION, GENERIC_READ, GENERIC_WRITE,
-        INVALID_HANDLE_VALUE,
+        CloseHandle, GetLastError, ERROR_SEM_TIMEOUT, ERROR_SHARING_VIOLATION, GENERIC_READ,
+        GENERIC_WRITE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, OPEN_ALWAYS,
@@ -774,8 +1356,10 @@ mod platform {
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
+    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        CreateEventW, OpenEventW, OpenProcess, ResetEvent, SetEvent, WaitForSingleObject,
+        PROCESS_SET_QUOTA, PROCESS_TERMINATE, SYNCHRONIZATION_SYNCHRONIZE,
     };
 
     /// 鎖檔的 handle；drop 時關閉，另一個監督者才能開啟。
@@ -884,6 +1468,67 @@ mod platform {
             return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    /// 停止事件的具名物件。由鎖名推導，`--stop` 與監督者一定對得上。
+    ///
+    /// 放在 `Local\`：同一個登入 session 內的行程都看得到，包括以原使用者
+    /// 身分執行的安裝器輔助程式。事件是手動重設，只在停止期間存在。
+    fn stop_event_name(lock_name: &str) -> String {
+        format!("{lock_name}-stop")
+    }
+
+    /// 停止事件的 handle；存在期間事件物件不會消失，drop 時先重設再關閉。
+    pub(super) struct StopEvent(OwnedHandle);
+
+    impl Drop for StopEvent {
+        fn drop(&mut self) {
+            unsafe {
+                let _ =
+                    ResetEvent(self.0.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE);
+            }
+        }
+    }
+
+    /// 要求所有監督者結束：建立（或開啟）具名事件並設為 signaled。
+    pub(super) fn signal_stop_event(lock_name: &str) -> io::Result<StopEvent> {
+        let name = super::wide(&stop_event_name(lock_name));
+        // 手動重設、初始未 signaled。名稱已存在時 CreateEventW 會開啟它。
+        let handle = unsafe { CreateEventW(ptr::null(), 1, 0, name.as_ptr()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let ok = unsafe { SetEvent(handle) };
+        let error = io::Error::last_os_error();
+        if ok == 0 {
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
+            return Err(error);
+        }
+        // SAFETY: handle 由 CreateEventW 建立，所有權交給 OwnedHandle。
+        Ok(StopEvent(unsafe { OwnedHandle::from_raw_handle(handle) }))
+    }
+
+    /// 監督者是否看到停止事件。沒有事件物件就是沒有停止要求。
+    pub(super) fn stop_event_signaled(lock_name: &str) -> bool {
+        let name = super::wide(&stop_event_name(lock_name));
+        let handle = unsafe { OpenEventW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr()) };
+        if handle.is_null() {
+            return false;
+        }
+        let signaled = unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0;
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+        signaled
+    }
+
+    /// 目前行程所屬的 Windows session；取不到時回 `None`。
+    pub(super) fn current_session_id() -> Option<u32> {
+        let mut session = 0_u32;
+        let ok = unsafe { ProcessIdToSessionId(std::process::id(), &mut session) };
+        (ok != 0).then_some(session)
     }
 
     /// 安裝 console 控制處理器：Ctrl+C、關機、登出都只設停止旗標。
@@ -1040,6 +1685,8 @@ fn pipe_path(socket: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
+
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
@@ -1224,6 +1871,107 @@ mod tests {
         assert!(
             read_log(&log_path).contains("連續失敗 5 次，停止重試 30s"),
             "應記錄暫停與時間"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 升級／反安裝用：停止要求檔一出現，監督者就要收尾並刪掉要求檔。
+    #[cfg(unix)]
+    #[test]
+    fn stop_file_ends_supervisor_and_is_removed() {
+        let dir = temp_dir("stop-file");
+        let log_path = dir.join("supervisor.log");
+        let stop_path = dir.join("stop.req");
+
+        let mut config = SupervisorConfig::new(
+            "/bin/sh",
+            vec!["-c".into(), "sleep 5".into()],
+            dir.join("engine.sock"),
+            &log_path,
+        );
+        config.poll_interval = Duration::from_millis(10);
+        config.health_interval = Duration::from_secs(60);
+        config.shutdown_grace = Duration::from_millis(200);
+        config.stop_path = Some(stop_path.clone());
+
+        let writer = stop_path.clone();
+        let writer_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            std::fs::write(&writer, b"stop\n").expect("寫入停止要求");
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        run_with(&config, &|| Instant::now() > deadline).expect("監督迴圈應正常結束");
+        writer_thread.join().expect("停止要求執行緒");
+
+        assert!(!stop_path.exists(), "停止要求檔應在收尾時刪除");
+        let text = read_log(&log_path);
+        assert!(text.contains("停止要求"), "應記錄停止原因：{text}");
+        assert!(
+            text.contains("Shutdown"),
+            "應先送 Shutdown 讓引擎存檔：{text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 啟動清理只能刪舊檔；剛寫入的合法停止要求要留給 `stop_reason` 處理。
+    #[test]
+    fn stale_stop_file_is_removed_but_fresh_one_is_kept() {
+        let dir = temp_dir("stale-stop");
+        let stop = dir.join("stop.req");
+        std::fs::write(&stop, b"stop\n").expect("寫入停止要求");
+        let mut config = SupervisorConfig::new(
+            "/bin/sh",
+            Vec::new(),
+            dir.join("engine.sock"),
+            dir.join("supervisor.log"),
+        );
+        config.stop_path = Some(stop.clone());
+
+        assert!(!remove_stale_stop_file(&config), "剛寫入的要求不能當成殘骸");
+        assert!(stop.exists());
+
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stop)
+            .expect("開啟停止要求");
+        file.set_modified(SystemTime::now() - Duration::from_secs(120))
+            .expect("調整修改時間");
+        assert!(remove_stale_stop_file(&config), "超過期限的要求應刪除");
+        assert!(!stop.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 身分檔要能分辨「同一顆 binary」與「舊版」；壞檔一律視為舊版。
+    #[test]
+    fn identity_round_trip_and_build_comparison() {
+        let dir = temp_dir("identity");
+        let path = identity_path_in(&dir, r"Local\jc-ime-engine-supervisor");
+        let current = SupervisorIdentity::current().expect("讀取自己的身分");
+        write_identity_at(&path, &current).expect("寫入身分檔");
+
+        let read = read_identity_at(&path).expect("讀回身分檔");
+        assert_eq!(read, current);
+        assert!(read.matches_build(&current));
+
+        let mut other_version = current.clone();
+        other_version.version = "0.0.0".to_string();
+        assert!(
+            !current.matches_build(&other_version),
+            "版本不同就不是同一顆"
+        );
+
+        let mut other_sha = current.clone();
+        other_sha.exe_sha256 = "00".repeat(32);
+        assert!(!current.matches_build(&other_sha), "SHA 不同就不是同一顆");
+
+        let mut no_sha = current.clone();
+        no_sha.exe_sha256.clear();
+        assert!(current.matches_build(&no_sha), "沒有 SHA 時退回只比版本");
+
+        std::fs::write(&path, b"{\"pid\":1}").expect("寫入舊格式");
+        assert!(
+            read_identity_at(&path).is_none(),
+            "缺 schema 的舊檔視為舊版"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -42,8 +42,7 @@ use std::io::Write;
 use std::io::{self, BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-#[cfg(unix)]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
 #[cfg(not(windows))]
@@ -110,6 +109,10 @@ fn supervisor_lock_name(instance: &str) -> String {
 /// 命令列解析結果。
 enum Parsed {
     Run(Box<Options>),
+    /// 要求監督者結束，不啟動引擎。
+    Stop(Box<Options>),
+    /// 驗證執行中的監督者與這個執行檔是同一個 binary。
+    Verify(Box<Options>),
     Help,
     Version,
 }
@@ -120,6 +123,20 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let options = match parse_args(&args) {
         Ok(Parsed::Run(options)) => *options,
+        Ok(Parsed::Stop(options)) => {
+            if let Err(err) = stop_engine(&options) {
+                eprintln!("jc-engine --stop: {err:#}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Ok(Parsed::Verify(options)) => {
+            if let Err(err) = verify_running(&options) {
+                eprintln!("jc-engine --verify-running: {err:#}");
+                std::process::exit(1);
+            }
+            return;
+        }
         Ok(Parsed::Help) => {
             print_usage();
             return;
@@ -331,6 +348,73 @@ fn run_supervisor(options: &Options) -> anyhow::Result<()> {
         }
         Err(err) => Err(err.into()),
     }
+}
+
+/// `--stop`：先要求監督者優雅結束，真的不回應才送 `Shutdown` 存檔並強制結束。
+fn stop_engine(options: &Options) -> anyhow::Result<()> {
+    let lock = supervisor_lock_name(&options.instance);
+    let socket = match &options.mode {
+        Transport::Socket(path) => path.clone(),
+        Transport::Stdio => default_supervisor_socket(),
+    };
+    supervise::stop(&lock, &socket).with_context(|| format!("停止引擎失敗（{lock}）"))?;
+    println!("jc-engine: 引擎已結束（{lock}）");
+    Ok(())
+}
+
+/// `--verify-running`：確認單例鎖的持有者與這個執行檔是同一顆 binary。
+///
+/// 安裝器在啟動引擎後執行這一步。只看「有沒有行程」不夠：升級時舊行程還在，
+/// 新引擎會因為單例鎖直接退出，使用者要到下次登入才換得掉。
+fn verify_running(options: &Options) -> anyhow::Result<()> {
+    let lock = supervisor_lock_name(&options.instance);
+    let current =
+        supervise::SupervisorIdentity::current().context("讀取自己的版本與 SHA-256 失敗")?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    // 舊引擎還在跑、新引擎正在接手時會先看到舊身分；這不是最終結果，
+    // 保留最後一次差異，等到期限再決定成敗。
+    let mut mismatch: Option<String> = None;
+    loop {
+        match supervise::InstanceLock::acquire(&lock) {
+            Ok(guard) => {
+                // 鎖拿得到代表沒有監督者在跑；丟掉後繼續等它啟動。
+                drop(guard);
+            }
+            Err(supervise::Error::AlreadyRunning { .. }) => {
+                if let Some(running) = supervise::read_identity(&lock) {
+                    if running.matches_build(&current) {
+                        println!(
+                            "jc-engine: 執行中的引擎已驗證（pid {}，版本 {}）",
+                            running.pid, running.version
+                        );
+                        return Ok(());
+                    }
+                    mismatch = Some(format!(
+                        "pid {}、版本 {}、sha {}…；預期版本 {}、sha {}…",
+                        running.pid,
+                        running.version,
+                        short_sha(&running.exe_sha256),
+                        current.version,
+                        short_sha(&current.exe_sha256)
+                    ));
+                }
+            }
+            Err(err) => return Err(anyhow::Error::new(err).context("檢查引擎單例鎖失敗")),
+        }
+        if Instant::now() >= deadline {
+            if let Some(detail) = mismatch {
+                bail!(
+                    "30 秒內執行中的引擎仍是不同 binary：{detail}。請回報安裝 log 的 supervisor.log。"
+                );
+            }
+            bail!("30 秒內沒有看到執行中的引擎（{lock}）；請確認 jc-engine 已啟動");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn short_sha(sha: &str) -> &str {
+    sha.get(..12).unwrap_or(sha)
 }
 
 /// 個人學習資料目錄：`--personal-dir` > `--settings` 的目錄 > 平台預設。
@@ -545,6 +629,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut personal_prefix = DEFAULT_PERSONAL_PREFIX.to_string();
     let mut personal_dir: Option<PathBuf> = None;
     let mut instance = DEFAULT_INSTANCE.to_string();
+    let mut stop = false;
+    let mut verify_running = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -567,6 +653,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--print-settings" => print_settings = true,
             "--allow-empty-data" => allow_empty_data = true,
             "--supervise" => supervise = true,
+            "--stop" => stop = true,
+            "--verify-running" => verify_running = true,
             "--supervisor-log" => {
                 let value = value_of(args, &mut index, "--supervisor-log")?;
                 supervisor_log = Some(PathBuf::from(value));
@@ -618,10 +706,19 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         index += 1;
     }
 
+    if stop && verify_running {
+        return Err("--stop 與 --verify-running 不能同時使用".into());
+    }
+    if stop && supervise {
+        return Err("--stop 不能與 --supervise 併用".into());
+    }
+    if verify_running && supervise {
+        return Err("--verify-running 不能與 --supervise 併用".into());
+    }
     if let Some(path) = socket {
         mode = Transport::Socket(path);
     }
-    Ok(Parsed::Run(Box::new(Options {
+    let options = Box::new(Options {
         mode,
         max_frame,
         data,
@@ -635,7 +732,14 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         personal_prefix,
         personal_dir,
         instance,
-    })))
+    });
+    if stop {
+        Ok(Parsed::Stop(options))
+    } else if verify_running {
+        Ok(Parsed::Verify(options))
+    } else {
+        Ok(Parsed::Run(options))
+    }
 }
 
 /// 解析 `--mode`；`en` 併入混打，舊值仍可解析。
@@ -692,7 +796,9 @@ fn print_usage() {
          \x20           [--neural <on|off>] [--socket <path>] [--max-frame <bytes>]\n\
          \x20           [--personal-prefix <name>]\n\
 \x20 jc-engine --supervise [--socket <name>] [--supervisor-log <path>]\n\
-\x20           [--instance <name>]\n\n\
+\x20           [--instance <name>]\n\
+\x20 jc-engine --stop [--instance <name>] [--socket <name>]\n\
+\x20 jc-engine --verify-running [--instance <name>]\n\n\
          選項：\n\
          \x20 --data <dir>        資料根目錄；未指定時讀 JC_DATA\n\
          \x20 --settings <path>   設定檔；未指定時讀資料根目錄的 settings.json\n\
@@ -703,6 +809,8 @@ fn print_usage() {
          \x20 --supervisor-log <path>  監督者 log 路徑（預設 %LOCALAPPDATA%\\jc-ime\\supervisor.log）\n\
 \x20 --personal-prefix <name> 個人資料檔名前綴，預設 personal\n\
 \x20 --instance <name>        監督者實例名，預設 main（影響鎖與 log 檔名）\n\
+         \x20 --stop               要求目前的監督者結束（升級／反安裝用）\n\
+         \x20 --verify-running     確認執行中的監督者與這個執行檔是同一顆 binary\n\
          \x20 --mode <mode>       輸入模式：zh、ja、mixed、en；預設由設定檔決定\n\
          \x20 --neural <on|off>   日文神經轉換；預設由設定檔的 selection 決定\n\
         {SOCKET_HELP}\
@@ -717,7 +825,9 @@ fn print_usage() {
 fn print_usage_to_stderr() {
     eprintln!(
         "用法：jc-engine --data <dir> [--settings <path>] [--personal-dir <dir>] [--mode <zh|ja|mixed|en>] [--neural <on|off>] [--socket <path>] [--max-frame <bytes>] [--personal-prefix <name>]\n\
-         \x20     jc-engine --supervise [--socket <name>] [--supervisor-log <path>] [--instance <name>]"
+         \x20     jc-engine --supervise [--socket <name>] [--supervisor-log <path>] [--instance <name>]\n\
+         \x20     jc-engine --stop [--instance <name>]\n\
+         \x20     jc-engine --verify-running [--instance <name>]"
     );
 }
 
@@ -763,6 +873,22 @@ mod tests {
                 "{toggle}: 已移除的 Caps Lock 英文能力不該回報"
             );
         }
+    }
+
+    #[test]
+    fn stop_and_verify_are_separate_modes() {
+        assert!(matches!(parse(&["--stop"]), Ok(Parsed::Stop(_))));
+        assert!(matches!(
+            parse(&["--verify-running"]),
+            Ok(Parsed::Verify(_))
+        ));
+        assert!(matches!(
+            parse(&["--stop", "--instance", "next"]),
+            Ok(Parsed::Stop(_))
+        ));
+        assert!(parse(&["--stop", "--verify-running"]).is_err());
+        assert!(parse(&["--stop", "--supervise"]).is_err());
+        assert!(parse(&["--verify-running", "--supervise"]).is_err());
     }
 
     #[test]
