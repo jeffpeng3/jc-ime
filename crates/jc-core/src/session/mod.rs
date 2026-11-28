@@ -27,6 +27,7 @@ mod mixed;
 pub mod neural;
 mod segments;
 pub mod symbols;
+mod units;
 
 pub use input_style::{
     full_width_idle_keys, halfwidth_shift_keys, idle_keys, warn_space_selects_ignored,
@@ -39,6 +40,7 @@ pub use neural::{
     DEFAULT_RIGHT_CONTEXT_CHARS, DEFAULT_TIMEOUT_MS, QUALITY_GAP_THRESHOLD,
 };
 pub use segments::tone_mark_keys;
+pub use units::{DisplayUnit, DisplayUnitMeta};
 
 use key_policy::KeyOutcome;
 
@@ -437,6 +439,10 @@ pub struct Session {
     /// [`Self::MIXED_CURSOR_END`] 代表結尾；打字時一律回到結尾，方向鍵與刪除
     /// 才會把游標停在字元之間。候選固定作用在游標右側的那一個字元。
     pub(super) cursor_rune: usize,
+    /// 顯示字元的 provenance；`units.surface` 串接等於目前 `preedit`。
+    pub(super) units: Vec<DisplayUnit>,
+    /// 與 [`Session::units`] 平行：每個字元在 `AsciiInput::typed()` 的位元組範圍。
+    pub(super) unit_spans: Vec<(usize, usize)>,
     /// 候選窗是否已展開成四欄；第一次按 → 展開，Esc 或重新開窗時重設。
     pub(super) candidate_expanded: bool,
     /// 這一次開啟的候選窗要作用在哪裡；`None` 時沿用舊的片段／音節路徑。
@@ -660,6 +666,8 @@ impl Session {
             zh: ZhInput::standard(),
             syllables: Vec::new(),
             cursor_rune: Self::MIXED_CURSOR_END,
+            units: Vec::new(),
+            unit_spans: Vec::new(),
             candidate_expanded: false,
             mixed_target: None,
             mixed_choices: Vec::new(),
@@ -897,6 +905,7 @@ impl Session {
                     self.suggestion = None;
                     self.candidates.clear();
                     self.cursor_rune = if forward { at } else { at - 1 };
+                    self.sync_units();
                     return self.snapshot();
                 }
             }
@@ -947,6 +956,7 @@ impl Session {
                 // Tab 在沒有補全可用的字面尾巴上是 no-op：不要重建畫面，
                 // 並讓引擎明確回 handled=false。
                 self.key_consumed = false;
+                self.sync_units();
                 return self.snapshot();
             }
         } else {
@@ -1009,6 +1019,7 @@ impl Session {
             self.prefix_mark_literal = true;
         }
         self.literal_tail.push_str(text);
+        self.sync_units();
         self.snapshot()
     }
 

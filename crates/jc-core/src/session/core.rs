@@ -2742,6 +2742,7 @@ impl Session {
         }
         if self.menu.is_some() {
             self.rebuild_menu();
+            self.sync_units();
             return;
         }
         self.base.clear();
@@ -2772,6 +2773,7 @@ impl Session {
         if self.highlighted >= self.candidates.len() {
             self.highlighted = 0;
         }
+        self.sync_units();
     }
 
     /// 注音顯示與候選共用的排序：nbest → 個人學習 → rerank。
