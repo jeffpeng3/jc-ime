@@ -87,6 +87,20 @@ fn state(child: &mut Child, output: &mut BufReader<std::process::ChildStdout>) -
         .expect("要有快照回應")
 }
 
+fn commit(child: &mut Child, output: &mut BufReader<std::process::ChildStdout>) -> Response {
+    let input = child.stdin.as_mut().expect("stdin");
+    write_message(input, &Request::Commit, DEFAULT_MAX_FRAME).unwrap();
+    input.flush().unwrap();
+    read_message(output, DEFAULT_MAX_FRAME)
+        .unwrap()
+        .expect("要有提交回應")
+}
+
+/// 外殼在 Caps Lock 開著時送出的按鍵：文字仍是基礎小寫，Caps 只是一個旗標。
+fn caps_key(ch: char) -> Key {
+    Key::char(ch, false).with_caps()
+}
+
 fn shutdown(mut child: Child) {
     if let Some(input) = child.stdin.as_mut() {
         write_message(input, &Request::Shutdown, DEFAULT_MAX_FRAME).unwrap();
@@ -140,6 +154,111 @@ fn engine_converts_zhuyin_with_data() {
         reply,
         Response::Committed { text: "我".into() },
         "注音應轉成實際漢字"
+    );
+    shutdown(child);
+}
+
+/// Caps Lock 只改最後字面大小寫：注音鍵仍走注音，轉出的漢字不受影響。
+///
+/// 這條走真正的 `jc-engine` 與資料包，不是 core 的 mock session。
+#[test]
+fn caps_lock_zhuyin_runs_stay_zhuyin_with_real_engine() {
+    let Some(root) = jc_testdata::root() else {
+        eprintln!("缺少測試資料：JC_TESTDATA");
+        return;
+    };
+    let root = root.into_os_string();
+    let mut child = spawn(&[
+        std::ffi::OsStr::new("--data"),
+        &root,
+        std::ffi::OsStr::new("--mode"),
+        std::ffi::OsStr::new("mixed"),
+    ]);
+    let mut output = hello(&mut child);
+
+    for ch in "su3cl3".chars() {
+        let reply = send_key(&mut child, &mut output, caps_key(ch));
+        assert!(
+            matches!(reply, Response::State { .. }),
+            "Caps + {ch:?} 應回 State，得到 {reply:?}"
+        );
+    }
+    let snapshot = state(&mut child, &mut output);
+    let Response::State { preedit, .. } = snapshot else {
+        panic!("Caps + su3cl3 應收到 State，得到 {snapshot:?}");
+    };
+    assert_eq!(preedit, "你好", "Caps 不能讓注音鍵失效");
+    assert_eq!(
+        commit(&mut child, &mut output),
+        Response::Committed {
+            text: "你好".into()
+        }
+    );
+
+    for ch in "w96j0".chars() {
+        let reply = send_key(&mut child, &mut output, caps_key(ch));
+        assert!(
+            matches!(reply, Response::State { .. }),
+            "Caps + {ch:?} 應回 State，得到 {reply:?}"
+        );
+    }
+    let reply = send_key(
+        &mut child,
+        &mut output,
+        Key::new(KeyCode::Space, None, false).with_caps(),
+    );
+    let Response::State { preedit, .. } = reply else {
+        panic!("Caps + w96j0 + 空白應回 State，得到 {reply:?}");
+    };
+    assert_eq!(preedit, "台灣", "Caps 不能改變注音轉換結果");
+    assert_eq!(
+        commit(&mut child, &mut output),
+        Response::Committed {
+            text: "台灣".into()
+        }
+    );
+    shutdown(child);
+}
+
+/// Caps 開著時英文 run 是大寫；Caps + Shift 依系統反轉成小寫。
+#[test]
+fn caps_lock_english_run_and_shift_case_with_real_engine() {
+    let Some(root) = jc_testdata::root() else {
+        eprintln!("缺少測試資料：JC_TESTDATA");
+        return;
+    };
+    let root = root.into_os_string();
+    let mut child = spawn(&[
+        std::ffi::OsStr::new("--data"),
+        &root,
+        std::ffi::OsStr::new("--mode"),
+        std::ffi::OsStr::new("mixed"),
+    ]);
+    let mut output = hello(&mut child);
+
+    for ch in "hello".chars() {
+        send_key(&mut child, &mut output, caps_key(ch));
+    }
+    let snapshot = state(&mut child, &mut output);
+    let Response::State { preedit, .. } = snapshot else {
+        panic!("Caps + hello 應收到 State，得到 {snapshot:?}");
+    };
+    assert_eq!(preedit, "HELLO", "Caps 開著時英文 run 要大寫");
+    assert_eq!(
+        commit(&mut child, &mut output),
+        Response::Committed {
+            text: "HELLO".into()
+        }
+    );
+
+    let reply = send_key(&mut child, &mut output, Key::char('A', true).with_caps());
+    let Response::State { preedit, .. } = reply else {
+        panic!("Caps + Shift + A 應回 State，得到 {reply:?}");
+    };
+    assert_eq!(preedit, "a", "Caps + Shift 要依系統反轉成小寫");
+    assert_eq!(
+        commit(&mut child, &mut output),
+        Response::Committed { text: "a".into() }
     );
     shutdown(child);
 }

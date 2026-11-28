@@ -615,6 +615,34 @@ mod tests {
         }
     }
 
+    /// 舊 `values` 的 `caps-lock-english` 只能被忽略：不留在快照、也不產生
+    /// 「本版不認得」之類的警示。
+    #[test]
+    fn old_store_caps_lock_english_value_is_dropped_without_notes() {
+        let mut settings = fresh_settings("linux");
+        let mut raw = serde_json::to_value(settings.profile_store()).expect("序列化風格");
+        let items = raw["items"].as_array_mut().expect("items 陣列");
+        for item in items {
+            item["values"]["caps-lock-english"] = serde_json::json!("on");
+        }
+        settings.load_profiles(raw);
+        assert!(!settings.read_only());
+        assert!(!settings.profile_invalid);
+        assert!(
+            !settings
+                .notes()
+                .iter()
+                .any(|note| note.contains("caps-lock-english")),
+            "退休欄位不該產生警示：{:?}",
+            settings.notes()
+        );
+        let saved = serde_json::to_string(&settings.profile_store()).expect("序列化風格");
+        assert!(
+            !saved.contains("caps-lock-english"),
+            "退休欄位不該寫回：{saved}"
+        );
+    }
+
     /// 舊版 store 的 rules 一定有 `caps_letter`；欄位已退休，但不能讓整個
     /// 風格變成 invalid／唯讀。
     #[test]

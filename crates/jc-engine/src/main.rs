@@ -753,6 +753,18 @@ mod tests {
         assert_eq!(with.get("clause_display"), Some(&true));
     }
 
+    /// 移除的功能不能再從 health 廣告能力；外殼不該有機會重新打開它。
+    #[test]
+    fn health_does_not_advertise_removed_caps_lock_english() {
+        for toggle in ["both", "left", "right", "none"] {
+            let caps = build_shell_caps(toggle, true, true);
+            assert!(
+                !caps.contains_key("caps_lock_english"),
+                "{toggle}: 已移除的 Caps Lock 英文能力不該回報"
+            );
+        }
+    }
+
     #[test]
     fn defaults_to_stdio_with_one_mib_frames() {
         let Ok(Parsed::Run(options)) = parse(&[]) else {

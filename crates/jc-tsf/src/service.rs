@@ -3152,6 +3152,19 @@ mod english_route_tests {
             }
         }
 
+        /// 單按 Caps Lock：外殼只讓系統處理，不得碰目前的組字。
+        fn tap_caps_lock(&mut self) {
+            let (w, l) = (WPARAM(VK_CAPITAL.0 as usize), LPARAM(1 | (0x3a << 16)));
+            let tested = unsafe { self.sink.OnTestKeyDown(&self.ctx, w, l) }
+                .unwrap()
+                .as_bool();
+            if tested {
+                let _ = unsafe { self.sink.OnKeyDown(&self.ctx, w, l) }.unwrap();
+            }
+            let up = LPARAM(1 | (0x3a << 16) | 1 << 30 | 1 << 31);
+            let _ = unsafe { self.sink.OnKeyUp(&self.ctx, w, up) }.unwrap();
+        }
+
         /// 單按右 Shift：keydown 只讓外殼觀察，keyup 觸發模式切換。
         fn tap_right_shift(&mut self) {
             let (w, l) = (WPARAM(VK_RSHIFT.0 as usize), LPARAM(1 | (0x36 << 16)));
@@ -3342,6 +3355,28 @@ mod english_route_tests {
         assert_eq!(rig.host, "hello");
         assert!(rig.sent().is_empty(), "5 鍵都不得送引擎");
         assert!(!rig.composing(), "英文不建組字");
+    }
+
+    /// 組字中按 Caps Lock 只由系統翻轉鎖定狀態，不能送出 present／commit／
+    /// notice，也不能改動 preedit 或結束組字。
+    #[test]
+    fn caps_lock_key_does_not_touch_composition_or_send_requests() {
+        plain_keyboard();
+        let mut rig = Rig::new(false);
+        rig.type_chars("hellp");
+        let sent = rig.sent();
+        let preedit = rig.preedit();
+        let host = rig.host.clone();
+
+        hold_caps(true);
+        rig.tap_caps_lock();
+        hold_caps(false);
+        plain_keyboard();
+
+        assert_eq!(rig.sent(), sent, "Caps Lock 不得送 present／commit／notice");
+        assert_eq!(rig.preedit(), preedit, "Caps Lock 不得改動 preedit");
+        assert_eq!(rig.host, host, "Caps Lock 不是字面輸入");
+        assert!(rig.composing(), "Caps Lock 不得結束組字");
     }
 
     /// Caps Lock 開著時，字母路由用正規化後的小寫鍵，引擎才會開始組字。
